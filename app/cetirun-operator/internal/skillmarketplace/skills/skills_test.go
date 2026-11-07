@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -343,6 +344,45 @@ func TestDiscoverRejectsOnlyTheSkillWithAnUnsafeName(t *testing.T) {
 	}
 	if len(problems) != len(bad) {
 		t.Fatalf("names outside every skill must not be problems: %+v", problems)
+	}
+}
+
+// The storage and the Agents' file systems take names of at most 255 bytes.
+// A longer name rejects its skill, which the worker could not publish; names
+// that only start with dots stay valid.
+func TestDiscoverRejectsANameLongerThan255Bytes(t *testing.T) {
+	cjk := strings.Repeat("\u6d4b", 85) // 255 bytes
+	files := map[string]string{
+		"skills/fits/SKILL.md":                  skillMD("fits", "A name of 255 bytes"),
+		"skills/fits/" + cjk:                    "x",
+		"skills/dots/SKILL.md":                  skillMD("dots", "Names that start with dots"),
+		"skills/dots/..notes.md":                "x",
+		"skills/dots/...":                       "x",
+		"skills/dots/..data/x.txt":              "x",
+		"skills/long-file/SKILL.md":             skillMD("long-file", "A file name of 258 bytes"),
+		"skills/long-file/" + cjk + ".md":       "x",
+		"skills/long-dir/SKILL.md":              skillMD("long-dir", "A directory name of 256 bytes"),
+		"skills/long-dir/" + cjk + "x/notes.md": "x",
+	}
+	found, problems, err := Discover(newTree(files), "skills", DefaultLimits, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, skill := range found {
+		names = append(names, skill.Name)
+	}
+	if !slices.Equal(names, []string{"dots", "fits"}) {
+		t.Fatalf("valid skills %v", names)
+	}
+	reasons := map[string]string{}
+	for _, problem := range problems {
+		reasons[problem.Path] = problem.Reason
+	}
+	for _, name := range []string{"long-file", "long-dir"} {
+		if !strings.Contains(reasons["skills/"+name], "longer than 255 bytes") {
+			t.Errorf("%s: reason %q", name, reasons["skills/"+name])
+		}
 	}
 }
 

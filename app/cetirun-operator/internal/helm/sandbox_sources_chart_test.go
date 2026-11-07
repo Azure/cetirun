@@ -264,6 +264,7 @@ func TestSkillMarketplaceChartSwitch(t *testing.T) {
 	if !reflect.DeepEqual(deployment, operatorChartDeployment(t, baseline)) {
 		t.Fatal("the switch changed the operator Deployment beyond its variable")
 	}
+	volume, claim := workerStorageNames(t, enabled)
 	delete(baseline, "Deployment/cetirun-operator")
 	delete(enabled, "Deployment/cetirun-operator")
 	// The switch adds the worker and its access, and nothing else.
@@ -275,10 +276,9 @@ func TestSkillMarketplaceChartSwitch(t *testing.T) {
 		}
 	}
 	slices.Sort(added)
-	volume := "PersistentVolume/cetirun-skill-marketplace-" + values["namespace"].(string) + "-storage"
 	wantAdded := []string{
-		"Deployment/cetirun-skill-marketplace", volume,
-		"PersistentVolumeClaim/cetirun-skill-marketplace-storage", "Role/cetirun-skill-marketplace-catalog",
+		"Deployment/cetirun-skill-marketplace", "PersistentVolume/" + volume,
+		"PersistentVolumeClaim/" + claim, "Role/cetirun-skill-marketplace-catalog",
 		"RoleBinding/cetirun-skill-marketplace-catalog", "ServiceAccount/cetirun-skill-marketplace",
 	}
 	if !reflect.DeepEqual(added, wantAdded) {
@@ -286,6 +286,75 @@ func TestSkillMarketplaceChartSwitch(t *testing.T) {
 	}
 	if !reflect.DeepEqual(enabled, baseline) {
 		t.Fatal("the switch changed other operator chart objects")
+	}
+}
+
+// workerStorageNames returns the names of the worker's volume and claim, and
+// checks that they and the worker's mount belong together.
+func workerStorageNames(t *testing.T, objects map[string]*unstructured.Unstructured) (string, string) {
+	t.Helper()
+	var volume, claim string
+	for key, object := range objects {
+		switch {
+		case strings.HasPrefix(key, "PersistentVolume/"):
+			volume = object.GetName()
+		case strings.HasPrefix(key, "PersistentVolumeClaim/"):
+			claim = object.GetName()
+		}
+	}
+	pv := objects["PersistentVolume/"+volume]
+	ref, _, _ := unstructured.NestedString(pv.Object, "spec", "claimRef", "name")
+	bound, _, _ := unstructured.NestedString(objects["PersistentVolumeClaim/"+claim].Object, "spec", "volumeName")
+	var deployment appsv1.Deployment
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(objects["Deployment/cetirun-skill-marketplace"].Object, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	mounted := ""
+	for _, source := range deployment.Spec.Template.Spec.Volumes {
+		if source.Name == "storage" && source.PersistentVolumeClaim != nil {
+			mounted = source.PersistentVolumeClaim.ClaimName
+		}
+	}
+	if volume == "" || ref != claim || bound != volume || mounted != claim {
+		t.Fatalf("volume %q (claim %q), claim %q (volume %q), worker mounts %q", volume, ref, claim, bound, mounted)
+	}
+	return volume, claim
+}
+
+// Kubernetes cannot change the source of a volume or the class of a bound
+// claim. A change of the storage renders a new volume and claim for the
+// worker, so the upgrade creates them and removes the earlier ones, which the
+// chart does not keep. The same storage keeps its names.
+func TestSkillMarketplaceStorageChangeRendersNewWorkerStorage(t *testing.T) {
+	names := func(storage map[string]any) (string, string) {
+		t.Helper()
+		values := skillMarketplaceChartValues(t)
+		marketplace := enabledSkillMarketplace()
+		for key, value := range storage {
+			marketplace["storage"].(map[string]any)[key] = value
+		}
+		values["skillMarketplace"] = marketplace
+		objects, err := renderSandboxSourcesChart(t, values)
+		if err != nil {
+			t.Fatal(err)
+		}
+		volume, claim := workerStorageNames(t, objects)
+		for _, key := range []string{"PersistentVolume/" + volume, "PersistentVolumeClaim/" + claim} {
+			if _, kept := objects[key].GetAnnotations()["helm.sh/resource-policy"]; kept {
+				t.Fatalf("%s must not be kept by Helm: a storage change replaces it", key)
+			}
+		}
+		return volume, claim
+	}
+	volume, claim := names(nil)
+	if again, againClaim := names(nil); again != volume || againClaim != claim {
+		t.Fatal("the same storage must keep the names of the worker's volume and claim")
+	}
+	for field, value := range map[string]any{"resourceGroup": "other-rg", "storageAccount": "otherskills",
+		"containerName": "moved", "storageClassName": "azureblob-nfs-standard", "size": "200Gi"} {
+		if other, otherClaim := names(map[string]any{field: value}); other == volume || otherClaim == claim {
+			t.Errorf("a change of storage.%s must rename the worker's volume and claim: %s %s", field, other, otherClaim)
+		}
 	}
 }
 
@@ -311,6 +380,10 @@ func TestSkillMarketplaceChartRejectsInvalidConfiguration(t *testing.T) {
 		{"no repository", "skillMarketplace.repository.url is required", nil, map[string]any{"enabled": true}},
 		{"credentials in the URL", "must not contain credentials", nil,
 			withRepository(map[string]any{"url": "https://user:synthetic@git.example.invalid/x.git"})},
+		{"a query in the URL", "must not contain a query or a fragment", nil,
+			withRepository(map[string]any{"url": "https://git.example.invalid/x.git?token=synthetic"})},
+		{"a fragment in the URL", "must not contain a query or a fragment", nil,
+			withRepository(map[string]any{"url": "https://git.example.invalid/x.git#synthetic"})},
 		{"token without a Secret", "existingSecret is required", nil,
 			withRepository(map[string]any{"url": "https://git.example.invalid/x.git", "auth": "token"})},
 	} {

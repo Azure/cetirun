@@ -86,7 +86,7 @@ function CatalogView({ catalog }: { catalog: SkillMarketplaceCatalog }) {
   const teams = catalog.teams ?? [];
   return <>
     {catalog.error && <MessageBar intent="error">
-      <MessageBarBody><MessageBarTitle>The last check or publication failed.</MessageBarTitle>{catalog.error}</MessageBarBody>
+      <MessageBarBody><MessageBarTitle>The last check of the repository failed.</MessageBarTitle>{catalog.error}</MessageBarBody>
     </MessageBar>}
     {catalog.truncated && <MessageBar intent="warning">
       <MessageBarBody>Some lists were shortened to fit the catalog.</MessageBarBody>

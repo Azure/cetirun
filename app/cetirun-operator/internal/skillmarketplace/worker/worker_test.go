@@ -293,8 +293,14 @@ func TestNothingChangesBeforeTheFirstTeamsDocument(t *testing.T) {
 	if id, _, _ := f.publisher.ReadCurrent(uid); id == "" {
 		t.Fatal("the releases must stay while no Teams document is known")
 	}
-	// An empty document is a known document: the Team left it.
+	// An empty document is a known document: the Team left it. The grace
+	// period starts now.
 	f.setTeams()
+	f.publish(t)
+	if _, err := os.Stat(filepath.Join(f.publisher.Root, "teams", uid)); err != nil {
+		t.Fatalf("the releases of a Team that left the document stay for the grace period: %v", err)
+	}
+	f.worker.Now = func() time.Time { return time.Now().Add(26 * time.Hour) }
 	f.publish(t)
 	if _, err := os.Stat(filepath.Join(f.publisher.Root, "teams", uid)); !os.IsNotExist(err) {
 		t.Fatalf("the releases of a Team that left the document must go after the grace period: %v", err)

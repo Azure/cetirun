@@ -66,7 +66,7 @@ export interface SkillMarketplaceCatalog {
   commit?: string;
   syncedAt?: string;
   checkedAt?: string;
-  /** The last failed check or publication. */
+  /** The last failed check of the repository. A failed publication is the error of its Team. */
   error?: string;
   /** The valid skills at commit, sorted by name. */
   skills?: SkillMarketplaceSkill[];

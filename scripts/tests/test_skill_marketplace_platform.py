@@ -109,6 +109,27 @@ class SkillMarketplacePlatformTests(unittest.TestCase):
     def worker(self, objects):
         return self.find(objects, "Deployment", WORKER)["spec"]["template"]["spec"]
 
+    def worker_storage(self, objects):
+        """The names of the worker's claim and volume, which name each other."""
+        claims = [doc for doc in objects if doc["kind"] == "PersistentVolumeClaim" and doc["metadata"]["name"].startswith(WORKER)]
+        volumes = [doc for doc in objects if doc["kind"] == "PersistentVolume" and doc["metadata"]["name"].startswith(WORKER)]
+        self.assertEqual((len(claims), len(volumes)), (1, 1))
+        claim, volume = claims[0], volumes[0]
+        self.assertEqual(claim["spec"]["volumeName"], volume["metadata"]["name"])
+        self.assertEqual(volume["spec"]["claimRef"]["name"], claim["metadata"]["name"])
+        return claim["metadata"]["name"], volume["metadata"]["name"]
+
+    def test_a_storage_change_renders_new_worker_storage(self):
+        names = self.worker_storage(self.render(VALUES))
+        self.assertEqual(self.worker_storage(self.render(VALUES)), names)
+        storage = ("cetirun-operator", "skillMarketplace", "storage")
+        for field, value in (("containerName", "moved"), ("storageAccount", "otherskills"), ("resourceGroup", "other-rg"),
+                             ("storageClassName", "azureblob-nfs-standard"), ("size", "200Gi")):
+            with self.subTest(field=field):
+                other = self.worker_storage(self.render(changed(((*storage, field), value))))
+                self.assertNotEqual(other[0], names[0])
+                self.assertNotEqual(other[1], names[1])
+
     def test_the_operator_runs_the_worker_in_its_namespace(self):
         lint = self.helm(VALUES, lint=True)
         self.assertEqual(lint.returncode, 0, lint.stdout + lint.stderr)
@@ -135,16 +156,21 @@ class SkillMarketplacePlatformTests(unittest.TestCase):
         volumes = {volume["name"]: volume for volume in pod["volumes"]}
         self.assertEqual(volumes["credentials"]["secret"]["secretName"], "skills-repository")
         self.assertEqual(volumes["credentials"]["secret"]["items"], [{"key": "token", "path": "token"}])
-        self.assertEqual(volumes["storage"]["persistentVolumeClaim"]["claimName"], f"{WORKER}-storage")
+        # The storage is part of the names of the worker's volume and claim.
+        claim_name, volume_name = self.worker_storage(objects)
+        self.assertEqual(volumes["storage"]["persistentVolumeClaim"]["claimName"], claim_name)
         # Room for one pack of the repository limit, 256 MiB, and 64 MiB more.
         self.assertEqual(volumes["tmp"]["emptyDir"]["sizeLimit"], 256 * 2**20 + 64 * 2**20)
-        # The worker's read-write volume of the container; the names are those of the former chart.
-        volume = self.find(objects, "PersistentVolume", f"{WORKER}-{NAMESPACE}-storage")
+        # The worker's read-write volume of the container. Helm does not keep it or its claim: a
+        # storage change renders new ones, and the upgrade removes these. The container keeps its data.
+        volume = self.find(objects, "PersistentVolume", volume_name)
         self.assertEqual(volume["spec"]["csi"]["volumeAttributes"], {**STORAGE, "protocol": "nfs"})
-        self.assertEqual(volume["spec"]["claimRef"]["name"], f"{WORKER}-storage")
-        self.assertEqual(volume["metadata"]["annotations"]["helm.sh/resource-policy"], "keep")
-        claim = self.find(objects, "PersistentVolumeClaim", f"{WORKER}-storage")
+        self.assertEqual(volume["spec"]["persistentVolumeReclaimPolicy"], "Retain")
+        self.assertEqual(volume["spec"]["claimRef"]["name"], claim_name)
+        self.assertNotIn("helm.sh/resource-policy", volume["metadata"].get("annotations") or {})
+        claim = self.find(objects, "PersistentVolumeClaim", claim_name)
         self.assertEqual(claim["metadata"]["namespace"], NAMESPACE)
+        self.assertNotIn("helm.sh/resource-policy", claim["metadata"].get("annotations") or {})
         # The Operator gets the storage of the Agents' claims.
         config = json.loads(self.environment(objects, "cetirun-operator")["CETIRUN_SKILL_MARKETPLACE"])
         self.assertEqual(config, {"enabled": True, "storage": {**STORAGE, "storageClassName": "azureblob-nfs-premium"}})
@@ -217,6 +243,8 @@ class SkillMarketplacePlatformTests(unittest.TestCase):
             ((*marketplace, "repository", "auth"), "basic", "skillMarketplace.repository.auth must be none, token or ssh"),
             ((*marketplace, "repository", "existingSecret"), "", "skillMarketplace.repository.existingSecret is required"),
             ((*marketplace, "repository", "url"), "https://user:secret@git.example.invalid/x.git", "must not contain credentials"),
+            ((*marketplace, "repository", "url"), "https://git.example.invalid/x.git?token=synthetic", "must not contain a query or a fragment"),
+            ((*marketplace, "repository", "url"), "https://git.example.invalid/x.git#synthetic", "must not contain a query or a fragment"),
             ((*marketplace, "repository", "url"), "http://git.example.invalid/x.git", "must use https://"),
             ((*marketplace, "storage", "storageAccount"), "Example", "storageAccount must be 3-24 lowercase"),
             ((*marketplace, "storage", "containerName"), "a--b", "containerName must be a valid Blob container name"),

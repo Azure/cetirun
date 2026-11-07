@@ -390,9 +390,15 @@ behaviors. Keep it equal to the operator's `skillMarketplace.enabled`.
   `invalid_policy`, and the message names the Team.
 - `GET /api/v1/instances/{name}` returns `teamSkills` for an Agent whose Team
   has an Agent Policy and selects marketplace skills. Each entry has `name`,
-  `description`, `version`, and `state`. The state is `published`, `pending`,
-  `retained`, or `missing`. Without a catalog, each skill is `pending`. The
-  field is absent when the Portal cannot read the Team or the catalog.
+  `description`, `version`, and `state`. The version is the one in the release
+  of the Team. The state is `published`, `updating`, `pending`, `retained`, or
+  `missing`. `updating` means that the repository has another version, which
+  the entry gives as `repositoryVersion`. Without a catalog, each skill is
+  `pending`. The field is absent when the Portal cannot read the Team or the
+  catalog.
+- The same response has `teamSkillsPublicationFailed: true` when the catalog
+  has a publication error for the Team. The response does not include the
+  error; administrators see it on **Admin → Skills**.
 - The same response has `teamSkillsRestartNeeded: true` when the newest Pod
   of the Agent copied an earlier Team release. Both releases are of the current
   Team selection. The Portal reads the copied release ID from the termination

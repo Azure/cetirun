@@ -84,6 +84,9 @@ reason for each rejected directory.
   backslash. A name that Git uses for its own directory, such as `.git`, is
   also not allowed. Such names in other parts of the repository do not stop
   the synchronization.
+- A file or directory name in the skill has more than 255 bytes, for example
+  86 Chinese characters. The container and the file systems of the Agents
+  cannot store such a name.
 - The skill has more files, bytes, or directory levels than the
   [skill limits](#skill-limits) allow. By default, a skill can have at most
   500 files and 5 MiB in total. Its `SKILL.md` can have at most 256 KiB. No
@@ -149,12 +152,13 @@ validation also use it. Before you increase a size limit, do these checks:
   space of its Sandbox. Make sure that the copy fits in the scratch size of
   the Sandboxes of the Team.
 - Keep the memory limit of the worker, `skillMarketplace.worker.resources.limits.memory`, at least
-  twice `maxRepositorySize` plus 256 MiB. A commit needs memory for its
+  three times `maxRepositorySize` plus 256 MiB. A commit needs memory for its
   objects, and once more for its largest object or for the paths below
-  `repository.path`. The default memory limit, `1Gi`, fits the default
-  repository limits. Increase the memory limit together with either
-  repository limit. The worker sets the soft memory limit of its Go runtime
-  to 90% of the memory limit of its container.
+  `repository.path`. While the worker reads a new commit, it still holds the
+  files of the valid skills of the commit that it read before. The default
+  memory limit, `1Gi`, fits the default repository limits. Increase the memory
+  limit together with either repository limit. The worker sets the soft
+  memory limit of its Go runtime to 90% of the memory limit of its container.
 - The worker writes the pack of a check to an `emptyDir` volume of its Pod.
   It removes the pack after the check. The pack is at most
   `maxRepositorySize`.
@@ -180,14 +184,30 @@ teams/<team-uid>/releases/<id>/.cetirun-release.json
 - The release ID depends only on the selection and on the versions of its
   skills. When neither changes, the worker does not publish a new release.
 - The worker writes a complete release before it replaces `CURRENT`. After
-  that, it does not change the release.
+  that, it does not change the release. A release that is needed again, for
+  example after a revert, is written again unless it is complete.
 - The worker keeps the current release and the two newest other releases. It
-  removes older releases after ten minutes.
-- When you delete a Team, the worker removes its releases. It waits until
-  the last publication of the Team is older than one hour (`teamGCGrace`).
+  removes an older release when it has not been current for ten minutes, so
+  an Agent that started just before the change can still copy it.
+- When a Team leaves the list of policy-bound Teams, the worker keeps its
+  releases for one hour (`teamGCGrace`) after it finds the Team gone. A Team
+  leaves the list when you delete it, or when you remove its Agent Policy. A
+  Team that comes back within the hour keeps its releases, and with them its
+  retained skills. When the worker starts again, the hour starts again.
+- The worker removes releases during a full pass. It makes a full pass after
+  each new commit or change of a policy-bound Team, and every ten minutes.
+  Thus a removal can occur up to ten minutes after the times above.
+- The worker removes a release or the subtree of a Team by renaming it first.
+  A removal that stops part way never leaves an incomplete release under its
+  own name.
 
 The worker publishes again when the selection of a Team changes, and when it
-reads a new commit.
+reads a new commit. When the publication of a Team fails, the worker tries
+again after ten seconds. While the same selection and commit keep failing, it
+waits twice as long before each new try, up to five minutes. A change of the
+selection or of the commit tries again at once. The log of the worker has the
+error when the failure starts or its error changes, one short line for each
+further attempt, and one line when the publication succeeds again.
 
 ## How Agents receive the skills
 
@@ -396,7 +416,7 @@ skillMarketplace:
 | Field | Necessary | Meaning |
 | --- | --- | --- |
 | `repository.url` | Yes | The repository, in the form that `auth` needs. It cannot contain whitespace, credentials, a query, or a fragment |
-| `repository.ref` | No | A branch, a tag, or a full ref such as `refs/heads/main`. For a name without `refs/`, the worker uses the branch with that name, or else the tag. Empty uses the branch that the remote HEAD names |
+| `repository.ref` | No | A branch, a tag, or a full ref such as `refs/heads/main`. For a name without `refs/`, the worker uses the branch with that name, or else the tag. A tag can be a lightweight or an annotated tag. Empty uses the branch that the remote HEAD names |
 | `repository.path` | No | The directory of the skills, relative to the repository root, without `..`. Empty is the root |
 | `repository.auth` | Yes | `none`, `token`, or `ssh` |
 | `repository.existingSecret` | With `token` or `ssh` | The Secret in `platform.namespace`. Not allowed with `none` |
@@ -405,6 +425,9 @@ skillMarketplace:
 | `storage.storageAccount` | Yes | The storage account: 3 to 24 lowercase letters and digits |
 | `storage.containerName` | Yes | The container of the releases. It cannot be the `sharedSkills` container |
 | `storage.storageClassName` | Yes | A StorageClass of the Blob CSI driver |
+
+To move the releases to other storage, change the `storage` fields and run
+`make deploy` again. Refer to [Move to other storage](#move-to-other-storage).
 
 `make deploy` does these things with the block:
 
@@ -441,6 +464,40 @@ kubectl get configmap cetirun-skill-marketplace -n cetirun-system \
 ```
 
 **Admin → Skills** in the Portal shows the same state.
+
+### Move to other storage
+
+To move the releases to another container or storage account, for example to
+one that only private endpoints reach, prepare an empty container as in
+[Storage](#storage). Change the `storage` fields in the environment file, and
+run `make deploy` again. Then:
+
+- The worker gets a volume and a claim of the new storage. Helm removes its
+  earlier volume and claim. The earlier container keeps its data.
+- The worker publishes the release of each Team in the new container, from
+  the repository. A [retained skill](#retained-and-missing-skills) exists only
+  in the earlier container, so it becomes missing. To keep such a skill, add
+  it to the repository again before the move.
+- The operator replaces the skills claim of each Agent of a policy-bound
+  Team. Each running Agent stops and starts again one time, and then copies
+  the release of its Team from the new container.
+
+### Turn off the Skill Marketplace
+
+Remove the `skillMarketplace` block from the environment file, and run
+`make deploy`. Then:
+
+- Helm removes the worker, and its volume and claim. The container keeps the
+  releases, and the Agents keep their skills claims.
+- An Agent of a policy-bound Team that selects skills changes to `Failed`
+  with `AgentConfigInvalid`. The message names the skills, and says that the
+  Skill Marketplace is off. Its running Pod keeps running with the skills
+  that it copied. The operator does not apply changes to the Agent until you
+  remove the skills from the Team, or turn the Skill Marketplace on again.
+- When you add the block again and run `make deploy`, these Agents become
+  `Ready` again. They restart only to apply changes that waited, for example
+  a new release that a `make deploy` run installed while the Skill
+  Marketplace was off.
 
 ## Select the skills of a Team
 
@@ -572,11 +629,15 @@ spec:
 - The checks of the Portal do not apply to `kubectl`. The worker lists a
   selected name that the catalog does not have as
   [missing](#retained-and-missing-skills).
-- Keep each Team skill in the allowed skills of the Policy. If a Team selects
-  a skill that its Policy does not allow, the operator denies the Agents of
-  the Team. This also occurs when a Policy edit removes a skill that a Team
-  selects. The condition `PolicyResolved` of these Agents is `False`, with
-  reason `PolicyDenied` and the message `skill "<name>" is not allowed by policy`.
+- Keep each Team skill in the allowed skills of the Policy. The Sandbox
+  admission webhook refuses a Team that selects a skill that its Policy does
+  not allow, also for a change of the skills alone. It also refuses a Policy
+  change that removes a skill that a Team of the Policy selects. The message
+  names the Team and the skills.
+- A Team that was stored before the webhook checked its skills can still
+  select such a skill. The operator then denies the Agents of the Team. The
+  condition `PolicyResolved` of these Agents is `False`, with reason
+  `PolicyDenied` and the message `skill "<name>" is not allowed by policy`.
   The operator revokes their Gateway keys and stops them.
 
 ## When changes take effect
@@ -701,10 +762,12 @@ skill, remove it from the Team. Then you can remove it from the Policy.
   Teams, Agents, Secrets, claims, or volumes.
 - The operator creates the claims and their PersistentVolumes, with its own
   permissions. It creates claims only in the protected namespaces of Agents,
-  and volumes only for the configured container. It never updates them.
-- When the claim of an Agent is gone, the operator deletes the
-  PersistentVolume of that claim. A claim is gone, for example, after the
-  deletion of its Agent. The data in the container stays.
+  and volumes only for the configured container. It never updates them. It
+  replaces a claim whose volume refers to other storage than the configured
+  one, and a volume that refers to an earlier claim of the Agent.
+- While the Skill Marketplace is on, the operator deletes the
+  PersistentVolume of an Agent whose claim is gone. A claim is gone, for
+  example, after the deletion of its Agent. The data in the container stays.
 - Agents can only read the skills, and only the HOME initializer mounts the
   claim. Skills can contain scripts that the Agents run. Review the repository
   as you review code.
@@ -730,7 +793,7 @@ jq '.teams[] | {name, release, selectionDigest, releaseSelectionDigest, retained
 | `repository` | The URL without user information, the ref, and the path |
 | `commit`, `syncedAt` | The last commit that the worker read, and when |
 | `checkedAt` | When the worker last examined the remote |
-| `error` | The error of the last check. The catalog keeps the skills of the last commit that the worker read |
+| `error` | The error of the last check of the repository. The catalog keeps the skills of the last commit that the worker read. The error of a publication is the `error` of its Team |
 | `skills` | The valid skills, with `name`, `description`, `version`, `path`, `updatedAt` (when the worker first saw this version), `files`, and `bytes` |
 | `invalid` | The rejected directories, with `path`, `name`, and `reason` |
 | `teams` | Each policy-bound Team, with `release`, `skills`, `retained`, `missing`, `error`, and two selection digests. The release serves the current selection of the Team when `releaseSelectionDigest` equals `selectionDigest` |
@@ -774,9 +837,12 @@ the Team in the catalog:
   cannot read the current release of the Team or the skill in it. It keeps the
   current release, and it tries again. Examine the mount of the worker and
   the container.
-- `publication failed`: the worker cannot write to the container. Examine the
-  private endpoint, the DNS zone, and the mount events of the Pod of the
-  worker.
+- `publication failed`: the worker could not write the release. The message
+  gives the reason. When the worker cannot write to the container, examine
+  the private endpoint, the DNS zone, and the mount events of the Pod of the
+  worker. The worker tries again, with a growing wait while the same error
+  repeats, up to five minutes. A change of the selection or a new commit
+  tries again at once.
 
 ### An Agent waits for its skills claim
 
@@ -806,7 +872,12 @@ kubectl get pv -l skills.cetirun.microsoft.com/marketplace=true
 
 The namespace can already have a claim with this name that the operator did
 not create for the Skill Marketplace. The operator does not change that claim,
-and its log says so.
+and its log says so once.
+
+When the claim of an Agent is deleted, the operator creates a new claim and
+volume. A running Agent keeps its claim until the operator stops the Agent,
+which then starts with the new claim. The operator examines a claim that is
+not bound yet every ten seconds.
 
 ### The initializer of an Agent fails
 

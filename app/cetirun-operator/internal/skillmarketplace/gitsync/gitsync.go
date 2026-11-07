@@ -69,7 +69,9 @@ type Source struct {
 
 var scpLike = regexp.MustCompile(`^([A-Za-z0-9._-]+)@([A-Za-z0-9.-]+):([^/].*)$`)
 
-// Validate checks the URL and authentication before any network use.
+// Validate checks the URL and authentication before any network use. The
+// worker logs the URL and lists it in the catalog, so the URL must not carry
+// credentials, a query or a fragment.
 func (s Source) Validate() error {
 	switch s.Auth {
 	case AuthNone, AuthToken:
@@ -83,6 +85,9 @@ func (s Source) Validate() error {
 		if parsed.Scheme != "https" && !(parsed.Scheme == "http" && s.AllowInsecureHTTP) {
 			return fmt.Errorf("the repository URL must use https://")
 		}
+		if parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(s.URL, "#") {
+			return fmt.Errorf("the repository URL must not contain a query or a fragment; keep credentials in the credentials Secret")
+		}
 	case AuthSSH:
 		if strings.HasPrefix(s.URL, "ssh://") {
 			parsed, err := url.Parse(s.URL)
@@ -91,6 +96,9 @@ func (s Source) Validate() error {
 			}
 			if _, hasPassword := parsed.User.Password(); hasPassword {
 				return fmt.Errorf("the repository URL must not contain a password")
+			}
+			if parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(s.URL, "#") {
+				return fmt.Errorf("the repository URL must not contain a query or a fragment")
 			}
 		} else if !scpLike.MatchString(s.URL) {
 			return fmt.Errorf("SSH repositories need an ssh:// URL or the user@host:path form")
@@ -104,7 +112,8 @@ func (s Source) Validate() error {
 	return nil
 }
 
-// Redacted is the URL without user information, for logs and the catalog.
+// Redacted is the URL without user information, query or fragment, for logs
+// and the catalog.
 func Redacted(raw string) string {
 	if match := scpLike.FindStringSubmatch(raw); match != nil {
 		return match[2] + ":" + match[3]
@@ -113,7 +122,7 @@ func Redacted(raw string) string {
 	if err != nil {
 		return "<invalid URL>"
 	}
-	parsed.User = nil
+	parsed.User, parsed.RawQuery, parsed.ForceQuery, parsed.Fragment, parsed.RawFragment = nil, "", false, "", ""
 	return parsed.String()
 }
 
@@ -166,14 +175,20 @@ func readSecret(name string) (string, error) {
 	return token, nil
 }
 
+// peeledSuffix names the commit of an annotated tag in a ref advertisement.
+const peeledSuffix = "^{}"
+
 // Resolve returns the commit that the configured ref names on the remote.
+// For an annotated tag, the remote advertises the tag object and, under the
+// name with "^{}", its commit: Resolve returns the commit, which a fetch of
+// the ref loads.
 func (s Source) Resolve(ctx context.Context) (plumbing.ReferenceName, plumbing.Hash, error) {
 	auth, err := s.auth()
 	if err != nil {
 		return "", plumbing.ZeroHash, err
 	}
 	remote := git.NewRemote(memory.NewStorage(), &config.RemoteConfig{Name: "origin", URLs: []string{s.URL}})
-	refs, err := remote.ListContext(ctx, &git.ListOptions{Auth: auth})
+	refs, err := remote.ListContext(ctx, &git.ListOptions{Auth: auth, PeelingOption: git.AppendPeeled})
 	if err != nil {
 		return "", plumbing.ZeroHash, s.sanitize(err)
 	}
@@ -206,6 +221,9 @@ func (s Source) Resolve(ctx context.Context) (plumbing.ReferenceName, plumbing.H
 	}
 	for _, name := range candidates {
 		if ref, ok := byName[name]; ok {
+			if peeled, ok := byName[name+peeledSuffix]; ok {
+				return name, peeled.Hash(), nil
+			}
 			return name, ref.Hash(), nil
 		}
 	}
@@ -214,9 +232,14 @@ func (s Source) Resolve(ctx context.Context) (plumbing.ReferenceName, plumbing.H
 
 // Snapshot is one commit's tree, held in memory.
 type Snapshot struct {
+	// Commit is the hash of the commit.
 	Commit string
-	tree   *object.Tree
-	store  *memory.Storage
+	// Ref is the hash that the ref named when the fetch read it: the commit,
+	// or the tag object of an annotated tag. The ref can move between Resolve
+	// and Fetch, so only this hash names what the fetch read.
+	Ref   string
+	tree  *object.Tree
+	store *memory.Storage
 }
 
 // Limits bound the memory that one fetch may use. The service checks them
@@ -276,7 +299,7 @@ func (s Source) Fetch(ctx context.Context, ref plumbing.ReferenceName, limits Li
 	if err != nil {
 		return nil, err
 	}
-	return &Snapshot{Commit: commit.Hash.String(), tree: tree, store: storage.Storage}, nil
+	return &Snapshot{Commit: commit.Hash.String(), Ref: head.Hash().String(), tree: tree, store: storage.Storage}, nil
 }
 
 // boundedStorage keeps the objects of one fetch in memory. go-git hands the

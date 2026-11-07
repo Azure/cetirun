@@ -102,6 +102,9 @@ func (r *AgentReconciler) customRuntimeValues(instance *api.Agent, team *api.Tea
 	// With the Skill Marketplace, Team marketplace skills are dropped here, not
 	// passed as ClawHub installs, which Custom refuses below. The HOME
 	// initializer copies them from the Team's release instead.
+	if err := skillsWithoutMarketplace(team, instance.Spec.SkillOverrides, r.SkillMarketplace); err != nil {
+		return nil, err
+	}
 	if err := applySkillValues(values, team, instance.Spec.SkillOverrides, r.SkillsStorageAccount, r.SkillMarketplace); err != nil {
 		return nil, err
 	}

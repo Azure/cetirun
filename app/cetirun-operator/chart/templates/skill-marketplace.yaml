@@ -5,9 +5,7 @@ mounts the release storage read-write, so it runs apart from the operator. Its
 Kubernetes access is two ConfigMaps of the operator namespace: it reads the
 operator's Teams document and updates the catalog that the operator creates.
 The operator reconciles Teams and Agents, and creates the Agents' read-only
-skills claims. The names and labels are the ones of the former
-cetirun-skill-marketplace chart, so an upgrade keeps the storage claim and
-replaces the Deployment.
+skills claims.
 */ -}}
 {{- $config := include "cetirun-operator.skillMarketplaceConfig" . -}}
 {{- if $config }}
@@ -17,7 +15,13 @@ replaces the Deployment.
 {{- $limits := $marketplace.limits -}}
 {{- $worker := $marketplace.worker | default dict -}}
 {{- $name := "cetirun-skill-marketplace" -}}
-{{- $volume := printf "%s-%s-storage" $name .Values.namespace | trunc 63 | trimSuffix "-" -}}
+{{- /* Kubernetes cannot change the source of a volume, or the class and
+size of a bound claim. The storage is part of the names of the worker's
+volume and claim: when it changes, Helm creates new ones and removes the
+earlier ones. */ -}}
+{{- $storageHash := printf "%s/%s/%s/%s/%s" $storage.resourceGroup $storage.storageAccount $storage.containerName $storage.storageClassName (toString $storage.size) | sha256sum | trunc 10 -}}
+{{- $volume := printf "%s-%s-%s" $name .Values.namespace $storageHash -}}
+{{- $claim := printf "%s-storage-%s" $name $storageHash -}}
 {{- $version := include "cetirun-operator.version" . | default .Chart.AppVersion -}}
 apiVersion: v1
 kind: ServiceAccount
@@ -73,7 +77,9 @@ subjects:
     namespace: {{ .Values.namespace }}
 ---
 # The worker's own read-write mount of the release container. Agents get
-# separate read-only claims, which the operator creates.
+# separate read-only claims, which the operator creates. Deleting these
+# objects leaves the container and its data: the volume is static, with the
+# Retain policy.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -83,8 +89,6 @@ metadata:
     app.kubernetes.io/instance: {{ .Release.Name }}
     app.kubernetes.io/version: {{ $version | quote }}
     app.kubernetes.io/managed-by: {{ .Release.Service }}
-  annotations:
-    helm.sh/resource-policy: keep
 spec:
   capacity:
     storage: {{ $storage.size | quote }}
@@ -96,7 +100,7 @@ spec:
     apiVersion: v1
     kind: PersistentVolumeClaim
     namespace: {{ .Values.namespace }}
-    name: {{ $name }}-storage
+    name: {{ $claim }}
   csi:
     driver: blob.csi.azure.com
     volumeHandle: {{ $volume }}
@@ -109,15 +113,13 @@ spec:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ $name }}-storage
+  name: {{ $claim }}
   namespace: {{ .Values.namespace }}
   labels:
     app.kubernetes.io/name: {{ $name }}
     app.kubernetes.io/instance: {{ .Release.Name }}
     app.kubernetes.io/version: {{ $version | quote }}
     app.kubernetes.io/managed-by: {{ .Release.Service }}
-  annotations:
-    helm.sh/resource-policy: keep
 spec:
   accessModes: ["ReadWriteMany"]
   storageClassName: {{ $storage.storageClassName | quote }}
@@ -228,7 +230,7 @@ spec:
       volumes:
         - name: storage
           persistentVolumeClaim:
-            claimName: {{ $name }}-storage
+            claimName: {{ $claim }}
         # Holds the pack of one fetch while the worker checks it: at most
         # limits.maxRepositorySize, removed after the fetch.
         - name: tmp
