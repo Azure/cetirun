@@ -16,5 +16,9 @@ a commitment to release dates.
   choices, enforced beyond the user interface.
 - **Private memory and safer lifecycle:** built-in Wiki-style memory, private
   data that CetiRun keeps, and controlled replacement and recovery.
+- **Shared agent pools:** an Agent mode with many interchangeable replicas for
+  headless, queue-driven work: throwaway home storage instead of a private
+  volume, one Gateway key with per-task usage attribution, and no inbound
+  route.
 - **Operations:** scoped diagnostics, clearer policy status, and CetiAdmin
   assistance with explicit authorization.
