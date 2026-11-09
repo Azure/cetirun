@@ -131,6 +131,10 @@ param adxClusterName string = 'adx${uniqueString(subscription().subscriptionId, 
 param adxResourceGroupName string = resourceGroupName
 
 param adxSubscriptionId string = subscription().subscriptionId
+
+@description('Region of a new Kusto cluster. Not every region offers every Kusto SKU, for example the Dev SKUs.')
+param adxLocation string = location
+
 param adxSkuName string = 'Dev(No SLA)_Standard_E2a_v4'
 
 @allowed(['Basic', 'Standard'])
@@ -209,7 +213,7 @@ module adx 'modules/adx.bicep' = if (adxMode != 'none') {
   params: {
     clusterName: adxClusterName
     createCluster: adxMode == 'create'
-    location: location
+    location: adxLocation
     skuName: adxSkuName
     skuTier: adxSkuTier
     skuCapacity: adxSkuCapacity

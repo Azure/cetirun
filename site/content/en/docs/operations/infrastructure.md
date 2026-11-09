@@ -328,6 +328,10 @@ The template can also create the Azure resources of the optional
 | `create` | A new Kusto cluster `adxClusterName` in `adxResourceGroupName`, with the three databases |
 | `existing` | The three databases in the existing Kusto cluster `adxClusterName` |
 
+A new Kusto cluster goes to the AKS region unless `adxLocation` names
+another. Not every region offers every Kusto SKU; the default Dev SKU, for
+example, is not offered in every region.
+
 With `create` or `existing`, the template also creates these resources:
 
 - The databases `CetiRunLogs`, `CetiRunMetrics` and `CetiRunAgents`, with the
