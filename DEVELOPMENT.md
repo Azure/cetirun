@@ -765,8 +765,9 @@ image. Prepare its tools and dependencies separately with
 `HERMES_HOME` and the checksum-verified source. Select that source and its
 `.venv/bin/python` through `MEMORY_HERMES_SOURCE` and `MEMORY_HERMES_PYTHON`
 when running `node --test app/cetirun-memory-context/tests/native.test.mjs`.
-The host check validates the install stamp, native hook and middleware calls,
-Webapp owner/source isolation, and bounded model requests to loopback.
+The host checks validate the install stamp, native hook and middleware calls,
+default channel access, configured source restrictions, child inheritance and
+bounded model requests to loopback.
 Run the same interpreter with
 `-B scripts/tests/hermes_mcp_host.py --source /path/to/pinned/hermes` to test
 the native MCP SDK over loopback TLS. This includes workload token rotation,

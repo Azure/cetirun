@@ -35,18 +35,71 @@ def model_revision(provider, model, base_url, api_mode):
     return "sha256:" + hashlib.sha256(json.dumps([provider, model, base_url or "", api_mode], separators=(",", ":")).encode()).hexdigest()
 
 
-def owner_private_session(platform, parent_session_id, sender_id):
-    if parent_session_id:
+def owner_private_session(platform, parent_session_id, sender_id, access=None, *, chat_id="", chat_type=""):
+    if parent_session_id or not platform or platform == "subagent":
         return False
-    if platform in ("cli", "tui", "api_server"):
-        return True
-    if platform != "desktop":
+    access = access or {}
+    if "platforms" in access and platform not in access["platforms"]:
         return False
-    from gateway.owner_identity import host_owner_subject, same_owner
-    from gateway.session_policy import active_policy
-    policy = active_policy()
-    return bool(policy and policy.source == "gui" and policy.platform == "desktop"
-                and sender_id and same_owner(sender_id, host_owner_subject()))
+    if platform in ("cron", "acp") and access.get(platform) is False:
+        return False
+    for key, value in (("senders", sender_id), ("chats", chat_id), ("chat_types", chat_type)):
+        limits = access.get(key, {})
+        if platform in limits and value not in limits[platform]:
+            return False
+    return True
+
+
+def restriction_env(name):
+    value = os.environ.get(name, "").lower()
+    if value not in ("", "false", "true", "0", "1"):
+        raise ValueError("MemoryRestrictionsInvalid")
+    return value in ("true", "1")
+
+
+def owner_access(ctx):
+    def valid_identifier(value, limit):
+        return (isinstance(value, str) and 0 < len(value) <= limit and value.strip() == value
+                and "*" not in value and not any(ord(c) < 32 for c in value))
+
+    def valid_identifiers(values, limit):
+        return isinstance(values, list) and len(values) <= 32 and all(valid_identifier(value, limit) for value in values)
+
+    configured = ctx.get_config("owner_access", {}) if hasattr(ctx, "get_config") else {}
+    try:
+        environment = json.loads(os.environ.get("CETIRUN_MEMORY_OWNER_ACCESS") or "{}")
+    except ValueError:
+        raise ValueError("MemoryOwnerAccessInvalid") from None
+    policies = (configured, environment)
+    for access in policies:
+        if not isinstance(access, dict) or set(access) - {"platforms", "senders", "chats", "chat_types", "subagents", "cron", "acp"}:
+            raise ValueError("MemoryOwnerAccessInvalid")
+        if any(type(access[key]) is not bool for key in ("subagents", "cron", "acp") if key in access):
+            raise ValueError("MemoryOwnerAccessInvalid")
+        if "platforms" in access and not valid_identifiers(access["platforms"], 64):
+            raise ValueError("MemoryOwnerAccessInvalid")
+        for key in ("senders", "chats", "chat_types"):
+            limits = access.get(key, {})
+            if not isinstance(limits, dict) or len(limits) > 32:
+                raise ValueError("MemoryOwnerAccessInvalid")
+            for platform, values in limits.items():
+                if not valid_identifier(platform, 64) or not valid_identifiers(values, 256):
+                    raise ValueError("MemoryOwnerAccessInvalid")
+    return policies
+
+
+class OwnerGrant:
+    """Process-local native lineage, never read from a tool payload or transcript."""
+    def __init__(self, principal, cwd, private, controls, parent=None):
+        self.principal, self.cwd, self.allowed = principal, cwd, private
+        self.controls, self.parent = dict(controls), parent
+
+    def refresh(self):
+        if self.parent:
+            self.parent.refresh()
+            self.allowed &= self.parent.allowed
+            for key in self.controls:
+                self.controls[key] |= self.parent.controls[key]
 
 
 def load_assets(root):
@@ -275,7 +328,11 @@ def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_
         raise ValueError("AgentContextTooLarge")
     from hermes_cli.version_info import get_version_info
     native_version = get_version_info().base_version
-    sessions, guard = {}, threading.RLock()
+    access = owner_access(ctx)
+    allow_children = all(policy.get("subagents", True) for policy in access)
+    restrictions = {"noCapture": restriction_env("CETIRUN_MEMORY_NO_CAPTURE"),
+                    "noMemory": restriction_env("CETIRUN_MEMORY_NO_MEMORY")}
+    sessions, grants, spawns, guard = {}, {}, {}, threading.RLock()
     tool_identity = ContextVar("cetirun_memory_tool_identity", default=None)
 
     def state(session_id=None):
@@ -283,14 +340,56 @@ def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_
             from gateway.session_context import get_session_env
             session_id = get_session_env("HERMES_SESSION_ID")
         with guard:
-            return sessions.get(session_id)
+            current = sessions.get(session_id)
+            grant = grants.get(session_id)
+            if current and grant:
+                grant.refresh()
+                changed = any(current.binding[key] != value for key, value in grant.controls.items())
+                current.binding.update(grant.controls)
+                current.binding["audience"] = "owner-private" if grant.allowed else "unknown"
+                # A tightened parent restriction invalidates the cached private view.
+                if changed or not grant.allowed or current.binding["noMemory"]:
+                    current.turn_text = None
+            return current
+
+    def spawn(parent_session_id="", parent_turn_id="", child_session_id="", **_kwargs):
+        if not allow_children or not child_session_id or child_session_id == parent_session_id:
+            return
+        with guard:
+            parent = state(parent_session_id)
+            if (not parent or parent.cancelled.is_set() or not parent.private()
+                    or not parent_turn_id or parent.binding["opportunityId"] != parent_turn_id
+                    or child_session_id in grants or child_session_id in spawns):
+                return
+            grant = grants[parent_session_id]
+            spawns[child_session_id] = (parent_session_id, OwnerGrant(
+                ("subagent", parent_session_id), grant.cwd, True, grant.controls, grant))
+            if len(spawns) > 128:
+                spawns.pop(next(iter(spawns)))
 
     def start(session_id="", platform="", parent_session_id="", sender_id="", user_message="", turn_id="", model="", conversation_history=None, **kwargs):
         from agent.runtime_cwd import resolve_agent_cwd
-        private = owner_private_session(platform, parent_session_id, sender_id)
         if not session_id:
             return
+        from gateway.session_context import get_session_env
+        chat_id = chat_type = ""
+        if get_session_env("HERMES_SESSION_ID") == session_id and get_session_env("HERMES_SESSION_PLATFORM") == platform:
+            chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
+            chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE")
+        private = all(owner_private_session(platform, parent_session_id, sender_id, policy,
+                                           chat_id=chat_id, chat_type=chat_type) for policy in access)
         with guard:
+            inherited = spawns.pop(session_id, None)
+            old_grant = grants.get(session_id)
+            if platform == "subagent" and parent_session_id:
+                grant = inherited[1] if inherited and inherited[0] == parent_session_id else old_grant
+                if not grant or grant.principal != ("subagent", parent_session_id) or not grant.parent:
+                    grant = None
+                if grant:
+                    grant.refresh()
+                    private = grant.allowed
+            else:
+                grant = None
             previous = sessions.get(session_id)
             controls = {"noCapture": False, "noMemory": False}
             if previous:
@@ -304,23 +403,45 @@ def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_
                     if isinstance(text, str) and text.strip() in ("/memory off", "/memory no-capture"):
                         controls["noCapture"] = True
                         controls["noMemory"] |= text.strip() == "/memory off"
-            if private and isinstance(user_message, str) and user_message.strip() in ("/memory off", "/memory no-capture", "/memory on"):
+            if private and not parent_session_id and isinstance(user_message, str) and user_message.strip() in ("/memory off", "/memory no-capture", "/memory on"):
                 mode = user_message.strip().split()[1]
                 controls = {"noCapture": mode != "on", "noMemory": mode == "off"}
-            controls["noCapture"] |= kwargs.get("noCapture") is True
-            controls["noMemory"] |= kwargs.get("noMemory") is True
+            controls["noCapture"] |= restrictions["noCapture"] or kwargs.get("noCapture") is True
+            controls["noMemory"] |= restrictions["noMemory"] or kwargs.get("noMemory") is True
+            cwd = str(resolve_agent_cwd())
+            if grant:
+                cwd = grant.cwd
+                controls = {key: controls[key] or grant.controls[key] for key in controls}
+                grant.controls = controls
+            else:
+                principal = (platform, sender_id, chat_id, chat_type)
+                if old_grant and old_grant.allowed and old_grant.principal == principal and old_grant.cwd == cwd and not old_grant.parent:
+                    grant = old_grant
+                    grant.allowed, grant.controls = private, controls
+                else:
+                    if old_grant:
+                        old_grant.allowed = False
+                    grant = OwnerGrant(principal, cwd, private, controls)
+            grants[session_id] = grant
+            # Apply restrictions to descendants now, even if they are between turns.
+            for item in [*grants.values(), *(value[1] for value in spawns.values())]:
+                item.refresh()
             provider = kwargs.get("provider", "")
             # The effective route is resolved by native request middleware.
             binding = {"adapter": ADAPTER, "entrypoint": "hermes", "nativeVersion": native_version,
                        "sessionId": session_id, "opportunityId": turn_id or str(uuid.uuid4()),
-                       "cwd": str(resolve_agent_cwd()), "audience": "owner-private" if private else "unknown",
+                       "cwd": cwd, "audience": "owner-private" if private else "unknown",
                        "destination": {"kind": "owner-private" if private else "unknown"},
                        "parentSessionId": parent_session_id or "", "evaluation": False, **controls,
                        "model": provider + "/" + model, "modelEvaluation": False}
+            if private and grant.parent:
+                binding["ownerAuthorizedChild"] = True
             sessions[session_id] = session_factory(root, binding)
             if len(sessions) > 128:
-                sessions.pop(next(iter(sessions))).stop()
-        if sessions[session_id].writable() and isinstance(user_message, str) and user_message.lower().startswith(("remember my preference:", "记住我的偏好：")):
+                evicted = next(iter(sessions))
+                sessions.pop(evicted).stop()
+                grants.pop(evicted).allowed = False
+        if not parent_session_id and sessions[session_id].writable() and isinstance(user_message, str) and user_message.lower().startswith(("remember my preference:", "记住我的偏好：")):
             sessions[session_id].call("owner-preference", {"message": user_message}, event_id=binding["opportunityId"] + "-preference")
 
     def request(request, session_id="", provider="", model="", api_request_id="", base_url="", **kwargs):
@@ -330,8 +451,7 @@ def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_
         current.binding["model"] = provider + "/" + model
         current.binding["modelRevision"] = model_revision(provider, model, base_url, kwargs.get("api_mode"))
         current.binding["modelEvaluation"] = kwargs.get("api_mode") in ("chat_completions", "chat", "openai")
-        # Other people's platforms and sub-agents get no Memory context. Their
-        # requests stay unchanged; the tool still refuses private access.
+        # Explicitly excluded sessions and unqualified children get no private view.
         if not current.private():
             return None
         messages = request.get("messages")
@@ -378,11 +498,15 @@ def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_
     def outbound(tool_name="", session_id="", **_kwargs):
         current = state(session_id)
         if current and current.binding["audience"] == "owner-private" and not current.binding["noMemory"] and tool_name in ("send_message", "delegate_task"):
+            if tool_name == "delegate_task" and allow_children:
+                return None
             return {"action": "approve", "message": "This task may contain Agent-private memory. Confirm the exact recipient and minimum outgoing content; a child receives no automatic Memory access."}
 
     def finish(session_id="", turn_id="", completed=False, interrupted=False, **_kwargs):
         current = state(session_id)
         if current and (not turn_id or current.binding["opportunityId"] == turn_id):
+            if interrupted and session_id in grants:
+                grants[session_id].allowed = False
             if completed and not interrupted and current.writable():
                 current.call("boundary")
             current.stop()
@@ -394,6 +518,7 @@ def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_
 
     ctx.register_system_prompt_section("cetirun-memory-context", canonical, max_chars=4000)
     ctx.register_hook("pre_llm_call", start)
+    ctx.register_hook("subagent_start", spawn)
     ctx.register_middleware("llm_request", request)
     ctx.register_middleware("tool_execution", execute)
     ctx.register_hook("post_tool_call", feedback)

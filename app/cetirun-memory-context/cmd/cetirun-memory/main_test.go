@@ -93,6 +93,102 @@ func TestCLIAndMCPRejectInvalidRootBindings(t *testing.T) {
 	}
 }
 
+func TestRuntimeRestrictions(t *testing.T) {
+	for _, mode := range []string{"no-memory", "no-capture"} {
+		for _, source := range []string{"environment", "flag-before", "flag-after"} {
+			t.Run(mode+"/"+source, func(t *testing.T) {
+				home := t.TempDir()
+				t.Chdir(home)
+				t.Setenv("HOME", home)
+				t.Setenv("CETIRUN_MEMORY_ROOT", filepath.Join(home, "memory"))
+				t.Setenv("CETIRUN_MEMORY_NO_CAPTURE", "false")
+				t.Setenv("CETIRUN_MEMORY_NO_MEMORY", "false")
+				binding := memory.NativeBinding{Adapter: memory.AdapterVersion, Entrypoint: "hermes", NativeVersion: "fixture/1", SessionID: "fixture-session", OpportunityID: "fixture-turn", CWD: home, Audience: "owner-private", Destination: memory.Destination{Kind: "owner-private"}}
+				invoke := func(args []string, input any) (int, string) {
+					t.Helper()
+					raw, err := json.Marshal(input)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var out, errOut bytes.Buffer
+					code := run(context.Background(), args, bytes.NewReader(raw), &out, &errOut)
+					return code, out.String()
+				}
+				preference := memory.NativeEvent{Binding: binding, EventID: "preference", Event: "owner-preference", Payload: json.RawMessage(`{"message":"Remember my preference: CLI permission fixture"}`)}
+				if code, out := invoke([]string{"native-event"}, preference); code != 0 {
+					t.Fatalf("seed: %d %s", code, out)
+				}
+				if source == "environment" {
+					t.Setenv("CETIRUN_MEMORY_"+strings.ToUpper(strings.ReplaceAll(mode, "-", "_")), "1")
+				}
+				arguments := func(args ...string) []string {
+					if source == "flag-before" {
+						return append([]string{"--" + mode}, args...)
+					}
+					if source == "flag-after" {
+						return append(args, "--"+mode)
+					}
+					return args
+				}
+				wantReason := "CaptureProhibited"
+				if mode == "no-memory" {
+					wantReason = "MemoryDisabled"
+				}
+				if code, out := invoke(arguments("native-event"), preference); code != 4 || !strings.Contains(out, wantReason) {
+					t.Fatalf("native write: %d %s", code, out)
+				}
+				query := memory.NativeEvent{Binding: binding, EventID: "read", Event: "tool", Command: "query", Payload: json.RawMessage(`{"queryTerms":["CLI permission fixture"]}`)}
+				wantReadCode := 0
+				if mode == "no-memory" {
+					wantReadCode = 4
+				}
+				if code, out := invoke(arguments("native-event"), query); code != wantReadCode || (code == 0) != strings.Contains(out, "CLI permission fixture") {
+					t.Fatalf("native read: %d %s", code, out)
+				}
+				zero := int64(0)
+				request := memory.Request{ContractVersion: memory.ContractVersion, RequestID: "direct-read", ExpectedGeneration: &zero, RequestContext: memory.RequestContext{Audience: "owner-private", Destination: memory.Destination{Kind: "owner-private"}, Scope: memory.Scope{"project": home}}, Payload: query.Payload}
+				if code, out := invoke(arguments("query"), request); code != wantReadCode {
+					t.Fatalf("direct read: %d %s", code, out)
+				}
+				request.Payload = json.RawMessage(`{}`)
+				if code, out := invoke(arguments("init"), request); code != 4 || !strings.Contains(out, wantReason) {
+					t.Fatalf("direct write: %d %s", code, out)
+				}
+				legacy := memory.NativeInput{Platform: "cli", CWD: home, UserMessage: "Remember my preference: forbidden legacy write", SessionID: "legacy"}
+				if code, out := invoke(arguments("native-context", "hermes"), legacy); code != 0 || strings.Contains(out, "forbidden legacy write") || (mode == "no-capture") != strings.Contains(out, "CLI permission fixture") {
+					t.Fatalf("legacy context: %d %s", code, out)
+				}
+				// MCP metadata cannot override the process's restrictions with false.
+				input := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"fixture"}}}` + "\n" +
+					`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"cetirun_memory","arguments":{"command":"capture","payload":{}},"_meta":{"cetirun/noCapture":false,"cetirun/noMemory":false}}}` + "\n"
+				var out, errOut bytes.Buffer
+				if code := run(context.Background(), arguments("mcp", "--stdio", "--owner-private"), strings.NewReader(input), &out, &errOut); code != 0 || !strings.Contains(out.String(), wantReason) {
+					t.Fatalf("MCP write: %d %s %s", code, out.String(), errOut.String())
+				}
+			})
+		}
+	}
+}
+
+func TestRestrictionInputsCannotSilentlyEnableMemory(t *testing.T) {
+	t.Setenv("CETIRUN_MEMORY_NO_CAPTURE", "false")
+	t.Setenv("CETIRUN_MEMORY_NO_MEMORY", "false")
+	for _, name := range []string{"CETIRUN_MEMORY_NO_CAPTURE", "CETIRUN_MEMORY_NO_MEMORY"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(name, "tru")
+			var out, errOut bytes.Buffer
+			if code := run(context.Background(), []string{"native-event"}, strings.NewReader(`{}`), &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "MemoryRestrictionsInvalid") || out.Len() != 0 {
+				t.Fatalf("invalid restriction accepted: %d %s %s", code, out.String(), errOut.String())
+			}
+		})
+	}
+	t.Setenv("CETIRUN_MEMORY_NO_MEMORY", "true")
+	var out, errOut bytes.Buffer
+	if code := run(context.Background(), []string{"native-event", "--no-memory=false"}, strings.NewReader(`{}`), &out, &errOut); code != 2 {
+		t.Fatalf("restriction reset accepted: %d %s %s", code, out.String(), errOut.String())
+	}
+}
+
 func TestCustomMemoryRootRejectsSymlink(t *testing.T) {
 	home := t.TempDir()
 	target := t.TempDir()
