@@ -81,6 +81,7 @@ The cluster template creates these functions:
 | `CetiRunLogs` | `KubeEvents()` | One Kubernetes event version |
 | `CetiRunLogs` | `AgentInventoryHistory()`, `AgentInventory()` | Each record of an Agent's namespace, owner, Team and policy; the current Agents |
 | `CetiRunAgents` | `AgentLogsWithOwner()` | Agent output with the Agent, owner and Team |
+| `CetiRunMetrics` | `CollectionHealth(window)` | One check of the collection per cluster, with `Status` `OK`, `Warning` or `Failed` |
 
 For example, the spend of each Agent today:
 
@@ -89,6 +90,20 @@ GatewayRequests()
 | where Timestamp > startofday(now())
 | summarize Calls = count(), Spend = sum(Spend) by Agent, Owner, Team, Model
 ```
+
+`CollectionHealth()` checks the last 15 minutes by default: platform and
+Gateway logs and metrics still arrive, the collector dropped no log lines, no
+backlog was refused, the oldest unsent data is younger than 10 minutes
+(`Warning`) or 30 minutes (`Failed`), the ingestor reports healthy, and no
+platform container restarted more than three times in an hour. It does not
+read the Agent logs database. To see only the problems:
+
+```kusto
+CollectionHealth() | where Status != "OK"
+```
+
+Run that query from an alert or a dashboard of your choice; the cluster
+template creates neither.
 
 ## Prerequisites
 

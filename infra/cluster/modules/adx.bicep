@@ -78,7 +78,7 @@ param agentLogsViewers array = []
 // commands that can also run on a Kusto cluster made without this module;
 // their comment lines are left out here.
 var logsFunctions = join(filter(split(loadTextContent('adx/cetirun-logs.kql'), '\n'), line => !startsWith(line, '//')), '\n')
-var metricsFunctions = join(filter(split(loadTextContent('adx/cetirun-metrics.kql'), '\n'), line => !startsWith(line, '//')), '\n')
+var metricsFunctions = join(filter(split('${loadTextContent('adx/cetirun-metrics.kql')}\n${replace(loadTextContent('adx/cetirun-health.kql'), '__LOGS_DATABASE__', logsDatabaseName)}', '\n'), line => !startsWith(line, '//')), '\n')
 var agentLogsFunctions = replace(join(filter(split(loadTextContent('adx/cetirun-agents.kql'), '\n'), line => !startsWith(line, '//')), '\n'), '__LOGS_DATABASE__', logsDatabaseName)
 
 var databases = [
