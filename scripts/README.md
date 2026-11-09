@@ -840,11 +840,6 @@ the offline validation targets. Its manifest pins Linux amd64/arm64 downloads by
 SHA256. The `envtest` bundle installs Kubernetes 1.37
 `kube-apiserver`/`kubectl` and its bundled etcd into a new explicit directory.
 
-Downloads retry HTTP 408, 429, 500, 502, 503, and 504 at most three times,
-waiting 15 seconds between attempts. Other errors, including checksum and
-archive validation failures, stop the install. Each request keeps its 45-second
-socket timeout; exhausting retries leaves no selected tools installed.
-
 The installer verifies the archive before it reads only its named regular
 members. It refuses outputs that already exist and symlink destinations. If a
 write fails, it removes only the files that it created. It does not start the
@@ -853,6 +848,11 @@ binaries or contact a cluster.
 Downloads are capped at 128 MiB, and this cap also applies to raw binaries.
 Each selected archive member or raw binary is capped at 128 MiB. Across one
 invocation, the total selected payloads are capped at 384 MiB.
+
+Downloads retry transient HTTP errors (408, 429, 500, 502, 503, and 504),
+connection errors, and timeouts at most three times, waiting 5, 15, and 30
+seconds. Each attempt keeps the 45-second socket timeout. Permanent HTTP and
+TLS errors, invalid payloads, and checksum mismatches fail without retrying.
 
 Oversized advertised lengths cause a failure before the installer reads the
 response. Absent or understated lengths still use a bounded read. The installer

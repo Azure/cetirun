@@ -3,11 +3,16 @@
 
 """Offline checks for the independent terminal image and its build entrypoint."""
 
+import hashlib
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
 from pathlib import Path
+import re
+import stat
 import subprocess
 import tempfile
+import threading
 import unittest
 
 
@@ -16,6 +21,75 @@ SCRIPT = ROOT / "scripts/terminal-docker-build.sh"
 
 
 class TerminalImageTests(unittest.TestCase):
+    def run_download(self, statuses, *, valid_checksum=True):
+        image = (ROOT / "app/cetirun-operator/Dockerfile.terminal").read_text()
+        command = "curl " + image.split("    curl ", 1)[1].split("\n\nFROM ", 1)[0]
+        command = command.replace("\\\n", "")
+        source = re.search(r'"https://[^\"]+"', command).group()
+        payload = b"synthetic ttyd binary\n"
+        attempts = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                status = statuses[min(len(attempts), len(statuses) - 1)]
+                attempts.append(status)
+                body = payload if status == 200 else b"synthetic download failure\n"
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_):
+                pass
+
+        with tempfile.TemporaryDirectory(prefix="cetirun-terminal-download-") as temp:
+            output = Path(temp) / "ttyd"
+            with HTTPServer(("127.0.0.1", 0), Handler) as server:
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    command = command.replace(source, f'"http://127.0.0.1:{server.server_port}/tool"')
+                    command = command.replace("/ttyd", str(output)).replace("curl ", "curl -q ", 1)
+                    result = subprocess.run(
+                        ["sh", "-c", command], capture_output=True, text=True, timeout=75,
+                        env={
+                            **os.environ,
+                            "NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1",
+                            "terminal_sha": hashlib.sha256(payload).hexdigest() if valid_checksum else "0" * 64,
+                        },
+                    )
+                finally:
+                    server.shutdown()
+                    thread.join(timeout=5)
+                    self.assertFalse(thread.is_alive(), "loopback server did not stop")
+            if result.returncode == 0:
+                self.assertEqual(output.read_bytes(), payload)
+                self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o755)
+            elif output.exists():
+                self.assertEqual(output.stat().st_mode & 0o111, 0)
+        return result, attempts
+
+    def test_download_recovers_from_gateway_timeout(self):
+        result, attempts = self.run_download([504, 200])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(attempts, [504, 200])
+
+    def test_download_retry_exhaustion_still_fails(self):
+        result, attempts = self.run_download([504])
+        self.assertEqual(result.returncode, 22, result.stderr)
+        self.assertEqual(attempts, [504] * 6)
+
+    def test_permanent_download_error_is_not_retried(self):
+        result, attempts = self.run_download([404])
+        self.assertEqual(result.returncode, 22, result.stderr)
+        self.assertEqual(attempts, [404])
+
+    def test_download_checksum_mismatch_prevents_executable_install(self):
+        result, attempts = self.run_download([200], valid_checksum=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(attempts, [200])
+        self.assertIn("FAILED", result.stdout)
+
     def test_mcr_release_builds_and_publishes_terminal(self):
         pipeline = (ROOT / ".pipelines/release-mcr.yml").read_text()
         inventory = json.loads((ROOT / "scripts/release-artifacts.json").read_text())

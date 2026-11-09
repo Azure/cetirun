@@ -28,7 +28,8 @@ RUN case "${TARGETARCH}" in \
       arm64) terminal_arch=aarch64; terminal_sha="${TTYD_SHA256_ARM64}" ;; \
       *) echo "Unsupported terminal architecture" >&2; exit 1 ;; \
     esac && \
-    curl --fail --location --retry 3 --max-time 120 \
+    curl --fail --location --retry 5 --retry-delay 10 --retry-max-time 180 \
+      --connect-timeout 15 --max-time 120 \
       "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.${terminal_arch}" -o /ttyd && \
     echo "${terminal_sha}  /ttyd" | sha256sum --check && chmod 755 /ttyd
 

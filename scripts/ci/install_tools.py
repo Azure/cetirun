@@ -21,7 +21,7 @@ import re
 import sys
 import tarfile
 import time
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 
@@ -30,8 +30,7 @@ MANIFEST = Path(__file__).with_name("tools.json")
 MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024
 MAX_MEMBER_BYTES = 128 * 1024 * 1024
 MAX_TOTAL_BYTES = 384 * 1024 * 1024
-DOWNLOAD_ATTEMPTS = 4
-DOWNLOAD_RETRY_DELAY = 15
+DOWNLOAD_RETRY_DELAYS = (5, 15, 30)
 
 
 def check_size(size, limit, description):
@@ -55,21 +54,29 @@ def download_bytes(response):
     return data
 
 
-def download_tool(url):
-    for attempt in range(DOWNLOAD_ATTEMPTS):
+def download(url):
+    for attempt in range(len(DOWNLOAD_RETRY_DELAYS) + 1):
         try:
             with urlopen(url, timeout=45) as response:
                 return download_bytes(response)
-        except HTTPError as error:
-            error.close()
-            if error.code not in (408, 429, 500, 502, 503, 504) or attempt == DOWNLOAD_ATTEMPTS - 1:
+        except (URLError, TimeoutError, ConnectionError) as error:
+            if isinstance(error, HTTPError):
+                error.close()
+                retryable = error.code in (408, 429, 500, 502, 503, 504)
+                description = f"HTTP {error.code}"
+            else:
+                reason = error.reason if isinstance(error, URLError) else error
+                retryable = isinstance(reason, (TimeoutError, ConnectionError))
+                description = type(reason).__name__
+            if not retryable or attempt == len(DOWNLOAD_RETRY_DELAYS):
                 raise
+            delay = DOWNLOAD_RETRY_DELAYS[attempt]
             print(
-                f"Tool download returned HTTP {error.code}; retrying in "
-                f"{DOWNLOAD_RETRY_DELAY}s ({attempt + 1}/{DOWNLOAD_ATTEMPTS - 1})",
+                f"Download failed ({description}); retrying in {delay}s "
+                f"({attempt + 1}/{len(DOWNLOAD_RETRY_DELAYS)})",
                 file=sys.stderr, flush=True,
             )
-            time.sleep(DOWNLOAD_RETRY_DELAY)
+            time.sleep(delay)
 
 
 def archive_member(member):
@@ -260,7 +267,7 @@ def main(argv=None):
             names = ", ".join(output.name for output, _ in outputs)
             print(f"Installing {names} from {url}", flush=True)
             data = binaries_bytes(
-                download_tool(url), checksum,
+                download(url), checksum,
                 [member for _, member in outputs],
                 max_total_bytes=remaining_bytes,
             )
