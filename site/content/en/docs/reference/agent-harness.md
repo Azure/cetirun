@@ -18,8 +18,10 @@ context.
 >
 > Private images use Portal-managed Registry credentials and the Operator's
 > credential synchronizer. Custom supports non-default usernames. Built-in
-> profiles still must use `vibe`. Portal self-service is also opt-in. A default
-> installation does not allow Custom Agents to be created or provisioned.
+> profiles still must use `vibe`. A default installation allows Custom Agents
+> in the Portal and the Operator, but it approves no Custom image. A Custom
+> Agent starts only after an administrator approves its image digest. Refer to
+> [Custom runtime](#custom-runtime).
 
 ## Configuration
 
