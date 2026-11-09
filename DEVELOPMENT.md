@@ -827,8 +827,9 @@ set must have an explicit `ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true`.
 
 [`scripts/release-artifacts.json`](scripts/release-artifacts.json) is the
 common inventory for root Make targets and the MCR release pipeline. It
-contains 13 images and 8 charts. These include the Broker, VS Code, and Memory
-assets. `make artifact-check` examines source paths and chart coverage. The
+contains 14 images and 9 charts. These include the Broker, VS Code, Memory and
+ADX-Mon (`cetirun-observability`) assets. `make artifact-check` examines source
+paths and chart coverage. The
 driver calls the image builders that already exist, stamps the explicit
 version/source SHA, and builds the base image before its consumers. It never
 logs in or installs tools.

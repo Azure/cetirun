@@ -75,6 +75,14 @@ CHARTS = (
         ),
     ),
     (
+        "app/cetirun-observability/chart",
+        (
+            "clusterName=lint",
+            "adx.endpoint=https://lint.example.invalid",
+            "ingestor.clientId=66666666-6666-6666-6666-666666666666",
+        ),
+    ),
+    (
         "infra/istio",
         (
             "clientId=lint-client",
@@ -249,6 +257,11 @@ def chart_gate(root):
         ["bash", str(require_file(root / "scripts/cetirun-ai-gateway-helm-test.sh"))],
         root,
         env={**offline_env(), "CHART_DIR": str(root / "app/cetirun-ai-gateway/chart")},
+    )
+    run(
+        ["bash", str(require_file(root / "scripts/cetirun-observability-helm-test.sh"))],
+        root,
+        env={**offline_env(), "CHART_DIR": str(root / "app/cetirun-observability/chart")},
     )
 
 

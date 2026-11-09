@@ -32,10 +32,15 @@ spec:
         {{- if or .Values.azure.clientId .Values.agentIdentity.enabled .Values.agentIdentity.cleanupEnabled }}
         azure.workload.identity/use: "true"
         {{- end }}
-      {{- with .Values.podAnnotations }}
       annotations:
+        {{- /* The ADX-Mon collector of the cetirun-observability chart scrapes
+        the metrics port of Pods with these annotations. */}}
+        adx-mon/scrape: "true"
+        adx-mon/port: "8080"
+        adx-mon/path: /metrics
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
       securityContext:

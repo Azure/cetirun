@@ -20,9 +20,10 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/cetirun-release.py"
 IMAGES = {"cetirun-base", "openclaw-gateway", "hermes-gateway", "cetirun-desktop", "cetirun-operator",
           "cetirun-ai-gateway", "cetirun-agent-broker", "cetirun-connections-mcp", "cetirun-terminal",
-          "cetirun-portal", "cetirun-vscode", "cetirun-pi-agent", "cetirun-memory-context"}
+          "cetirun-portal", "cetirun-vscode", "cetirun-pi-agent", "cetirun-memory-context",
+          "cetirun-observability"}
 CHARTS = {"cetirun", "cetirun-istio", "cetirun-operator", "cetirun-portal", "cetirun-platform",
-          "cetirun-ai-gateway", "cetirun-agent-broker", "cetirun-connections-mcp"}
+          "cetirun-ai-gateway", "cetirun-agent-broker", "cetirun-connections-mcp", "cetirun-observability"}
 DOCKER = r'''
 import json, os, pathlib, sys
 args = sys.argv[1:]
@@ -254,7 +255,8 @@ class ReleaseInventoryTests(unittest.TestCase):
         store = self.fake_registry()
         scripts = {"cetirun": "cetirun", "cetirun-istio": "istio", "cetirun-operator": "operator",
                    "cetirun-portal": "portal", "cetirun-platform": "platform", "cetirun-ai-gateway": "ai-gateway",
-                   "cetirun-agent-broker": "agent-broker", "cetirun-connections-mcp": "cetirun-connections-mcp"}
+                   "cetirun-agent-broker": "agent-broker", "cetirun-connections-mcp": "cetirun-connections-mcp",
+                   "cetirun-observability": "cetirun-observability"}
         for registry, version in ((None, None), ("registry.example.com", None),
                                   (None, "1.2.3-dev.1"), ("registry.example.com:5000/team/test", "1.2.3-dev.2")):
             env = dict(self.env)
@@ -436,7 +438,7 @@ class ReleaseInventoryTests(unittest.TestCase):
         result = subprocess.run(["make", "build-images"], env=self.env, cwd=ROOT, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         builds = [command for command in self.commands() if command[:2] == ["buildx", "build"]]
-        self.assertEqual(len(builds), 13)
+        self.assertEqual(len(builds), 14)
         tags = {command[command.index("-t") + 1] if "-t" in command else command[command.index("--tag") + 1] for command in builds}
         self.assertEqual(tags, {self.image(name) for name in IMAGES})
         for command in builds:
@@ -463,7 +465,7 @@ class ReleaseInventoryTests(unittest.TestCase):
         self.assertNotIn("cetirun-vscode", {entry["name"] for entry in plan["images"]})
         self.run_release("build-images", "--exclude-image", "cetirun-vscode")
         builds = [command for command in self.commands() if command[:2] == ["buildx", "build"]]
-        self.assertEqual(len(builds), 12)
+        self.assertEqual(len(builds), 13)
         self.assertFalse(any(self.image("cetirun-vscode") in command for command in builds))
 
     def test_invalid_image_exclusions_fail_before_docker(self):
@@ -517,11 +519,11 @@ class ReleaseInventoryTests(unittest.TestCase):
             self.assertIn("--push", command)
             self.assertNotIn("--load", command)
 
-    def test_successful_publish_verifies_all_thirteen_images(self):
+    def test_successful_publish_verifies_all_fourteen_images(self):
         self.run_release("publish-images")
         commands = self.commands()
         builds = [command for command in commands if command[:2] == ["buildx", "build"]]
-        self.assertEqual(len(builds), 13)
+        self.assertEqual(len(builds), 14)
         last_build = max(index for index, command in enumerate(commands) if command[:2] == ["buildx", "build"])
         self.assertEqual(commands[last_build + 1], ["buildx", "imagetools", "inspect", self.image("cetirun-pi-agent")])
         for name in IMAGES:

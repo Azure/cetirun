@@ -92,7 +92,7 @@ class GateTests(unittest.TestCase):
                 validate.chart_gate(self.root)
         run.assert_not_called()
 
-    def test_all_eight_charts_and_both_runtime_types_are_checked(self):
+    def test_all_nine_charts_and_both_runtime_types_are_checked(self):
         for directory, _ in validate.CHARTS:
             chart = self.root / directory
             chart.mkdir(parents=True, exist_ok=True)
@@ -104,17 +104,18 @@ class GateTests(unittest.TestCase):
         (self.root / "scripts/cetirun-istio-helm-test.sh").write_text("# fixture")
         (self.root / "scripts/cetirun-agent-broker-helm-test.sh").write_text("# fixture")
         (self.root / "scripts/cetirun-ai-gateway-helm-test.sh").write_text("# fixture")
+        (self.root / "scripts/cetirun-observability-helm-test.sh").write_text("# fixture")
         with patch.object(validate, "run") as run:
             validate.chart_gate(self.root)
         commands = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(sum(c[:2] == ["helm", "lint"] for c in commands), 9)
-        self.assertEqual(sum(c[:2] == ["helm", "template"] for c in commands), 9)
+        self.assertEqual(sum(c[:2] == ["helm", "lint"] for c in commands), 10)
+        self.assertEqual(sum(c[:2] == ["helm", "template"] for c in commands), 10)
         self.assertEqual(
             {str(Path(c[3]).relative_to(self.root)) for c in commands if c[:2] == ["helm", "lint"]},
             {
                 "app/cetirun-chart", "app/cetirun-operator/chart", "app/cetirun-portal/chart",
                 "app/cetirun-connections-mcp/chart", "app/cetirun-agent-broker/chart", "app/cetirun-ai-gateway/chart",
-                "app/cetirun-platform", "infra/istio",
+                "app/cetirun-observability/chart", "app/cetirun-platform", "infra/istio",
             },
         )
         self.assertTrue(all("--strict" in c for c in commands if c[1] == "lint"))
@@ -132,6 +133,7 @@ class GateTests(unittest.TestCase):
                 "cetirun-istio-helm-test.sh",
                 "cetirun-agent-broker-helm-test.sh",
                 "cetirun-ai-gateway-helm-test.sh",
+                "cetirun-observability-helm-test.sh",
             ],
         )
 
