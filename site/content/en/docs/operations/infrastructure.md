@@ -309,6 +309,12 @@ workspace.
 The agent chart’s session logger is also enabled by default. Before you onboard
 users, see [Security](../../security/).
 
+On Kata node pools with the node image `AKSAzureLinux-V3katagen2-202610.30.1`
+or later, the monitoring add-on collects no container logs or metrics from those
+nodes: its pods there restart in a loop because the node kernel has no legacy
+iptables `nat` table. The platform and the Agents run on these nodes. To
+collect from them, use the [ADX-Mon collection](../observability/).
+
 ## Azure Data Explorer
 
 The template can also create the Azure resources of the optional

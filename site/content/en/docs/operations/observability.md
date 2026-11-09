@@ -155,3 +155,16 @@ Container Insights and managed Prometheus, which the cluster template enables
 by default, keep running next to ADX-Mon. Compare the two before you turn
 Container Insights off. Both collect the same container output, so each one
 needs its own access review.
+
+On Kata node pools with the node image `AKSAzureLinux-V3katagen2-202610.30.1`
+or later, Container Insights and managed Prometheus collect nothing from those
+nodes. Their `addon-token-adapter` container needs the legacy iptables `nat`
+table, which the kernel of these images does not provide, so it restarts in a
+loop. The CetiRun platform and its Agents run on those nodes, so their logs do
+not reach Log Analytics. The ADX-Mon collector does not depend on that
+container: use ADX-Mon to collect from Kata node pools. To find the affected
+pods:
+
+```bash
+kubectl get pods -n kube-system -o wide | grep -E 'ama-(logs|metrics-node)-' | grep -v Running
+```

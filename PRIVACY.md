@@ -141,7 +141,9 @@ That output includes the session logger's output that is described above and
 what Agents print themselves. This output can include conversation text.
 Successful collection still depends on the deployed collectors, permissions,
 and settings. Source configuration alone does not prove that a live cluster
-collects data.
+collects data. For example, on Kata node pools with the node image
+`AKSAzureLinux-V3katagen2-202610.30.1` or later, the add-on collects no
+container output from those nodes.
 
 By default, Container Insights also copies the environment variables of every
 container into its `ContainerInventory` table. This copy includes values that
