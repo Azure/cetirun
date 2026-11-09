@@ -147,21 +147,20 @@ class DeploymentWiringTests(unittest.TestCase):
                            env=OFFLINE_ENV, check=True, text=True, capture_output=True, timeout=60)
             value_file = base / "values.json"
             value_file.write_text(json.dumps(values["platform"]))
-            success = subprocess.run(["helm", "template", "platform", str(chart), "--namespace", "cetirun-system",
-                                      "--values", str(value_file)], env=OFFLINE_ENV, text=True, capture_output=True)
+            command = ["helm", "template", "platform", str(chart), "--namespace", "cetirun-system",
+                       "--kube-version", "1.37.0", "--values", str(value_file)]
+            success = subprocess.run(command, env=OFFLINE_ENV, text=True, capture_output=True)
             self.assertEqual(success.returncode, 0, success.stderr)
             values["platform"]["cetirun-portal"]["sandboxStorage"] = {
                 "platformNamespace": "", "platformConfigMapName": "", "defaultStorageClassName": ""}
             value_file.write_text(json.dumps(values["platform"]))
-            omitted = subprocess.run(["helm", "template", "platform", str(chart), "--namespace", "cetirun-system",
-                                      "--values", str(value_file)], env=OFFLINE_ENV, text=True, capture_output=True)
+            omitted = subprocess.run(command, env=OFFLINE_ENV, text=True, capture_output=True)
             self.assertNotEqual(omitted.returncode, 0)
             self.assertIn("sandboxStorage must exactly match", omitted.stderr)
             values["platform"]["cetirun-portal"]["sandboxStorage"]["platformConfigMapName"] = "sandbox-platform"
             values["platform"]["cetirun-portal"]["sandboxStorage"]["platformNamespace"] = "other-system"
             value_file.write_text(json.dumps(values["platform"]))
-            failed = subprocess.run(["helm", "template", "platform", str(chart), "--namespace", "cetirun-system",
-                                     "--values", str(value_file)], env=OFFLINE_ENV, text=True, capture_output=True)
+            failed = subprocess.run(command, env=OFFLINE_ENV, text=True, capture_output=True)
             self.assertNotEqual(failed.returncode, 0)
             self.assertIn("sandboxStorage must exactly match", failed.stderr)
 
