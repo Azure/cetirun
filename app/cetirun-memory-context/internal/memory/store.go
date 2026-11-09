@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -19,7 +20,7 @@ import (
 
 type Config struct {
 	Root string
-	Home string // Import source boundary; defaults to the process user's home.
+	Home string // Import source boundary; managed layout uses the root's HOME.
 }
 type Store struct {
 	Config Config
@@ -29,7 +30,11 @@ type Store struct {
 
 func New(config Config) *Store {
 	if config.Home == "" {
-		config.Home, _ = os.UserHomeDir()
+		if filepath.Base(config.Root) == "memory" && filepath.Base(filepath.Dir(config.Root)) == ".cetirun" {
+			config.Home = filepath.Dir(filepath.Dir(config.Root))
+		} else {
+			config.Home, _ = os.UserHomeDir()
+		}
 	}
 	return &Store{Config: config, now: time.Now}
 }

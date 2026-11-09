@@ -13,8 +13,8 @@ import sys
 import tarfile
 import tempfile
 import unittest
-from unittest.mock import MagicMock, patch
-from urllib.error import URLError
+from unittest.mock import MagicMock, call, patch
+from urllib.error import HTTPError, URLError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import install_tools
@@ -217,6 +217,71 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(binary.read_bytes(), PAYLOADS[member])
             self.assertEqual(stat.S_IMODE(binary.stat().st_mode), 0o755)
         self.assertEqual(sentinel.read_bytes(), b"keep")
+
+    def test_transient_http_errors_retry_raw_and_bundled_downloads(self):
+        for code in (408, 429, 500, 502, 503, 504):
+            for bundled in (True, False):
+                with self.subTest(code=code, bundled=bundled):
+                    self.destination = self.root / f"bin-{code}-{bundled}"
+                    data = self.data if bundled else b"synthetic raw tool"
+                    spec = self.spec(data=data)
+                    if not bundled:
+                        del spec["members"]
+                    failure = HTTPError(spec["url"], code, "temporary failure", {}, io.BytesIO())
+                    with patch("time.sleep") as sleep:
+                        result, download, error = self.install(
+                            {"envtest": spec}, fetch=[failure, Download(data)]
+                        )
+                    self.assertEqual(result, 0, error)
+                    self.assertEqual(download.call_count, 2)
+                    self.assertTrue(failure.fp.closed)
+                    sleep.assert_called_once_with(15)
+                    if bundled:
+                        for name, member in MEMBERS.items():
+                            self.assertEqual((self.destination / name).read_bytes(), PAYLOADS[member])
+                    else:
+                        self.assertEqual((self.destination / "envtest").read_bytes(), data)
+
+    def test_transient_http_retries_stop_without_installing_partial_tools(self):
+        raw_spec = self.spec(url="https://example.com/raw")
+        del raw_spec["members"]
+
+        def fetch(url, **kwargs):
+            if url.endswith("/raw"):
+                raise HTTPError(url, 504, "Gateway Time-out", {}, io.BytesIO())
+            return Download(self.data)
+
+        with patch("time.sleep") as sleep:
+            result, download, error = self.install(
+                {"envtest": self.spec(), "raw": raw_spec}, ("envtest", "raw"), fetch
+            )
+        self.assertEqual(result, 1)
+        self.assertEqual(download.call_count, 5)
+        self.assertEqual(sleep.call_args_list, [call(15)] * 3)
+        self.assertIn("HTTP Error 504", error)
+        self.assert_no_outputs()
+
+    def test_permanent_http_errors_do_not_retry(self):
+        for code in (401, 403, 404):
+            with self.subTest(code=code), patch("time.sleep") as sleep:
+                failure = HTTPError("https://example.com/tool", code, "permanent failure", {}, io.BytesIO())
+                result, download, error = self.install(fetch=[failure])
+                self.assertEqual(result, 1)
+                self.assertIn(f"HTTP Error {code}", error)
+                download.assert_called_once()
+                sleep.assert_not_called()
+                self.assert_no_outputs()
+
+    def test_recovered_download_still_requires_matching_checksum(self):
+        failure = HTTPError("https://example.com/tool", 504, "Gateway Time-out", {}, io.BytesIO())
+        with patch("time.sleep") as sleep, patch.object(install_tools.tarfile, "open") as parse:
+            result, download, error = self.install(fetch=[failure, Download(b"tampered")])
+        self.assertEqual(result, 1)
+        self.assertIn("SHA256 mismatch", error)
+        self.assertEqual(download.call_count, 2)
+        sleep.assert_called_once_with(15)
+        parse.assert_not_called()
+        self.assert_no_outputs()
 
     def test_oversized_content_length_fails_without_reading_body(self):
         limit = len(self.data)

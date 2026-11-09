@@ -840,6 +840,11 @@ the offline validation targets. Its manifest pins Linux amd64/arm64 downloads by
 SHA256. The `envtest` bundle installs Kubernetes 1.37
 `kube-apiserver`/`kubectl` and its bundled etcd into a new explicit directory.
 
+Downloads retry HTTP 408, 429, 500, 502, 503, and 504 at most three times,
+waiting 15 seconds between attempts. Other errors, including checksum and
+archive validation failures, stop the install. Each request keeps its 45-second
+socket timeout; exhausting retries leaves no selected tools installed.
+
 The installer verifies the archive before it reads only its named regular
 members. It refuses outputs that already exist and symlink destinations. If a
 write fails, it removes only the files that it created. It does not start the

@@ -495,15 +495,16 @@ var (
 		"*.p12", "*.pfx", "*.jks", "*.keystore", "*.kdbx", "*.kubeconfig", "client_secret*.json", "openclaw.json*"}
 )
 
-// credentialFile reports whether a HOME-relative path is such a file.
+// Match nested homes too, so changing the import boundary cannot hide these paths.
 func credentialFile(rel string) bool {
-	if slices.Contains(credentialPaths, rel) || slices.ContainsFunc(credentialDirectories, func(dir string) bool { return strings.HasPrefix(rel, dir) }) {
-		return true
-	}
-	// OpenClaw keeps each agent's provider auth profiles and model credentials
-	// in agents/<id>/agent/.
-	if parts := strings.Split(rel, "/"); len(parts) > 4 && parts[0] == ".openclaw" && parts[1] == "agents" && parts[3] == "agent" {
-		return true
+	for suffix := rel; suffix != ""; {
+		if slices.Contains(credentialPaths, suffix) || slices.ContainsFunc(credentialDirectories, func(dir string) bool { return strings.HasPrefix(suffix, dir) }) {
+			return true
+		}
+		if parts := strings.Split(suffix, "/"); len(parts) > 4 && parts[0] == ".openclaw" && parts[1] == "agents" && parts[3] == "agent" {
+			return true
+		}
+		_, suffix, _ = strings.Cut(suffix, "/")
 	}
 	name := strings.ToLower(filepath.Base(rel))
 	if slices.Contains(credentialNames, name) {
