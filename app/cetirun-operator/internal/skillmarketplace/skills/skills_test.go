@@ -194,6 +194,52 @@ func TestDiscoverRootSkillIsRejected(t *testing.T) {
 	}
 }
 
+// A directory whose SKILL.md is not a regular file, for example a symbolic
+// link to the SKILL.md of another skill, is a rejected skill directory with a
+// reason. It is not left out of the catalog without one. The skill that holds
+// the target of the link stays valid.
+func TestDiscoverRejectsASkillWhoseSKILLmdIsNotARegularFile(t *testing.T) {
+	tree := newTree(map[string]string{
+		"skills/cve-detect/SKILL.md": skillMD("cve-detect", "Detect CVEs"),
+		"skills/cve-check/SKILL.md":  "../cve-detect/SKILL.md",
+		"skills/cve-fix/SKILL.md":    "../cve-detect/SKILL.md",
+		"skills/sub/SKILL.md":        "",
+		// Inside a valid outer skill, a linked SKILL.md is a nested skill
+		// directory, and the link also rejects the outer skill.
+		"skills/outer/SKILL.md":       skillMD("outer", "Outer skill"),
+		"skills/outer/inner/SKILL.md": "../SKILL.md",
+	})
+	tree.modes["skills/cve-check/SKILL.md"] = Symlink
+	tree.modes["skills/cve-fix/SKILL.md"] = Symlink
+	tree.modes["skills/sub/SKILL.md"] = Submodule
+	tree.modes["skills/outer/inner/SKILL.md"] = Symlink
+	found, problems, err := Discover(tree, "skills", DefaultLimits, DefaultReserved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].Name != "cve-detect" {
+		t.Fatalf("the target of the links must stay the only valid skill: %+v", found)
+	}
+	reasons := map[string]string{}
+	for _, problem := range problems {
+		reasons[problem.Path] = problem.Reason
+	}
+	for dir, want := range map[string]string{
+		"skills/cve-check":   "SKILL.md is a symbolic link",
+		"skills/cve-fix":     "SKILL.md is a symbolic link",
+		"skills/sub":         "SKILL.md is a Git submodule",
+		"skills/outer":       "inner/SKILL.md is a symbolic link",
+		"skills/outer/inner": "nested inside skill outer",
+	} {
+		if !strings.Contains(reasons[dir], want) {
+			t.Errorf("%s: reason %q, want %q", dir, reasons[dir], want)
+		}
+	}
+	if len(problems) != 5 {
+		t.Errorf("problems: %+v", problems)
+	}
+}
+
 // generatedTree yields directories with paths of a given length, without
 // keeping them, and counts the entries that it yields.
 type generatedTree struct {

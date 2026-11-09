@@ -79,7 +79,8 @@ reason for each rejected directory.
 - The name is reserved. By default, `cetirun-memory` and `connected-services`
   are reserved, because CetiRun and its Agent images supply skills with these
   names.
-- The directory contains a symbolic link or a Git submodule.
+- The directory contains a symbolic link or a Git submodule. This includes a
+  `SKILL.md` that is a symbolic link to another skill's file.
 - A file or directory name in the skill has a control character or a
   backslash. A name that Git uses for its own directory, such as `.git`, is
   also not allowed. Such names in other parts of the repository do not stop
