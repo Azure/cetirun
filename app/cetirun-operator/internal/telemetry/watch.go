@@ -13,6 +13,7 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	toolscache "k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -29,6 +30,8 @@ type Recorder struct {
 	// last holds the record last written for each inventory object, by UID:
 	// an update that changes none of the recorded fields writes nothing.
 	last map[string]string
+	// registered holds the inventory kinds whose handlers are added.
+	registered map[string]bool
 }
 
 // inventory is one kind of inventory object.
@@ -69,10 +72,27 @@ func (r *Recorder) Register(ctx context.Context, c cache.Cache) error {
 			return fmt.Errorf("event handler: %w", err)
 		}
 	}
+	_, err := r.registerInventory(ctx, c)
+	return err
+}
+
+// registerInventory adds handlers for the inventory kinds that are not
+// registered yet. A kind whose CustomResourceDefinition is not installed, as
+// when this program starts before the CetiRun platform, is left out and
+// counted as missing; other errors stop the registration.
+func (r *Recorder) registerInventory(ctx context.Context, c cache.Cache) (int, error) {
+	missing := 0
 	for _, kind := range kinds {
+		if r.isRegistered(kind.logType) {
+			continue
+		}
 		informer, err := c.GetInformer(ctx, kind.object)
+		if meta.IsNoMatchError(err) {
+			missing++
+			continue
+		}
 		if err != nil {
-			return fmt.Errorf("%s informer: %w", kind.logType, err)
+			return missing, fmt.Errorf("%s informer: %w", kind.logType, err)
 		}
 		if _, err := informer.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
 			AddFunc:    func(object any) { r.inventory(kind, object, ActionUpsert) },
@@ -84,16 +104,59 @@ func (r *Recorder) Register(ctx context.Context, c cache.Cache) error {
 				r.inventory(kind, object, ActionDelete)
 			},
 		}); err != nil {
-			return fmt.Errorf("%s handler: %w", kind.logType, err)
+			return missing, fmt.Errorf("%s handler: %w", kind.logType, err)
+		}
+		r.mu.Lock()
+		if r.registered == nil {
+			r.registered = map[string]bool{}
+		}
+		r.registered[kind.logType] = true
+		r.mu.Unlock()
+	}
+	return missing, nil
+}
+
+func (r *Recorder) isRegistered(logType string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.registered[logType]
+}
+
+// RunRegistration registers the inventory kinds that were missing at start
+// once their CustomResourceDefinitions exist. It checks at each interval
+// until every kind is registered or the context ends.
+func (r *Recorder) RunRegistration(ctx context.Context, c cache.Cache, interval time.Duration) error {
+	reported := false
+	for {
+		missing, err := r.registerInventory(ctx, c)
+		if err != nil {
+			return err
+		}
+		if missing == 0 {
+			if reported {
+				r.Log.Info("the CetiRun resources are installed; inventory records start")
+			}
+			return nil
+		}
+		if !reported {
+			r.Log.Info("CetiRun resources are not installed; writing events only until they are", "missingKinds", missing)
+			reported = true
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(interval):
 		}
 	}
-	return nil
 }
 
 // Snapshot writes every inventory object again, so that the latest state of
 // each one stays within the retention of the logs.
 func (r *Recorder) Snapshot(ctx context.Context, reader client.Reader) error {
 	for _, kind := range kinds {
+		if !r.isRegistered(kind.logType) {
+			continue
+		}
 		list, err := listOf(kind.object)
 		if err != nil {
 			return err

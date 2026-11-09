@@ -104,6 +104,11 @@ func run(ctx context.Context, o options) error {
 		return err
 	}
 	if err := mgr.Add(runnableFunc(func(ctx context.Context) error {
+		return recorder.RunRegistration(ctx, mgr.GetCache(), time.Minute)
+	})); err != nil {
+		return err
+	}
+	if err := mgr.Add(runnableFunc(func(ctx context.Context) error {
 		return recorder.RunSnapshots(ctx, mgr.GetClient(), o.snapshotInterval)
 	})); err != nil {
 		return err
