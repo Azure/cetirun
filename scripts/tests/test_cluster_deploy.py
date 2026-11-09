@@ -50,7 +50,9 @@ case "$1 $2" in
 import json, os, pathlib, stat, sys
 args = sys.argv
 template_path = pathlib.Path(args[args.index("--template-file") + 1])
-params_path = pathlib.Path(args[args.index("--parameters") + 1])
+params_arg = args[args.index("--parameters") + 1]
+assert params_arg.startswith("@"), "Azure CLI JSON parameter files must use @path"
+params_path = pathlib.Path(params_arg[1:])
 template = json.loads(template_path.read_text())
 params = json.loads(params_path.read_text())
 version = params["parameters"].get("kubernetesVersion", {}).get("value", template["parameters"]["kubernetesVersion"]["defaultValue"])

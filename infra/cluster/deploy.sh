@@ -69,14 +69,14 @@ az group create --name "$RG_NAME" --location "$RG_LOCATION" --tags project=cetir
 az deployment group validate \
   --resource-group "$RG_NAME" \
   --template-file "${DEPLOYMENT_INPUT_DIR}/template.json" \
-  --parameters "${DEPLOYMENT_INPUT_DIR}/parameters.json" \
+  --parameters "@${DEPLOYMENT_INPUT_DIR}/parameters.json" \
   --name "${DEPLOYMENT_NAME}-validate"
 
 # Deploy
 az deployment group create \
   --resource-group "$RG_NAME" \
   --template-file "${DEPLOYMENT_INPUT_DIR}/template.json" \
-  --parameters "${DEPLOYMENT_INPUT_DIR}/parameters.json" \
+  --parameters "@${DEPLOYMENT_INPUT_DIR}/parameters.json" \
   --name "$DEPLOYMENT_NAME"
 
 # Read cluster name from outputs
