@@ -801,3 +801,30 @@ lets the worker read the ConfigMap `cetirun-skill-marketplace-teams` and read
 and update the ConfigMap `cetirun-skill-marketplace`. The operator writes the
 first ConfigMap, and it creates the second one. The operator also creates the
 Agents' claims and volumes. Its ClusterRole already has these permissions.
+
+## Observability chart
+
+Source: [observability values]({{< repo "app/cetirun-observability/chart/values.yaml" >}}).
+The platform chart installs it with the `cetirun-observability` values, which
+are off by default. `make deploy` sets the first four rows from the
+`observability` block of the environment file. For the procedure, see
+[Observability with ADX-Mon](../../operations/observability/).
+
+| Value | Purpose / default |
+| --- | --- |
+| `clusterName` | Necessary. A DNS label that names this CetiRun cluster in every row. |
+| `adx.endpoint` | Necessary. The query URI of the Kusto cluster, `https://<name>.<region>.kusto.windows.net`, without a path. |
+| `adx.databases.logs`, `adx.databases.metrics`, `adx.databases.agentLogs` | `CetiRunLogs`, `CetiRunMetrics`, `CetiRunAgents`. |
+| `ingestor.clientId` | Necessary. The client ID of the managed identity that the ingestor uses through workload identity. |
+| `global.registry`, `global.version` | Empty. With a registry, the images are `<registry>/cetirun-observability` and, for the telemetry program, `<registry>/cetirun-operator`. The tag is `image.tag`, then `global.version`, then the `appVersion` of the chart. |
+| `logs.platformNamespaces` | `cetirun-credentials`, `cetirun-istio`, `aks-istio-system`. The release namespace is always included. |
+| `logs.ingressNamespace` | `aks-istio-ingress`. Empty leaves out the ingress gateway's access log. |
+| `logs.agents.enabled` | `true`. The output of every container of Agent Pods, Custom terminals and GitHub Copilot proxies, into the Agent logs database. |
+| `metrics.scrapeInterval`, `metrics.keep`, `metrics.drop` | `60` seconds; the regular expressions of the metric names that are kept, and of those that are dropped even when kept. Every other metric is dropped. |
+| `collector.maxDiskUsage`, `collector.hostPath` | `2147483648` bytes; `/var/lib/cetirun-adx-mon`. The write-ahead log and the log file positions on each node. |
+| `collector.tolerations` | Every taint, so that the collector runs on every node. |
+| `ingestor.storage.size`, `ingestor.maxDiskUsage` | `16Gi`; `12884901888` bytes. |
+| `ingestor.tls.secretName` | Empty. The chart creates a CA and a certificate for the transfer endpoint on the first installation and keeps them. |
+| `kubeStateMetrics.enabled`, `kubeStateMetrics.objects` | `true`; Pods, nodes, Deployments, StatefulSets, DaemonSets, Jobs, claims and namespaces. The chart refuses other kinds. |
+| `telemetry.enabled`, `telemetry.events`, `telemetry.snapshotInterval` | `true`; `warnings-and-cetirun`, also `all` or `none`; `1h`. |
+| `crds.install` | `true`. The ADX-Mon definitions Function, ManagementCommand and SummaryRule. |

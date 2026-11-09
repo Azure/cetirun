@@ -166,12 +166,27 @@ By default, the operator configures a controller-runtime metrics listener at
 collection of those metrics in a deployment depends on the monitoring
 configuration of that deployment.
 
+The optional `cetirun-observability` chart, off by default, sends the same
+kinds of data to Azure Data Explorer with ADX-Mon. Its collector reads the
+container output of the platform namespaces into the `CetiRunLogs` database,
+and the output of every container of the Agent Pods, Custom terminals and
+GitHub Copilot proxies into the `CetiRunAgents` database. Agent output can
+include conversation text. Its telemetry program writes each Agent's
+namespace, owner alias, display name, email, Entra tenant and object IDs, Team
+and policy, and Kubernetes events, into `CetiRunLogs`. Metrics go to the
+`CetiRunMetrics` database; the AI Gateway's metric labels include key aliases,
+user IDs and Team names. The chart does not copy container environment
+variables. Retention is a property of each database: the cluster template sets
+90 days for logs, 30 days for metrics and 14 days for Agent logs.
+
 Source: [cluster defaults](infra/cluster/main.bicep),
 [collection destinations and retention](infra/cluster/modules/aks-cluster.bicep),
 [Container Insights agent settings](infra/cluster/container-azm-ms-agentconfig.yaml),
 [Istio defaults](infra/istio/values.yaml),
 [Envoy access-log fields](infra/istio/templates/egress/accesslog.yaml),
-and [operator metrics configuration](app/cetirun-operator/cmd/main.go).
+[operator metrics configuration](app/cetirun-operator/cmd/main.go),
+[ADX-Mon collection](app/cetirun-observability/chart/templates/_helpers.tpl),
+and [Azure Data Explorer databases](infra/cluster/modules/adx.bicep).
 
 ## Network and third-party boundaries
 
@@ -272,8 +287,9 @@ and [Log Analytics configuration](infra/cluster/modules/aks-cluster.bicep).
   data. Also tell them if conversation content is collected in logs.
 - Examine `logger.enabled`, agent logging, `desktop.logging`,
   `egress.accessLog.enabled`, the AI Gateway's `requestLog` and `metrics`,
-  collection rules, and metrics scraping separately. If you disable only the
-  session logger, this does not disable the other paths.
+  collection rules, the `cetirun-observability` chart, and metrics scraping
+  separately. If you disable only the session logger, this does not disable the
+  other paths.
 - Restrict access to the portal, Kubernetes Secrets, workspace volumes, desktop
   and terminal endpoints, operational logs, and monitoring workspaces. Evaluate
   administrators and automation identities as data-access roles.
