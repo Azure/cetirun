@@ -410,13 +410,18 @@ class NativeGatewayChartTests(unittest.TestCase):
         main = object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]["containers"][0]
         for kind in ("livenessProbe", "readinessProbe", "startupProbe"):
             with self.subTest(probe=kind):
-                mode = "readiness" if kind == "readinessProbe" else "liveness"
+                command = ["node", "/etc/cetirun/hermes-health-probe.cjs"]
+                if kind == "readinessProbe":
+                    command = ["/usr/local/bin/hermes-python", "/etc/cetirun/hermes-runtime.py", "readiness"]
                 self.assertEqual(main[kind]["exec"]["command"], [
-                    "/usr/local/bin/hermes-python", "/etc/cetirun/hermes-runtime.py", mode,
-                    "--timeout", str(main[kind]["timeoutSeconds"]),
+                    *command, "--timeout", str(main[kind]["timeoutSeconds"]),
                 ])
                 self.assertNotIn("httpGet", main[kind])
-        self.assertNotIn("health-probe.cjs", object_of_kind(objects, "ConfigMap")["data"])
+        data = object_of_kind(objects, "ConfigMap")["data"]
+        self.assertEqual(data["hermes-health-probe.cjs"], (
+            RUNTIME_CHART / "agents/hermes/bootstrap/hermes-health-probe.cjs"
+        ).read_text())
+        self.assertNotIn("health-probe.cjs", data)
 
     def test_packaged_chart_contains_the_native_runtime_assets(self):
         values = native_values()
