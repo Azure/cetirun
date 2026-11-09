@@ -583,10 +583,10 @@ readinessProbe:
   timeoutSeconds: 5
   failureThreshold: 6
 
-# -- Seconds a replica being replaced or evicted may keep serving requests it
-# has already accepted. LiteLLM finishes them on SIGTERM with no limit of its
-# own, so a response still running when this expires is cut off. A replica with
-# nothing in flight exits within seconds, whatever the value.
+# -- Total seconds before Kubernetes forcibly stops a replaced or evicted replica.
+# The proxy gets 90% of this period to finish accepted requests (540 seconds by
+# default), leaving 10% for shutdown cleanup (60 seconds by default). A replica
+# exits when its work and cleanup finish; it need not wait for the full period.
 terminationGracePeriodSeconds: 600
 
 # -- Node selector for pod assignment

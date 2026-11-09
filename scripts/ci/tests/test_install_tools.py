@@ -8,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import ssl
 import stat
 import sys
 import tarfile
@@ -92,6 +93,88 @@ class InstallerTests(unittest.TestCase):
 
     def assert_no_outputs(self):
         self.assertFalse(self.destination.exists())
+
+    def test_transient_http_errors_retry_before_installing_verified_payloads(self):
+        for status in (408, 429, 500, 502, 503, 504):
+            with self.subTest(status=status):
+                self.destination = self.root / str(status)
+                body = Download(b"synthetic HTTP error")
+                failure = HTTPError("https://example.com/tool", status, "temporary", {}, body)
+                with patch.object(install_tools.time, "sleep") as sleep:
+                    result, download, error = self.install(fetch=[failure, Download(self.data)])
+                self.assertEqual(result, 0, error)
+                self.assertEqual(download.call_count, 2)
+                sleep.assert_called_once_with(5)
+                self.assertTrue(body.closed)
+                self.assertIn(f"HTTP {status}", error)
+                for name, member in MEMBERS.items():
+                    self.assertEqual((self.destination / name).read_bytes(), PAYLOADS[member])
+
+    def test_connection_errors_and_timeouts_retry(self):
+        for index, failure in enumerate((
+            TimeoutError("synthetic timeout"), ConnectionResetError("synthetic reset"),
+            URLError(TimeoutError("synthetic timeout")),
+            URLError(ConnectionResetError("synthetic reset")),
+        )):
+            with self.subTest(error=failure):
+                self.destination = self.root / str(index)
+                with patch.object(install_tools.time, "sleep") as sleep:
+                    result, download, error = self.install(fetch=[failure, Download(self.data)])
+                self.assertEqual(result, 0, error)
+                self.assertEqual(download.call_count, 2)
+                sleep.assert_called_once_with(5)
+
+    def test_read_timeout_closes_response_and_restarts_the_download(self):
+        class InterruptedDownload(Download):
+            def read(self, size=-1):
+                super().read(1)
+                raise TimeoutError("synthetic interrupted read")
+
+        interrupted = InterruptedDownload(self.data)
+        with patch.object(install_tools.time, "sleep") as sleep:
+            result, download, error = self.install(fetch=[interrupted, Download(self.data)])
+        self.assertEqual(result, 0, error)
+        self.assertEqual(download.call_count, 2)
+        self.assertTrue(interrupted.closed)
+        sleep.assert_called_once_with(5)
+        for name, member in MEMBERS.items():
+            self.assertEqual((self.destination / name).read_bytes(), PAYLOADS[member])
+
+    def test_retry_exhaustion_fails_without_installing_earlier_tools(self):
+        raw_spec = self.spec(url="https://example.com/raw")
+        del raw_spec["members"]
+
+        def fetch(url, **kwargs):
+            if url.endswith("/raw"):
+                raise HTTPError(url, 504, "Gateway Time-out", {}, None)
+            return Download(self.data)
+
+        with patch.object(install_tools.time, "sleep") as sleep:
+            result, download, error = self.install(
+                {"envtest": self.spec(), "raw": raw_spec}, ("envtest", "raw"), fetch
+            )
+        self.assertEqual(result, 1)
+        self.assertEqual(download.call_count, 5)
+        self.assertEqual(sleep.call_args_list, [call(5), call(15), call(30)])
+        self.assertIn("HTTP Error 504", error)
+        self.assert_no_outputs()
+
+    def test_permanent_http_and_tls_errors_are_not_retried(self):
+        failures = [
+            HTTPError("https://example.com/tool", status, "permanent", {}, None)
+            for status in (400, 401, 403, 404, 410, 501)
+        ] + [
+            URLError(ssl.SSLCertVerificationError("synthetic certificate failure")),
+            URLError("synthetic unsupported error"),
+        ]
+        for failure in failures:
+            with self.subTest(error=failure):
+                with patch.object(install_tools.time, "sleep") as sleep:
+                    result, download, _ = self.install(fetch=[failure])
+                self.assertEqual(result, 1)
+                download.assert_called_once()
+                sleep.assert_not_called()
+                self.assert_no_outputs()
 
     def test_explicit_arch_selects_locked_helm_pin_and_member(self):
         manifest = json.loads(install_tools.MANIFEST.read_text())
@@ -235,7 +318,7 @@ class InstallerTests(unittest.TestCase):
                     self.assertEqual(result, 0, error)
                     self.assertEqual(download.call_count, 2)
                     self.assertTrue(failure.fp.closed)
-                    sleep.assert_called_once_with(15)
+                    sleep.assert_called_once_with(5)
                     if bundled:
                         for name, member in MEMBERS.items():
                             self.assertEqual((self.destination / name).read_bytes(), PAYLOADS[member])
@@ -257,7 +340,7 @@ class InstallerTests(unittest.TestCase):
             )
         self.assertEqual(result, 1)
         self.assertEqual(download.call_count, 5)
-        self.assertEqual(sleep.call_args_list, [call(15)] * 3)
+        self.assertEqual(sleep.call_args_list, [call(5), call(15), call(30)])
         self.assertIn("HTTP Error 504", error)
         self.assert_no_outputs()
 
@@ -279,7 +362,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("SHA256 mismatch", error)
         self.assertEqual(download.call_count, 2)
-        sleep.assert_called_once_with(15)
+        sleep.assert_called_once_with(5)
         parse.assert_not_called()
         self.assert_no_outputs()
 
@@ -464,13 +547,17 @@ class InstallerTests(unittest.TestCase):
         self.assert_no_outputs()
 
     def test_checksum_is_verified_before_parsing_archive(self):
-        with patch.object(install_tools.tarfile, "open") as parse:
+        with (
+            patch.object(install_tools.tarfile, "open") as parse,
+            patch.object(install_tools.time, "sleep") as sleep,
+        ):
             result, download, error = self.install(
                 {"envtest": self.spec(sha256={"amd64": "0" * 64})}
             )
         self.assertEqual(result, 1)
         self.assertIn("SHA256 mismatch", error)
         download.assert_called_once()
+        sleep.assert_not_called()
         parse.assert_not_called()
         self.assert_no_outputs()
 

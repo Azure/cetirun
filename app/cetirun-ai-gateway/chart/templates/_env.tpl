@@ -44,6 +44,8 @@ Everything the proxy needs, including credentials held in chart-managed Secrets.
 
 {{- define "cetirun-ai-gateway.proxyEnv" -}}
 {{ include "cetirun-ai-gateway.commonEnv" . }}
+- name: GRACEFUL_SHUTDOWN_TIMEOUT
+  value: {{ mulf .Values.terminationGracePeriodSeconds 0.9 | quote }}
 - name: STORE_MODEL_IN_DB
   value: "True"
 {{- if .Values.migrations.enabled }}

@@ -34,8 +34,8 @@ spec:
       serviceAccountName: {{ include "cetirun-ai-gateway.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      {{- /* LiteLLM finishes requests in flight on SIGTERM and sets no limit of
-      its own, so this decides whether a long response survives a rollout. */}}
+      {{- /* The proxy uses 90% of this period to finish requests; the rest is
+      reserved for shutdown cleanup before Kubernetes sends SIGKILL. */}}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- if .Values.migrations.enabled }}
       {{- /* Migrations run before the proxy starts, in every pod. prisma holds a

@@ -4,8 +4,8 @@
 # CetiRun AI Gateway image: open-source LiteLLM, installed as pinned packages on
 # the Azure Linux Python base from MCR.
 #
-# requirements.txt is the exact package set of the upstream LiteLLM image for
-# the same release, minus litellm-enterprise (see the comment at its top). The
+# requirements.txt pins the upstream LiteLLM lockfile for the Gateway's runtime
+# extras, with the exclusions documented at its top. The
 # prisma layout below reproduces the upstream image's: the prisma CLI and
 # engines live under /opt/prisma and the generated client records those paths,
 # so migrations need neither npm nor network access at runtime.
