@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import threading
 from types import SimpleNamespace
@@ -23,7 +24,27 @@ assert sys.version_info[:2] == (3, 14), "Hermes qualification requires its PM Py
 sys.path.insert(0, str(source))
 root = Path(os.environ["MEMORY_TEST_ASSETS"])
 workspace = os.environ["MEMORY_TEST_WORKSPACE"]
-Path(os.environ["HERMES_HOME"]).mkdir()
+profile = Path(os.environ["HERMES_HOME"])
+profile.mkdir()
+plugin_name = "cetirun-memory-context"
+shutil.copytree(Path(os.environ["MEMORY_TEST_PLUGIN"]).parent, profile / "plugins" / plugin_name)
+binary = profile / "bin/memory-helper"
+binary.parent.mkdir()
+shutil.copy2(root / "bin/cetirun-memory", binary)
+data_root = profile / "local-memory"
+bindings = {"CETIRUN_MEMORY_ROOT": str(data_root), "CETIRUN_MEMORY_ASSETS": str(root),
+            "CETIRUN_MEMORY_BINARY": str(binary), "CETIRUN_MEMORY_CONTEXT": str(root / "AGENTS.md")}
+profile.joinpath(".env").write_text("".join(f"{name}={value}\n" for name, value in bindings.items()))
+profile.joinpath("config.yaml").write_text(
+    "plugins:\n  enabled: [cetirun-memory-context]\nskills:\n  external_dirs:\n"
+    f"    - {root / 'skills'}\n")
+for name in bindings:
+    os.environ.pop(name, None)
+
+from hermes_cli.env_loader import load_hermes_dotenv
+
+load_hermes_dotenv(hermes_home=profile, load_external_secrets=False)
+assert all(os.environ.get(name) == value for name, value in bindings.items())
 
 from hermes_cli.version_info import get_version_info
 
@@ -43,9 +64,14 @@ spec = importlib.util.spec_from_file_location("memory_native_fixture", root / "a
 adapter = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(adapter)
 manager = plugins.PluginManager()
-manager._discovered = True
-manifest = plugins.PluginManifest(name="cetirun-memory-context", version="1", source="bundled", path=str(root / "adapters/hermes"))
-adapter.register(plugins.PluginContext(manifest, manager), root=root)
+with patch.object(plugins, "get_plugin_manager", return_value=manager):
+    manager.discover_and_load()
+loaded = manager._plugins[plugin_name]
+assert loaded.enabled and not loaded.error, loaded.error
+assert Path(loaded.manifest.path) == profile / "plugins" / plugin_name
+from hermes_cli import plugins_manifest
+with patch.object(plugins_manifest, "running_hermes_version", return_value="0.22.6"):
+    assert plugins_manifest.requires_hermes_error(loaded.manifest)
 assert registry.get_entry("cetirun_memory", scope=manager.scope_key) is not None
 assert registry.get_definitions({"cetirun_memory"})[0]["function"]["name"] == "cetirun_memory"
 
@@ -90,6 +116,18 @@ with patch.object(plugins, "get_plugin_manager", return_value=manager):
     assert "synthetic concise examples" not in json.dumps(request)
     status = json.loads(registry.dispatch("cetirun_memory", {"command": "status", "payload": {}}, session_id="native-hermes"))
     assert status["ok"] and status["data"]["modelEvaluationSupported"]
+    assert data_root.is_dir() and data_root.stat().st_mode & 0o777 == 0o700
+
+    # Exercise the native dotenv loader, not a direct replacement of os.environ.
+    profile.joinpath(".env").write_text(
+        f"CETIRUN_MEMORY_BINARY=relative-helper\nCETIRUN_MEMORY_ROOT={profile / 'wrong-store'}\n")
+    load_hermes_dotenv(hermes_home=profile, load_external_secrets=False)
+    manager.invoke_hook("pre_llm_call", session_id="native-hermes", platform="cli", turn_id="after-dotenv",
+                        model="fixture", user_message="Synthetic next turn")
+    after_reload = apply_llm_request_middleware(request, session_id="native-hermes", provider="openai", model="fixture",
+                                               api_mode="chat_completions")
+    assert after_reload.changed and "synthetic concise examples" in json.dumps(after_reload.payload)
+    assert not (profile / "wrong-store").exists()
 
     from model_tools import handle_function_call
 
@@ -161,7 +199,7 @@ thread = threading.Thread(target=server.serve_forever, daemon=True)
 thread.start()
 token = set_runtime_main("openai", "fixture", base_url=f"http://127.0.0.1:{server.server_port}/v1", api_key="sk-dummy",
                          api_mode="chat_completions", session_id="native-hermes")
-session = adapter.MemorySession(root, {"model": "openai/fixture", "sessionId": "native-hermes",
+session = adapter.MemorySession(root / "bin/cetirun-memory", {}, {"model": "openai/fixture", "sessionId": "native-hermes",
     "modelRevision": adapter.model_revision("openai", "fixture", f"http://127.0.0.1:{server.server_port}/v1", "chat_completions")})
 ticket = {"system": "Only synthetic JSON fixtures", "prompt": "Return a fixture total", "maxTokens": 512, "timeoutSeconds": 2}
 try:
