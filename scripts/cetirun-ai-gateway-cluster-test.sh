@@ -637,10 +637,9 @@ jq -e '.routing_tier == "MEDIUM"' <<< "${routed_line}" >/dev/null \
   || fail "OpenClaw's context, not the request, decided the tier: ${routed_line}"
 pass "a request for code with OpenClaw's context after it went to the medium tier"
 
-# LiteLLM finishes requests in flight when it is stopped, with no limit of its
-# own, so the pod's grace period decides whether a long response survives a
-# rollout or a node drain. At the Kubernetes default of 30 seconds, a rolling
-# update cut a streamed response off partway through. The request goes from
+# Both the proxy's shutdown timeout and the pod's grace period must let a long
+# response survive a rollout or node drain. LiteLLM's default 30-second timeout
+# cancels this request even when the pod has a longer grace period. It goes from
 # inside the cluster to the pod's own address, as a client's connection does
 # once the Service has routed it, and outlasts the default by a clear margin.
 echo "==> A stopping replica finishes the request it is serving"

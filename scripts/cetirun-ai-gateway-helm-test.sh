@@ -620,12 +620,21 @@ assert_contains "kind: PodDisruptionBudget" "three replicas get a PodDisruptionB
 
 # ----- Shutdown -----
 
-# LiteLLM finishes requests in flight when stopped and sets no limit of its own,
-# so the pod's grace period is the limit. At the Kubernetes default of 30
-# seconds, a rolling update cut a streamed response off partway through.
 echo "==> a stopping replica has time to finish its requests"
-assert_contains "terminationGracePeriodSeconds: 600" \
+assert_contains "terminationGracePeriodSeconds: 600$" \
   "the grace period is longer than the Kubernetes default" "${output}"
+assert_contains 'value: "540"$' "the proxy waits for long requests with cleanup headroom" \
+  "$(gateway_block "${gateway_deployment}" | grep -A1 'name: GRACEFUL_SHUTDOWN_TIMEOUT$')"
+assert_absent 'name: GRACEFUL_SHUTDOWN_TIMEOUT$' "migration does not inherit the proxy shutdown budget" \
+  "$(init_block "${gateway_deployment}")"
+for setting in 1200:1080 30:27 1:0.9 0:0; do
+  pod_grace="${setting%%:*}"
+  proxy_grace="${setting#*:}"
+  shutdown_pod="$(render -s templates/deployment.yaml --set "terminationGracePeriodSeconds=${pod_grace}")"
+  assert_contains "terminationGracePeriodSeconds: ${pod_grace}$" "the Pod keeps its configured budget" "${shutdown_pod}"
+  assert_contains "value: \"${proxy_grace}\"$" "the proxy budget follows the Pod budget with cleanup headroom" \
+    "$(gateway_block "${shutdown_pod}" | grep -A1 'name: GRACEFUL_SHUTDOWN_TIMEOUT$')"
+done
 
 # ----- Unpriced models -----
 

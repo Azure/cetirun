@@ -422,7 +422,7 @@
             "type": "integer",
             "minimum": 0,
             "default": 600,
-            "description": "How long a stopping replica may spend finishing requests it has already accepted"
+            "description": "Total Pod termination budget; the proxy uses 90% to finish accepted requests and reserves 10% for shutdown cleanup"
         },
         "nodeSelector": {"type": "object", "default": {}},
         "tolerations": {"type": "array", "default": []},

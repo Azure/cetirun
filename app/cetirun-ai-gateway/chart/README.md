@@ -2671,17 +2671,23 @@ values:
 
 ### Rollouts let requests in flight finish
 
-When a replica is replaced or evicted, it accepts no more requests, and it
-finishes the requests that it has. LiteLLM sets no limit for this time. As a
-result, the pod's `terminationGracePeriodSeconds` decides how long a response
-can run and still survive a rollout or a node drain. At the Kubernetes default
-of 30 seconds, a rolling restart stopped a 90-second streamed response after 80
-chunks. With a longer period, the same stream completed.
+When a replica is replaced or evicted, the proxy stops accepting new requests
+and waits for accepted requests to finish. The chart sets the Pod's
+`terminationGracePeriodSeconds` to 600 seconds and LiteLLM's
+`GRACEFUL_SHUTDOWN_TIMEOUT` to 90% of that value: 540 seconds for in-flight
+requests, leaving 60 seconds for shutdown cleanup before Kubernetes forcibly
+stops the container. A replica exits when its work and cleanup finish; it does
+not have to wait for the full budget. Increasing `terminationGracePeriodSeconds`
+increases both budgets in the same proportion. A value of zero permits no wait.
 
-The chart sets 600 seconds. This is the same ten minutes after which the OpenAI
-SDKs stop a request by default. If no requests are in flight, this setting
-costs nothing. A replica with no request in flight exited four seconds after it
-was told to stop. If single model calls can run longer, increase this value.
+LiteLLM 1.108.3 defaults its own shutdown timeout to 30 seconds when the
+environment variable is absent. A longer Pod grace period alone therefore does
+not protect long requests. The cluster test keeps a 45-second request in flight
+while deleting its replica and requires the request to complete successfully.
+
+In earlier cluster measurements, the Kubernetes default of 30 seconds cut off
+a 90-second streamed response after 80 chunks; a longer period let it finish.
+An idle replica exited four seconds after it was told to stop.
 
 On a single-node test cluster, one of two replicas was deleted while requests
 flowed through the Service. This was done both normally and by force. None of
