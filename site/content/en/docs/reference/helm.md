@@ -198,6 +198,9 @@ The operator and the Custom provider use the same home defaults:
 selects the default class of the cluster, not the class with the name
 `default`. For shared skills and recovery, see [storage](../../operations/storage/).
 Custom uses its approved HOME claim template, not `persistence.*` overrides.
+For Custom, the operator ignores a deployment-wide `persistence` setting in
+`CETIRUN_HELM_VALUES`, which configures built-in agents, and rejects
+`persistence` in the `spec.helm.values` of the Agent.
 
 For standalone and built-in agents, a claim that already exists must be in the
 runtime namespace. If you disable persistence, `emptyDir` is used unless you
