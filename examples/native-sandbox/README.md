@@ -4,6 +4,11 @@ This example tests one OpenClaw Agent with a Kata Sandbox and a shared AI
 Gateway model. New Agents use the explicitly enabled common executor, not a
 production failover or complete AgentPolicy conformance test.
 
+For the scoped Kubernetes API checks that can be run on an authorized AKS
+target, read [AKS workflow](aks/README.md). The local `platform-probe.py`
+documented below has a Kind/Docker/QEMU and hostpath-CSI contract; it is not an
+AKS qualification tool.
+
 ## Ordinary-container backend
 
 For a deliberately non-VM backend, [container.yaml](container.yaml) contains an

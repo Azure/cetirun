@@ -83,6 +83,8 @@ RUN mkdir -p /usr/local/share/openclaw-extensions /usr/local/share/openclaw-npm 
 # Warm the npm cache before the managed installs. The managed installer has a
 # five-minute work timeout with no CLI override; an ARM host building the
 # required linux/amd64 image under QEMU can exceed it even while npm is healthy.
+COPY --chown=vibe:vibe agents/openclaw/check-openat2.py /tmp/check-openat2.py
+RUN python3 /tmp/check-openat2.py && rm /tmp/check-openat2.py
 RUN npm --min-release-age=0 install \
       --prefix /tmp/openclaw-plugin-prefetch \
       --omit=dev \

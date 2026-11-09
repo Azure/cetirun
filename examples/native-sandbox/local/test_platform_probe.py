@@ -146,6 +146,56 @@ class LocalPlatformProbeTests(unittest.TestCase):
         with self.assertRaises(probe.Error):
             kube.create({"kind": "Agent", "metadata": {"namespace": "cetirun-agent", "name": "agent"}})
 
+    def test_owned_pvc_create_uses_shared_strict_collection(self):
+        kube = self.client()
+        namespace = next(iter(kube.namespaces))
+        document = {
+            "apiVersion": "v1", "kind": "PersistentVolumeClaim",
+            "metadata": {"name": "home", "namespace": namespace},
+            "spec": {"accessModes": ["ReadWriteOncePod"], "storageClassName": "synthetic-csi",
+                     "resources": {"requests": {"storage": "1Gi"}}},
+        }
+        namespace_object = {"metadata": {"uid": "owned-uid", "labels": {probe.qualify.RUN_LABEL: "run"}}}
+        response = {**document, "metadata": {**document["metadata"], "uid": "claim-uid"}}
+        with patch.object(kube, "get", return_value=namespace_object) as get, \
+                patch.object(kube, "check_target") as target, \
+                patch.object(kube, "command", return_value=json.dumps(response)) as command:
+            self.assertEqual(kube.create(document), response)
+        target.assert_called_once()
+        get.assert_called_once_with("namespace", namespace)
+        command.assert_called_once_with(
+            kube.prefix + ["create", "--raw", "/api/v1/namespaces/" + namespace +
+                           "/persistentvolumeclaims?fieldValidation=Strict", "-f", "-"],
+            document, probe.REQUEST_SECONDS,
+        )
+        self.assertEqual(kube.uncertain_creates, [])
+
+    def test_owned_pvc_create_rejects_replaced_namespace(self):
+        kube = self.client()
+        namespace = next(iter(kube.namespaces))
+        document = {"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+                    "metadata": {"name": "home", "namespace": namespace}}
+        with patch.object(kube, "get", return_value={"metadata": {
+                "uid": "replacement", "labels": {probe.qualify.RUN_LABEL: "run"}}}), \
+                patch.object(kube, "command") as command:
+            with self.assertRaisesRegex(probe.Error, "ownership changed"):
+                kube.create(document)
+        command.assert_not_called()
+        self.assertEqual(kube.uncertain_creates, [])
+
+    def test_owned_pvc_create_retains_unknown_creation_receipt(self):
+        kube = self.client()
+        namespace = next(iter(kube.namespaces))
+        document = {"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+                    "metadata": {"name": "home", "namespace": namespace}}
+        namespace_object = {"metadata": {"uid": "owned-uid", "labels": {probe.qualify.RUN_LABEL: "run"}}}
+        with patch.object(kube, "get", return_value=namespace_object), \
+                patch.object(kube, "check_target"), \
+                patch.object(kube, "command", return_value=json.dumps(document)):
+            with self.assertRaisesRegex(probe.Error, "Creation UID unknown"):
+                kube.create(document)
+        self.assertEqual(kube.uncertain_creates, [{"kind": "PersistentVolumeClaim", "name": "home", "namespace": namespace}])
+
     def test_command_has_bounded_timeout_and_sanitized_errors(self):
         kube = self.client()
         with patch.object(probe.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "ok", "")) as run:

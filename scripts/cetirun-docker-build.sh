@@ -6,6 +6,8 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
+source "${script_dir}/cetirun-build-attestations.sh"
+cetirun_validate_sbom_generator "${SBOM_GENERATOR:-}"
 
 registry="${REGISTRY:-$("${script_dir}/cetirun-release-metadata.sh" registry)}"
 image_name="${IMAGE_NAME:-openclaw-gateway}"
@@ -13,6 +15,7 @@ release_version="${VERSION:-$("${script_dir}/cetirun-release-metadata.sh" versio
 image_tag="${IMAGE_TAG:-${release_version}}"
 git_sha="${GIT_SHA:-$(git -C "${repo_root}" rev-parse HEAD 2>/dev/null || echo unknown)}"
 push="${PUSH:-false}"
+cetirun_require_sbom_generator_push "${push}"
 context_dir="${repo_root}/app/cetirun-chart"
 dockerfile="${DOCKERFILE:-agents/openclaw/Dockerfile}"
 build_base="${BUILD_BASE:-true}"
@@ -53,9 +56,10 @@ if [ -n "${build_network}" ]; then
     *) echo "BUILD_NETWORK must be default, host, or none" >&2; exit 1 ;;
   esac
 fi
-if docker buildx inspect --bootstrap 2>/dev/null | grep -q 'Driver:.*docker-container'; then
-  common_output_args+=(--provenance=true --sbom=true)
-fi
+buildx_driver=""
+if buildx_driver="$(docker buildx inspect --bootstrap 2>/dev/null | awk '/^Driver:/ { print $2; exit }')"; then :; fi
+cetirun_configure_sbom_attestation "${buildx_driver}"
+common_output_args+=("${CETIRUN_SBOM_ATTESTATION_ARGS[@]}")
 if [ "${push}" = "true" ]; then
   common_output_args+=(--push)
 else

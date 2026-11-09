@@ -108,6 +108,7 @@ class SandboxPlatformQualificationTests(unittest.TestCase):
         cases = [
             ("v1", "Namespace", "/api/v1/namespaces"),
             ("v1", "Pod", "/api/v1/namespaces/probe/pods"),
+            ("v1", "PersistentVolumeClaim", "/api/v1/namespaces/probe/persistentvolumeclaims"),
             ("networking.k8s.io/v1", "NetworkPolicy", "/apis/networking.k8s.io/v1/namespaces/probe/networkpolicies"),
             ("cilium.io/v2", "CiliumNetworkPolicy", "/apis/cilium.io/v2/namespaces/probe/ciliumnetworkpolicies"),
         ]
@@ -124,8 +125,9 @@ class SandboxPlatformQualificationTests(unittest.TestCase):
         documents = [None, [], {"apiVersion": "v1", "kind": "Secret"},
                      {"apiVersion": "https://example.invalid", "kind": "Namespace"},
                      {"apiVersion": [], "kind": "Pod"}]
-        for namespace in (None, "", "../other", "probe?dryRun=All", "probe/other", "with.dot", [], "x" * 64):
-            documents.append({"apiVersion": "v1", "kind": "Pod", "metadata": {"namespace": namespace}})
+        for kind in ("Pod", "PersistentVolumeClaim"):
+            for namespace in (None, "", "../other", "probe?dryRun=All", "probe/other", "with.dot", [], "x" * 64):
+                documents.append({"apiVersion": "v1", "kind": kind, "metadata": {"namespace": namespace}})
         for document in documents:
             with self.subTest(document=document), patch.object(client, "run") as run:
                 with self.assertRaises(qualify.QualificationError):

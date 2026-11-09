@@ -206,8 +206,10 @@ registry and the version of the platform images and of the Agent chart. As a
 result, image tags are not necessary in the environment file.
 
 The build of the OpenClaw image runs an installer. The `openat2` system call is
-necessary for this installer, but the builders of Azure Container Registry
-Tasks refuse this call. Build on a Docker host.
+necessary for this installer. The Dockerfile checks the actual builder before
+the plugin downloads, and stops with guidance if that builder blocks the call.
+Use a Linux Docker Buildx builder that permits `openat2`; remote builders that
+block the syscall, including Azure Container Registry Tasks, are unsupported.
 
 ### Example: Azure Container Registry
 

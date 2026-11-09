@@ -164,6 +164,7 @@ class Kubernetes:
         collections = {
             ("v1", "Namespace"): ("/api/v1", "namespaces", False),
             ("v1", "Pod"): ("/api/v1", "pods", True),
+            ("v1", "PersistentVolumeClaim"): ("/api/v1", "persistentvolumeclaims", True),
             ("networking.k8s.io/v1", "NetworkPolicy"): ("/apis/networking.k8s.io/v1", "networkpolicies", True),
             ("cilium.io/v2", "CiliumNetworkPolicy"): ("/apis/cilium.io/v2", "ciliumnetworkpolicies", True),
         }
