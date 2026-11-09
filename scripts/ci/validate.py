@@ -20,6 +20,7 @@ MODULES = {"internal": "app/internal", **{name: f"app/cetirun-{name}" for name i
 MODULES["cetirun-connections-mcp"] = "app/cetirun-connections-mcp"
 WORKFLOWS = (
     "memory-context-ci.yml",
+    "observability-ci.yml",
     "operator-ci.yml",
     "portal-ci.yml",
     "agent-broker-ci.yml",
