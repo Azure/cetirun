@@ -141,7 +141,7 @@ class SyntheticCluster(DEPLOY.Deployment):
         if args[:2] == ["config", "view"]:
             return self.config["target"]["cluster"] + "\n" + self.config["target"]["server"]
         if args[0] == "version":
-            return json.dumps({"serverVersion": {"major": "1", "minor": "37"}})
+            return json.dumps({key: {"major": "1", "minor": "37"} for key in ("clientVersion", "serverVersion")})
         if args[:2] == ["rollout", "status"]:
             return "successfully rolled out\n"
         if args[:2] == ["get", "pods"]:

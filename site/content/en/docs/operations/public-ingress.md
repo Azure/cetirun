@@ -182,6 +182,16 @@ the certificate-only bootstrap against that release or remove the ownership
 checks to make it pass. A hostname change requires a short interruption and a
 new browser sign-in.
 
+There is no executable migration command in the deployment helper. Review
+the complete values and manifest from the same installed Helm revision before
+following this procedure. Offline rendering alone cannot prove a TLS-only
+change: bundled database and Gateway Secrets use server-side `lookup` and
+generate replacement values when lookup is unavailable, while CetiAdmin has
+lookup-dependent resources and lifecycle hooks. Do not ignore Secret or
+non-TLS differences to obtain a clean comparison, and do not bypass the hooks.
+The migration must preserve those retained values and satisfy the normal
+lifecycle checks before either full-release upgrade.
+
 1. Record the current full Helm revisions, rendered resources, ingress Service
    UID and address, and TLS Secret UID/resource version. Save the certificate
    and private key in restricted storage outside the repository. Preserve Agent

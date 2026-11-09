@@ -31,7 +31,7 @@ previous = [json.loads(line) for line in log.read_text().splitlines()] if log.ex
 with log.open("a") as output:
     output.write(json.dumps(args) + "\n")
 if args[:2] == ["buildx", "inspect"]:
-    print("Driver: docker")
+    print("Driver: " + os.environ.get("ARTIFACT_BUILDX_DRIVER", "docker"))
 if args[:3] == ["buildx", "imagetools", "inspect"]:
     reference = args[3]
     if os.environ.get("ARTIFACT_REGISTRY_ERROR"):
@@ -446,6 +446,81 @@ class ReleaseInventoryTests(unittest.TestCase):
         self.assertIn(self.image("cetirun-base"), builds[0])
         vscode = next(command for command in builds if self.image("cetirun-vscode") in command)
         self.assertIn("ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true", vscode)
+
+    def test_sbom_generator_override_reaches_all_attestation_builders(self):
+        generator = "registry.example.com/tools/sbom-generator@sha256:" + "a" * 64
+        self.env.update(ARTIFACT_BUILDX_DRIVER="docker-container", SBOM_GENERATOR=generator)
+        self.run_release("publish-images")
+        attested = {
+            "cetirun-base", "openclaw-gateway", "hermes-gateway", "cetirun-desktop",
+            "cetirun-operator", "cetirun-ai-gateway", "cetirun-agent-broker",
+            "cetirun-portal", "cetirun-pi-agent",
+        }
+        builds = [command for command in self.commands() if command[:2] == ["buildx", "build"]]
+        self.assertEqual(len(builds), 13)
+        for image in attested:
+            command = next(command for command in builds if self.image(image) in command)
+            self.assertIn("--provenance=true", command)
+            self.assertIn(f"--sbom=generator={generator}", command)
+            self.assertNotIn("--sbom=true", command)
+
+    def test_default_sbom_generator_is_retained(self):
+        self.env["ARTIFACT_BUILDX_DRIVER"] = "docker-container"
+        self.run_release("publish-images")
+        builds = [command for command in self.commands() if command[:2] == ["buildx", "build"]]
+        for image in ("cetirun-base", "openclaw-gateway", "hermes-gateway", "cetirun-desktop",
+                      "cetirun-operator", "cetirun-ai-gateway", "cetirun-agent-broker",
+                      "cetirun-portal", "cetirun-pi-agent"):
+            command = next(command for command in builds if self.image(image) in command)
+            self.assertIn("--provenance=true", command)
+            self.assertIn("--sbom=true", command)
+
+    def test_sbom_generator_override_rejects_a_non_attesting_driver(self):
+        generator = "registry.example.com/tools/sbom-generator@sha256:" + "a" * 64
+        self.env["SBOM_GENERATOR"] = generator
+        result = self.run_release("publish-images", success=False)
+        self.assertIn("requires a docker-container Buildx driver", result.stderr)
+        self.assertFalse(any(command[:2] == ["buildx", "build"] for command in self.commands()))
+
+    def test_sbom_generator_override_rejects_direct_local_builds(self):
+        generator = "registry.example.com/tools/sbom-generator@sha256:" + "a" * 64
+        for script in (
+            "scripts/cetirun-docker-build.sh", "scripts/ai-gateway-docker-build.sh",
+            "scripts/operator-docker-build.sh", "scripts/portal-docker-build.sh",
+            "scripts/agent-broker-docker-build.sh", "scripts/pi-agent-docker-build.sh",
+        ):
+            with self.subTest(script=script):
+                result = subprocess.run(
+                    ["bash", script],
+                    env={**self.env, "SBOM_GENERATOR": generator, "PUSH": "false",
+                         "BUILD_BASE": "false", "BUILD_IMAGE": "false",
+                         "BUILD_HERMES": "false", "BUILD_DESKTOP": "false"},
+                    cwd=ROOT, capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("SBOM_GENERATOR requires PUSH=true", result.stderr)
+        self.assertEqual(self.commands(), [])
+
+    def test_invalid_sbom_generator_stops_release_and_direct_builders_before_docker(self):
+        invalid = "registry.example.com/tools/sbom-generator:mutable"
+        self.env["SBOM_GENERATOR"] = invalid
+        result = self.run_release("publish-images", success=False)
+        self.assertIn("SBOM_GENERATOR must be", result.stderr)
+        self.assertEqual(self.commands(), [])
+        for script in (
+            "scripts/cetirun-docker-build.sh", "scripts/ai-gateway-docker-build.sh",
+            "scripts/operator-docker-build.sh", "scripts/portal-docker-build.sh",
+            "scripts/agent-broker-docker-build.sh", "scripts/pi-agent-docker-build.sh",
+        ):
+            with self.subTest(script=script):
+                result = subprocess.run(
+                    ["bash", script], env={**self.env, "BUILD_BASE": "false", "BUILD_IMAGE": "false",
+                                             "BUILD_HERMES": "false", "BUILD_DESKTOP": "false"},
+                    cwd=ROOT, capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("SBOM_GENERATOR must be", result.stderr)
+        self.assertEqual(self.commands(), [])
 
     def test_license_and_coordinates_fail_before_docker(self):
         for key, value in (("ACCEPT_VSCODE_SERVER_LICENSE_TERMS", "false"), ("REGISTRY", ""),

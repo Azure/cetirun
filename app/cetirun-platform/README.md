@@ -215,6 +215,47 @@ release ownership, the necessary Secret key names, storage references, and
 image/chart availability. It refuses to adopt unmanaged objects or resources
 from another Helm release.
 
+The kubectl client must be within one minor version of the API server (which
+must be Kubernetes 1.37 or newer). Preflight reports an incompatible client
+before deployment writes. Select a compatible binary on `PATH`; the helper
+does not install tools or change the current context. Repeated preflights in
+one invocation reuse successful inspections only for exact image digest
+references. Image tags, chart versions, target identity, ownership, Secrets,
+and other live prerequisites are still checked again.
+
+For an existing bundled PostgreSQL StatefulSet whose claim template omitted
+`storageClassName`, preserve that omission. The Bound PVC can have the
+defaulted StorageClass even though the immutable StatefulSet template has no
+class. Opt into the following upgrade-only mode, using the actual PVC class
+and the original requested size:
+
+```yaml
+platform:
+  postgresqlStorage:
+    mode: retain-default
+    storageClassName: example-default
+  values:
+    cetirun-ai-gateway:
+      postgresql:
+        bundled:
+          persistence:
+            storageClass: ""
+            size: 10Gi
+```
+
+This mode requires the existing release-owned StatefulSet, Bound PVC, bound
+PV, StorageClass, and password Secret. It compares the complete rendered
+claim template with the existing template (allowing only Kubernetes defaults)
+and checks the actual PVC class, request, access mode, and PV binding. Their
+UIDs and storage fields are retained for rechecks before and after each
+platform upgrade. A missing or replaced object, changed size or template, or
+foreign owner stops the deployment. This is not a storage migration or a
+fresh-install mode; it never replaces the StatefulSet or PVC. Concurrent
+administrative storage changes must be excluded during deployment, since
+these checks and a Helm upgrade are not a single Kubernetes transaction.
+New installations continue to require an explicit nonempty
+`persistence.storageClass` without `platform.postgresqlStorage`.
+
 Helm's client OpenAPI validation is enabled by default. If a diagnosed schema
 download failure prevents deployment, explicitly set
 `release.clientOpenAPIValidation: false` to pass Helm's

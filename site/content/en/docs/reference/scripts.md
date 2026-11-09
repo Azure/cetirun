@@ -121,6 +121,7 @@ agent helper builds for `linux/amd64`. Its inputs include:
 | `NPM_REGISTRY` | Registry that most build stages use |
 | `OPENCLAW_NPM_REGISTRY` | Separate OpenClaw package registry |
 | `PYPI_INDEX_URL` | Default Python package index supplied to Hermes' locked `uv` install |
+| `SBOM_GENERATOR` | Optional Buildx SBOM generator image, pinned as a lowercase OCI reference with `@sha256:<64 lowercase hexadecimal characters>` |
 
 The public MCR default is a pull address, not a writable registry. Set an
 explicit writable `REGISTRY` for `PUSH=true`, `docker-push` or chart publication;
@@ -139,6 +140,22 @@ Webapp and TUI assets. Runtime startup uses those prebuilt assets without
 installing dependencies or Electron. `PYPI_INDEX_URL` defaults to
 `https://pypi.org/simple/`. An alternate index must contain the exact locked
 artifacts.
+
+When a helper emits a Buildx SBOM attestation, it uses Buildx's default
+generator unless `SBOM_GENERATOR` is set. The override is executable
+supply-chain input, so mutable tags are rejected before the build. For example:
+
+```bash
+SBOM_GENERATOR=registry.example.com/tools/sbom-generator@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  make publish-images REGISTRY=registry.example.com VERSION=0.1.1 \
+  GIT_SHA="$(git rev-parse HEAD)"
+```
+
+`SBOM_GENERATOR` requires `PUSH=true` and a non-default `docker-container`
+Buildx driver. Loaded local images do not retain Buildx attestations, so an
+explicit override fails before an image build in that mode or when the driver
+is unavailable; it is never silently ignored. The unified release passes this
+input to its image builders and validates its syntax before registry preflight.
 
 ## Connected deployment helpers
 
