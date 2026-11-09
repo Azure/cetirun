@@ -18,8 +18,10 @@ context.
 >
 > Private images use Portal-managed Registry credentials and the Operator's
 > credential synchronizer. Custom supports non-default usernames. Built-in
-> profiles still must use `vibe`. Portal self-service is also opt-in. A default
-> installation does not allow Custom Agents to be created or provisioned.
+> profiles still must use `vibe`. A default installation allows Custom Agents
+> in the Portal and the Operator, but it approves no Custom image. A Custom
+> Agent starts only after an administrator approves its image digest. Refer to
+> [Custom runtime](#custom-runtime).
 
 ## Configuration
 
@@ -732,10 +734,15 @@ in [Configuration and skills](../../concepts/configuration/).
 
 The contract uses `OPENAI_BASE_URL` and the Agent's Virtual Key as
 `OPENAI_API_KEY` for model discovery and calls through the shared AI Gateway.
-That Gateway and a separate Copilot authorization proxy are
-[Roadmap](../../overview/roadmap/) capabilities. They are not prerequisites that
-the schema implements. For supported built-in model configuration, refer to
-[Choose a model](../../guides/models/).
+The Operator sets both variables for an approved Custom image when the
+platform AI Gateway is enabled. `OPENAI_BASE_URL` is the in-cluster address of
+the Gateway with `/v1`. `OPENAI_API_KEY` comes from the Agent's own Secret
+`ai-gateway-virtual-key`. The GitHub Copilot models of the Agent use the same
+address and key, through the separate Copilot proxy that
+[Custom runtime](#custom-runtime) describes. The platform does not write a
+model list or a default model for a Custom image. The image gets the models
+from `GET $OPENAI_BASE_URL/models`. For the model configuration of the
+built-in runtimes, refer to [Choose a model](../../guides/models/).
 
 ## Chat
 
