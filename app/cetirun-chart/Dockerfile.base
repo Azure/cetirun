@@ -292,7 +292,7 @@ RUN cd /usr/local/share/npm-global/lib && \
 USER root
 ARG UV_VERSION=0.12.23
 ARG UV_SHA256=9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6
-RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/uv.tar.gz && \
+RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://releases.astral.sh/github/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/uv.tar.gz && \
     echo "${UV_SHA256}  /tmp/uv.tar.gz" | sha256sum --check && \
     tar xzf /tmp/uv.tar.gz -C /tmp && \
     install -m 755 /tmp/uv-x86_64-unknown-linux-gnu/uv /usr/local/bin/uv && \

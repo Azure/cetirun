@@ -707,21 +707,26 @@ func renderedWebhooks(t *testing.T, ca []byte) (*admissionregistrationv1.Validat
 
 func testServingProcess(t *testing.T, restConfig *rest.Config, config Config, agent *api.Agent) {
 	t.Helper()
-	freePort := func() int {
+	reservePort := func() net.Listener {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
 		}
-		port := listener.Addr().(*net.TCPAddr).Port
-		if err := listener.Close(); err != nil {
-			t.Fatal(err)
-		}
-		return port
+		t.Cleanup(func() { _ = listener.Close() })
+		return listener
 	}
 	directory := t.TempDir()
 	first, second := newServingCertificate(t, 1), newServingCertificate(t, 2)
 	first.write(t, directory)
-	port, healthPort := freePort(), freePort()
+	// Hold both reservations so the OS cannot return the same port twice.
+	webhookListener, healthListener := reservePort(), reservePort()
+	port := webhookListener.Addr().(*net.TCPAddr).Port
+	healthPort := healthListener.Addr().(*net.TCPAddr).Port
+	for _, listener := range []net.Listener{webhookListener, healthListener} {
+		if err := listener.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
