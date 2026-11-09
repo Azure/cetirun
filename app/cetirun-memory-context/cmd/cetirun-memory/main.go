@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 
 	"github.com/Azure/CetiRun/app/cetirun-memory-context/assets"
@@ -28,7 +29,7 @@ func validMemoryRoot(root string) bool {
 
 func run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) int {
 	if slices.Contains(args, "--help") || len(args) == 0 {
-		fmt.Fprintln(out, "Usage: cetirun-memory COMMAND < request.json\nCommands: status init query capture revise prepare commit propose check advance select retire record-source-check record-use trace lint repair-index forget plan|apply import plan|apply\nAsset installer: install-assets DIRECTORY\nNative adapter: native-event (memory-adapter/v1)\nOwner-private MCP: mcp --stdio --owner-private\nLegacy context adapter: native-context hermes|pi\nBinding: CETIRUN_MEMORY_ROOT (explicit canonical absolute path). Import sources: files under HOME.")
+		fmt.Fprintln(out, "Usage: cetirun-memory [--no-memory] [--no-capture] COMMAND < request.json\nCommands: status init query capture revise prepare commit propose check advance select retire record-source-check record-use trace lint repair-index forget plan|apply import plan|apply\nAsset installer: install-assets DIRECTORY\nNative adapter: native-event (memory-adapter/v1)\nOwner-private MCP: mcp --stdio --owner-private\nLegacy context adapter: native-context hermes|pi\nRestrictions: --no-memory / CETIRUN_MEMORY_NO_MEMORY; --no-capture / CETIRUN_MEMORY_NO_CAPTURE. Environment values: true/false or 1/0. Restrictions are additive; request payloads cannot relax them.\nBinding: CETIRUN_MEMORY_ROOT (explicit canonical absolute path). Import sources: files under HOME.")
 		guide, err := assets.Files.ReadFile("skills/cetirun-memory/references/requests.md")
 		if err != nil {
 			return 8
@@ -39,10 +40,48 @@ func run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		}
 		return 0
 	}
+	noCapture, noMemory := false, false
+	for _, option := range []struct {
+		name  string
+		value *bool
+	}{{"CETIRUN_MEMORY_NO_CAPTURE", &noCapture}, {"CETIRUN_MEMORY_NO_MEMORY", &noMemory}} {
+		switch strings.ToLower(os.Getenv(option.name)) {
+		case "", "false", "0":
+		case "true", "1":
+			*option.value = true
+		default:
+			fmt.Fprintln(errOut, "MemoryRestrictionsInvalid")
+			return 2
+		}
+	}
+	commandsWithOptions := args
+	args = nil
+	for _, arg := range commandsWithOptions {
+		switch arg {
+		case "--no-capture":
+			noCapture = true
+		case "--no-memory":
+			noMemory = true
+		default:
+			args = append(args, arg)
+		}
+	}
 	if len(args) == 2 && args[0] == "native-context" && (args[1] == "hermes" || args[1] == "pi") {
 		data, err := io.ReadAll(io.LimitReader(in, memory.MaxInput+1))
-		if err != nil {
+		if err != nil || len(data) > memory.MaxInput {
 			return 2
+		}
+		if noCapture || noMemory {
+			var input memory.NativeInput
+			if json.Unmarshal(data, &input) != nil {
+				return 2
+			}
+			input.NoCapture = input.NoCapture || noCapture
+			input.NoMemory = input.NoMemory || noMemory
+			data, err = json.Marshal(input)
+			if err != nil {
+				return 2
+			}
 		}
 		canonical, _ := assets.Files.ReadFile("AGENTS.md")
 		store := memory.New(memory.Config{Root: os.Getenv("CETIRUN_MEMORY_ROOT")})
@@ -64,6 +103,8 @@ func run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		if memory.Decode(data, &event) != nil {
 			return 2
 		}
+		event.Binding.NoCapture = event.Binding.NoCapture || noCapture
+		event.Binding.NoMemory = event.Binding.NoMemory || noMemory
 		canonical, _ := assets.Files.ReadFile("AGENTS.md")
 		store := memory.New(memory.Config{Root: os.Getenv("CETIRUN_MEMORY_ROOT")})
 		response, code := store.NativeEvent(ctx, event, string(canonical))
@@ -79,7 +120,7 @@ func run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			return 4
 		}
 		id := rand.Text()
-		binding := memory.NativeBinding{Adapter: memory.AdapterVersion, Entrypoint: "custom", NativeVersion: "mcp/2025-06-18", SessionID: id, OpportunityID: id, CWD: cwd, Audience: "owner-private", Destination: memory.Destination{Kind: "owner-private"}, NoCapture: os.Getenv("CETIRUN_MEMORY_NO_CAPTURE") == "true", NoMemory: os.Getenv("CETIRUN_MEMORY_NO_MEMORY") == "true"}
+		binding := memory.NativeBinding{Adapter: memory.AdapterVersion, Entrypoint: "custom", NativeVersion: "mcp/2025-06-18", SessionID: id, OpportunityID: id, CWD: cwd, Audience: "owner-private", Destination: memory.Destination{Kind: "owner-private"}, NoCapture: noCapture, NoMemory: noMemory}
 		return runMCP(ctx, in, out, memory.New(memory.Config{Root: root}), binding)
 	}
 	if len(args) == 2 && args[0] == "install-assets" {
@@ -119,6 +160,8 @@ func run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		fmt.Fprintln(errOut, "InvalidInput")
 		return 2
 	}
+	request.RequestContext.NoCapture = request.RequestContext.NoCapture || noCapture
+	request.RequestContext.NoMemory = request.RequestContext.NoMemory || noMemory
 	root := os.Getenv("CETIRUN_MEMORY_ROOT")
 	if !validMemoryRoot(root) {
 		fmt.Fprintln(errOut, "BindingUnavailable")

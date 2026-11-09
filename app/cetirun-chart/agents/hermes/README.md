@@ -182,10 +182,13 @@ visible when validating this behavior.
 
 CetiRun keeps AI Gateway routing, model selection, workload-authenticated
 Connections MCP and the platform Memory plugin. Memory authorization follows
-the trusted session source and parent relationship: a Webapp owner-private
-session can use private Memory, while a message-channel or subagent session
-does not become private merely because the browser opened it. Plugin operations
-must preserve the platform-managed integrations.
+the trusted session source and parent relationship. Every host-admitted channel
+can use Memory by default; configured restrictions still apply when a channel
+session is opened in the browser. Native descendants require a matching spawn
+event and inherit their parent's scope and restrictions. Plugin operations must
+preserve the platform-managed integrations. See
+[Memory access controls](../../../cetirun-memory-context/OWNER_ACCESS.md) for
+environment variables, helper flags and platform/sender/conversation limits.
 
 With Memory enabled, Hermes mounts platform instructions read-only at
 `$HOME/.agents/AGENTS.md` and keeps personal files and skills elsewhere in
@@ -266,8 +269,8 @@ Restart the gateway and start a new private session after changing the paths;
 exports in a CLI shell do not update a gateway that is already running. This
 setup does not migrate existing data.
 
-Private Memory remains available only to CLI, TUI, API Server and authenticated
-owner Webapp sessions. Message-channel and subagent sessions do not gain access.
+Memory is available to all host-admitted channels by default. Configured access
+restrictions still apply, and native descendants inherit their parent's limits.
 The standalone CLI and stdio MCP accept the same custom data root. Explicit
 imports still select files from the process's `HOME` and reject files inside
 the active Memory data directory.

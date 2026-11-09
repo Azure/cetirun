@@ -57,9 +57,9 @@ with patch.object(plugins, "get_plugin_manager", return_value=manager):
     policy = build_policy({"source": "gui", "cwd": workspace, "model": "fixture"}, {})
     for name, platform, parent, sender, private in (
         ("webapp-owner", "desktop", "", host_owner_subject(), True),
-        ("webapp-channel", "discord", "", "synthetic-channel-user", False),
+        ("webapp-channel", "discord", "", "synthetic-channel-user", True),
         ("webapp-child", "desktop", "webapp-owner", host_owner_subject(), False),
-        ("webapp-other-owner", "desktop", "", "uid:987654", False),
+        ("webapp-other-owner", "desktop", "", "uid:987654", True),
         ("api-owner", "api_server", "", "", True),
     ):
         agent = SimpleNamespace(session_id=name, platform=platform, _parent_session_id=parent,

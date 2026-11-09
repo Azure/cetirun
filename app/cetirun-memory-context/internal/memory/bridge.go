@@ -19,23 +19,25 @@ const AdapterVersion = "memory-adapter/v1"
 // NativeBinding is constructed by the installed adapter, not a model tool's
 // arguments. It is cooperative provenance, not a same-UID security boundary.
 type NativeBinding struct {
-	Adapter             string               `json:"adapter"`
-	Entrypoint          string               `json:"entrypoint"`
-	NativeVersion       string               `json:"nativeVersion"`
-	SessionID           string               `json:"sessionId"`
-	OpportunityID       string               `json:"opportunityId"`
-	CWD                 string               `json:"cwd"`
-	Audience            string               `json:"audience"`
-	Destination         Destination          `json:"destination"`
-	ParentSessionID     string               `json:"parentSessionId,omitempty"`
-	NoCapture           bool                 `json:"noCapture"`
-	NoMemory            bool                 `json:"noMemory"`
-	Evaluation          bool                 `json:"evaluation"`
-	Delegation          *Delegation          `json:"delegation,omitempty"`
-	Model               string               `json:"model,omitempty"`
-	ModelRevision       string               `json:"modelRevision,omitempty"`
-	ModelEvaluation     bool                 `json:"modelEvaluation"`
-	CurrentSourceChecks []CurrentSourceCheck `json:"currentSourceChecks,omitempty"`
+	Adapter         string      `json:"adapter"`
+	Entrypoint      string      `json:"entrypoint"`
+	NativeVersion   string      `json:"nativeVersion"`
+	SessionID       string      `json:"sessionId"`
+	OpportunityID   string      `json:"opportunityId"`
+	CWD             string      `json:"cwd"`
+	Audience        string      `json:"audience"`
+	Destination     Destination `json:"destination"`
+	ParentSessionID string      `json:"parentSessionId,omitempty"`
+	// Hermes sets this only after its owner policy and native spawn hook agree.
+	OwnerAuthorizedChild bool                 `json:"ownerAuthorizedChild,omitempty"`
+	NoCapture            bool                 `json:"noCapture"`
+	NoMemory             bool                 `json:"noMemory"`
+	Evaluation           bool                 `json:"evaluation"`
+	Delegation           *Delegation          `json:"delegation,omitempty"`
+	Model                string               `json:"model,omitempty"`
+	ModelRevision        string               `json:"modelRevision,omitempty"`
+	ModelEvaluation      bool                 `json:"modelEvaluation"`
+	CurrentSourceChecks  []CurrentSourceCheck `json:"currentSourceChecks,omitempty"`
 }
 
 type NativeEvent struct {
@@ -55,7 +57,10 @@ func (b NativeBinding) request(event NativeEvent) (Request, error) {
 	if b.Adapter != AdapterVersion || !slices.Contains([]string{"openclaw", "hermes", "pi-http", "pi-tui", "custom"}, b.Entrypoint) || b.NativeVersion == "" || !validText(b.NativeVersion, 128) || !validText(b.SessionID, 256) || b.SessionID == "" || b.OpportunityID == "" || !validText(b.OpportunityID, 256) || !filepath.IsAbs(b.CWD) || filepath.Clean(b.CWD) != b.CWD || b.CWD == "/" || event.EventID == "" || !validText(event.EventID, 256) {
 		return Request{}, problem(2, "InvalidNativeBinding")
 	}
-	if b.Evaluation || b.ParentSessionID != "" && b.Delegation == nil {
+	if b.OwnerAuthorizedChild && (b.Entrypoint != "hermes" || b.ParentSessionID == "" || b.ParentSessionID == b.SessionID || !validText(b.ParentSessionID, 256) || b.Delegation != nil) {
+		return Request{}, problem(4, "InheritedContextUnavailable")
+	}
+	if b.Evaluation || b.ParentSessionID != "" && b.Delegation == nil && !b.OwnerAuthorizedChild {
 		return Request{}, problem(4, "InheritedContextUnavailable")
 	}
 	if b.ModelEvaluation && (b.Model == "" || !digestPattern.MatchString(b.ModelRevision)) {
@@ -123,7 +128,7 @@ func (s *Store) NativeEvent(ctx context.Context, event NativeEvent, canonical st
 		if !explicit {
 			return failed(out, problem(2, "InvalidInput"))
 		}
-		if r.RequestContext.NoCapture || r.RequestContext.Delegation != nil {
+		if r.RequestContext.NoCapture || r.RequestContext.Delegation != nil || event.Binding.ParentSessionID != "" {
 			return failed(out, problem(4, "CaptureProhibited"))
 		}
 		if err := s.captureNativePreference(ctx, r, body, event.Binding.SessionID); err != nil {

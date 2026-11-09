@@ -32,7 +32,9 @@ async function fixture(t) {
   await cp(path.join(assets, "AGENTS.md"), path.join(home, ".agents/AGENTS.md"));
   await chmod(path.join(home, ".agents/AGENTS.md"), 0o600);
   await cp(path.join(assets, "skills"), path.join(home, ".agents/skills"), { recursive: true });
-  const env = { ...process.env, HOME: home, CETIRUN_MEMORY_ASSETS: assets, CETIRUN_MEMORY_ROOT: path.join(home, ".cetirun/memory") };
+  const env = { ...process.env, HOME: home, CETIRUN_MEMORY_ASSETS: assets, CETIRUN_MEMORY_ROOT: path.join(home, ".cetirun/memory"),
+    CETIRUN_MEMORY_BINARY: path.join(assets, "bin/cetirun-memory"), CETIRUN_MEMORY_CONTEXT: path.join(home, ".agents/AGENTS.md"),
+    CETIRUN_MEMORY_NO_CAPTURE: "", CETIRUN_MEMORY_NO_MEMORY: "", CETIRUN_MEMORY_OWNER_ACCESS: "" };
   const bridge = await createMemoryBridge(env, { assets: await loadAssets(assets) });
   const binding = { entrypoint: "custom", nativeVersion: "fixture/1", sessionId: "native-session", opportunityId: "native-task", cwd: workspace,
     audience: "owner-private", destination: { kind: "owner-private" }, model: "fixture/model", modelRevision: digest("fixture-route"), modelEvaluation: true };
@@ -276,6 +278,28 @@ test("pinned Hermes host APIs load the adapter and execute bounded native calls"
       HERMES_HOME: path.join(f.home, ".hermes"), HERMES_SKIP_AUTO_UPDATE: "1", PYTHONDONTWRITEBYTECODE: "1" }, encoding: "utf8", timeout: 30000,
   });
   assert.match(output, /Pinned Hermes host checks passed/);
+});
+
+test("pinned Hermes applies access restrictions through native hooks and session metadata", { skip: !process.env.MEMORY_HERMES_SOURCE }, async t => {
+  const f = await fixture(t);
+  assert.ok(process.env.MEMORY_HERMES_PYTHON, "select the provisioned Hermes PM interpreter");
+  const home = path.join(f.home, ".hermes");
+  await mkdir(home);
+  await writeFile(path.join(home, "OWNER_ACCESS_TEST_FIXTURE"), "synthetic native access fixture\n");
+  const owner_access = { platforms: ["discord", "telegram"],
+    senders: { discord: ["fixture-owner"], telegram: ["fixture-telegram"] },
+    chats: { discord: ["fixture-chat"] }, chat_types: { discord: ["dm"] } };
+  await writeFile(path.join(home, "config.yaml"), JSON.stringify({
+    plugins: { entries: { "cetirun-memory-context": { settings: { owner_access } } } },
+  }));
+  const output = execFileSync(process.env.MEMORY_HERMES_PYTHON, ["-B", path.join(moduleDir, "tests/hermes_owner_host.py")], {
+    env: { ...f.env, MEMORY_TEST_ASSETS: f.assets, MEMORY_TEST_WORKSPACE: f.workspace,
+      MEMORY_HERMES_SOURCE: process.env.MEMORY_HERMES_SOURCE, HERMES_HOME: home,
+      HERMES_SKIP_AUTO_UPDATE: "1", PYTHONDONTWRITEBYTECODE: "1" }, encoding: "utf8", timeout: 30000,
+  });
+  const result = JSON.parse(output);
+  assert.equal(result.real_hooks_registry, true);
+  assert.equal(result.model_requests, 0);
 });
 
 async function skillHost(source, runtime, changed) {

@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import types
+import uuid
 from unittest.mock import patch
 
 root = Path(os.environ["MEMORY_TEST_ASSETS"])
@@ -23,13 +24,6 @@ session_context = types.ModuleType("gateway.session_context")
 session_context.get_session_env = lambda name: "hermes-fixture" if name == "HERMES_SESSION_ID" else ""
 sys.modules["gateway"] = types.ModuleType("gateway")
 sys.modules["gateway.session_context"] = session_context
-session_policy = types.ModuleType("gateway.session_policy")
-session_policy.active_policy = lambda: types.SimpleNamespace(source="gui", platform="desktop")
-sys.modules["gateway.session_policy"] = session_policy
-owner_identity = types.ModuleType("gateway.owner_identity")
-owner_identity.host_owner_subject = lambda: "uid:1024"
-owner_identity.same_owner = lambda stored, subject: stored == subject
-sys.modules["gateway.owner_identity"] = owner_identity
 version_info = types.ModuleType("hermes_cli.version_info")
 version_info.get_version_info = lambda: types.SimpleNamespace(base_version="0.22.7")
 sys.modules["hermes_cli"] = types.ModuleType("hermes_cli")
@@ -38,20 +32,20 @@ spec = importlib.util.spec_from_file_location("memory_plugin", root / "adapters/
 plugin = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(plugin)
 
-assert plugin.owner_private_session("desktop", "", "uid:1024")
-assert not plugin.owner_private_session("desktop", "parent", "uid:1024")
-assert not plugin.owner_private_session("desktop", "", "uid:9999")
-assert not plugin.owner_private_session("desktop", "", "")
-assert not plugin.owner_private_session("discord", "", "uid:1024")
-session_policy.active_policy = lambda: None
-assert not plugin.owner_private_session("desktop", "", "uid:1024")
-session_policy.active_policy = lambda: types.SimpleNamespace(source="discord", platform="desktop")
-assert not plugin.owner_private_session("desktop", "", "uid:1024")
+for platform in ("cli", "tui", "desktop", "api_server", "discord", "telegram", "slack", "cron", "acp", "new-channel"):
+    assert plugin.owner_private_session(platform, "", "")
+    assert not plugin.owner_private_session(platform, "parent", "sender")
+assert not plugin.owner_private_session("", "", "sender")
+assert not plugin.owner_private_session("subagent", "", "sender")
 
 
 class Host:
-    def __init__(self):
+    def __init__(self, config=None):
+        self.config = {} if config is None else config
         self.hooks, self.middleware, self.tools, self.sections = {}, {}, {}, {}
+
+    def get_config(self, key, default=None):
+        return self.config.get(key, default)
 
     def register_hook(self, name, callback):
         self.hooks[name] = callback
@@ -64,6 +58,21 @@ class Host:
 
     def register_system_prompt_section(self, name, content, **kwargs):
         self.sections[name] = content
+
+
+def start_session(selected_host, sid, platform="discord", sender="owner-discord", *,
+                  chat_type="dm", chat_id="fixture-chat", turn_id=None, **kwargs):
+    native = {"HERMES_SESSION_ID": sid, "HERMES_SESSION_PLATFORM": platform,
+              "HERMES_SESSION_CHAT_ID": chat_id, "HERMES_SESSION_CHAT_TYPE": chat_type}
+    with patch.object(session_context, "get_session_env", lambda name: native.get(name, "")):
+        selected_host.hooks["pre_llm_call"](session_id=sid, platform=platform, sender_id=sender,
+            turn_id=turn_id or sid + "-turn", model="model", **kwargs)
+
+
+def call_memory(selected_host, sid, command="query", payload=None):
+    return json.loads(selected_host.tools["cetirun_memory"]["handler"](
+        {"command": command, "payload": payload if payload is not None else {"queryTerms": [note["title"]]}},
+        session_id=sid, tool_call_id="fixture-" + str(uuid.uuid4())))
 
 
 host = Host()
@@ -158,9 +167,8 @@ off = host.middleware["llm_request"](original, session_id="hermes-fixture", prov
 assert off["request"]["messages"][-1]["content"] == plugin.reminder(plugin.MEMORY_OFF), off
 assert CountingPopen.started == 0, CountingPopen.started
 count_helpers(False)
-host.hooks["pre_llm_call"](session_id="hermes-fixture", platform="slack", turn_id="turn-3", user_message="group", model="model")
-# Other people's platforms get no Memory context, failure observations or
-# boundary events, and start no helper process.
+host.hooks["pre_llm_call"](session_id="hermes-fixture", platform="", turn_id="turn-3", user_message="group", model="model")
+# Missing native provenance still gets no Memory context or automatic events.
 count_helpers(True)
 shared = host.middleware["llm_request"](original, session_id="hermes-fixture", provider="fixture", model="model")
 assert shared is None, shared
@@ -171,6 +179,197 @@ count_helpers(False)
 host.hooks["pre_llm_call"](session_id="hermes-fixture", platform="cli", turn_id="turn-4", user_message="Fixture", model="model")
 host.hooks["on_session_end"](session_id="hermes-fixture", completed=True)
 assert json.loads(tool({"command": "query", "payload": {"queryTerms": ["Hermes private fixture"]}}))["reason"] == "Cancelled"
+
+# No policy means every admitted channel, including anonymous channel posts.
+for platform in ("cli", "tui", "desktop", "api_server", "discord", "telegram", "slack", "cron", "acp", "new-channel"):
+    sid = "default-" + platform
+    start_session(host, sid, platform, "")
+    assert call_memory(host, sid)["ok"], platform
+    assert call_memory(host, sid, "capture", {"note": {**note, "title": sid}})["ok"], platform
+for chat_type in ("dm", "group", "channel"):
+    sid = "default-discord-" + chat_type
+    start_session(host, sid, chat_type=chat_type)
+    assert call_memory(host, sid)["ok"], chat_type
+host.hooks["subagent_start"](parent_session_id="default-cli", parent_turn_id="default-cli-turn", child_session_id="default-child")
+start_session(host, "default-child", "subagent", "", parent_session_id="default-cli")
+assert call_memory(host, "default-child")["ok"]
+
+# Explicit policy narrows the default, including local entrypoints.
+owner_access = {"platforms": ["discord", "telegram", "cron", "acp"],
+                "senders": {"discord": ["owner-discord"], "telegram": ["owner-telegram"]},
+                "subagents": True, "cron": True, "acp": True}
+acl_host = Host({"owner_access": owner_access})
+plugin.register(acl_host, root=root)
+acl_tool = acl_host.tools["cetirun_memory"]["handler"]
+
+def acl_start(sid, platform="discord", sender="owner-discord", **kwargs):
+    start_session(acl_host, sid, platform, sender, **kwargs)
+
+def acl_call(sid, command="query", payload=None):
+    return call_memory(acl_host, sid, command, payload)
+
+for platform, sender in (("discord", "owner-discord"), ("telegram", "owner-telegram")):
+    for chat_type in ("dm", "group", "channel"):
+        sid = platform + "-" + chat_type
+        acl_start(sid, platform, sender, chat_type=chat_type)
+        found = acl_call(sid)
+        assert found["ok"], (sid, found)
+        assert found["data"]["hits"][0]["note"]["body"] == note["body"]
+        assert acl_call(sid, "capture", {"note": {**note, "title": "Owner " + sid}})["ok"]
+for sid, platform, sender in (("stranger", "discord", "stranger"), ("missing", "telegram", ""),
+                              ("cross-platform", "telegram", "owner-discord"), ("unknown", "slack", "owner-discord"),
+                              ("denied-cli", "cli", ""), ("denied-tui", "tui", ""),
+                              ("denied-api", "api_server", ""), ("denied-desktop", "desktop", "")):
+    acl_start(sid, platform, sender)
+    assert not acl_call(sid)["ok"], sid
+    assert acl_host.middleware["llm_request"](original, session_id=sid) is None
+for platform in ("acp", "cron"):
+    acl_start(platform, platform, "")
+    assert acl_call(platform)["ok"]
+
+acl_start("parent")
+assert acl_host.hooks["pre_tool_call"](tool_name="delegate_task", session_id="parent") is None
+assert acl_host.hooks["pre_tool_call"](tool_name="send_message", session_id="parent")["action"] == "approve"
+acl_start("forged-child", "subagent", "", parent_session_id="parent")
+assert not acl_call("forged-child")["ok"], "parent ID alone is not an owner grant"
+spawn = acl_host.hooks["subagent_start"]
+spawn(parent_session_id="parent", parent_turn_id="parent-turn", child_session_id="child")
+# The child works in another directory but inherits its parent's memory scope.
+setattr(runtime_cwd, "resolve_agent_cwd", lambda: Path(workspace) / "child-worktree")
+acl_start("child", "subagent", "", parent_session_id="parent", user_message="/memory on")
+setattr(runtime_cwd, "resolve_agent_cwd", lambda: Path(workspace))
+child_result = acl_call("child")
+assert child_result.get("ok"), child_result
+assert child_result["data"]["hits"][0]["note"]["body"] == note["body"]
+assert acl_call("child", "capture", {"note": {**note, "title": "Child synthetic note"}})["ok"]
+spawn(parent_session_id="child", parent_turn_id="child-turn", child_session_id="grandchild")
+acl_start("grandchild", "subagent", "", parent_session_id="child")
+assert acl_call("grandchild")["ok"]
+acl_start("child", "subagent", "", parent_session_id="wrong-parent")
+assert not acl_call("child")["ok"], "a resumed child cannot change its parent"
+# Use a fresh native lineage after invalidating the mismatched one.
+spawn(parent_session_id="parent", parent_turn_id="parent-turn", child_session_id="child-2")
+acl_start("child-2", "subagent", "", parent_session_id="parent")
+spawn(parent_session_id="child-2", parent_turn_id="child-2-turn", child_session_id="grandchild-2")
+acl_start("grandchild-2", "subagent", "", parent_session_id="child-2")
+acl_start("parent", user_message="/memory no-capture")
+assert acl_call("grandchild-2")["ok"]
+assert acl_call("grandchild-2", "capture", {"note": note})["reason"] == "CaptureProhibited"
+acl_start("grandchild-2", "subagent", "", parent_session_id="child-2", user_message="/memory on")
+assert acl_call("grandchild-2", "capture", {"note": note})["reason"] == "CaptureProhibited"
+acl_start("parent", user_message="/memory off")
+assert acl_call("grandchild-2")["reason"] == "MemoryDisabled"
+acl_start("parent", user_message="/memory on")
+# A descendant cannot regain access after it observed a stricter parent mode.
+assert acl_call("grandchild-2")["reason"] == "MemoryDisabled"
+spawn(parent_session_id="parent", parent_turn_id="stale-turn", child_session_id="stale-child")
+acl_start("stale-child", "subagent", "", parent_session_id="parent")
+assert not acl_call("stale-child")["ok"]
+spawn(parent_session_id="parent", parent_turn_id="parent-turn", child_session_id="live-child")
+acl_start("live-child", "subagent", "", parent_session_id="parent")
+acl_host.hooks["on_session_end"](session_id="parent", completed=True)
+assert acl_call("live-child")["ok"], "normal parent completion must not kill background descendants"
+acl_start("parent", sender="stranger")
+assert not acl_call("live-child")["ok"], "owner authorization must not survive sender changes"
+assert json.loads(acl_tool({"command": "status", "payload": {}, "ownerAuthorizedChild": True},
+                          session_id="live-child", tool_call_id="forged"))["reason"] == "InvalidInput"
+
+# Old descendants must observe interruption even when they are idle until the
+# parent has already begun a new turn with the same sender and working directory.
+acl_start("interrupted-parent")
+spawn(parent_session_id="interrupted-parent", parent_turn_id="interrupted-parent-turn", child_session_id="interrupted-child")
+acl_start("interrupted-child", "subagent", "", parent_session_id="interrupted-parent")
+spawn(parent_session_id="interrupted-child", parent_turn_id="interrupted-child-turn", child_session_id="interrupted-grandchild")
+acl_start("interrupted-grandchild", "subagent", "", parent_session_id="interrupted-child")
+spawn(parent_session_id="interrupted-parent", parent_turn_id="interrupted-parent-turn", child_session_id="pending-child")
+acl_host.hooks["on_session_end"](session_id="interrupted-parent", turn_id="interrupted-parent-turn", interrupted=True)
+acl_start("interrupted-parent", turn_id="resumed-turn")
+assert acl_call("interrupted-parent")["ok"]
+for sid in ("interrupted-child", "interrupted-grandchild"):
+    assert not acl_call(sid)["ok"], sid
+acl_start("pending-child", "subagent", "", parent_session_id="interrupted-parent")
+assert not acl_call("pending-child")["ok"]
+spawn(parent_session_id="interrupted-parent", parent_turn_id="resumed-turn", child_session_id="fresh-child")
+acl_start("fresh-child", "subagent", "", parent_session_id="interrupted-parent")
+assert acl_call("fresh-child")["ok"]
+
+# Both policies apply: an environment allowlist cannot reopen a profile denial.
+profile = {"platforms": ["discord", "telegram"], "senders": {"discord": ["owner-discord"]},
+           "chat_types": {"discord": ["dm"]}, "subagents": False}
+restricted = Host({"owner_access": profile})
+environment = {"platforms": ["discord", "cli"], "senders": {"discord": ["owner-discord", "stranger"]},
+               "chats": {"discord": ["fixture-chat"]}, "subagents": True}
+with patch.dict(os.environ, CETIRUN_MEMORY_OWNER_ACCESS=json.dumps(environment)):
+    plugin.register(restricted, root=root)
+for sid, platform, sender, chat_type, chat_id, allowed in (
+    ("limited-owner", "discord", "owner-discord", "dm", "fixture-chat", True),
+    ("limited-stranger", "discord", "stranger", "dm", "fixture-chat", False),
+    ("limited-telegram", "telegram", "owner-telegram", "dm", "fixture-chat", False),
+    ("limited-cli", "cli", "", "dm", "fixture-chat", False),
+    ("limited-group", "discord", "owner-discord", "group", "fixture-chat", False),
+    ("limited-channel", "discord", "owner-discord", "channel", "fixture-chat", False),
+    ("limited-other-chat", "discord", "owner-discord", "dm", "other-chat", False),
+    ("limited-unknown-chat", "discord", "owner-discord", "", "", False),
+):
+    start_session(restricted, sid, platform, sender, chat_type=chat_type, chat_id=chat_id)
+    assert call_memory(restricted, sid)["ok"] is allowed, sid
+restricted.hooks["subagent_start"](parent_session_id="limited-owner", parent_turn_id="limited-owner-turn", child_session_id="limited-child")
+start_session(restricted, "limited-child", "subagent", "", parent_session_id="limited-owner")
+assert not call_memory(restricted, "limited-child")["ok"]
+# Neither arbitrary hook arguments nor stale context can supply a chat identity.
+restricted.hooks["pre_llm_call"](session_id="wrong-context", platform="discord", sender_id="owner-discord",
+    chat_id="fixture-chat", chat_type="dm", turn_id="wrong-context-turn")
+assert not call_memory(restricted, "wrong-context")["ok"]
+
+for policy in ({"platforms": []}, {"senders": {"discord": []}}, {"chats": {"discord": []}}, {"chat_types": {"discord": []}}):
+    denied_host = Host()
+    with patch.dict(os.environ, CETIRUN_MEMORY_OWNER_ACCESS=json.dumps(policy)):
+        plugin.register(denied_host, root=root)
+    start_session(denied_host, "empty-list")
+    assert not call_memory(denied_host, "empty-list")["ok"], policy
+for platform in ("cron", "acp"):
+    denied_host = Host()
+    with patch.dict(os.environ, CETIRUN_MEMORY_OWNER_ACCESS=json.dumps({platform: False})):
+        plugin.register(denied_host, root=root)
+    start_session(denied_host, "disabled-" + platform, platform, "")
+    assert not call_memory(denied_host, "disabled-" + platform)["ok"]
+
+# Startup restrictions survive /memory on, later turns and child inheritance.
+for variable, reason in (("CETIRUN_MEMORY_NO_CAPTURE", "CaptureProhibited"),
+                         ("CETIRUN_MEMORY_NO_MEMORY", "MemoryDisabled")):
+    restricted = Host()
+    with patch.dict(os.environ, {variable: "true"}):
+        plugin.register(restricted, root=root)
+    for mode in ("on", "no-capture", "on"):
+        start_session(restricted, "mode-parent", "cli", "", user_message="/memory " + mode)
+        assert call_memory(restricted, "mode-parent", "capture", {"note": note})["reason"] == reason
+        readback = call_memory(restricted, "mode-parent")
+        assert readback["ok"] is (variable == "CETIRUN_MEMORY_NO_CAPTURE"), readback
+    restricted.hooks["subagent_start"](parent_session_id="mode-parent", parent_turn_id="mode-parent-turn", child_session_id="mode-child")
+    start_session(restricted, "mode-child", "subagent", "", parent_session_id="mode-parent", user_message="/memory on")
+    assert call_memory(restricted, "mode-child", "capture", {"note": note})["reason"] == reason
+
+for bad in ({"senders": {"discord": ["*"]}}, {"senders": {"discord": "owner-discord"}},
+            {"subagents": "true"}, {"unknown": True}, {"platforms": "discord"},
+            {"platforms": ["*"]}, {"chats": {"discord": [""]}}, {"chat_types": []}):
+    bad_host = Host({"owner_access": bad})
+    try:
+        plugin.register(bad_host, root=root)
+    except ValueError as error:
+        assert str(error) == "MemoryOwnerAccessInvalid", error
+    else:
+        raise AssertionError("malformed owner policy accepted: " + repr(bad))
+for variable, value, reason in (("CETIRUN_MEMORY_OWNER_ACCESS", "{", "MemoryOwnerAccessInvalid"),
+                                ("CETIRUN_MEMORY_OWNER_ACCESS", "null", "MemoryOwnerAccessInvalid"),
+                                ("CETIRUN_MEMORY_NO_CAPTURE", "yes", "MemoryRestrictionsInvalid"),
+                                ("CETIRUN_MEMORY_NO_MEMORY", "tru", "MemoryRestrictionsInvalid")):
+    with patch.dict(os.environ, {variable: value}):
+        try:
+            plugin.register(Host(), root=root)
+        except ValueError as error:
+            assert str(error) == reason, error
+        else:
+            raise AssertionError("malformed environment policy accepted")
 
 # Load the shipped plugin entrypoint with local paths, including a helper outside
 # the asset package. No platform context file or .cetirun data directory is needed.
