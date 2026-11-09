@@ -139,7 +139,11 @@ requests to `9120`. The target registration must explicitly approve the new
 Webapp port. An old approval for `9119` does not authorize `9120`.
 
 Readiness includes API health, gateway control-socket Webapp state, the password
-auth provider and prebuilt products. Startup and liveness use API `/health`.
+auth provider and prebuilt products. Startup and liveness use a lightweight
+Node probe for loopback API `/health`, without starting Python or checking the
+PM selection on every probe. Dependency validation remains on container and
+supervised gateway startup, and on readiness. The lightweight probe requires
+HTTP 200 and a valid JSON response and bounds all checks with one deadline.
 All three probes also verify managed ingress certificates against Envoy's active
 certificate and check the managed egress proxy when those helpers are enabled.
 If the Webapp listener fails after startup validation, upstream keeps a private

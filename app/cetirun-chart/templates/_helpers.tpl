@@ -570,12 +570,13 @@ Protected built-in probes run inside the container, without host ingress grants.
 {{- if eq $kind "hermes" -}}
 exec:
   command:
+    {{- if eq .pathPort "cetirun.agent.readinessProbePathPort" }}
     - /usr/local/bin/hermes-python
     - /etc/cetirun/hermes-runtime.py
-    {{- if eq .pathPort "cetirun.agent.readinessProbePathPort" }}
     - readiness
     {{- else }}
-    - liveness
+    - node
+    - /etc/cetirun/hermes-health-probe.cjs
     {{- end }}
     - --timeout
     - {{ .timeoutSeconds | quote }}

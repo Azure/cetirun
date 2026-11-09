@@ -90,12 +90,19 @@ func (b *Bundle) validateHermesTemplate(spec corev1.PodSpec, apiPort *int32) err
 		}
 	}
 	for name, probe := range map[string]*corev1.Probe{"readiness": main.ReadinessProbe, "startup": main.StartupProbe} {
-		mode := "readiness"
-		if name == "startup" {
-			mode = "liveness"
+		matches := func(command []string) bool {
+			return probe != nil && probe.Exec != nil && len(probe.Exec.Command) == len(command)+1 && slices.Equal(probe.Exec.Command[:len(command)], command)
 		}
-		if probe == nil || probe.Exec == nil || len(probe.Exec.Command) != 5 || !slices.Equal(probe.Exec.Command[:4], []string{"/usr/local/bin/hermes-python", "/etc/cetirun/hermes-runtime.py", mode, "--timeout"}) {
-			return fmt.Errorf("Hermes %s probe must use the managed %s check", name, mode)
+		command := []string{"/usr/local/bin/hermes-python", "/etc/cetirun/hermes-runtime.py", "readiness", "--timeout"}
+		if name == "startup" {
+			// Existing Agents can remain pinned to a chart with the PM startup probe.
+			if matches([]string{"/usr/local/bin/hermes-python", "/etc/cetirun/hermes-runtime.py", "liveness", "--timeout"}) {
+				continue
+			}
+			command = []string{"node", "/etc/cetirun/hermes-health-probe.cjs", "--timeout"}
+		}
+		if !matches(command) {
+			return fmt.Errorf("Hermes %s probe must use its managed health check", name)
 		}
 	}
 	return nil

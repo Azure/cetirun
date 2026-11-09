@@ -249,6 +249,51 @@ func TestReconciledSandboxPullSecretIsKubeletOnly(t *testing.T) {
 	}
 }
 
+func TestReconciledHermesProbeCommands(t *testing.T) {
+	fixture := gatewayHeldFixture("hermes")
+	fixture.Input.Reconciled = true
+	bundle, err := w.Build(fixture.Input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := sampleInput("hermes", "openai", false)
+	input["secrets"].(map[string]any)["existingSecret"] = "runtime-secret"
+	prepared, err := PrepareSandboxChart(testChart(t), input, nil, bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := prepared.SandboxTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := template.DeepCopy()
+	legacy.Spec.Containers[0].StartupProbe.Exec.Command = []string{"/usr/local/bin/hermes-python", "/etc/cetirun/hermes-runtime.py", "liveness", "--timeout", "5"}
+	if err := bundle.ValidateReconciledTemplate(legacy, prepared.Agent.Image, false, prepared.Agent.Port); err != nil {
+		t.Fatal("an existing Agent's pinned chart lost its supported startup contract:", err)
+	}
+	for name, mutate := range map[string]func(*corev1.Container){
+		"missing startup": func(c *corev1.Container) { c.StartupProbe = nil },
+		"unmanaged startup": func(c *corev1.Container) {
+			c.StartupProbe.Exec.Command = []string{"node", "-e", "process.exit(0)"}
+		},
+		"lightweight readiness": func(c *corev1.Container) {
+			c.ReadinessProbe.Exec.Command = []string{"node", "/etc/cetirun/hermes-health-probe.cjs", "--timeout", "10"}
+		},
+		"host HTTP startup": func(c *corev1.Container) {
+			c.StartupProbe.Exec = nil
+			c.StartupProbe.HTTPGet = &corev1.HTTPGetAction{Path: "/health"}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := template.DeepCopy()
+			mutate(&changed.Spec.Containers[0])
+			if err := bundle.ValidateReconciledTemplate(changed, prepared.Agent.Image, false, prepared.Agent.Port); err == nil {
+				t.Fatal("Hermes accepted a probe outside its managed health contract")
+			}
+		})
+	}
+}
+
 func TestReconciledSandboxProxyCannotConsumeAgentPullCredentials(t *testing.T) {
 	bundle, values := reconciledSandboxInputs(t)
 	input := bundle.Identity()
