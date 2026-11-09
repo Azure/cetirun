@@ -849,6 +849,11 @@ Downloads are capped at 128 MiB, and this cap also applies to raw binaries.
 Each selected archive member or raw binary is capped at 128 MiB. Across one
 invocation, the total selected payloads are capped at 384 MiB.
 
+Downloads retry transient HTTP errors (408, 429, 500, 502, 503, and 504),
+connection errors, and timeouts at most three times, waiting 5, 15, and 30
+seconds. Each attempt keeps the 45-second socket timeout. Permanent HTTP and
+TLS errors, invalid payloads, and checksum mismatches fail without retrying.
+
 Oversized advertised lengths cause a failure before the installer reads the
 response. Absent or understated lengths still use a bounded read. The installer
 examines selected member sizes before it reads any member payload. Verified

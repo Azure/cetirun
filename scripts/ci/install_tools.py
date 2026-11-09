@@ -20,6 +20,8 @@ import platform
 import re
 import sys
 import tarfile
+import time
+from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 
@@ -28,6 +30,7 @@ MANIFEST = Path(__file__).with_name("tools.json")
 MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024
 MAX_MEMBER_BYTES = 128 * 1024 * 1024
 MAX_TOTAL_BYTES = 384 * 1024 * 1024
+DOWNLOAD_RETRY_DELAYS = (5, 15, 30)
 
 
 def check_size(size, limit, description):
@@ -49,6 +52,31 @@ def download_bytes(response):
     data = response.read(MAX_DOWNLOAD_BYTES + 1)
     check_size(len(data), MAX_DOWNLOAD_BYTES, "Tool download")
     return data
+
+
+def download(url):
+    for attempt in range(len(DOWNLOAD_RETRY_DELAYS) + 1):
+        try:
+            with urlopen(url, timeout=45) as response:
+                return download_bytes(response)
+        except (URLError, TimeoutError, ConnectionError) as error:
+            if isinstance(error, HTTPError):
+                error.close()
+                retryable = error.code in (408, 429, 500, 502, 503, 504)
+                description = f"HTTP {error.code}"
+            else:
+                reason = error.reason if isinstance(error, URLError) else error
+                retryable = isinstance(reason, (TimeoutError, ConnectionError))
+                description = type(reason).__name__
+            if not retryable or attempt == len(DOWNLOAD_RETRY_DELAYS):
+                raise
+            delay = DOWNLOAD_RETRY_DELAYS[attempt]
+            print(
+                f"Download failed ({description}); retrying in {delay}s "
+                f"({attempt + 1}/{len(DOWNLOAD_RETRY_DELAYS)})",
+                file=sys.stderr, flush=True,
+            )
+            time.sleep(delay)
 
 
 def archive_member(member):
@@ -238,12 +266,11 @@ def main(argv=None):
         for (url, checksum), outputs in downloads.items():
             names = ", ".join(output.name for output, _ in outputs)
             print(f"Installing {names} from {url}", flush=True)
-            with urlopen(url, timeout=45) as response:
-                data = binaries_bytes(
-                    download_bytes(response), checksum,
-                    [member for _, member in outputs],
-                    max_total_bytes=remaining_bytes,
-                )
+            data = binaries_bytes(
+                download(url), checksum,
+                [member for _, member in outputs],
+                max_total_bytes=remaining_bytes,
+            )
             remaining_bytes -= sum(len(payload) for payload in data.values())
             for output, member in outputs:
                 binaries[output] = data[member]
