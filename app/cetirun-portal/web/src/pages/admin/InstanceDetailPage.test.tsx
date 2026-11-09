@@ -67,6 +67,18 @@ describe("InstanceDetailPage", () => {
     }));
   });
 
+  it("keeps approval guidance visible when opening diagnostics", async () => {
+    vi.mocked(adminInstances.getAdminInstance).mockResolvedValue({ ...agent, phase: "Provisioning", ready: false,
+      governance: { category: "policy", reason: "UnauthorizedBinding", message: "The current binding or identity grant is not authorized.", condition: "SandboxReady", observedGeneration: 4 },
+    });
+    const user = userEvent.setup();
+    renderPage();
+    expect(await screen.findByText("Binding or identity approval required")).toBeInTheDocument();
+    expect(screen.getByText(/identity or role approvals/)).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Status" }));
+    expect(screen.getByText("Binding or identity approval required")).toBeInTheDocument();
+  });
+
   it.each(["hermes", "openclaw"] as const)("shows the %s port as read-only and omits it when saving", async (type) => {
     const builtIn = { ...agent, agent: { ...agent.agent, type, webUI: false } };
     vi.mocked(adminInstances.getAdminInstance).mockResolvedValue(builtIn);

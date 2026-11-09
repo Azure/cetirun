@@ -84,6 +84,17 @@ describe("OverviewSection", () => {
     expect(screen.queryByText("Azure connection management")).not.toBeInTheDocument();
   });
 
+  it("shows the identity cause on both tabs instead of a provisioning spinner", () => {
+    renderInRouter(<OverviewSection instance={{ ...baseInstance, phase: "Provisioning", generation: 2,
+      governance: { category: "identity", reason: "OwnerBindingMissing", message: "trusted Agent Identity owner binding is missing or invalid", condition: "AgentIdentityReady", observedGeneration: 2 },
+    }} />);
+    expect(screen.getByText("Identity owner binding required")).toBeInTheDocument();
+    expect(screen.queryByText("Provisioning your agent...")).not.toBeInTheDocument();
+    expect(screen.getByText("Provisioning")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Status" }));
+    expect(screen.getByText("Identity owner binding required")).toBeInTheDocument();
+  });
+
   it("adds owner lifecycle controls without replacing connection controls or claiming shutdown", () => {
     mockFeatures.data = { tailscaleEnabled: false, agentIdentityEnabled: true, agentToolsEnabled: true };
     renderInRouter(<OverviewSection instance={{ ...baseInstance, suspended: true, resumeAvailable: true, phase: "Suspended" }} />);

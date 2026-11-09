@@ -26,6 +26,38 @@ resource lists, not guesses.
 Sources: [name and routing helpers]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}})
 and [reconciler]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}}).
 
+## Read governance status in the Portal
+
+The **My Agents** and administrator **All agents** lists show a governance
+cause next to the lifecycle phase. The Agent detail page shows the same cause
+and a suggested next step on every tab. For example, an Agent can remain
+`Pending` while the Portal shows **Blocked by policy** with `PolicyDenied` and
+the policy's reason.
+
+| Portal status | Next step |
+| --- | --- |
+| Blocked by policy | Review the Agent configuration against the Team's Agent Policy. Read the reported reason. |
+| Identity owner binding required | Ask an administrator to verify the trusted owner binding for Agent Identity. |
+| Binding or identity approval required | Ask an administrator to verify the Team binding and the Agent's identity or role approvals. |
+| Identity not ready | Examine Agent Identity setup and the reported reason. |
+| Platform support required | Verify platform support for the requested Sandbox controls. |
+| Governance dependency unavailable | Examine the required policy, Sandbox, and platform dependencies. |
+| Waiting for governance | Wait for the Operator to verify prerequisites. If the condition persists, examine the detailed conditions. |
+
+`UnauthorizedBinding` can mean a binding or identity grant is not authorized.
+It does not identify Entra approval as the only possible cause. The Portal
+keeps that distinction and does not infer a specific identity failure from a
+generic enforcement wait.
+
+The summary requires an observation for the current Agent generation. Some
+policy and Agent Identity conditions do not have their own observed generation.
+For those conditions, the Portal checks the generation and matching state in
+the corresponding policy or identity status. It omits older observations after
+a configuration change and does not override deletion or suspension. Specific
+causes take precedence over a generic enforcement wait. Full reported
+conditions remain available under **Status**. The summary describes the latest
+reported observation; it does not approve a grant or verify live enforcement.
+
 ## Follow the first failure
 
 | Observation | Inspect next |

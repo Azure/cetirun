@@ -18,6 +18,7 @@ import { Add20Regular } from "@fluentui/react-icons";
 import { useInstancesQuery } from "../hooks/useInstance";
 import { useFeatures } from "../hooks/useFeatures";
 import { CreateForm } from "../components/CreateForm";
+import { GovernanceNotice } from "../components/GovernanceNotice";
 import { agentTypeLabel } from "../utils/instance";
 
 export function InstanceListPage() {
@@ -104,6 +105,7 @@ export function InstanceListPage() {
                 </div>
               }
             />
+            <GovernanceNotice instance={inst} compact />
           </Card>
         ))}
       </div>

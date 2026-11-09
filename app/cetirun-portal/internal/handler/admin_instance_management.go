@@ -95,7 +95,7 @@ func adminInstanceDetail(instance *api.Agent) AdminInstanceDetail {
 func adminInstanceConditions(instance *api.Agent) []ConditionStatus {
 	out := make([]ConditionStatus, 0, len(instance.Status.Conditions))
 	for _, condition := range instance.Status.Conditions {
-		out = append(out, ConditionStatus{Type: condition.Type, Status: string(condition.Status), Reason: condition.Reason, Message: condition.Message})
+		out = append(out, ConditionStatus{Type: condition.Type, Status: string(condition.Status), Reason: condition.Reason, Message: condition.Message, ObservedGeneration: condition.ObservedGeneration})
 	}
 	return out
 }
