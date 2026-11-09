@@ -151,10 +151,13 @@ To use the chart without `make deploy`, set the same values under
 
 ## Container Insights
 
-Container Insights and managed Prometheus, which the cluster template enables
-by default, keep running next to ADX-Mon. Compare the two before you turn
-Container Insights off. Both collect the same container output, so each one
-needs its own access review.
+When the cluster template creates or uses Azure Data Explorer (`adxMode`
+`create` or `existing`), it turns Container Insights and managed Prometheus off
+by default, and creates no Log Analytics workspace or Azure Monitor workspace.
+Set `enableContainerInsights` or `enablePrometheusMetrics` to `true` to keep
+them next to ADX-Mon, for example to compare the two. Both collect the same
+container output, so each one needs its own access review. On a cluster that
+already runs them, the template turns them off at its next deployment.
 
 On Kata node pools with the node image `AKSAzureLinux-V3katagen2-202610.30.1`
 or later, Container Insights and managed Prometheus collect nothing from those

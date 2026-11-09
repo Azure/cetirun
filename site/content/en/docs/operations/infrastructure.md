@@ -44,7 +44,7 @@ value.
 | Availability zones | `1`, `2`, `3` on all three pools |
 | Networking | Azure CNI overlay, Cilium, load-balancer outbound |
 | Pod / Service / DNS ranges | `10.244.0.0/16`, `172.16.0.0/16`, `172.16.0.10` |
-| Monitoring | Container Insights and Prometheus enabled |
+| Monitoring | Container Insights and Prometheus enabled; both off when `adxMode` is `create` or `existing` |
 
 The cluster template defaults to Kubernetes 1.37, the minimum for Sandbox and
 CetiAdmin admission. The cluster helper checks the effective `kubernetesVersion`
@@ -261,10 +261,12 @@ configure Entra, Broker/MCP or admission certificates, and it does not change
 the cluster template.
 
 By default, the cluster parameters enable Container Insights and Prometheus
-metrics. Examine the workspace and data-collection resources, the retention,
-the access roles, and the costs. If `logAnalyticsWorkspaceId` is empty, the
-template creates a Log Analytics workspace with 30-day retention, even if
-`enableContainerInsights` is false. The template enables the cluster's
+metrics. With `adxMode` `create` or `existing`, both are off by default, and
+the [ADX-Mon collection](../observability/) replaces them; set them
+explicitly to keep them. Examine the workspace and data-collection resources,
+the retention, the access roles, and the costs. If `logAnalyticsWorkspaceId` is
+empty and Container Insights is on, the template creates a Log Analytics
+workspace with 30-day retention. The template enables the cluster's
 monitoring add-on with its data collection rule. Container Insights collects
 this data through that add-on:
 

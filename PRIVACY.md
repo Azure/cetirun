@@ -128,7 +128,8 @@ and the Gateway chart's
 ### Infrastructure collection and traffic metadata
 
 The cluster template sets `enableContainerInsights` and
-`enablePrometheusMetrics` to `true` by default. With these settings, the
+`enablePrometheusMetrics` to `true` by default, and to `false` when `adxMode`
+selects Azure Data Explorer for the `cetirun-observability` collection. With these settings, the
 template enables the Container Insights monitoring add-on and managed
 Prometheus. It also defines data collection rules and associations for
 Container Insights and for managed Prometheus. The rules for Container Insights
