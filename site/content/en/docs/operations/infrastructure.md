@@ -36,7 +36,7 @@ value.
 
 | Setting | Default |
 | --- | --- |
-| Kubernetes / AKS SKU | `1.34` / `Premium` |
+| Kubernetes / AKS SKU | `1.37` / `Premium` |
 | System pool | `Standard_D8s_v6`, 2–10 nodes, Ubuntu |
 | Agent pool | `Standard_D16s_v6`, 15–150 nodes, AzureLinux |
 | Agent2 pool | `Standard_D32s_v6`, 3–10 nodes, AzureLinux |
@@ -46,13 +46,19 @@ value.
 | Pod / Service / DNS ranges | `10.244.0.0/16`, `172.16.0.0/16`, `172.16.0.10` |
 | Monitoring | Container Insights and Prometheus enabled |
 
-`make deploy` refuses a cluster that runs a Kubernetes version older than 1.37,
-because Sandbox admission must have this version. In your parameter file, set
-`kubernetesVersion` to 1.37 or later. See
-[Install CetiRun](../../getting-started/platform/#platform-chart) and
+The cluster template defaults to Kubernetes 1.37, the minimum for Sandbox and
+CetiAdmin admission. The cluster helper checks the effective `kubernetesVersion`
+before any Azure writes, including overrides in Bicep or JSON parameter files.
+It rejects older versions, prereleases, and values it cannot resolve to a stable
+`major.minor` or `major.minor.patch`. `make deploy` also refuses an older cluster.
+See [Install CetiRun](../../getting-started/platform/#platform-chart) and
 [Policy-bound Teams](../policy-teams/). To see the Kubernetes versions of a
 region, run
 `az aks get-versions --location your-approved-region --output table`.
+If the region does not offer a stable compatible version, stop and select a
+region/version that does; do not fall back to an older version. This default
+change does not upgrade existing clusters. Plan any existing-cluster upgrade
+separately, following the upgrade path supported by AKS.
 
 Leave `istioRevision` empty to let AKS select its default managed Istio
 revision. To pin a revision, set it only after confirming that the region lists
@@ -137,28 +143,33 @@ operation. The helper below has no render-only or dry-run mode.
 
 ## Helper side effects
 
-To run `infra/cluster/deploy.sh`, you must have Bash, Azure CLI, Bicep, kubectl,
-and an Azure session that is already authorized. You must also set
-`RESOURCE_GROUP` and `LOCATION`. `PARAM_FILE` selects the parameters that you
+To run `infra/cluster/deploy.sh`, you must have Bash, Python 3, Azure CLI,
+the Bicep CLI on `PATH`, kubectl, and an Azure session that is already authorized.
+You must also set `RESOURCE_GROUP` and `LOCATION`. `PARAM_FILE` selects the parameters that you
 examined. The helper uses the current Azure subscription and does not select
 one. Confirm that scope independently. The helper does these steps:
 
-1. It installs or updates `aks-preview`. If necessary, it registers the managed
+1. It compiles Bicep locally (`--no-restore`), reads the compiled or supplied
+   JSON parameters, and checks the effective Kubernetes version. It stops on
+   compilation or version errors before any Azure operation. It saves the
+   validated inputs in a private temporary directory, uses those same inputs
+   for validation and deployment, and removes the directory on exit.
+2. It installs or updates `aks-preview`. If necessary, it registers the managed
    Gateway API preview feature.
-2. It creates or updates the resource group.
-3. It validates and creates the Bicep deployment.
-4. It fetches credentials with `--overwrite-existing`.
-5. It creates the Container Insights agent settings in `kube-system`. These
+3. It creates or updates the resource group.
+4. It validates and creates the Bicep deployment.
+5. It fetches credentials with `--overwrite-existing`.
+6. It creates the Container Insights agent settings in `kube-system`. These
    settings are in `infra/cluster/container-azm-ms-agentconfig.yaml`. If it
    cannot create them, it stops with an error. If the cluster already has agent
    settings, the helper does not change them. In that case, it stops unless
    these settings disable environment variable collection.
-6. It enables Gateway API and runs connected checks.
+7. It enables Gateway API and runs connected checks.
 
 By default, the helper requests user credentials. `AKS_ADMIN_CREDENTIALS=true`
 selects local admin credentials. This setting is only for an explicitly
 authorized bootstrap environment that has local accounts enabled. It is not a
-fallback for an Azure RBAC failure. Step 5 writes to `kube-system`. As a
+fallback for an Azure RBAC failure. Step 6 writes to `kube-system`. As a
 result, the identity must have write access there, not only read access.
 
 **Connected, mutating example:** use it only after you examine the script and
@@ -171,10 +182,10 @@ PARAM_FILE=/absolute/path/cluster.bicepparam \
 ```
 
 This is not a dry run. The helper changes cloud resources, the subscription
-feature registration, and the local Kubernetes configuration. Its extension,
-feature, and resource-group writes occur **before** template validation. As a
-result, if the parameter file is not valid or does not exist, this does not
-mean that nothing changed. Gateway API enablement is a side effect of the
+feature registration, and the local Kubernetes configuration. The local version
+preflight runs first, but extension, feature, and resource-group writes still
+occur **before Azure deployment validation**. A later validation failure does
+not mean that nothing changed. Gateway API enablement is a side effect of the
 helper. CetiRun's routing templates use Istio `Gateway` and `VirtualService`
 resources.
 
