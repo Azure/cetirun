@@ -4,12 +4,14 @@
 """Webapp startup and readiness contracts, using synthetic HOME and listener fixtures."""
 
 import importlib.util
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import threading
 import types
 import unittest
 from unittest.mock import patch
@@ -235,10 +237,14 @@ class WebappChartTests(unittest.TestCase):
         pod = next(d for d in docs if d and d["kind"] == "StatefulSet")["spec"]["template"]["spec"]
         main = pod["containers"][0]
         self.assertIn({"name": "hermes-managed", "mountPath": "/etc/cetirun/hermes-managed", "readOnly": True}, main["volumeMounts"])
-        for probe, mode in (("startupProbe", "liveness"), ("livenessProbe", "liveness"),
-                            ("readinessProbe", "readiness")):
-            self.assertEqual(main[probe]["exec"]["command"][0:3],
-                             ["/usr/local/bin/hermes-python", "/etc/cetirun/hermes-runtime.py", mode])
+        for probe in ("startupProbe", "livenessProbe"):
+            self.assertEqual(main[probe]["exec"]["command"],
+                             ["node", "/etc/cetirun/hermes-health-probe.cjs", "--timeout",
+                              str(main[probe]["timeoutSeconds"])])
+        self.assertEqual(main["readinessProbe"]["exec"]["command"],
+                         ["/usr/local/bin/hermes-python", "/etc/cetirun/hermes-runtime.py", "readiness", "--timeout",
+                          str(main["readinessProbe"]["timeoutSeconds"])])
+        self.assertEqual(config["data"]["hermes-health-probe.cjs"], (BOOTSTRAP / "hermes-health-probe.cjs").read_text())
         self.assertIn({"name": "webapp", "containerPort": 9120, "protocol": "TCP"}, main["ports"])
         self.assertNotIn(9119, [port["containerPort"] for port in main["ports"]])
 
@@ -261,6 +267,121 @@ class WebappChartTests(unittest.TestCase):
                 self.assertNotEqual(self.render("--set", override).returncode, 0)
         permitted = self.render("--set", "hermes.config.secrets.onepassword.enabled=true,hermes.config.secrets.onepassword.env.EXAMPLE_SERVICE_TOKEN=op://example/item/token")
         self.assertEqual(permitted.returncode, 0, permitted.stderr)
+
+
+@unittest.skipUnless(shutil.which("node"), "requires Node for the Hermes health probe")
+class HermesHealthProbeTests(unittest.TestCase):
+    def setUp(self):
+        self.status, self.body, self.stall = 200, b'{"status":"ok"}', False
+        self.requests = []
+        self.release = threading.Event()
+        fixture = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                fixture.requests.append((self.path, self.headers))
+                self.send_response(fixture.status)
+                self.send_header("Content-Length", str(len(fixture.body)))
+                self.end_headers()
+                if fixture.stall:
+                    fixture.release.wait(timeout=5)
+                    return
+                self.wfile.write(fixture.body)
+
+            def log_message(self, *_args):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self.stop_server)
+
+    def stop_server(self):
+        self.release.set()
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.assertFalse(self.thread.is_alive())
+
+    def probe(self, *, args=None, env=None, helpers=None):
+        command = [shutil.which("node")]
+        if helpers is not None:
+            # Only the existing Envoy helpers are synthetic; HTTP and the probe run unchanged.
+            command += ["-e", """
+const Module = require('node:module');
+const original = Module._load;
+const helpers = JSON.parse(process.env.TEST_HELPERS);
+Module._load = function(name, ...args) {
+  if (Object.hasOwn(helpers, name)) return (callback) => {
+    console.error(name);
+    if (helpers[name] === 'throw') throw new Error('synthetic helper failure');
+    if (helpers[name] !== 'stall') setTimeout(() => callback(helpers[name] === 'ready'), 25);
+  };
+  return original.call(this, name, ...args);
+};
+require(process.argv[1]);
+"""]
+        command += [str(BOOTSTRAP / "hermes-health-probe.cjs"), *(args if args is not None else ["--timeout", "1"])]
+        return subprocess.run(command, env={
+            **os.environ, "PATH": "", "API_SERVER_PORT": str(self.server.server_port),
+            "CETIRUN_EGRESS_SNI": "false", "CETIRUN_INGRESS_MTLS": "false",
+            "TEST_HELPERS": json.dumps(helpers), **(env or {}),
+        }, capture_output=True, text=True, timeout=30, check=False)
+
+    def test_loopback_json_health_needs_no_python_or_credentials_and_ignores_proxy(self):
+        result = self.probe(env={"HTTP_PROXY": "http://127.0.0.1:1", "HTTPS_PROXY": "http://127.0.0.1:1",
+                                 "ALL_PROXY": "http://127.0.0.1:1", "NODE_USE_ENV_PROXY": "1",
+                                 "API_SERVER_KEY": "sk-dummy", "HERMES_PYTHON": "/missing-python"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        path, headers = self.requests[0]
+        self.assertEqual(path, "/health")
+        self.assertEqual(headers["Host"], f"127.0.0.1:{self.server.server_port}")
+        self.assertIsNone(headers["Authorization"])
+        self.assertIsNone(headers["Cookie"])
+
+    def test_requires_http_200_and_complete_valid_json(self):
+        for status, body in ((204, b""), (302, b"{}"), (503, b"{}"), (200, b""),
+                             (200, b"<html>not health</html>"), (200, b'{"status":')):
+            with self.subTest(status=status, body=body):
+                self.status, self.body = status, body
+                result = self.probe()
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("HTTPProbeFailed", result.stderr)
+
+    def test_stalled_response_is_bounded(self):
+        self.stall = True
+        result = self.probe()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("ProbeTimeout", result.stderr)
+
+    def test_enabled_helpers_are_required_and_share_the_deadline(self):
+        proxy, ingress = "/etc/cetirun/proxy-health.cjs", "/etc/cetirun/ingress-health.cjs"
+        env = {"CETIRUN_EGRESS_SNI": "true", "CETIRUN_INGRESS_MTLS": "true"}
+        for helpers, expected in (
+            ({proxy: "ready", ingress: "ready"}, None),
+            ({proxy: "failed", ingress: "ready"}, "EgressProxyNotReady"),
+            ({proxy: "ready", ingress: "failed"}, "IngressTLSNotReady"),
+            ({proxy: "throw", ingress: "ready"}, "EgressProxyNotReady"),
+            ({proxy: "ready", ingress: "stall"}, "ProbeTimeout"),
+        ):
+            with self.subTest(helpers=helpers):
+                result = self.probe(env=env, helpers=helpers)
+                self.assertEqual(result.returncode, 1 if expected else 0, result.stderr)
+                if expected:
+                    self.assertIn(expected, result.stderr)
+                else:
+                    self.assertLess(result.stderr.index(proxy), result.stderr.index(ingress))
+
+    def test_invalid_inputs_fail_without_http(self):
+        for args, port in (([], "8642"), (["--timeout", "0"], "8642"),
+                           (["--timeout", "2147484"], "8642"), (["--timeout", "1"], "9120"),
+                           (["--timeout", "1"], "65536"), (["--timeout", "1"], "localhost")):
+            with self.subTest(args=args, port=port):
+                result = self.probe(args=args, env={"API_SERVER_PORT": port})
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("InvalidProbeArguments", result.stderr)
+        self.assertEqual(self.requests, [])
 
 
 if __name__ == "__main__":
