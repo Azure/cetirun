@@ -12,7 +12,8 @@ param location string
 // --- AKS cluster parameters ---
 
 param clusterName string
-param kubernetesVersion string = '1.34'
+@description('Stable Kubernetes version, at least 1.37 for Sandbox and CetiAdmin admission. The selected version must be available in the target AKS region.')
+param kubernetesVersion string = '1.37'
 param dnsPrefix string
 param nodeResourceGroup string
 

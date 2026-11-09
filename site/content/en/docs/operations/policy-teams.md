@@ -34,9 +34,9 @@ For the other Team settings, follow [Configure a team](../../guides/teams/).
 ## The cluster
 
 - **Kubernetes 1.37 or later.** `make deploy` and the operator chart refuse an
-  older cluster. The default of the [cluster template](../infrastructure/) is
-  `1.34`. In your parameter file, set `kubernetesVersion` to a 1.37 or later
-  version that your region offers.
+  older cluster. The [cluster template](../infrastructure/) defaults to `1.37`,
+  and its deployment helper rejects older overrides before any Azure writes.
+  Select a stable 1.37 or later version that your region offers.
 - **Kata.** Agent node pools with `workloadRuntime: KataVmIsolation` supply the
   `kata-vm-isolation` RuntimeClass. The two agent pools of the template have
   this setting.

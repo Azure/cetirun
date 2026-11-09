@@ -16,6 +16,14 @@ AKS_ADMIN_CREDENTIALS="${AKS_ADMIN_CREDENTIALS:-false}"
 RG_NAME="${RESOURCE_GROUP:?RESOURCE_GROUP is required}"
 LOCATION="${LOCATION:?LOCATION is required}"
 
+# Check the effective version before extension, feature, or resource writes.
+# Deploy these same compiled inputs even if the source changes while waiting
+# for Azure feature registration. The private directory can contain secrets.
+DEPLOYMENT_INPUT_DIR="$(mktemp -d)"
+trap 'rm -rf -- "$DEPLOYMENT_INPUT_DIR"' EXIT
+python3 "${SCRIPT_DIR}/../../scripts/validate-cluster-kubernetes.py" \
+  --template "$BICEP_FILE" --parameters "$PARAM_FILE" --output-dir "$DEPLOYMENT_INPUT_DIR"
+
 AGENT_SETTINGS_NAME="container-azm-ms-agentconfig"
 AGENT_SETTINGS_FILE="${SCRIPT_DIR}/${AGENT_SETTINGS_NAME}.yaml"
 
@@ -60,15 +68,15 @@ az group create --name "$RG_NAME" --location "$RG_LOCATION" --tags project=cetir
 # Validate
 az deployment group validate \
   --resource-group "$RG_NAME" \
-  --template-file "$BICEP_FILE" \
-  --parameters "$PARAM_FILE" \
+  --template-file "${DEPLOYMENT_INPUT_DIR}/template.json" \
+  --parameters "${DEPLOYMENT_INPUT_DIR}/parameters.json" \
   --name "${DEPLOYMENT_NAME}-validate"
 
 # Deploy
 az deployment group create \
   --resource-group "$RG_NAME" \
-  --template-file "$BICEP_FILE" \
-  --parameters "$PARAM_FILE" \
+  --template-file "${DEPLOYMENT_INPUT_DIR}/template.json" \
+  --parameters "${DEPLOYMENT_INPUT_DIR}/parameters.json" \
   --name "$DEPLOYMENT_NAME"
 
 # Read cluster name from outputs
