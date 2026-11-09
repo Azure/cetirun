@@ -671,8 +671,8 @@ ran against mock deployments in place of separate Azure OpenAI resources. The
 clients were an OpenClaw-like client and OpenClaw itself. Where noted, the
 tests also ran against Azure OpenAI. The figures in tables were measured on
 LiteLLM 1.101.0, and the text gives the changes in 1.105.1 where they apply.
-The image now runs 1.105.6, a patch release of the same line. Measurements that
-name 1.105.1 were not repeated on this release, unless the text says so.
+The image now runs 1.108.3. Measurements that name an earlier release were not
+repeated for this upgrade, unless the text says so.
 
 ### Choosing a deployment
 
@@ -3120,20 +3120,18 @@ is applicable only to a single replica.
 
 The Gateway runs `cetirun-ai-gateway`. This image is built from
 `app/cetirun-ai-gateway` and published with the other CetiRun images. It is
-open-source LiteLLM, 1.105.6, installed as pinned packages on the Azure Linux
+open-source LiteLLM, 1.108.3, installed as pinned packages on the Azure Linux
 Python base from MCR. It runs as the non-root user 65532.
 
-- `requirements.txt` is the exact package set of the upstream LiteLLM image for
-  the same release. It is installed with `--no-deps`, so nothing else is added.
-  The differences are on purpose. `litellm-enterprise`, which carries the
-  BerriAI Enterprise License, is omitted. Two backports that are necessary for
-  Python 3.12 are added. A package with a known security advisory is moved to
-  a patched version, and the file marks the advisory.
+- `requirements.txt` pins the upstream release's frozen `uv.lock` for the
+  Gateway's existing runtime extras. It is installed with `--no-deps`, so
+  nothing else is added. `litellm-enterprise`, which carries the BerriAI
+  Enterprise License, and the optional Admin MCP group are omitted. The two
+  Python 3.12 backports keep their existing CetiRun pins.
 
-  No package of the 1.105.6 set is moved yet. The advisories that were
-  published after that release, for ddtrace, dnspython, and filelock, are
-  handled separately. The build fails if the enterprise package is present. It
-  also fails if `pip check` finds a requirement that the set does not meet.
+  LiteLLM 1.108.3 permits filelock 4.x; the lockfile selects 4.2.4, which includes
+  the security fixes released in 4.2.1. The build fails if the enterprise
+  package is present or if `pip check` finds an unmet dependency.
 - The prisma CLI and engines are installed at build time. As a result, neither
   npm nor network access is necessary for migrations. In a measurement on a
   network with no route out, migrations applied, and the proxy became ready.
@@ -3144,8 +3142,12 @@ Python base from MCR. It runs as the non-root user 65532.
   `CETIRUN_REQUEST_LOG=true`, which the chart sets, the request log callback is
   also registered.
 
-To move to a new LiteLLM release, generate `requirements.txt` again from the
-upstream image of that release. Then build the image again. The build's
+To move to a new LiteLLM release, export its frozen `uv.lock` with the uv version
+used by its Dockerfile. For 1.108.3 this is uv 0.11.7, with the `proxy`,
+`proxy-runtime`, `extra_proxy`, `semantic-router`, `saml` and `bedrock-realtime`
+extras and no default groups. Select Linux/Python 3.12 entries, pin the LiteLLM
+and proxy-extras workspace packages to their release versions, and keep the
+exclusions and backport pins above. Then build the image again. The build's
 `pip check` then names any backport that the new set must have. Then the
 pull-request dependency review flags any package with a high or critical
 advisory.
@@ -3258,7 +3260,7 @@ Azure's gpt-6-astra and gpt-6.1-sol as models that take
 
 With `priceTable: bundled`, or when the download failed, a request with this
 value got Azure's 400, and it did not lose the parameter (measured with
-gpt-6-astra). The copy in 1.105.6, which the image ships, has the correction.
+gpt-6-astra). LiteLLM corrected its bundled table in 1.105.6.
 
 **GitOps.** Generated credentials depend on Helm's `lookup`, which returns
 nothing under `helm template`. Some tools, such as Argo CD, render in that way.

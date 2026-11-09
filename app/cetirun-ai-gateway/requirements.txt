@@ -1,20 +1,21 @@
 # Python packages of the CetiRun AI Gateway image, installed with --no-deps, so
 # this list is the complete set.
 #
-# It is the exact package set of the upstream LiteLLM v1.105.6 image
-# (ghcr.io/berriai/litellm@sha256:df829230aab5d0b8590afbdb6569a41956c177985201f92949b9d63d88147003,
-# built from BerriAI/litellm commit 3a05120f107575d215730006c1e8299e33862aaa)
-# minus litellm-enterprise. That package carries the BerriAI Enterprise License,
-# which allows production use only with a BerriAI subscription; the Gateway uses
-# the open-source proxy only, which imports it only inside try blocks. Keeping
-# everything else identical keeps the tested dependency set. Two exceptions:
-# the short block at the end, backports that Python 3.12 needs and the
-# upstream image, on Python 3.13, does not; and security updates, marked
-# inline, where the upstream version has a known security advisory.
+# Pinned from LiteLLM v1.108.3's uv.lock with uv 0.11.7 at BerriAI/litellm
+# commit b7d579fab2818968322ef96e5b8e98dc8178fafc, the source of the release image
+# ghcr.io/berriai/litellm@sha256:f14d0a035d84d1a8bc98538faf5999e456641fd4cfa191822fd4be1934c1f4f6.
+# Export the proxy, proxy-runtime, extra_proxy, semantic-router, saml and
+# bedrock-realtime extras without default groups, then select Linux/Python 3.12.
+# Keep the existing runtime surface: omit the optional admin-mcp group and
+# litellm-enterprise. The latter requires a BerriAI subscription in production;
+# the open-source proxy imports it only inside try blocks. The Python 3.12
+# backports at the end retain CetiRun's existing pins, including aiologic 0.17.1
+# rather than the lockfile's 0.17.0. Security updates may be marked inline.
 #
 # When moving to a new LiteLLM release, regenerate this list from that release's
-# image rather than editing versions by hand, then let `pip check` in the build
-# name any backport the new set needs, and dependency review any advisory.
+# frozen lockfile with those extras rather than resolving new versions, then let
+# `pip check` in the build name any backport the new set needs, and dependency
+# review any advisory.
 a2a-sdk==1.1.0
 aiofiles==24.1.0
 aiohappyeyeballs==2.6.1
@@ -54,7 +55,7 @@ ddtrace==4.15.6  # GHSA-3633-r77q-h3v3
 ddtrace-internal==0.1.0
 detect-secrets==1.5.0
 distro==1.9.0
-dnspython==2.9.0
+dnspython==2.9.1
 docstring_parser==0.18.0
 email-validator==2.3.0
 envier==0.6.1
@@ -62,7 +63,7 @@ Expression==5.6.0
 fastapi==0.136.3
 fastapi-sso==0.19.0
 fastuuid==0.14.0
-filelock==3.32.7
+filelock==4.2.4
 frozenlist==1.8.0
 fsspec==2026.7.0
 google-api-core==2.30.3
@@ -109,15 +110,15 @@ json-rpc==1.15.0
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 langfuse==4.15.2
-litellm==1.105.6
-litellm-proxy-extras==0.4.105
+litellm==1.108.3
+litellm-proxy-extras==0.4.110
 llm-sandbox==0.3.39
 lxml==6.1.1
 mangum==0.17.0
 markdown-it-py==4.2.0
 MarkupSafe==3.0.3
-mcp==2.2.0
-mcp-types==2.2.0
+mcp==2.3.0
+mcp-types==2.3.0
 mdurl==0.1.2
 ml-dtypes==0.4.1
 msal==1.37.0
