@@ -43,7 +43,8 @@ export function SuspendAgentButton({ instance }: { instance: Instance }) {
     <Button disabled={change.isPending || (!request && !available)} onClick={() => {
       if (!request) {
         change.reset();
-        setRequest({ uid: instance.uid, resourceVersion: instance.resourceVersion, suspended: !instance.suspended });
+        setRequest({ uid: instance.uid, resourceVersion: instance.resourceVersion, generation: instance.generation,
+          suspended: !instance.suspended });
       }
       setOpen(true);
     }}>

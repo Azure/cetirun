@@ -215,7 +215,11 @@ func TestReconciledSandboxSuspensionDoesNotAdoptReplacedNamespace(t *testing.T) 
 	})
 	f.reconcileOK(t)
 	current = f.current(t)
-	if current.Status.Phase != api.PhasePending || current.Status.AccessURL != "" || writes != 0 || f.installer.stages != stages {
+	keyBlocked := false
+	for _, key := range f.gateway.keys {
+		keyBlocked = keyBlocked || key.Blocked
+	}
+	if current.Status.Phase != api.PhasePending || current.Status.AccessURL != "" || writes != 0 || f.installer.stages != stages || keyBlocked {
 		t.Fatalf("suspension adopted or repaired a replaced namespace: status=%#v writes=%d stages=%d", current.Status, writes, f.installer.stages-stages)
 	}
 }
@@ -281,6 +285,58 @@ func TestReconciledSandboxSuspendsAfterPreBootstrapSkillsFailure(t *testing.T) {
 	}
 	if _, _, err := f.r.readSandboxBootstrap(ctx, failed); !apierrors.IsNotFound(err) {
 		t.Fatalf("pre-bootstrap skills failure created a bootstrap receipt: %v", err)
+	}
+	if condition := meta.FindStatusCondition(failed.Status.Conditions, api.ConditionHelmDeployed); condition == nil ||
+		condition.Status != metav1.ConditionFalse || condition.Reason != "ChartNotInstalled" {
+		t.Fatalf("first pre-bootstrap failure did not preserve creation progress: %#v", failed.Status.Conditions)
+	}
+	// An unchanged missing publication must not cycle the Agent through a
+	// persisted Provisioning phase.  That would continuously invalidate the
+	// Portal's suspension confirmation version despite no intent changing.
+	before := failed.DeepCopy()
+	resourceWrites, statusWrites := 0, 0
+	f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.CreateOption) error {
+			if _, isAgent := object.(*api.Agent); !isAgent {
+				resourceWrites++
+			}
+			return c.Create(ctx, object, options...)
+		},
+		Update: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.UpdateOption) error {
+			if _, isAgent := object.(*api.Agent); !isAgent {
+				resourceWrites++
+			}
+			return c.Update(ctx, object, options...)
+		},
+		Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, options ...client.PatchOption) error {
+			if _, isAgent := object.(*api.Agent); !isAgent {
+				resourceWrites++
+			}
+			return c.Patch(ctx, object, patch, options...)
+		},
+		Delete: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.DeleteOption) error {
+			if _, isAgent := object.(*api.Agent); !isAgent {
+				resourceWrites++
+			}
+			return c.Delete(ctx, object, options...)
+		},
+		SubResourcePatch: func(ctx context.Context, c client.Client, subresource string, object client.Object,
+			patch client.Patch, options ...client.SubResourcePatchOption,
+		) error {
+			if _, isAgent := object.(*api.Agent); isAgent && subresource == "status" {
+				statusWrites++
+			}
+			return c.SubResource(subresource).Patch(ctx, object, patch, options...)
+		},
+	})
+	if _, err := f.reconcile(); err == nil {
+		t.Fatal("unchanged missing Team skills publication unexpectedly succeeded")
+	}
+	held := f.current(t)
+	if held.UID != before.UID || held.Generation != before.Generation || !reflect.DeepEqual(held.Spec, before.Spec) ||
+		held.ResourceVersion != before.ResourceVersion || !reflect.DeepEqual(held.Status, before.Status) ||
+		resourceWrites != 0 || statusWrites != 0 {
+		t.Fatalf("unchanged pre-bootstrap hold churned state: resourceWrites=%d statusWrites=%d before=%#v after=%#v", resourceWrites, statusWrites, before, held)
 	}
 	// This is the same persisted intent a successful Portal suspension request
 	// writes after its independent no-lifetime proof.

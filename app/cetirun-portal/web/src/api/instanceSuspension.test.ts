@@ -9,7 +9,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("owner suspension API", () => {
   it.each([true, false])("retries suspended=%s using exactly the original action and version", async (suspended) => {
-    const request = { uid: "agent-uid", resourceVersion: "7", suspended };
+    const request = { uid: "agent-uid", resourceVersion: "7", generation: 2, suspended };
     const response = { ...request, resourceVersion: "8", generation: 3 };
     const fetch = vi.fn().mockImplementation(() => Promise.resolve(Response.json(response, { status: 202 })));
     vi.stubGlobal("fetch", fetch);
@@ -18,7 +18,7 @@ describe("owner suspension API", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
     for (const call of fetch.mock.calls) {
       expect(call).toEqual([`/api/v1/instances/alice%2Fsynthetic/${suspended ? "suspend" : "resume"}`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "X-CetiRun-Agent-Generation": "2", "Content-Type": "application/json" },
         body: JSON.stringify({ uid: request.uid, resourceVersion: request.resourceVersion }),
       }]);
     }

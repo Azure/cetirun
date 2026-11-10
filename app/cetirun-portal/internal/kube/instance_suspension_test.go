@@ -279,6 +279,7 @@ func TestOwnerSuspensionRejectsUnsafeRequests(t *testing.T) {
 	}{
 		{"missing UID", func(_ *api.Agent, v *InstanceVersion) { v.UID = "" }, nil, ErrInstanceVersionRequired},
 		{"missing version", func(_ *api.Agent, v *InstanceVersion) { v.ResourceVersion = "" }, nil, ErrInstanceVersionRequired},
+		{"negative generation", func(_ *api.Agent, v *InstanceVersion) { v.Generation = -1 }, nil, ErrInstanceVersionRequired},
 		{"replaced Agent", func(_ *api.Agent, v *InstanceVersion) { v.UID = "old-uid" }, nil, ErrInstanceChanged},
 		{"stale version", func(_ *api.Agent, v *InstanceVersion) { v.ResourceVersion = "old-version" }, nil, ErrInstanceChanged},
 		{"foreign owner", nil, func(*api.Agent) error { return denied }, denied},
@@ -314,6 +315,214 @@ func TestOwnerSuspensionRejectsUnsafeRequests(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestOwnerSuspensionAcceptsStatusOnlyVersionChanges(t *testing.T) {
+	ctx := context.Background()
+	agent := restartableInstance()
+	fc := fake.NewClientBuilder().WithScheme(newScheme()).WithGlobalResourceVersionCounter().
+		WithStatusSubresource(&api.Agent{}).WithObjects(agent, suspensionWorkload(agent)).Build()
+	if err := fc.Get(ctx, client.ObjectKeyFromObject(agent), agent); err != nil {
+		t.Fatal(err)
+	}
+	version := InstanceVersion{UID: agent.UID, ResourceVersion: agent.ResourceVersion, Generation: agent.Generation}
+	statusOnly := agent.DeepCopy()
+	statusOnly.Status.Phase = api.PhasePending
+	if err := fc.Status().Update(ctx, statusOnly); err != nil {
+		t.Fatal(err)
+	}
+	if statusOnly.ResourceVersion == version.ResourceVersion {
+		t.Fatal("status update did not advance resourceVersion")
+	}
+	updated, err := NewClient(fc).SetInstanceSuspendedByName(ctx, agent.Name, version, true, nil)
+	if err != nil || !updated.Spec.Suspended || updated.Generation != version.Generation {
+		t.Fatalf("status-only update rejected suspension: %#v, %v", updated, err)
+	}
+}
+
+func TestOwnerSuspensionRetriesOneStatusOnlyPatchConflict(t *testing.T) {
+	ctx := context.Background()
+	agent := restartableInstance()
+	patches := 0
+	fc := fake.NewClientBuilder().WithScheme(newScheme()).WithGlobalResourceVersionCounter().
+		WithStatusSubresource(&api.Agent{}).WithObjects(agent, suspensionWorkload(agent)).
+		WithInterceptorFuncs(interceptor.Funcs{Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			patches++
+			if patches == 1 {
+				current := &api.Agent{}
+				if err := c.Get(ctx, client.ObjectKeyFromObject(obj), current); err != nil {
+					return err
+				}
+				current.Status.Phase = api.PhasePending
+				if err := c.Status().Update(ctx, current); err != nil {
+					return err
+				}
+			}
+			return c.Patch(ctx, obj, patch, opts...)
+		}}).Build()
+	if err := fc.Get(ctx, client.ObjectKeyFromObject(agent), agent); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := NewClient(fc).SetInstanceSuspendedByName(ctx, agent.Name,
+		InstanceVersion{UID: agent.UID, ResourceVersion: agent.ResourceVersion, Generation: agent.Generation}, true, nil)
+	if err != nil || !updated.Spec.Suspended || patches != 2 {
+		t.Fatalf("status-only patch conflict was not retried once: patches=%d updated=%#v err=%v", patches, updated, err)
+	}
+}
+
+func TestOwnerSuspensionGenerationRejectsConcurrentSpecificationChange(t *testing.T) {
+	ctx := context.Background()
+	agent := restartableInstance()
+	fc := fake.NewClientBuilder().WithScheme(newScheme()).WithGlobalResourceVersionCounter().
+		WithObjects(agent, suspensionWorkload(agent)).Build()
+	if err := fc.Get(ctx, client.ObjectKeyFromObject(agent), agent); err != nil {
+		t.Fatal(err)
+	}
+	version := InstanceVersion{UID: agent.UID, ResourceVersion: agent.ResourceVersion, Generation: agent.Generation}
+	concurrent := agent.DeepCopy()
+	concurrent.Spec.User.DisplayName = "Concurrent update"
+	concurrent.Generation++
+	if err := fc.Update(ctx, concurrent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewClient(fc).SetInstanceSuspendedByName(ctx, agent.Name, version, true, nil); !errors.Is(err, ErrInstanceChanged) {
+		t.Fatalf("concurrent specification change was accepted: %v", err)
+	}
+	current := &api.Agent{}
+	if err := fc.Get(ctx, client.ObjectKeyFromObject(agent), current); err != nil || current.Spec.Suspended || current.Spec.User.DisplayName != "Concurrent update" {
+		t.Fatalf("rejected request overwrote concurrent specification: %#v, %v", current, err)
+	}
+}
+
+func TestOwnerSuspensionGenerationDoesNotRetryUnsafePatchConflicts(t *testing.T) {
+	denied := errors.New("synthetic owner denial")
+	for _, tc := range []struct {
+		name      string
+		prepare   func(*api.Agent)
+		change    func(context.Context, client.WithWatch, *api.Agent, *appsv1.StatefulSet) error
+		authorize func(*api.Agent) error
+		want      error
+	}{
+		{
+			name: "specification", want: ErrInstanceChanged,
+			change: func(ctx context.Context, c client.WithWatch, current *api.Agent, _ *appsv1.StatefulSet) error {
+				current.Spec.User.DisplayName = "Concurrent update"
+				current.Generation++
+				return c.Update(ctx, current)
+			},
+		},
+		{
+			name: "deletion", want: ErrInstanceDeleting,
+			prepare: func(agent *api.Agent) { agent.Finalizers = []string{api.Finalizer} },
+			change: func(ctx context.Context, c client.WithWatch, current *api.Agent, _ *appsv1.StatefulSet) error {
+				return c.Delete(ctx, current)
+			},
+		},
+		{
+			name: "replacement", want: ErrInstanceChanged,
+			change: func(ctx context.Context, c client.WithWatch, current *api.Agent, _ *appsv1.StatefulSet) error {
+				if err := c.Delete(ctx, current); err != nil {
+					return err
+				}
+				replacement := current.DeepCopy()
+				replacement.UID, replacement.ResourceVersion = "replacement-uid", ""
+				return c.Create(ctx, replacement)
+			},
+		},
+		{
+			name: "owner authorization", want: denied,
+			change: func(ctx context.Context, c client.WithWatch, current *api.Agent, _ *appsv1.StatefulSet) error {
+				if current.Annotations == nil {
+					current.Annotations = map[string]string{}
+				}
+				current.Annotations["test.cetirun.microsoft.com/owner"] = "denied"
+				return c.Update(ctx, current)
+			},
+			authorize: func(agent *api.Agent) error {
+				if agent.Annotations["test.cetirun.microsoft.com/owner"] == "denied" {
+					return denied
+				}
+				return nil
+			},
+		},
+		{
+			name: "HOME eligibility", want: ErrSuspensionHomeRequired,
+			change: func(ctx context.Context, c client.WithWatch, _ *api.Agent, workload *appsv1.StatefulSet) error {
+				workload.Spec.Template.Spec.Volumes[0].VolumeSource = corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
+				if err := c.Update(ctx, workload); err != nil {
+					return err
+				}
+				return apierrors.NewConflict(schema.GroupResource{Group: api.GroupVersion.Group, Resource: "agents"}, workload.Name,
+					errors.New("synthetic status conflict"))
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			agent := restartableInstance()
+			if tc.prepare != nil {
+				tc.prepare(agent)
+			}
+			workload := suspensionWorkload(agent)
+			patches := 0
+			fc := fake.NewClientBuilder().WithScheme(newScheme()).WithGlobalResourceVersionCounter().
+				WithObjects(agent, workload).WithInterceptorFuncs(interceptor.Funcs{Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				patches++
+				current := &api.Agent{}
+				if err := c.Get(ctx, client.ObjectKeyFromObject(obj), current); err != nil {
+					return err
+				}
+				storedWorkload := &appsv1.StatefulSet{}
+				if err := c.Get(ctx, client.ObjectKeyFromObject(workload), storedWorkload); err != nil {
+					return err
+				}
+				if err := tc.change(ctx, c, current, storedWorkload); err != nil {
+					return err
+				}
+				return c.Patch(ctx, obj, patch, opts...)
+			}}).Build()
+			if err := fc.Get(ctx, client.ObjectKeyFromObject(agent), agent); err != nil {
+				t.Fatal(err)
+			}
+			_, err := NewClient(fc).SetInstanceSuspendedByName(ctx, agent.Name,
+				InstanceVersion{UID: agent.UID, ResourceVersion: agent.ResourceVersion, Generation: agent.Generation}, true, tc.authorize)
+			if !errors.Is(err, tc.want) || patches != 1 {
+				t.Fatalf("unsafe conflict retried or accepted: patches=%d err=%v", patches, err)
+			}
+		})
+	}
+}
+
+func TestOwnerSuspensionGenerationStopsAfterTwoStatusConflicts(t *testing.T) {
+	ctx := context.Background()
+	agent := restartableInstance()
+	patches := 0
+	fc := fake.NewClientBuilder().WithScheme(newScheme()).WithGlobalResourceVersionCounter().
+		WithStatusSubresource(&api.Agent{}).WithObjects(agent, suspensionWorkload(agent)).
+		WithInterceptorFuncs(interceptor.Funcs{Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			patches++
+			current := &api.Agent{}
+			if err := c.Get(ctx, client.ObjectKeyFromObject(obj), current); err != nil {
+				return err
+			}
+			if patches%2 == 0 {
+				current.Status.Phase = api.PhaseReady
+			} else {
+				current.Status.Phase = api.PhasePending
+			}
+			if err := c.Status().Update(ctx, current); err != nil {
+				return err
+			}
+			return c.Patch(ctx, obj, patch, opts...)
+		}}).Build()
+	if err := fc.Get(ctx, client.ObjectKeyFromObject(agent), agent); err != nil {
+		t.Fatal(err)
+	}
+	_, err := NewClient(fc).SetInstanceSuspendedByName(ctx, agent.Name,
+		InstanceVersion{UID: agent.UID, ResourceVersion: agent.ResourceVersion, Generation: agent.Generation}, true, nil)
+	if !apierrors.IsConflict(err) || patches != 2 {
+		t.Fatalf("sustained status conflicts retried more than once: patches=%d err=%v", patches, err)
 	}
 }
 

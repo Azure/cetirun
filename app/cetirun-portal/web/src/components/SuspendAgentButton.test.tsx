@@ -45,7 +45,17 @@ describe("SuspendAgentButton", () => {
     view.rerender(<SuspendAgentButton instance={{ ...instance, uid: "replacement-uid", resourceVersion: "8" }} />);
     fireEvent.click(screen.getByRole("button", { name: "Suspend", exact: true }));
     expect(mutation.mutate).toHaveBeenCalledWith({
-      uid: instance.uid, resourceVersion: "7", suspended: true,
+      uid: instance.uid, resourceVersion: "7", generation: 2, suspended: true,
+    }, expect.anything());
+  });
+
+  it("keeps the original generation and version across a status-only refresh", () => {
+    const view = render(<SuspendAgentButton instance={instance} />);
+    fireEvent.click(screen.getByRole("button", { name: "Suspend Agent" }));
+    view.rerender(<SuspendAgentButton instance={{ ...instance, resourceVersion: "8", phase: "Pending" }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Suspend", exact: true }));
+    expect(mutation.mutate).toHaveBeenCalledWith({
+      uid: instance.uid, resourceVersion: "7", generation: 2, suspended: true,
     }, expect.anything());
   });
 
@@ -69,7 +79,7 @@ describe("SuspendAgentButton", () => {
     fireEvent.click(screen.getByRole("button", { name: "Suspend Agent" }));
     fireEvent.click(screen.getByRole("button", { name: "Suspend", exact: true }));
     expect(mutation.mutate).toHaveBeenCalledWith({
-      uid: instance.uid, resourceVersion: "8", suspended: true,
+      uid: instance.uid, resourceVersion: "8", generation: 2, suspended: true,
     }, expect.anything());
   });
 
@@ -88,7 +98,7 @@ describe("SuspendAgentButton", () => {
     fireEvent.click(screen.getByRole("button", { name: `Review ${action.toLowerCase()} request` }));
     fireEvent.click(screen.getByRole("button", { name: "Retry request" }));
     expect(mutation.mutate.mock.calls[1][0]).toEqual(sent);
-    expect(sent).toEqual({ uid: instance.uid, resourceVersion: "7", suspended });
+    expect(sent).toEqual({ uid: instance.uid, resourceVersion: "7", generation: 2, suspended });
   });
 
   it("observes accepted intent after a lost reply without claiming shutdown or submitting again", () => {
@@ -136,7 +146,7 @@ describe("SuspendAgentButton", () => {
     fireEvent.click(screen.getByRole("button", { name: "Resume Agent" }));
     fireEvent.click(screen.getByRole("button", { name: "Resume", exact: true }));
     expect(mutation.mutate).toHaveBeenCalledWith({
-      uid: instance.uid, resourceVersion: "7", suspended: false,
+      uid: instance.uid, resourceVersion: "7", generation: 2, suspended: false,
     }, expect.anything());
   });
 

@@ -207,6 +207,32 @@ func (r *AgentReconciler) verifySuspendedReconciledBootstrap(ctx context.Context
 	return nil
 }
 
+// verifySuspendedReconciledLifetime admits the independent suspension path
+// only when the protected runtime namespace is the exact object recorded for
+// this Agent.  It intentionally does not require the full bootstrap inventory
+// to match: stopSandboxBuiltinWorkload separately proves workload ownership
+// before changing replicas, while a Role or other auxiliary drift must not
+// keep an already-owned workload or Gateway key live.  The normal suspended
+// bootstrap verification still requires the complete inventory before it can
+// report suspension as fully verified.
+func (r *AgentReconciler) verifySuspendedReconciledLifetime(ctx context.Context, agent *api.Agent) error {
+	_, receipt, err := r.readSandboxBootstrap(ctx, agent)
+	if err != nil {
+		return fmt.Errorf("read suspended Sandbox bootstrap ownership receipt: %w", err)
+	}
+	if !receipt.Reconciled || receipt.Objects[0].UID == "" {
+		return fmt.Errorf("suspended Sandbox namespace identity is incomplete")
+	}
+	namespace := &corev1.Namespace{}
+	if err := r.customReader().Get(ctx, client.ObjectKey{Name: receipt.Namespace}, namespace); err != nil {
+		return fmt.Errorf("read suspended Sandbox namespace: %w", err)
+	}
+	if err := r.validateSandboxBootstrapNamespace(ctx, agent, namespace); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sandboxPreparationAttempt) error {
 	agent, config := attempt.agent, r.SandboxPreparation.bootstrap
 	accountName, err := r.bootstrapIdentityAccountName(attempt)

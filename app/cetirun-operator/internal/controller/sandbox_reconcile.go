@@ -77,10 +77,14 @@ func (r *AgentReconciler) suspendUnbootstrappedReconciledSandbox(ctx context.Con
 		return false, ctrl.Result{}, nil
 	}
 	// A protected receipt may describe either a completed lifetime or an
-	// interrupted write. Only a read-only, UID-pinned inventory proof may reach
-	// normal stopping; otherwise do not touch a replacement namespace.
+	// interrupted write. A complete inventory proof remains required before a
+	// suspended lifetime can be treated as verified.  Stopping is narrower:
+	// once the recorded namespace identity is confirmed, independently-owned
+	// workload shutdown and Gateway key blocking must not be delayed by an
+	// unrelated bootstrap inventory drift such as an operator Role update.
+	// Otherwise do not touch a replacement namespace.
 	if controllerutil.ContainsFinalizer(agent, sandbox.BootstrapFinalizer) {
-		if err := r.verifySuspendedReconciledBootstrap(ctx, agent); err != nil {
+		if err := r.verifySuspendedReconciledLifetime(ctx, agent); err != nil {
 			return r.holdUnbootstrappedSuspension(ctx, agent)
 		}
 		return false, ctrl.Result{}, nil

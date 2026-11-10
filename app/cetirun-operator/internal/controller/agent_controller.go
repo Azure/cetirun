@@ -715,8 +715,16 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 	if instance.Status.Phase == "" || instance.Status.Phase == cetirunv1alpha1.PhasePending {
 		logger.V(1).Info("Setting phase to Provisioning", "alias", instance.Spec.User.Alias, "currentPhase", instance.Status.Phase)
-		if err := r.setPhase(ctx, instance, cetirunv1alpha1.PhaseProvisioning); err != nil {
-			return ctrl.Result{}, err
+		if reconciledSandbox && !creating {
+			// Bootstrap may still fail before it creates any lifetime evidence.
+			// Keep Provisioning in memory until a later write can make progress;
+			// persisting it here otherwise creates a Pending -> Provisioning ->
+			// Pending loop through an unchanged dependency hold.
+			instance.Status.Phase = cetirunv1alpha1.PhaseProvisioning
+		} else {
+			if err := r.setPhase(ctx, instance, cetirunv1alpha1.PhaseProvisioning); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 	} else if creating {
 		if err := r.updateStatus(ctx, instance); err != nil {

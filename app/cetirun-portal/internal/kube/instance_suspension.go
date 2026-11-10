@@ -181,41 +181,64 @@ func (c *Client) SetInstanceSuspendedByName(ctx context.Context, name string, ve
 	if version.UID == "" || version.ResourceVersion == "" {
 		return nil, ErrInstanceVersionRequired
 	}
-	instance, err := c.GetInstanceByName(ctx, name)
-	if err != nil {
-		return nil, err
+	if version.Generation < 0 {
+		return nil, ErrInstanceVersionRequired
 	}
-	if authorize != nil {
-		if err := authorize(instance); err != nil {
+	// A status write changes resourceVersion without changing the owner-visible
+	// configuration. New clients send generation so that a held Agent remains
+	// suspendable while the controller reports progress. There is deliberately
+	// only one fresh read after a conditional-write conflict: it rechecks the
+	// owner, lifecycle guards, and the complete specification without masking
+	// sustained contention.
+	for attempt := 0; attempt < 2; attempt++ {
+		instance, err := c.GetInstanceByName(ctx, name)
+		if err != nil {
 			return nil, err
 		}
-	}
-	if err := validateInstanceUpdate(instance, UpdateInstanceOpts{ExpectedUID: version.UID}); err != nil {
-		return nil, err
-	}
-	if slices.Contains(instance.Finalizers, api.SandboxPreparationFinalizer) {
-		return nil, ErrSuspensionUnsupported
-	}
-	// A retry may observe the requested intent after a lost response or status
-	// write. A stale version must never reverse a newer, opposite intent.
-	if instance.Spec.Suspended == suspended {
-		return instance, nil
-	}
-	if instance.ResourceVersion != version.ResourceVersion {
-		return nil, ErrInstanceChanged
-	}
-	if suspended {
-		if err := c.CheckSuspension(ctx, instance); err != nil {
+		if authorize != nil {
+			if err := authorize(instance); err != nil {
+				return nil, err
+			}
+		}
+		if err := validateInstanceUpdate(instance, UpdateInstanceOpts{ExpectedUID: version.UID}); err != nil {
 			return nil, err
 		}
+		if slices.Contains(instance.Finalizers, api.SandboxPreparationFinalizer) {
+			return nil, ErrSuspensionUnsupported
+		}
+		// A retry may observe the requested intent after a lost response or a
+		// status write. Identity, ownership, and deletion are checked above,
+		// so returning this existing intent cannot reverse a later operation.
+		if instance.Spec.Suspended == suspended {
+			return instance, nil
+		}
+		if version.Generation > 0 {
+			if instance.Generation != version.Generation {
+				return nil, ErrInstanceChanged
+			}
+		} else if instance.ResourceVersion != version.ResourceVersion {
+			return nil, ErrInstanceChanged
+		}
+		if suspended {
+			if err := c.CheckSuspension(ctx, instance); err != nil {
+				return nil, err
+			}
+		}
+		before := instance.DeepCopy()
+		// Keep pending restart/migration requests: suspension takes precedence,
+		// and resumption lets the existing controller continue those operations.
+		instance.Spec.Suspended = suspended
+		err = c.client.Patch(ctx, instance, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}),
+			client.FieldValidation(metav1.FieldValidationStrict))
+		if err == nil {
+			return instance, nil
+		}
+		// Older clients did not supply a generation and retain the original
+		// resourceVersion-only contract, including surfacing the first
+		// optimistic-lock conflict unchanged.
+		if version.Generation == 0 || !apierrors.IsConflict(err) || attempt == 1 {
+			return nil, fmt.Errorf("request Agent suspension change: %w", err)
+		}
 	}
-	before := instance.DeepCopy()
-	// Keep pending restart/migration requests: suspension takes precedence, and
-	// resumption lets the existing controller continue those same operations.
-	instance.Spec.Suspended = suspended
-	if err := c.client.Patch(ctx, instance, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}),
-		client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
-		return nil, fmt.Errorf("request Agent suspension change: %w", err)
-	}
-	return instance, nil
+	return nil, ErrInstanceChanged
 }
