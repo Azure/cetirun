@@ -88,3 +88,17 @@ func testBindings() Custom {
 			DNS: Peer{Namespace: "kube-system", PodLabels: map[string]string{"k8s-app": "kube-dns"}}},
 	}
 }
+
+func TestSharedValuesDropNativeSettings(t *testing.T) {
+	values := map[string]any{"persistence": map[string]any{"size": "8Gi"}, "nodeSelector": map[string]any{"pool": "agents"}}
+	shared := SharedValues(values)
+	if _, ok := shared["persistence"]; ok || shared["nodeSelector"] == nil || len(shared) != 1 {
+		t.Fatalf("shared values = %v", shared)
+	}
+	if _, ok := values["persistence"]; !ok {
+		t.Fatal("SharedValues mutated its input")
+	}
+	if err := ValidateOverrides(shared); err != nil {
+		t.Fatal(err)
+	}
+}

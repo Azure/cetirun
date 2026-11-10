@@ -111,10 +111,12 @@ func Discover(tree Tree, root string, limits Limits, reserved []string) ([]Skill
 	sort.Slice(all, func(i, j int) bool { return all[i].Path < all[j].Path })
 
 	// Skill directories: directories that hold SKILL.md, not below a hidden
-	// directory, outermost first.
+	// directory, outermost first. A SKILL.md that is not a regular file, such
+	// as a symbolic link, still marks a skill directory, so that validate
+	// rejects it with a reason instead of leaving it out of the catalog.
 	var candidates []string
 	for _, entry := range all {
-		if path.Base(entry.Path) != skillFile || (entry.Mode != Regular && entry.Mode != Executable) {
+		if path.Base(entry.Path) != skillFile || entry.Mode == Dir {
 			continue
 		}
 		dir := path.Dir(entry.Path)
