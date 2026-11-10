@@ -1,0 +1,34 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+//
+// Query functions of the CetiRun content database: the prompts and responses
+// of AI Gateway calls. Its readers are a separate, small group. Rows arrive in
+// the table Content, one per part of a call's request or response
+// (cetirun_ai_gateway/content.py).
+.create-or-alter function with (folder = "CetiRun", docstring = "AI Gateway calls with their request and response text, the parts of each joined again. Join with GatewayRequests() of the logs database on CallId.", skipvalidation = "true") GatewayContent() {
+    Content
+    | extend Body = todynamic(Body)
+    | project
+        Timestamp,
+        Cluster,
+        CallId = tostring(Body['call_id']),
+        RequestId = tostring(Body['request_id']),
+        Model = tostring(Body['model']),
+        Status = tostring(Body['status']),
+        Agent = tostring(Body['agent']),
+        AgentUid = tostring(Body['agent_uid']),
+        Owner = tostring(Body['owner']),
+        Team = tostring(Body['team']),
+        Kind = tostring(Body['kind']),
+        Part = toint(Body['part']),
+        Parts = toint(Body['parts']),
+        Text = tostring(Body['text'])
+    | summarize Timestamp = min(Timestamp), Received = count(), Pieces = make_list(bag_pack("p", Part, "t", Text)),
+        Parts = max(Parts) by Cluster, CallId, RequestId, Model, Status, Agent, AgentUid, Owner, Team, Kind
+    | mv-apply Piece = Pieces on (
+        order by toint(Piece['p']) asc
+        | summarize Text = strcat_array(make_list(tostring(Piece['t'])), "")
+    )
+    | extend Complete = Received == Parts
+    | project-away Pieces
+}

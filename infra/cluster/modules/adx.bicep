@@ -76,6 +76,21 @@ param viewers array = []
 @description('Principals that read the Agent logs database, in the same form as viewers.')
 param agentLogsViewers array = []
 
+@description('Create the database of AI Gateway prompts and responses. The ADX-Mon ingestor gets no role on it.')
+param createContentDatabase bool = false
+
+@description('Database of AI Gateway prompts and responses.')
+param contentDatabaseName string = 'CetiRunContent'
+
+@minValue(1)
+param contentRetentionDays int = 7
+
+@description('Client (application) ID of the identity that writes content records, such as the AI Gateway\'s. Empty skips its role.')
+param contentWriterClientId string = ''
+
+@description('Principals that read the content database, in the same form as viewers. Keep it small: it holds conversations.')
+param contentViewers array = []
+
 // The query functions of the databases. Their files are scripts of management
 // commands that can also run on a Kusto cluster made without this module;
 // their comment lines are left out here.
@@ -196,9 +211,63 @@ resource viewerAssignment 'Microsoft.Kusto/clusters/databases/principalAssignmen
   }
 }]
 
+// Prompts and responses, apart from every other database: the ADX-Mon
+// ingestor cannot write here, and only contentViewers read it. The table is
+// created here because a writer with the Ingestor role cannot create tables.
+resource contentDatabase 'Microsoft.Kusto/clusters/databases@2024-04-13' = if (createContentDatabase) {
+  parent: cluster
+  name: contentDatabaseName
+  location: location
+  kind: 'ReadWrite'
+  properties: {
+    softDeletePeriod: 'P${contentRetentionDays}D'
+    hotCachePeriod: 'P${min(hotCacheDays, contentRetentionDays)}D'
+  }
+  dependsOn: [
+    newCluster
+  ]
+}
+
+resource contentSchema 'Microsoft.Kusto/clusters/databases/scripts@2024-04-13' = if (createContentDatabase) {
+  parent: contentDatabase
+  name: 'cetirun-schema'
+  properties: {
+    #disable-next-line use-secure-value-for-secure-inputs
+    scriptContent: join([
+      '.create-merge table Content (Timestamp: datetime, Cluster: string, Body: dynamic)'
+      format('.alter database [\'{0}\'] policy ingestionbatching \'{{"MaximumBatchingTimeSpan":"{1}","MaximumNumberOfItems":500,"MaximumRawDataSizeMB":1024}}\'', contentDatabaseName, format('00:{0:00}:{1:00}', ingestionBatchingSeconds / 60, ingestionBatchingSeconds % 60))
+      join(filter(split(loadTextContent('adx/cetirun-content.kql'), '\n'), line => !startsWith(line, '//')), '\n')
+    ], '\n\n')
+    continueOnErrors: false
+  }
+}
+
+resource contentWriter 'Microsoft.Kusto/clusters/databases/principalAssignments@2024-04-13' = if (createContentDatabase && !empty(contentWriterClientId)) {
+  parent: contentDatabase
+  name: guid(cluster.id, contentDatabaseName, contentWriterClientId, 'Ingestor')
+  properties: {
+    principalId: contentWriterClientId
+    principalType: 'App'
+    role: 'Ingestor'
+    tenantId: tenantId
+  }
+}
+
+resource contentViewer 'Microsoft.Kusto/clusters/databases/principalAssignments@2024-04-13' = [for viewer in (createContentDatabase ? contentViewers : []): {
+  parent: contentDatabase
+  name: guid(cluster.id, contentDatabaseName, viewer.principalId, 'Viewer')
+  properties: {
+    principalId: viewer.principalId
+    principalType: viewer.principalType
+    role: 'Viewer'
+    tenantId: tenantId
+  }
+}]
+
 @description('Query URI of the Kusto cluster; the ingestor derives the ingestion URI from it.')
 output clusterUri string = cluster.properties.uri
 output dataIngestionUri string = cluster.properties.dataIngestionUri
 output logsDatabaseName string = logsDatabaseName
 output metricsDatabaseName string = metricsDatabaseName
 output agentLogsDatabaseName string = agentLogsDatabaseName
+output contentDatabaseName string = createContentDatabase ? contentDatabaseName : ''
