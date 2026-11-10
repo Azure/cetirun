@@ -287,6 +287,8 @@ class SyntheticAPIIngress(INGRESS.Ingress):
 
     def helm(self, *args, **kwargs):
         self.api_calls.append(("helm", args))
+        if args[:2] == ("version", "--template"):
+            return "v3.19.0"
         if args[0] == "list":
             release = args[args.index("--filter") + 1].strip("^").rstrip("$").replace("\\", "")
             if release == self.config["certManager"]["release"]:
@@ -718,6 +720,46 @@ class PublicIngressTests(unittest.TestCase):
         self.assertIn("--subscription", commands[1])
         self.assertEqual(commands[1][commands[1].index("--subscription") + 1], SUBSCRIPTION)
         self.assertNotIn("set", commands[1])
+
+    def test_release_status_keeps_all_statuses_on_helm3_and_uses_helm4_default(self):
+        value = self.normalized()
+        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+            for version, expects_all in (("v3.19.0", True), ("v4.3.1", False)):
+                with self.subTest(version=version):
+                    ingress = INGRESS.Ingress(value, scratch)
+                    calls = []
+
+                    def helm(*args, **kwargs):
+                        calls.append(args)
+                        if args[0] == "version":
+                            return version
+                        self.assertEqual(args[0], "list")
+                        return json.dumps([{"status": "failed", "revision": "1"}])
+
+                    ingress.helm = helm
+                    self.assertEqual(ingress.release_status("cetirun-platform", "cetirun-system")["status"], "failed")
+                    self.assertEqual("--all" in calls[1], expects_all)
+                    ingress.release_status("cetirun-platform", "cetirun-system")
+                    self.assertEqual(sum(call[0] == "version" for call in calls), 1)
+
+    def test_release_status_rejects_unknown_helm_and_active_operations(self):
+        value = self.normalized()
+        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+            for version in ("invalid", "v2.17.0", "v5.0.0"):
+                with self.subTest(version=version):
+                    ingress = INGRESS.Ingress(value, scratch)
+                    with patch.object(ingress, "helm", return_value=version) as helm:
+                        for _ in range(2):
+                            with self.assertRaises(INGRESS.IngressError):
+                                ingress.release_status("cetirun-platform", "cetirun-system")
+                        self.assertTrue(all(call.args[0] == "version" for call in helm.call_args_list))
+            for version in ("v3.19.0", "v4.3.1"):
+                for status in ("pending-install", "pending-upgrade", "uninstalling"):
+                    with self.subTest(version=version, status=status):
+                        ingress = INGRESS.Ingress(value, scratch)
+                        with patch.object(ingress, "helm", side_effect=[version, json.dumps([{"status": status}])]):
+                            with self.assertRaisesRegex(INGRESS.IngressError, "active or unsupported"):
+                                ingress.release_status("cetirun-platform", "cetirun-system")
 
     def test_azure_preflight_binds_the_exact_aks_and_public_ip(self):
         value = self.normalized(mode="azure-public-ip")

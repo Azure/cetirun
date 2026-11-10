@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -12,9 +13,11 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 CHART = ROOT / "app" / "cetirun-chart"
+OPENAT2_PROBE = CHART / "agents" / "openclaw" / "check-openat2.py"
 
 
 def version_tuple(value):
@@ -22,6 +25,12 @@ def version_tuple(value):
 
 
 class ImageDependencyTests(unittest.TestCase):
+    def openat2_probe(self):
+        spec = importlib.util.spec_from_file_location("check_openat2", OPENAT2_PROBE)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
     def _hermes_source_command(self):
         content = (CHART / "agents/hermes/Dockerfile").read_text()
         stage = content.split("FROM ${BASE_IMAGE} AS hermes-source\n", 1)[1].split("\nFROM ", 1)[0]
@@ -210,6 +219,50 @@ class ImageDependencyTests(unittest.TestCase):
             with self.subTest(field=field):
                 self.assertNotIn(field, template)
                 self.assertNotIn(field, values)
+
+    def test_openclaw_builder_checks_openat2_before_plugin_downloads(self):
+        dockerfile = (CHART / "agents/openclaw/Dockerfile").read_text()
+        preflight = OPENAT2_PROBE
+        self.assertTrue(preflight.is_file())
+        self.assertIn("COPY --chown=vibe:vibe agents/openclaw/check-openat2.py", dockerfile)
+        self.assertLess(
+            dockerfile.index("python3 /tmp/check-openat2.py"),
+            dockerfile.index("--prefix /tmp/openclaw-plugin-prefetch"),
+        )
+        source = preflight.read_text()
+        self.assertIn("libc.syscall", source)
+        self.assertIn("errno.ENOSYS", source)
+        self.assertIn("Linux Docker Buildx builder", source)
+        self.assertIn("remote builders that block this syscall are unsupported", source)
+
+    def test_openat2_probe_closes_the_successful_descriptor(self):
+        probe = self.openat2_probe()
+        libc = Mock()
+        libc.syscall.return_value = 41
+        with patch.object(probe.ctypes, "CDLL", return_value=libc) as load_libc, \
+             patch.object(probe.os, "close") as close:
+            probe.main()
+        load_libc.assert_called_once_with(None, use_errno=True)
+        self.assertEqual(libc.syscall.call_args.args[0].value, probe.SYS_OPENAT2)
+        close.assert_called_once_with(41)
+
+    def test_openat2_probe_reports_enosys(self):
+        probe = self.openat2_probe()
+        libc = Mock()
+        libc.syscall.return_value = -1
+        with patch.object(probe.ctypes, "CDLL", return_value=libc), \
+             patch.object(probe.ctypes, "get_errno", return_value=probe.errno.ENOSYS), \
+             self.assertRaisesRegex(SystemExit, r"openat2.*not implemented"):
+            probe.main()
+
+    def test_openat2_probe_rejects_other_syscall_failures(self):
+        probe = self.openat2_probe()
+        libc = Mock()
+        libc.syscall.return_value = -1
+        with patch.object(probe.ctypes, "CDLL", return_value=libc), \
+             patch.object(probe.ctypes, "get_errno", return_value=probe.errno.EPERM), \
+             self.assertRaisesRegex(SystemExit, r"rejected it.*Operation not permitted"):
+            probe.main()
 
     def test_hermes_uses_official_locked_source_install(self):
         content = (CHART / "agents/hermes/Dockerfile").read_text()

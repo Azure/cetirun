@@ -134,15 +134,12 @@ def load_assets(root):
     canonical = (root / "AGENTS.md").read_text()
     if len(canonical.encode()) > 2048:
         raise ValueError("MemoryContractTooLarge")
-    return canonical
+    return canonical, next(item["digest"] for item in files if item["path"] == "bin/cetirun-memory")
 
 
 class MemorySession:
-    def __init__(self, root, binding):
-        self.root, self.binding = root, binding
-        self.binary = Path(os.environ.get("CETIRUN_MEMORY_BINARY") or root / "bin/cetirun-memory")
-        if not self.binary.is_absolute():
-            raise ValueError("MemoryBindingInvalid")
+    def __init__(self, binary, environment, binding):
+        self.binary, self.environment, self.binding = binary, environment, binding
         self.cancelled = threading.Event()
         self.checks, self.injected = [], []
         self.loop = self.task = None
@@ -171,7 +168,8 @@ class MemorySession:
         process = None
         try:
             process = subprocess.Popen([str(self.binary), "native-event"],
-                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                       env={**os.environ, **self.environment})
             deadline = time.monotonic() + 5
             first = raw
             while True:
@@ -315,7 +313,18 @@ def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_
     root = Path(root or selected)
     if not root.is_absolute():
         raise ValueError("MemoryBindingInvalid")
-    memory_contract = load_assets(root)
+    memory_contract, helper_digest = load_assets(root)
+    binary = Path(os.environ.get("CETIRUN_MEMORY_BINARY") or root / "bin/cetirun-memory")
+    if not binary.is_absolute():
+        raise ValueError("MemoryBindingInvalid")
+    if binary.is_symlink() or not binary.is_file() or binary.stat().st_nlink != 1 or binary.stat().st_size > 32 * 1024 * 1024:
+        raise ValueError("MemoryAssetUnsafe")
+    if "sha256:" + hashlib.sha256(binary.read_bytes()).hexdigest() != helper_digest:
+        raise ValueError("MemoryAssetMismatch")
+    environment = {"HOME": str(Path.home()), "CETIRUN_MEMORY_ROOT": os.environ.get("CETIRUN_MEMORY_ROOT", "")}
+    data_root = environment["CETIRUN_MEMORY_ROOT"]
+    if data_root and (not os.path.isabs(data_root) or os.path.normpath(data_root) != data_root or data_root == "/"):
+        raise ValueError("MemoryBindingInvalid")
     payload_schema = json.loads((root / "adapters/common/payload-schema.json").read_text())
     context_file = Path(os.environ.get("CETIRUN_MEMORY_CONTEXT") or Path.home() / ".agents/AGENTS.md")
     if not context_file.is_absolute():
@@ -436,7 +445,7 @@ def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_
                        "model": provider + "/" + model, "modelEvaluation": False}
             if private and grant.parent:
                 binding["ownerAuthorizedChild"] = True
-            sessions[session_id] = session_factory(root, binding)
+            sessions[session_id] = session_factory(binary, environment, binding)
             if len(sessions) > 128:
                 evicted = next(iter(sessions))
                 sessions.pop(evicted).stop()

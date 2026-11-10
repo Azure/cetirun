@@ -296,6 +296,7 @@ class Ingress:
         self.cm_recovery_uids = {}
         self.cm_replacing = False
         self.public_ip = None
+        self.helm_major = None
 
     def run(self, command, *, offline=False, input_text=None, timeout=60):
         env = {**os.environ, "KUBECONFIG": os.devnull if offline else self.config["target"]["kubeconfig"],
@@ -428,7 +429,19 @@ class Ingress:
                 "resources": [{"kind": d["kind"], "name": d["metadata"]["name"]} for d in self.documents]}
 
     def release_status(self, release, namespace):
-        rows = json.loads(self.helm("list", "--all", "--filter", "^" + re.escape(release) + "$", "--namespace", namespace, "-o", "json"))
+        # Helm 4 lists every release state by default and removed --all. Helm 3
+        # still needs the flag so a failed or pending release is not hidden.
+        if self.helm_major is None:
+            version = self.helm("version", "--template", "{{ .Version }}").strip()
+            match = re.fullmatch(r"v?([0-9]+)\.[0-9]+\.[0-9]+(?:[-+].*)?", version)
+            require(match is not None, "Cannot determine Helm client version")
+            major = int(match.group(1))
+            require(major in (3, 4), "Only Helm 3 and Helm 4 are supported")
+            self.helm_major = major
+        arguments = ["list"]
+        if self.helm_major == 3:
+            arguments.append("--all")
+        rows = json.loads(self.helm(*arguments, "--filter", "^" + re.escape(release) + "$", "--namespace", namespace, "-o", "json"))
         require(len(rows) <= 1, "Ambiguous Helm release")
         if rows:
             require(rows[0]["status"] in ("deployed", "failed"), "Helm release has an active or unsupported operation; inspect before retrying")

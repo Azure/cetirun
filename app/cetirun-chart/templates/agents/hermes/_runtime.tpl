@@ -276,6 +276,8 @@ Hermes configmap data
 {{ .Files.Get "agents/hermes/bootstrap/hermes-gateway.sh" | indent 4 }}
   hermes-runtime.py: |
 {{ .Files.Get "agents/hermes/bootstrap/hermes-runtime.py" | indent 4 }}
+  hermes-health-probe.cjs: |
+{{ .Files.Get "agents/hermes/bootstrap/hermes-health-probe.cjs" | indent 4 }}
   hermes-managed.yaml: |
     webapp:
       enabled: true

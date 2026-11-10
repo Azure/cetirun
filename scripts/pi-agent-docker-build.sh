@@ -21,6 +21,8 @@ esac
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
+source "${script_dir}/cetirun-build-attestations.sh"
+cetirun_validate_sbom_generator "${SBOM_GENERATOR:-}"
 registry="${REGISTRY:-$("${script_dir}/cetirun-release-metadata.sh" registry)}"
 release_version="${VERSION:-$("${script_dir}/cetirun-release-metadata.sh" version)}"
 image_tag="${IMAGE_TAG:-${release_version}}"
@@ -33,6 +35,7 @@ context_dir="${repo_root}/examples/pi-agent"
 [[ "${image_tag}" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]] || { printf '%s\n' "Invalid IMAGE_TAG." >&2; exit 2; }
 [[ "${base_image}" != *"://"* && "${base_image}" =~ ^[a-zA-Z0-9][a-zA-Z0-9./:@_-]*$ ]] || { printf '%s\n' "Invalid BASE_IMAGE." >&2; exit 2; }
 [[ "${push}" == "true" || "${push}" == "false" ]] || { printf '%s\n' "PUSH must be true or false." >&2; exit 2; }
+cetirun_require_sbom_generator_push "${push}"
 for file in Dockerfile package.json package-lock.json; do
   test -f "${context_dir}/${file}" || { printf 'Missing Pi build input: %s\n' "${file}" >&2; exit 1; }
 done
@@ -50,9 +53,10 @@ args=(
 if [[ "${push}" == "true" ]]; then
   "${script_dir}/cetirun-release-metadata.sh" check-push-registry "${registry}"
   args+=(--push)
-  if docker buildx inspect --bootstrap | grep -q 'Driver:.*docker-container'; then
-    args+=(--provenance=true --sbom=true)
-  fi
+  buildx_driver=""
+  if buildx_driver="$(docker buildx inspect --bootstrap 2>/dev/null | awk '/^Driver:/ { print $2; exit }')"; then :; fi
+  cetirun_configure_sbom_attestation "${buildx_driver}"
+  args+=("${CETIRUN_SBOM_ATTESTATION_ARGS[@]}")
 else
   args+=(--load)
 fi

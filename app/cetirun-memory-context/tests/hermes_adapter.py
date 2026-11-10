@@ -111,11 +111,13 @@ real_popen = subprocess.Popen
 
 class CountingPopen(real_popen):
     started = 0
-    commands, requests = [], []
+    commands, requests, bindings = [], [], []
 
     def __init__(self, *args, **kwargs):
         CountingPopen.started += 1
         CountingPopen.commands.append(args[0])
+        CountingPopen.bindings.append({name: kwargs.get("env", os.environ).get(name)
+                                      for name in ("HOME", "CETIRUN_MEMORY_ROOT")})
         super().__init__(*args, **kwargs)
 
     def communicate(self, input=None, **kwargs):
@@ -128,7 +130,7 @@ def count_helpers(enabled):
     # The adapter and this test share the subprocess module.
     subprocess.Popen = CountingPopen if enabled else real_popen
     CountingPopen.started = 0
-    CountingPopen.commands, CountingPopen.requests = [], []
+    CountingPopen.commands, CountingPopen.requests, CountingPopen.bindings = [], [], []
 
 
 # The further model requests of a turn's tool loop reuse its context and record
@@ -404,6 +406,42 @@ with patch.dict(os.environ, CETIRUN_MEMORY_ROOT=str(data_root), CETIRUN_MEMORY_A
         assert all(request["binding"]["nativeVersion"] == "0.22.8" for request in CountingPopen.requests)
     finally:
         count_helpers(False)
+
+    # A dotenv reload must not switch an already registered plugin's helper or store.
+    changed_root = local_home / "different-store"
+    count_helpers(True)
+    with patch.dict(os.environ, HOME=str(local_home), CETIRUN_MEMORY_ROOT=str(changed_root),
+                    CETIRUN_MEMORY_BINARY="relative-helper", CETIRUN_MEMORY_ASSETS="/missing-assets",
+                    CETIRUN_MEMORY_CONTEXT="/missing-context"):
+        local_host.hooks["pre_llm_call"](session_id="local-fixture", platform="cli", turn_id="after-reload", model="model")
+        found = json.loads(local_tool({"command": "query", "payload": {"queryTerms": [note["title"]]}},
+                                     session_id="local-fixture", tool_call_id="after-reload-query"))
+        assert found["data"]["hits"][0]["note"]["body"] == note["body"], found
+        assert CountingPopen.bindings and all(binding == {"HOME": str(local_home.parent), "CETIRUN_MEMORY_ROOT": str(data_root)}
+                                              for binding in CountingPopen.bindings)
+        assert not changed_root.exists()
+        local_host.hooks["pre_llm_call"](session_id="local-fixture", platform="cli", turn_id="off-after-reload",
+                                         user_message="/memory off", model="model")
+        disabled = local_host.middleware["llm_request"](original, session_id="local-fixture", provider="fixture", model="model")
+        assert disabled["request"]["messages"][-1]["content"] == plugin.reminder(plugin.MEMORY_OFF)
+    count_helpers(False)
+
+    other_binary = local_home / "bin/other-helper"
+    other_binary.write_text("#!/bin/sh\nexit 0\n")
+    other_binary.chmod(0o755)
+    linked_binary = local_home / "bin/linked-helper"
+    linked_binary.symlink_to(binary)
+    for selected, reason in (("relative-helper", "MemoryBindingInvalid"), (str(other_binary), "MemoryAssetMismatch"),
+                             (str(linked_binary), "MemoryAssetUnsafe")):
+        with patch.dict(os.environ, CETIRUN_MEMORY_BINARY=selected):
+            rejected = Host()
+            try:
+                loader.register(rejected)
+            except ValueError as error:
+                assert str(error) == reason, error
+            else:
+                raise AssertionError("unverified helper was accepted: " + selected)
+            assert not rejected.tools and not rejected.hooks
 
     # An explicitly selected missing context must fail rather than fall back to
     # another instruction file; absence of the assets binding still disables it.

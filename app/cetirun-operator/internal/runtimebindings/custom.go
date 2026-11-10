@@ -212,6 +212,22 @@ func ValidateContextFiles(files map[string]string) error {
 	return nil
 }
 
+// nativePlatformKeys are operator-wide settings that only native harnesses
+// consume. Custom HOME comes from its approved binding, so these are dropped
+// from the shared values instead of rejected; Agents still cannot set them.
+var nativePlatformKeys = map[string]bool{"persistence": true}
+
+// SharedValues returns the operator-wide Helm values that apply to Custom.
+func SharedValues(values map[string]any) map[string]any {
+	shared := make(map[string]any, len(values))
+	for key, value := range values {
+		if !nativePlatformKeys[key] {
+			shared[key] = value
+		}
+	}
+	return shared
+}
+
 // ValidateOverrides deliberately keeps the Custom override surface small.
 // Bindings, identity, routing, hooks and volumes never come from Helm overrides.
 func ValidateOverrides(values map[string]any) error {

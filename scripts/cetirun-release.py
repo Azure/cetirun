@@ -20,6 +20,11 @@ ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "scripts/release-artifacts.json"
 RUNTIME_CHART_LOCK = ROOT / "scripts/cetirun-runtime-chart-lock.py"
 IMAGE_DIGEST = re.compile(r"sha256:[a-f0-9]{64}\Z")
+SBOM_GENERATOR = re.compile(
+    r"(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]+)?/)?"
+    r"[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*"
+    r"@sha256:[a-f0-9]{64}\Z"
+)
 VERSION_SPEC = importlib.util.spec_from_file_location("cetirun_version", ROOT / "scripts/cetirun-version.py")
 VERSIONS = importlib.util.module_from_spec(VERSION_SPEC)
 VERSION_SPEC.loader.exec_module(VERSIONS)
@@ -74,6 +79,13 @@ def coordinates(args):
         raise ValueError("GIT_SHA must be the full source commit SHA")
     if args.chart_namespace != "helm":
         raise ValueError("CHART_NAMESPACE must be helm; use REGISTRY for a repository prefix")
+
+
+def sbom_generator():
+    generator = os.environ.get("SBOM_GENERATOR", "")
+    if generator and not SBOM_GENERATOR.fullmatch(generator):
+        raise ValueError("SBOM_GENERATOR must be a lowercase OCI image reference pinned with @sha256:<64 lowercase hexadecimal characters>")
+    return generator
 
 
 def runtime_chart_lock_inputs():
@@ -276,6 +288,7 @@ def main(argv=None):
         args.registry = args.registry.rstrip("/")
         args.git_sha = args.git_sha or run(["git", "rev-parse", "HEAD"], capture=True).strip()
         coordinates(args)
+        sbom_generator()
         runtime_lock = runtime_chart_lock_inputs()
         if runtime_lock is not None and args.force and args.command in ("publish-charts", "publish"):
             raise ValueError("Runtime Chart image locking requires a new immutable registry prefix; --force is not supported")

@@ -645,8 +645,19 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
         required(config, f"identity.{field}")
     for field in ("customRuntime.storageClass", "customRuntime.storageSize", "customRuntime.accessMode"):
         required(config, f"platform.values.cetirun-operator.{field}")
-    for field in ("storageClass", "size"):
-        required(config, f"platform.values.cetirun-ai-gateway.postgresql.bundled.persistence.{field}")
+    persistence_path = "platform.values.cetirun-ai-gateway.postgresql.bundled.persistence"
+    required(config, persistence_path + ".size")
+    retained_storage = config["platform"].get("postgresqlStorage")
+    if retained_storage is not None:
+        retained_storage = mapping(retained_storage, "platform.postgresqlStorage")
+        if (set(retained_storage) != {"mode", "storageClassName"}
+                or retained_storage.get("mode") != "retain-default"
+                or not resource_name(retained_storage.get("storageClassName"))):
+            raise ValueError("platform.postgresqlStorage requires mode=retain-default and the retained PVC's storageClassName")
+        if get_value(config, persistence_path + ".storageClass") != "":
+            raise ValueError("retain-default requires an explicit empty PostgreSQL persistence.storageClass to preserve the existing claim template")
+    else:
+        required(config, persistence_path + ".storageClass")
     raw_custom = get_value(config, "platform.values.cetirun-operator.customRuntime")
     if type(raw_custom.get("fsGroup")) is not int or not 1 <= raw_custom["fsGroup"] <= 2147483647:
         raise ValueError("customRuntime.fsGroup must explicitly name the qualified non-root storage group")
@@ -896,6 +907,10 @@ class Deployment:
         self.cetiadmin_migration_receipt = None
         self.ingress = None
         self.defer_public_tls = False
+        self.retained_database_pin = None
+        # Only immutable references can reuse a successful registry inspection.
+        # Tags and chart versions are mutable and are checked on every preflight.
+        self.verified_image_digests = set()
 
     def run(self, command, *, env=None, input_text=None):
         if env is None and self.config["target"].get("kubeconfig"):
@@ -1217,7 +1232,8 @@ class Deployment:
                 if isinstance(value, str) and value.startswith("os.environ/"):
                     refs.add(("Secret", c["platform"]["namespace"], ai["providerCredentials"]["existingSecret"], value.removeprefix("os.environ/")))
         storage_classes = [operator["customRuntime"]["storageClass"], c["sharedSkills"]["storageClassName"],
-                           ai["postgresql"]["bundled"]["persistence"]["storageClass"]]
+                           c["platform"].get("postgresqlStorage", {}).get("storageClassName")
+                           or ai["postgresql"]["bundled"]["persistence"]["storageClass"]]
         marketplace = operator["skillMarketplace"]
         if marketplace.get("enabled"):
             # The repository credentials stay in an existing Secret of the platform namespace.
@@ -1530,6 +1546,100 @@ class Deployment:
             return value.get("apiVersion"), value.get("kind"), metadata.get("namespace"), metadata.get("name")
         return self.ingress is not None and identity(doc) in {identity(value) for value in self.ingress.documents}
 
+    def check_retained_postgresql(self):
+        storage = self.config["platform"].get("postgresqlStorage")
+        if not storage:
+            return
+        if "platform" not in self.existing_releases:
+            raise ValueError("Retained PostgreSQL requires the existing platform Helm release; this mode cannot install a new release")
+        namespace, release = (self.config["platform"][key] for key in ("namespace", "release"))
+        name, claim = "cetirun-ai-gateway-postgresql", "data-cetirun-ai-gateway-postgresql-0"
+        identities = {}
+
+        def identity(kind, resource, ns=namespace):
+            metadata = self.resource(kind, resource, ns)
+            if not metadata or not metadata.get("uid") or metadata.get("deletionTimestamp"):
+                raise ValueError(f"Retained PostgreSQL requires an existing, non-terminating {kind}")
+            identities[(kind, ns, resource)] = metadata["uid"]
+            return metadata
+
+        metadata = identity("StatefulSet", name)
+        annotations = metadata.get("annotations", {})
+        if (annotations.get("meta.helm.sh/release-name"), annotations.get("meta.helm.sh/release-namespace")) != (release, namespace):
+            raise ValueError("Retained PostgreSQL StatefulSet belongs to another release")
+        identity("PersistentVolumeClaim", claim)
+        identity("Secret", name)
+        identity("StorageClass", storage["storageClassName"], "")
+        desired = next(doc for doc in self.documents["platform"]
+                       if doc["kind"] == "StatefulSet" and doc["metadata"]["name"] == name)["spec"]["volumeClaimTemplates"]
+        templates = json.loads(self.selected_fields("StatefulSet", name, ("spec.volumeClaimTemplates",), namespace)[0])
+
+        def normalized(templates):
+            result = copy.deepcopy(templates)
+            for template in result:
+                # Kubernetes adds these defaults to embedded PVC templates. Do
+                # not discard arbitrary fields, explicit storageClassName, or
+                # a nonempty status/metadata field when comparing templates.
+                if template.get("metadata", {}).get("creationTimestamp", "missing") is None:
+                    del template["metadata"]["creationTimestamp"]
+                if template.get("spec", {}).get("volumeMode") == "Filesystem":
+                    del template["spec"]["volumeMode"]
+                if template.get("status") in ({}, {"phase": "Pending"}):
+                    del template["status"]
+            return result
+
+        if normalized(templates) != normalized(desired):
+            raise ValueError("Retained PostgreSQL volumeClaimTemplates differ from the rendered chart; refusing an immutable storage change")
+        raw_spec, phase = self.selected_fields("PersistentVolumeClaim", claim, ("spec", "status.phase"), namespace)
+        spec = json.loads(raw_spec)
+        expected = desired[0]["spec"]
+        if (phase != "Bound" or not resource_name(spec.get("volumeName"))
+                or spec.get("storageClassName") != storage["storageClassName"]
+                or spec.get("accessModes") != expected["accessModes"]
+                or spec.get("volumeMode", "Filesystem") != "Filesystem"
+                or spec.get("resources", {}).get("requests") != expected["resources"]["requests"]):
+            raise ValueError("Retained PostgreSQL PVC must be Bound with the expected class, access mode, and storage request")
+        volume = spec["volumeName"]
+        identity("PersistentVolume", volume, "")
+        binding, volume_class = self.selected_fields("PersistentVolume", volume, ("spec.claimRef", "spec.storageClassName"))
+        binding = json.loads(binding)
+        if (binding.get("uid"), binding.get("namespace"), binding.get("name"), volume_class) != (
+                identities[("PersistentVolumeClaim", namespace, claim)], namespace, claim, storage["storageClassName"]):
+            raise ValueError("Retained PostgreSQL PV does not bind the exact retained PVC")
+        for (kind, ns, resource), uid in identities.items():
+            current = self.resource(kind, resource, ns) or {}
+            if current.get("uid") != uid or current.get("deletionTimestamp"):
+                raise ValueError("Retained PostgreSQL identity changed while checking storage")
+        snapshot = (identities, templates, spec)
+        if self.retained_database_pin is not None and snapshot != self.retained_database_pin:
+            raise ValueError("Retained PostgreSQL identity or storage changed during deployment")
+        self.retained_database_pin = copy.deepcopy(snapshot)
+
+    def check_kubectl_version(self):
+        versions = json.loads(self.kubectl("version", "-o", "json"))
+        parsed = {}
+        for component in ("clientVersion", "serverVersion"):
+            version = versions.get(component, {})
+            major = re.fullmatch(r"[0-9]+", str(version.get("major", "")))
+            minor = re.fullmatch(r"([0-9]+)\+?", str(version.get("minor", "")))
+            if not major or not minor:
+                raise ValueError("kubectl version must report parseable clientVersion and serverVersion")
+            parsed[component] = (int(major[0]), int(minor[1]))
+        client, server = parsed["clientVersion"], parsed["serverVersion"]
+        if server < (1, 37):
+            raise ValueError("Enforced admission requires Kubernetes 1.37 or newer")
+        if client[0] != server[0] or abs(client[1] - server[1]) > 1:
+            raise ValueError(f"kubectl {client[0]}.{client[1]} is outside the supported one-minor skew of Kubernetes "
+                             f"{server[0]}.{server[1]}; select a compatible kubectl on PATH before retrying")
+
+    def inspect_image(self, reference):
+        immutable = re.fullmatch(r"\S+@sha256:[0-9a-f]{64}", reference) is not None
+        if immutable and reference in self.verified_image_digests:
+            return
+        self.run(["docker", "buildx", "imagetools", "inspect", reference])
+        if immutable:
+            self.verified_image_digests.add(reference)
+
     def preflight(self):
         c = self.config
         self.existing_releases.clear()
@@ -1540,9 +1650,7 @@ class Deployment:
             raise ValueError("The selected context does not match target.cluster and target.server")
         if (self.resource("namespace", "kube-system") or {}).get("uid") != c["target"]["clusterUID"]:
             raise ValueError("target.clusterUID does not match this cluster's kube-system UID")
-        version = json.loads(self.kubectl("version", "-o", "json"))["serverVersion"]
-        if (int(version["major"]), int(re.match(r"\d+", version["minor"])[0])) < (1, 37):
-            raise ValueError("Enforced admission requires Kubernetes 1.37 or newer")
+        self.check_kubectl_version()
         for kind in ("gateways.networking.istio.io", "virtualservices.networking.istio.io", "authorizationpolicies.security.istio.io"):
             if not self.resource("customresourcedefinition", kind):
                 raise ValueError(f"Managed Istio prerequisite is missing: {kind}")
@@ -1570,6 +1678,9 @@ class Deployment:
             if releases:
                 if releases[0]["status"].startswith("pending-"):
                     raise ValueError(f"Release {section['release']} has an unfinished operation")
+                if (name == "platform" and c["platform"].get("postgresqlStorage")
+                        and releases[0]["status"] not in ("deployed", "failed")):
+                    raise ValueError("Retained PostgreSQL requires a deployed or failed platform Helm release")
                 if name == "platform":
                     if self.ingress:
                         if self.ingress.platform_state == "full":
@@ -1656,14 +1767,15 @@ class Deployment:
         database = "cetirun-ai-gateway-postgresql"
         if self.resource("PersistentVolumeClaim", f"data-{database}-0", c["platform"]["namespace"]) and not self.resource("Secret", database, c["platform"]["namespace"]):
             raise ValueError("Retained PostgreSQL data has no password Secret; refusing to generate a replacement")
+        self.check_retained_postgresql()
         self.check_tls()
         for entry in release_inventory(c)["images"]:
-            self.run(["docker", "buildx", "imagetools", "inspect", f"{c['release']['registry']}/{entry['name']}:{c['release']['version']}"])
+            self.inspect_image(f"{c['release']['registry']}/{entry['name']}:{c['release']['version']}")
         for image in self.values["platform"]["cetirun-operator"]["customRuntime"]["approvedImages"]:
-            self.run(["docker", "buildx", "imagetools", "inspect", image])
+            self.inspect_image(image)
         admin = self.values["platform"]["cetirun-operator"]["cetiadmin"]
         if admin["enabled"] and admin["runtime"].get("image"):
-            self.run(["docker", "buildx", "imagetools", "inspect", admin["runtime"]["image"]])
+            self.inspect_image(admin["runtime"]["image"])
         for entry in release_inventory(c)["charts"]:
             self.run(["helm", "show", "chart", f"oci://{c['release']['registry']}/helm/{entry['name']}", "--version", c["release"]["version"]])
 
@@ -1672,6 +1784,8 @@ class Deployment:
 
     def upgrade(self, name, values=None):
         section = self.config[name]
+        if name == "platform":
+            self.check_retained_postgresql()
         if name == "platform" and not self.values["platform"]["cetirun-operator"]["enabled"]:
             self.check_cetiadmin_stopped()
         elif name == "platform":
@@ -1689,6 +1803,8 @@ class Deployment:
         if not self.config["release"].get("clientOpenAPIValidation", True):
             args.append("--disable-openapi-validation")
         self.helm(*args)
+        if name == "platform":
+            self.check_retained_postgresql()
 
     def ready(self, name, documents=None):
         section = self.config[name]

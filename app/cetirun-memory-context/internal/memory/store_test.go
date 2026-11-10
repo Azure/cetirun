@@ -425,6 +425,53 @@ func TestImportDoesNotInheritNativeAuthority(t *testing.T) {
 	}
 }
 
+func TestImportKeepsManagedHomeBinding(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv("HOME", filepath.Dir(f.home))
+	f.store = New(Config{Root: f.store.Config.Root})
+	if f.store.Config.Home != f.home {
+		t.Fatalf("managed import HOME changed: %q, want %q", f.store.Config.Home, f.home)
+	}
+	outside := filepath.Join(t.TempDir(), "note.md")
+	if err := os.WriteFile(outside, []byte("Synthetic note."), 0600); err != nil {
+		t.Fatal(err)
+	}
+	response, code := f.store.Execute(context.Background(), "import-plan", f.request(t, importInput{Files: []string{outside}}))
+	if code != 2 || response.Reason != "InvalidPath" {
+		t.Fatalf("import escaped managed HOME: %d, %+v", code, response)
+	}
+}
+
+func TestImportRejectsNestedCredentials(t *testing.T) {
+	for _, relative := range []string{".aws/config", ".ssh/config", ".config/gh/hosts.yml", ".hermes/config.yaml", ".openclaw/agents/main/agent/models.json"} {
+		t.Run(relative, func(t *testing.T) {
+			f := newFixture(t)
+			f.store = New(Config{Root: filepath.Join(f.home, "custom-store"), Home: f.home})
+			f.call(t, "init", struct{}{})
+			file := filepath.Join(f.home, "nested-home", relative)
+			if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
+				t.Fatal(err)
+			}
+			contents := []byte("Synthetic configuration without a token.")
+			if err := os.WriteFile(file, contents, 0600); err != nil {
+				t.Fatal(err)
+			}
+			response, code := f.store.Execute(context.Background(), "import-plan", f.request(t, importInput{Files: []string{file}}))
+			if code != 2 || response.Reason != "SensitiveContent" {
+				t.Errorf("plan accepted credential path: %d, %+v", code, response)
+			}
+			request := f.request(t, importApplyInput{})
+			plan := ImportPlan{Scope: request.RequestContext.Scope, Files: []ImportFile{{Path: file, Digest: digest(contents)}}}
+			plan.Digest = plan.hash()
+			request.Payload, _ = json.Marshal(importApplyInput{Plan: plan})
+			response, code = f.store.Execute(context.Background(), "import-apply", request)
+			if code != 2 || response.Reason != "SensitiveContent" {
+				t.Errorf("apply accepted credential path: %d, %+v", code, response)
+			}
+		})
+	}
+}
+
 func TestImportUsesHomeBoundaryWithCustomMemoryRoot(t *testing.T) {
 	for _, relativeRoot := range []string{".cetirun/memory", ".hermes/memories/memory", "saved-knowledge"} {
 		t.Run(relativeRoot, func(t *testing.T) {
@@ -444,7 +491,8 @@ func TestImportUsesHomeBoundaryWithCustomMemoryRoot(t *testing.T) {
 				return name
 			}
 			// These notes can live outside the memory root's parent directory.
-			files := []string{write(filepath.Join(home, "notes", "preferences.md")), write(root + "-archive.md")}
+			files := []string{write(filepath.Join(home, "notes", "preferences.md")), write(root + "-archive.md"),
+				write(filepath.Join(home, "archive", ".aws-notes", "config")), write(filepath.Join(home, "archive", ".hermes", "readme.md"))}
 			plan := f.call(t, "import-plan", importInput{Files: files}).Data.(ImportPlan)
 			if refs := f.call(t, "import-apply", importApplyInput{Plan: plan}).Data.(writeResult).Refs; len(refs) != len(files) {
 				t.Fatalf("imported %d of %d files", len(refs), len(files))

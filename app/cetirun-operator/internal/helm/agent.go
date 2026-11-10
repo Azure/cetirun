@@ -182,7 +182,7 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 		if err := request.CetiAdmin.Validate(); err != nil {
 			return nil, err
 		}
-		copy := make(map[string]any, len(input)+1)
+		copy := make(map[string]any, len(input))
 		for key, value := range input {
 			copy[key] = value
 		}

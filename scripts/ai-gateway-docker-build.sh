@@ -7,6 +7,13 @@
 
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
+source "${script_dir}/cetirun-build-attestations.sh"
+cetirun_validate_sbom_generator "${SBOM_GENERATOR:-}"
+push="${PUSH:-false}"
+cetirun_require_sbom_generator_push "${push}"
+
 if ! command -v docker >/dev/null 2>&1; then
   echo "ERROR: docker is not installed or not found in PATH." >&2
   exit 1
@@ -16,15 +23,11 @@ if ! docker buildx version >/dev/null 2>&1; then
   exit 1
 fi
 
-script_dir="$(cd "$(dirname "$0")" && pwd)"
-repo_root="$(cd "$script_dir/.." && pwd)"
-
 registry="${REGISTRY:-$("${script_dir}/cetirun-release-metadata.sh" registry)}"
 image_name="${IMAGE_NAME:-cetirun-ai-gateway}"
 release_version="${VERSION:-$("${script_dir}/cetirun-release-metadata.sh" version)}"
 image_tag="${IMAGE_TAG:-${release_version}}"
 git_sha="${GIT_SHA:-$(git -C "${repo_root}" rev-parse HEAD 2>/dev/null || echo unknown)}"
-push="${PUSH:-false}"
 context_dir="${repo_root}/app/cetirun-ai-gateway"
 # Package sources, for networks that block the public registries. Same names
 # and defaults as the other CetiRun image builds.
@@ -46,9 +49,10 @@ if [ "${push}" = "true" ]; then
   "${script_dir}/cetirun-release-metadata.sh" check-push-registry "${registry}"
   build_args+=(--platform linux/amd64 --push)
   # Attestations (provenance/SBOM) require a non-default buildx driver.
-  if docker buildx inspect --bootstrap 2>/dev/null | grep -q 'Driver:.*docker-container'; then
-    build_args+=(--provenance=true --sbom=true)
-  fi
+  buildx_driver=""
+  if buildx_driver="$(docker buildx inspect --bootstrap 2>/dev/null | awk '/^Driver:/ { print $2; exit }')"; then :; fi
+  cetirun_configure_sbom_attestation "${buildx_driver}"
+  build_args+=("${CETIRUN_SBOM_ATTESTATION_ARGS[@]}")
   echo "==> Building and pushing ${image_ref}"
 else
   build_args+=(--load)

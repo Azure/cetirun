@@ -275,6 +275,7 @@ test("pinned Hermes host APIs load the adapter and execute bounded native calls"
   assert.ok(process.env.MEMORY_HERMES_PYTHON, "select the provisioned Hermes PM interpreter");
   const output = execFileSync(process.env.MEMORY_HERMES_PYTHON, ["-B", path.join(moduleDir, "tests/hermes_host.py")], {
     env: { ...f.env, MEMORY_TEST_ASSETS: f.assets, MEMORY_TEST_WORKSPACE: f.workspace, MEMORY_HERMES_SOURCE: process.env.MEMORY_HERMES_SOURCE,
+      MEMORY_TEST_PLUGIN: path.join(moduleDir, "../cetirun-chart/agents/hermes/plugins/cetirun-memory-context/__init__.py"),
       HERMES_HOME: path.join(f.home, ".hermes"), HERMES_SKIP_AUTO_UPDATE: "1", PYTHONDONTWRITEBYTECODE: "1" }, encoding: "utf8", timeout: 30000,
   });
   assert.match(output, /Pinned Hermes host checks passed/);

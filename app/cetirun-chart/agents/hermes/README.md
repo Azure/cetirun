@@ -139,7 +139,11 @@ requests to `9120`. The target registration must explicitly approve the new
 Webapp port. An old approval for `9119` does not authorize `9120`.
 
 Readiness includes API health, gateway control-socket Webapp state, the password
-auth provider and prebuilt products. Startup and liveness use API `/health`.
+auth provider and prebuilt products. Startup and liveness use a lightweight
+Node probe for loopback API `/health`, without starting Python or checking the
+PM selection on every probe. Dependency validation remains on container and
+supervised gateway startup, and on readiness. The lightweight probe requires
+HTTP 200 and a valid JSON response and bounds all checks with one deadline.
 All three probes also verify managed ingress certificates against Envoy's active
 certificate and check the managed egress proxy when those helpers are enabled.
 If the Webapp listener fails after startup validation, upstream keeps a private
@@ -198,8 +202,9 @@ An explicit shared mount at `$HOME/.agents/skills` still occupies that directory
 Ordinary Hermes context volumes have a `40Mi` limit; protected reconciled
 workloads retain their configured scratch limit.
 
-Hermes discovers personal, configured and shared skills alongside the installed
-Memory assets. The source-hash guarded `configs/apply-memory-skills.py` patch keeps
+The managed Hermes image discovers personal, configured and shared skills
+alongside the installed Memory assets. The source-hash guarded
+`configs/apply-memory-skills.py` patch keeps
 the reserved `cetirun-memory` skill bound to
 `/opt/cetirun-memory/skills/cetirun-memory/SKILL.md` in both the native catalog and
 direct skill lookup. User or shared copies cannot replace it by directory name,
@@ -215,13 +220,14 @@ The plugin declares `requires_hermes: ">=0.22.7"`. CetiRun's image and native
 qualification host remain pinned to `0.22.7`; accepting installation on a newer
 Hermes release does not mean that release has been qualified.
 
-The Hermes plugin accepts these absolute paths:
+The helper currently supports Linux only. The Hermes plugin accepts these
+absolute paths:
 
 | Environment variable | Purpose and default |
 | --- | --- |
 | `CETIRUN_MEMORY_ROOT` | Memory data directory. No required directory name or suffix; unset leaves Memory unbound. |
 | `CETIRUN_MEMORY_ASSETS` | Installed asset directory. Unset disables plugin registration. |
-| `CETIRUN_MEMORY_BINARY` | Helper executable; defaults to `$CETIRUN_MEMORY_ASSETS/bin/cetirun-memory`. |
+| `CETIRUN_MEMORY_BINARY` | Helper executable; defaults to `$CETIRUN_MEMORY_ASSETS/bin/cetirun-memory`. Its digest must match the installed manifest. |
 | `CETIRUN_MEMORY_CONTEXT` | Instruction file; defaults to `$HOME/.agents/AGENTS.md`. |
 
 The managed platform still supplies `$HOME/.cetirun/memory` and
@@ -236,7 +242,7 @@ export CETIRUN_MEMORY_BINARY="$CETIRUN_MEMORY_ASSETS/bin/cetirun-memory"
 export CETIRUN_MEMORY_CONTEXT="$CETIRUN_MEMORY_ASSETS/AGENTS.md"
 
 make -C app/cetirun-memory-context build
-mkdir -p "$CETIRUN_MEMORY_ROOT" "$CETIRUN_MEMORY_ASSETS" "$HOME/.hermes/plugins"
+mkdir -p "$CETIRUN_MEMORY_ASSETS" "$HOME/.hermes/plugins"
 app/cetirun-memory-context/bin/cetirun-memory install-assets "$CETIRUN_MEMORY_ASSETS"
 cp -R app/cetirun-chart/agents/hermes/plugins/cetirun-memory-context \
   "$HOME/.hermes/plugins/"
@@ -247,11 +253,16 @@ The build requires the repository's Go version and cached Go dependencies.
 assets from a different build. For an update, install into a new asset directory
 and update the configured paths together. A separately located helper can be
 selected with `CETIRUN_MEMORY_BINARY`; use a binary built from the same source as
-the installed assets.
+the installed assets. The plugin checks this at registration. Keep the helper and
+assets unchanged while Hermes is running; local writable files do not provide
+the managed image's read-only mount protection. Let the helper create the data
+directory on its first permitted write, with mode `0700`. If the directory
+already exists, ensure it is private; the helper does not change its mode.
 
 Append the plugin and skill directory to the existing lists in
 `~/.hermes/config.yaml`. Preserve the other entries. Replace `/home/example`
-below with your actual home directory; YAML values do not expand `$HOME`:
+below with your actual home directory. Hermes also expands `~` and environment
+variables in `skills.external_dirs`:
 
 ```yaml
 plugins:
@@ -264,16 +275,26 @@ skills:
 
 For persistent configuration, add the four variables to the Hermes profile's
 `.env` file (`~/.hermes/.env` for the default profile), using absolute paths and
-`NAME=value` entries. Hermes loads that file when the CLI or gateway starts.
+`NAME=value` entries. Hermes loads that file at startup and can reload it during
+gateway turns. The Memory plugin fixes its paths and helper HOME at registration;
+later environment changes do not switch an active binding. Use one set of Memory
+paths per Hermes process, not separate stores selected by routed profiles in a
+multiplexed process.
 Restart the gateway and start a new private session after changing the paths;
 exports in a CLI shell do not update a gateway that is already running. This
 setup does not migrate existing data.
 
+A local plugin installation does not apply the managed image's skill-loader
+patch. Native skill precedence and snapshots still apply: a same-named personal
+or project skill can shadow the external `cetirun-memory` skill. Avoid such
+duplicates; installing this plugin alone does not reserve the skill name.
+
 Memory is available to all host-admitted channels by default. Configured access
 restrictions still apply, and native descendants inherit their parent's limits.
 The standalone CLI and stdio MCP accept the same custom data root. Explicit
-imports still select files from the process's `HOME` and reject files inside
-the active Memory data directory.
+imports use the HOME containing a managed `.cetirun/memory` root; other data
+layouts use the process's `HOME`. They reject the active Memory data directory
+and credential paths, including credential directories inside nested homes.
 
 ## Validation and upgrades
 
