@@ -341,7 +341,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 	if reconciledSandbox && instance.Spec.Suspended {
 		if err := r.stopReconciledSandboxForSuspension(ctx, instance); err != nil {
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+			return ctrl.Result{}, err
 		}
 	}
 
@@ -405,7 +405,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 	if reconciledSandbox && r.SandboxNativeCoordination != nil && controllerutil.ContainsFinalizer(instance, sandbox.HoldFinalizer) {
 		if err := stderrors.Join(r.stopReconciledAuxiliaries(ctx, instance), r.stopSandboxBuiltin(ctx, instance)); err != nil {
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+			return ctrl.Result{}, err
 		}
 	}
 
@@ -1091,7 +1091,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 					return result, stderrors.Join(err, expectationErr, holdErr)
 				}
 			}
-			return ctrl.Result{RequeueAfter: 60 * time.Second}, err
+			return ctrl.Result{}, err
 		}
 		logger.Info("Helm chart installed/upgraded successfully", "release", releaseName)
 		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed,
@@ -1144,7 +1144,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		logger.Info("Instance is suspended, removing ingress and marking Suspended", "alias", alias)
 		if reconciledSandbox {
 			if err := r.stopNativeSandboxReservation(ctx, instance); err != nil {
-				return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+				return ctrl.Result{}, err
 			}
 		}
 		// Delete VirtualService so users see connection refused instead of 503.
@@ -1394,7 +1394,7 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 	} else {
 		if reconciledSandbox {
 			if err := r.checkSandboxBootstrapCleanup(ctx, instance); err != nil {
-				return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+				return ctrl.Result{}, err
 			}
 			if err := r.releaseSandboxBootstrapResources(ctx, instance, nsObj); err != nil {
 				return ctrl.Result{}, err

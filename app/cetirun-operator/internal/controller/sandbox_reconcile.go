@@ -1086,7 +1086,11 @@ func (r *AgentReconciler) holdReconciledSandboxWithStatus(ctx context.Context, a
 		}
 	}
 	failures = append(failures, r.updateStatus(ctx, agent))
-	return ctrl.Result{RequeueAfter: 15 * time.Second}, errors.Join(failures...)
+	// controller-runtime ignores RequeueAfter with an error.
+	if err := errors.Join(failures...); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 }
 
 func (r *AgentReconciler) stopReconciledSandboxForSuspension(ctx context.Context, agent *api.Agent) error {

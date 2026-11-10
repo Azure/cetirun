@@ -99,10 +99,16 @@ func (r *AgentReconciler) reconcileSandboxPreparation(ctx context.Context, agent
 		cleanupContext, cancelCleanup := context.WithTimeout(ctx, 10*time.Second)
 		defer cancelCleanup()
 		cleanupErr := r.revokeSandboxPreparationGrants(cleanupContext, agent)
-		statusErr := r.sandboxPreparationStatus(cleanupContext, agent, false, err)
+		changed, statusErr := r.recordSandboxPreparationStatus(cleanupContext, agent, false, err)
 		if sandboxPreparationUnsupportedError(err) && cleanupErr == nil && statusErr == nil {
 			log.FromContext(ctx).Info("Unsupported Sandbox preparation remains held", "agent", agent.Name)
 			return ctrl.Result{RequeueAfter: time.Minute}, nil
+		}
+		if cleanupErr == nil {
+			// Other prerequisite waits retry periodically, not every second (#493).
+			if result, waitErr := prerequisiteResult(ctx, err, changed, statusErr); waitErr == nil {
+				return result, nil
+			}
 		}
 		err = errors.Join(err, cleanupErr, statusErr)
 		log.FromContext(ctx).Error(err, "Sandbox preparation remains held", "agent", agent.Name)
@@ -574,12 +580,19 @@ func (r *AgentReconciler) sandboxHelmValues(agent *api.Agent, team *api.Team) (m
 }
 
 func (r *AgentReconciler) sandboxPreparationStatus(ctx context.Context, expected *api.Agent, prepared bool, cause error) error {
+	_, err := r.recordSandboxPreparationStatus(ctx, expected, prepared, cause)
+	return err
+}
+
+// recordSandboxPreparationStatus is sandboxPreparationStatus that also reports
+// whether this pass changed the recorded preparation result.
+func (r *AgentReconciler) recordSandboxPreparationStatus(ctx context.Context, expected *api.Agent, prepared bool, cause error) (bool, error) {
 	agent := &api.Agent{}
 	if err := r.customReader().Get(ctx, client.ObjectKeyFromObject(expected), agent); err != nil {
-		return err
+		return false, err
 	}
 	if agent.UID != expected.UID || agent.Generation != expected.Generation || !agent.DeletionTimestamp.IsZero() {
-		return fmt.Errorf("Sandbox Agent changed before preparation status")
+		return false, fmt.Errorf("Sandbox Agent changed before preparation status")
 	}
 	base := agent.DeepCopy()
 	agent.Status.Phase = api.PhasePending
@@ -612,11 +625,15 @@ func (r *AgentReconciler) sandboxPreparationStatus(ctx context.Context, expected
 		})
 	}
 	if equality.Semantic.DeepEqual(base.Status, agent.Status) {
-		return nil
+		return false, nil
 	}
 	if err := r.Status().Patch(ctx, agent, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-		return err
+		return false, err
 	}
 	emitSandboxAgentTransition(ctx, base, agent)
-	return nil
+	// Report a change of the preparation result only. The Sandbox hold rewrites
+	// Ready and SandboxReady after this write, so they change on every pass.
+	before := apimeta.FindStatusCondition(base.Status.Conditions, api.ConditionAgentConfigReady)
+	after := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionAgentConfigReady)
+	return before == nil || after == nil || before.Status != after.Status || before.Reason != after.Reason || before.Message != after.Message, nil
 }

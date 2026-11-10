@@ -304,7 +304,7 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 		}
 		publication, err := r.readSandboxSkillsPublication(ctx, config.SkillsCatalogConfigMapName, attempt.team)
 		if err != nil {
-			return fmt.Errorf("recorded skills publication is unavailable; recovery is required: %w", err)
+			return fmt.Errorf("%w: %w", errSkillsPublicationRecovery, err)
 		}
 		if !sameSandboxSkillsPublication(*publication, *receipt.Skills) {
 			return fmt.Errorf("%w: recorded skills publication changed; recovery is required", sandboxworkload.ErrStorageTransitionRequired)

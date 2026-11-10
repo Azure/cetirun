@@ -13,7 +13,6 @@ import (
 	"math/big"
 	"reflect"
 	"slices"
-	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -77,11 +76,12 @@ func (r *AgentReconciler) holdPolicyReprojection(ctx context.Context, agent *api
 	// Sandbox preparation pass from deadlocking before the Gateway can observe
 	// and clear its own PolicyReprojection block.
 	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, err
+		// Gateway status is written by reconcileAIGateway itself.
+		return prerequisiteResult(ctx, err, false, nil)
 	}
 	if agentIdentityRequested(agent) || !credentialPolicyVerified(agent, "") {
 		if err := r.reconcileAgentIdentity(ctx, agent); err != nil {
-			return ctrl.Result{RequeueAfter: 15 * time.Second}, errors.Join(err, r.updateStatus(ctx, agent))
+			return prerequisiteResult(ctx, err, false, r.updateStatus(ctx, agent))
 		}
 	}
 	if err := r.updateStatus(ctx, agent); err != nil {
