@@ -107,11 +107,15 @@ class LaunchTests(unittest.TestCase):
                                     registry = Path(env["COPILOT_PROVIDERS_CONFIG"])
                                     provider = json.loads(registry.read_text())
                                     self.assertEqual(registry.stat().st_mode & 0o777, 0o600)
-                                    self.assertEqual(provider["providers"][0]["baseUrl"], gateway.base)
-                                    self.assertEqual(provider["providers"][0]["apiKey"], KEY)
-                                    self.assertEqual(provider["models"][0]["wireModel"], "allowed")
-                                    self.assertEqual(argv[argv.index("--model") + 1], "cetirun/allowed")
+                                    self.assertEqual(provider, {"providers": [], "models": []})
+                                    self.assertEqual(env["COPILOT_PROVIDER_BASE_URL"], gateway.base)
+                                    self.assertEqual(env["COPILOT_PROVIDER_API_KEY"], KEY)
+                                    self.assertEqual(env["COPILOT_MODEL"], "allowed")
+                                    self.assertEqual(argv[argv.index("--model") + 1], "allowed")
                                     root = Path(env["COPILOT_HOME"]).parent
+                                    for path in root.rglob("*"):
+                                        if path.is_file():
+                                            self.assertNotIn(KEY, path.read_text(), str(path))
                                     self.assertIn(marker, (Path(env["COPILOT_HOME"]) / "agents/cetirun-platform-coder.agent.md").read_text())
                                     config = json.loads((Path(env["COPILOT_HOME"]) / "settings.json").read_text())
                                     self.assertFalse(config["memory"])
@@ -198,7 +202,7 @@ class LaunchTests(unittest.TestCase):
             self.assertNotIn("timeout", popen.return_value.wait.call_args.kwargs)
             self.assertNotIn("deadline", launch.call_args.kwargs)
 
-    def test_terminal_termination_reaps_child_and_removes_temporary_provider_credentials(self):
+    def test_terminal_termination_reaps_child_and_removes_temporary_provider_configuration(self):
         previous = signal.getsignal(signal.SIGTERM)
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
             "HOME": directory, "OPENAI_BASE_URL": "https://gateway.example.com/v1", "OPENAI_API_KEY": KEY,

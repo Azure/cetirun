@@ -114,6 +114,11 @@ for line in sys.stdin:
             with patch.dict(os.environ, environment, clear=True), native.launch(
                 runtime, gateway, MODEL, home, memory_mode=memory_mode,
             ) as (argv, env, workspace):
+                if runtime == "copilot":
+                    root = Path(env["COPILOT_PROVIDERS_CONFIG"]).parent
+                    for path in root.rglob("*"):
+                        if path.is_file():
+                            assert KEY not in path.read_text(), f"Gateway key written to {path.name}"
                 process = subprocess.Popen(
                     argv, env=env, cwd=workspace, stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,

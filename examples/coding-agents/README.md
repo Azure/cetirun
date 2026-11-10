@@ -127,7 +127,8 @@ through an anonymous Ingress or LoadBalancer.
 
 HTTP and terminals share Gateway routing and explicit platform instructions from
 `$HOME/.agents`, with native skill discovery for each CLI. Copilot uses an
-adapter-owned provider registry without changing the user's existing config.
+adapter-owned empty provider registry and environment-only Gateway credentials
+without changing the user's existing config or writing the key to adapter files.
 Platform Memory is connected only when supplied; `off` / `no-capture` restrictions
 are preserved. HTTP accepts up to 1 MiB, 100 messages and 64 KiB per user input,
 with a 600-second task deadline and UTF-8-safe SSE frames of at most 64 KiB.

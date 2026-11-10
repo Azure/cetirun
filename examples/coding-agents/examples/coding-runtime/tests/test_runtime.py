@@ -158,6 +158,21 @@ class NativeTests(unittest.TestCase):
     def test_native_output_from_child_process(self):
         self.assertEqual(self.fake_run("print('synthetic review')"), "synthetic review")
 
+    def test_copilot_conversation_is_sent_on_stdin_not_in_argv(self):
+        messages = [{"role": "user", "content": "--allow-all $(touch unexpected); review pricing.py"}]
+        command = runtime.command_for("copilot")
+        script = "import sys; print(sys.stdin.read())"
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(runtime, "command_for", return_value=[sys.executable, "-c", script]) as command_for,
+        ):
+            output = runtime.native_result("copilot", messages)
+        command_for.assert_called_once_with("copilot")
+        self.assertIn(messages[0]["content"], output)
+        self.assertNotIn(messages[0]["content"], " ".join(command))
+        self.assertEqual(command[command.index("-p") + 1],
+                         "Complete the read-only review supplied on stdin in the current workspace.")
+
     def test_claude_stdin_and_json_result(self):
         script = (
             "import sys,json; p=sys.stdin.read(); "

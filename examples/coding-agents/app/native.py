@@ -100,7 +100,7 @@ class Gateway:
                 "COPILOT_PROVIDER_TYPE": "openai",
                 "COPILOT_PROVIDER_API_KEY": self.key,
                 "COPILOT_PROVIDER_WIRE_API": "responses",
-                "COPILOT_MODEL": "cetirun/" + model,
+                "COPILOT_MODEL": model,
             })
         elif runtime == "claude":
             env.update({
@@ -230,11 +230,8 @@ def launch(runtime, gateway, model, home, interactive=False, memory_mode=""):
                 "strict-tools-list: true\ninclude-custom-instructions: true\n---\n" + instructions
             ))
             provider = root / "providers.json"
-            private_file(provider, json.dumps({
-                "providers": [{"name": "cetirun", "type": "openai", "baseUrl": gateway.base,
-                               "apiKey": gateway.key, "wireApi": "responses"}],
-                "models": [{"id": model, "provider": "cetirun", "wireModel": model}],
-            }))
+            # An empty registry enables environment-only routing without saving the key.
+            private_file(provider, json.dumps({"providers": [], "models": []}))
             env.update({
                 "COPILOT_HOME": str(profile), "COPILOT_PROVIDERS_CONFIG": str(provider),
             })
@@ -252,7 +249,7 @@ def command(runtime, gateway, model, interactive=False, context=None):
     context = context or {}
     mcp = context.get("mcp", {})
     if runtime == "copilot":
-        args = ["copilot", "--agent", "cetirun-platform-coder", "--model", "cetirun/" + model,
+        args = ["copilot", "--agent", "cetirun-platform-coder", "--model", model,
                 "--disable-builtin-mcps", "--no-auto-update"]
         if mcp:
             args += ["--additional-mcp-config", json.dumps({"mcpServers": {

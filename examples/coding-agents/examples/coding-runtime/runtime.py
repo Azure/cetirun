@@ -75,10 +75,11 @@ def task_prompt(messages, runtime):
     )
 
 
-def command_for(runtime, prompt="<synthetic-task-prompt>"):
+def command_for(runtime):
     if runtime == "copilot":
         return [
-            "copilot", "--agent", "cetirun-reviewer", "-p", prompt,
+            "copilot", "--agent", "cetirun-reviewer", "-p",
+            "Complete the read-only review supplied on stdin in the current workspace.",
             "--silent", "--stream", "off", "--trust-folder",
             "--disable-builtin-mcps", "--no-ask-user", "--no-auto-update",
             "--deny-tool", "shell", "--deny-tool", "write",
@@ -157,7 +158,7 @@ def stop_process(process):
 def native_result(runtime, messages, cancelled=lambda: False, deadline=DEADLINE):
     check_native_environment()
     prompt = task_prompt(messages, runtime)
-    command = command_for(runtime, prompt)
+    command = command_for(runtime)
     if not shutil.which(command[0]):
         raise RunError("runtime_not_installed", 503)
     process = subprocess.Popen(
@@ -169,7 +170,7 @@ def native_result(runtime, messages, cancelled=lambda: False, deadline=DEADLINE)
     try:
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)
-            pending = memoryview(b"" if runtime == "copilot" else prompt.encode())
+            pending = memoryview(prompt.encode())
             if pending:
                 os.set_blocking(process.stdin.fileno(), False)
                 selector.register(process.stdin, selectors.EVENT_WRITE)

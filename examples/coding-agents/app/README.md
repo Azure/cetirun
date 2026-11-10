@@ -31,15 +31,16 @@ Workspace 保留在 `$HOME/workspace`，三家配置按原生路径首次初始�
 
 | Runtime | Gateway 映射 |
 | --- | --- |
-| Copilot | 临时受控 provider registry，OpenAI Responses wire，显式选择 `cetirun/<authorized-model-id>`，wire model 仍为 Gateway 原始 ID |
+| Copilot | 通过环境变量配置 Gateway，OpenAI Responses wire，显式选择 Gateway 原始授权模型 ID |
 | Claude Code | Anthropic Messages 协议，去除 Gateway base 的末尾 `/v1` 避免重复路径，模型/subagent alias 保持同一授权模型 |
 | Codex | 显式 `cetirun` provider，Responses wire，`env_key` 引用 Virtual Key，不依赖个人 OpenAI 登录 |
 
 HTTP 和 `coding-tui` 共用同一启动准备逻辑。Copilot 使用独立、临时的
 `COPILOT_HOME`、`settings.json` 和 `COPILOT_PROVIDERS_CONFIG`，不会读取旧 provider
-作为模型路由，也不删除或覆盖用户原配置。provider JSON 只包含本 Agent 的 Gateway
-Virtual Key，文件权限为 `0600`，父目录为 `0700`，正常退出和受控取消后清理；
-Key 不出现在 argv。CLI 偏好不从用户原配置继承，持久会话与临时配置分开保存。
+作为模型路由，也不删除或覆盖用户原配置。provider JSON 为空 registry，不包含密钥；
+Gateway Virtual Key 仅通过子进程环境传入，不写入适配器配置文件或 argv。
+临时配置文件权限为 `0600`，父目录为 `0700`，正常退出和受控取消后清理。
+CLI 偏好不从用户原配置继承，持久会话与临时配置分开保存。
 
 平台只读规范视图为 `$HOME/.agents`。适配器将其中的 `AGENTS.md` 明确加入
 Copilot 的受控主角色、Claude 的追加 system prompt，以及 Codex 的
