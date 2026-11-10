@@ -18,6 +18,12 @@
         Status = tostring(Body['status']),
         Route = tostring(Body['route']),
         CallType = tostring(Body['call_type']),
+        // A call LiteLLM makes itself: health_check for its background probes,
+        // or a router's classifier call. Empty for a client's call.
+        CallOrigin = tostring(Body['call_origin']),
+        RoutingTier = tostring(Body['routing_tier']),
+        RoutingCause = tostring(Body['routing_cause']),
+        FallbackFrom = tostring(Body['fallback_from']),
         Stream = tobool(Body['stream']),
         Model = tostring(Body['model']),
         ProviderModel = tostring(Body['provider_model']),

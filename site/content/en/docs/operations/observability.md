@@ -77,7 +77,7 @@ The cluster template creates these functions:
 
 | Database | Function | Rows |
 |---|---|---|
-| `CetiRunLogs` | `GatewayRequests()` | One AI Gateway call with its Agent, owner, Team, model, tokens, spend and outcome. No request or response content |
+| `CetiRunLogs` | `GatewayRequests()` | One AI Gateway call with its Agent, owner, Team, model, tokens, spend, routing and outcome. No request or response content. `CallOrigin` is `health_check` for LiteLLM's own probes and empty for a client's call |
 | `CetiRunLogs` | `KubeEvents()` | One Kubernetes event version |
 | `CetiRunLogs` | `AgentInventoryHistory()`, `AgentInventory()` | Each record of an Agent's namespace, owner, Team and policy; the current Agents |
 | `CetiRunAgents` | `AgentLogsWithOwner()` | Agent output with the Agent, owner and Team |
@@ -87,7 +87,7 @@ For example, the spend of each Agent today:
 
 ```kusto
 GatewayRequests()
-| where Timestamp > startofday(now())
+| where Timestamp > startofday(now()) and CallOrigin != "health_check"
 | summarize Calls = count(), Spend = sum(Spend) by Agent, Owner, Team, Model
 ```
 
@@ -102,8 +102,33 @@ read the Agent logs database. To see only the problems:
 CollectionHealth() | where Status != "OK"
 ```
 
-Run that query from an alert or a dashboard of your choice; the cluster
-template creates neither.
+A cluster that stops sending stays `Failed` until its newest row is a day
+old. The cluster template creates no alert.
+
+## Dashboard
+
+`app/cetirun-observability/dashboards/cetirun.json` is an Azure Data Explorer
+dashboard with two pages:
+
+- **AI Gateway**: calls, failures, spend and tokens by Agent, owner and Team;
+  calls over time; tokens by model; failed calls by error; latency by model.
+  LiteLLM's health check probes are left out.
+- **Platform health**: `CollectionHealth()`, container restarts, Warning
+  events with CetiRun's namespaces first, and the current Agents.
+
+To use it:
+
+1. In the file, replace both `clusterUri` values with your Kusto cluster's
+   query URI. The two data sources are the logs and metrics databases; change
+   their `database` values if you renamed them.
+2. Open [Azure Data Explorer dashboards](https://dataexplorer.azure.com/dashboards)
+   in the tenant of the Kusto cluster, choose **New dashboard**, then
+   **File** > **Replace dashboard with file**, and save it.
+3. Choose your clusters in the **Cluster** parameter, and save that as the
+   default.
+
+Readers of the dashboard need the `Viewer` role on the logs and metrics
+databases. It does not read the Agent logs database.
 
 ## Prerequisites
 

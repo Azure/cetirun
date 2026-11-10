@@ -4,7 +4,7 @@
 ARG VERSION=dev
 ARG GIT_SHA=unknown
 
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/oss/go/microsoft/golang:1.27.3-1@sha256:7a193a3f8ee2ffc8c1420affd7e13cfee4e5d1291a54b1dee370ee1ea3b5241a AS builder
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/oss/go/microsoft/golang:1.27.3-1@sha256:25d710943a357c3b8669289f4f8af073f9c6c2a44a5b31341cf8997ea592dcba AS builder
 ARG VERSION
 ARG GIT_SHA
 ARG TARGETOS
@@ -33,7 +33,7 @@ RUN case "${TARGETARCH}" in \
       "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.${terminal_arch}" -o /ttyd && \
     echo "${terminal_sha}  /ttyd" | sha256sum --check && chmod 755 /ttyd
 
-FROM mcr.microsoft.com/azurelinux/distroless/base:3.0@sha256:e952865122598043cfb54f0257f016e28e02c21904e172b47dcb2148e095693a
+FROM mcr.microsoft.com/azurelinux/distroless/base:3.0@sha256:370fb2c55e7f0474fed019623cce6a8db65a4d70dedfca9219fc69d6c7627f89
 ARG VERSION
 ARG GIT_SHA
 LABEL org.opencontainers.image.source="https://github.com/Azure/CetiRun" \

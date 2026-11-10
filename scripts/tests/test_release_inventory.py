@@ -459,7 +459,7 @@ class ReleaseInventoryTests(unittest.TestCase):
             "cetirun-portal", "cetirun-pi-agent",
         }
         builds = [command for command in self.commands() if command[:2] == ["buildx", "build"]]
-        self.assertEqual(len(builds), 13)
+        self.assertEqual(len(builds), 14)
         for image in attested:
             command = next(command for command in builds if self.image(image) in command)
             self.assertIn("--provenance=true", command)
