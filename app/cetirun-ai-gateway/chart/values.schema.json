@@ -351,6 +351,44 @@
                 }
             }
         },
+        "content": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Prompts and responses of every call, written by the Gateway with a workload identity to an Azure Data Explorer database of their own. The console reads a call's content from there, and the spend log then stores no prompts.",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Write content to the database below.",
+                    "default": false
+                },
+                "clusterName": {
+                    "type": "string",
+                    "description": "Names this CetiRun cluster in every record; the console reads only this cluster's records.",
+                    "default": ""
+                },
+                "clientId": {
+                    "type": "string",
+                    "description": "Client ID of the managed identity with the roles Ingestor and Viewer on the content database.",
+                    "default": ""
+                },
+                "adx": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "endpoint": {
+                            "type": "string",
+                            "description": "Query URI of the Kusto cluster.",
+                            "default": ""
+                        },
+                        "database": {
+                            "type": "string",
+                            "description": "The content database.",
+                            "default": "CetiRunContent"
+                        }
+                    }
+                }
+            }
+        },
         "metrics": {
             "type": "object",
             "description": "LiteLLM's Prometheus metrics, served on a separate port without authentication",

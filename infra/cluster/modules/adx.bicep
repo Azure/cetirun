@@ -85,7 +85,7 @@ param contentDatabaseName string = 'CetiRunContent'
 @minValue(1)
 param contentRetentionDays int = 7
 
-@description('Client (application) ID of the identity that writes content records, such as the AI Gateway\'s. Empty skips its role.')
+@description('Client (application) ID of the AI Gateway\'s identity, which writes content records and reads them back for the LiteLLM console. Empty skips its roles.')
 param contentWriterClientId string = ''
 
 @description('Principals that read the content database, in the same form as viewers. Keep it small: it holds conversations.')
@@ -234,7 +234,6 @@ resource contentSchema 'Microsoft.Kusto/clusters/databases/scripts@2024-04-13' =
   properties: {
     #disable-next-line use-secure-value-for-secure-inputs
     scriptContent: join([
-      '.create-merge table Content (Timestamp: datetime, Cluster: string, Body: dynamic)'
       format('.alter database [\'{0}\'] policy ingestionbatching \'{{"MaximumBatchingTimeSpan":"{1}","MaximumNumberOfItems":500,"MaximumRawDataSizeMB":1024}}\'', contentDatabaseName, format('00:{0:00}:{1:00}', ingestionBatchingSeconds / 60, ingestionBatchingSeconds % 60))
       join(filter(split(loadTextContent('adx/cetirun-content.kql'), '\n'), line => !startsWith(line, '//')), '\n')
     ], '\n\n')
@@ -242,16 +241,18 @@ resource contentSchema 'Microsoft.Kusto/clusters/databases/scripts@2024-04-13' =
   }
 }
 
-resource contentWriter 'Microsoft.Kusto/clusters/databases/principalAssignments@2024-04-13' = if (createContentDatabase && !empty(contentWriterClientId)) {
+// The AI Gateway writes content and reads one call's content back for the
+// LiteLLM console, so its identity is Ingestor and Viewer of this database.
+resource contentWriter 'Microsoft.Kusto/clusters/databases/principalAssignments@2024-04-13' = [for role in ((createContentDatabase && !empty(contentWriterClientId)) ? ['Ingestor', 'Viewer'] : []): {
   parent: contentDatabase
-  name: guid(cluster.id, contentDatabaseName, contentWriterClientId, 'Ingestor')
+  name: guid(cluster.id, contentDatabaseName, contentWriterClientId, role)
   properties: {
     principalId: contentWriterClientId
     principalType: 'App'
-    role: 'Ingestor'
+    role: role
     tenantId: tenantId
   }
-}
+}]
 
 resource contentViewer 'Microsoft.Kusto/clusters/databases/principalAssignments@2024-04-13' = [for viewer in (createContentDatabase ? contentViewers : []): {
   parent: contentDatabase

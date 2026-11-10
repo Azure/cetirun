@@ -479,6 +479,29 @@ spendLogs:
   # forever.
   retention: 7d
 
+# -- Prompts and responses of every call, in an Azure Data Explorer database of
+# their own (the cluster template creates it as CetiRunContent, with 7 days of
+# retention and its own readers). The Gateway writes them with a workload
+# identity that may write and read only that database, never through a log
+# collector or stdout. The LiteLLM console's request pages read a call's
+# content back from there, so the spend log then stores no prompts and
+# spendLogs.storePrompts has no effect. Inline images and encrypted reasoning
+# are replaced by short notes. The cluster needs workload identity, and the
+# identity a federated credential for this release's ServiceAccount.
+content:
+  # -- Write content to the database below
+  enabled: false
+  # -- Names this CetiRun cluster in every record; the console reads only this
+  # cluster's records.
+  clusterName: ""
+  # -- Client ID of the managed identity with the roles Ingestor and Viewer on
+  # the content database
+  clientId: ""
+  adx:
+    # -- Query URI of the Kusto cluster
+    endpoint: ""
+    database: CetiRunContent
+
 # -- LiteLLM's Prometheus metrics: requests, failures, tokens, spend and
 # latency by model, virtual key, user and Team, and the budget left on each.
 #
