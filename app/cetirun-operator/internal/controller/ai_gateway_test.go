@@ -2222,7 +2222,7 @@ func legacyReconcileRoutesAgentWithProxyAndRevokesOnDelete(t *testing.T) {
 		}
 	}
 	config := runtimeValues["configFiles"].(map[string]any)["openclaw.json"].(string)
-	if !strings.Contains(config, `"openai/`+testSharedModelOne+`"`) || !strings.Contains(config, `"contextWindow": 1000000`) {
+	if !strings.Contains(config, `"cetirun/`+testSharedModelOne+`"`) || !strings.Contains(config, `"contextWindow": 1000000`) {
 		t.Fatalf("the native configuration lacks the Gateway models:\n%s", config)
 	}
 	current := &cetirunv1alpha1.Agent{}
@@ -2951,10 +2951,13 @@ func TestAIGatewayCatalogLeavesOutUnusableSharedNames(t *testing.T) {
 		{ID: "e", ModelName: atLimit, AccessGroups: []string{aiGatewaySharedAccessGroup}},
 		{ID: "f", ModelName: multiByteAtLimit, AccessGroups: []string{aiGatewaySharedAccessGroup}},
 		{ID: "g", ModelName: atLimit + "m", AccessGroups: []string{aiGatewaySharedAccessGroup}},
+		// The provider prefix of the Gateway in OpenClaw.
+		{ID: "h", ModelName: "cetirun/gpt-6", AccessGroups: []string{aiGatewaySharedAccessGroup}},
 	}, false, time.Now())
 	shared, _ := catalog.shared()
 	if !changed || len(shared) != 3 || shared[0].Name != "gpt-6" || shared[1].Name != atLimit ||
-		shared[2].Name != multiByteAtLimit || len(skipped) != 4 || !slices.Contains(skipped, atLimit+"m") {
+		shared[2].Name != multiByteAtLimit || len(skipped) != 5 || !slices.Contains(skipped, atLimit+"m") ||
+		!slices.Contains(skipped, "cetirun/gpt-6") {
 		t.Fatalf("shared=%d %v skipped=%d changed=%v", len(shared), shared, len(skipped), changed)
 	}
 }

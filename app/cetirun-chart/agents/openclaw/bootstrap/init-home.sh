@@ -62,15 +62,16 @@ agent_apply_config() (
   temp=$(mktemp "${dest}.tmp.XXXXXX")
   trap 'rm -f "$temp"' 0
   # Replace platform-owned model routing on every start. Personal settings
-  # outside model/auth configuration remain in HOME.
+  # outside model/auth configuration remain in HOME. This also removes the
+  # provider openai that earlier charts used for the AI Gateway.
   native_gateway=false
   if [ "${CETIRUN_NATIVE_SANDBOX:-false}" = true ]; then
     native_gateway=true
     jq -e '
-      (.models.providers | keys) == ["openai"]
+      (.models.providers | keys) == ["cetirun"]
       and .auth == {"profiles": {}}
-      and .models.providers.openai.apiKey == {"source": "env", "provider": "default", "id": "OPENAI_API_KEY"}
-      and (.models.providers.openai.baseUrl | type == "string" and length > 0)
+      and .models.providers.cetirun.apiKey == {"source": "env", "provider": "default", "id": "OPENAI_API_KEY"}
+      and (.models.providers.cetirun.baseUrl | type == "string" and length > 0)
       and (.agents.defaults.model.primary as $primary | .agents.defaults.models | has($primary))
       and ((.agents.list // []) | length == 0)
     ' "$source" >/dev/null 2>&1 ||

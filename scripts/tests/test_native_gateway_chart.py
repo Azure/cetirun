@@ -464,11 +464,11 @@ class NativeGatewayChartTests(unittest.TestCase):
         data = object_of_kind(objects, "ConfigMap")["data"]
         config = json.loads(data["openclaw.json"])
         self.assertEqual(config["auth"], {"profiles": {}})
-        self.assertEqual(list(config["models"]["providers"]), ["openai"])
-        self.assertEqual(config["models"]["providers"]["openai"]["apiKey"], {
+        self.assertEqual(list(config["models"]["providers"]), ["cetirun"])
+        self.assertEqual(config["models"]["providers"]["cetirun"]["apiKey"], {
             "source": "env", "provider": "default", "id": "OPENAI_API_KEY",
         })
-        self.assertEqual(config["agents"]["defaults"]["modelPolicy"], {"allow": ["openai/example-model"]})
+        self.assertEqual(config["agents"]["defaults"]["modelPolicy"], {"allow": ["cetirun/example-model"]})
 
     def test_native_invalid_controls_are_not_silently_ignored(self):
         cases = [
@@ -503,7 +503,7 @@ class NativeGatewayChartTests(unittest.TestCase):
             for item in pod["initContainers"] for variable in item.get("env", [])
         ))
         config = json.loads(object_of_kind(objects, "ConfigMap")["data"]["openclaw.json"])
-        self.assertEqual(list(config["models"]["providers"]), ["openai"])
+        self.assertEqual(list(config["models"]["providers"]), ["cetirun"])
         self.assertEqual(config["gateway"]["trustedProxies"], ["127.0.0.6"])
         self.assertNotIn("health-probe.cjs", object_of_kind(objects, "ConfigMap")["data"])
         for kind, path in (
@@ -758,6 +758,82 @@ class NativeHealthProbeTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1)
                 self.assertIn("invalid probe arguments", result.stderr)
         self.assertEqual(self.requests, [])
+
+
+def retired_name_values():
+    # gpt-4.1-mini is a name that OpenClaw 2026.9.6 counts as retired for the
+    # provider openai: its doctor rewrites it to gpt-5.4-mini.
+    values = native_values()
+    values["aiGateway"]["models"] = [{"id": "gpt-4.1-mini", "name": "gpt-4.1-mini"}]
+    values["secrets"]["model"] = "gpt-4.1-mini"
+    return values
+
+
+def rendered_openclaw_config(values):
+    objects = render(RUNTIME_CHART, values)
+    return json.loads(object_of_kind(objects, "ConfigMap")["data"]["openclaw.json"])
+
+
+def gateway_model_names(config, provider):
+    defaults = config["agents"]["defaults"]
+    return {
+        "primary": defaults["model"]["primary"],
+        "utility": defaults["utilityModel"],
+        "allow": defaults["modelPolicy"]["allow"],
+        "models": sorted(defaults["models"]),
+        "catalog": [model["id"] for model in config["models"]["providers"][provider]["models"]],
+    }
+
+
+@unittest.skipUnless(shutil.which("helm"), "requires Helm 3 or 4")
+class OpenClawGatewayProviderTests(unittest.TestCase):
+    """Issue #500: the Gateway is the provider cetirun in OpenClaw."""
+
+    def test_gateway_models_are_under_the_provider_cetirun(self):
+        config = rendered_openclaw_config(retired_name_values())
+        self.assertEqual(list(config["models"]["providers"]), ["cetirun"])
+        self.assertEqual(gateway_model_names(config, "cetirun"), {
+            "primary": "cetirun/gpt-4.1-mini", "utility": "cetirun/gpt-4.1-mini",
+            "allow": ["cetirun/gpt-4.1-mini"], "models": ["cetirun/gpt-4.1-mini"], "catalog": ["gpt-4.1-mini"],
+        })
+        provider = config["models"]["providers"]["cetirun"]
+        self.assertEqual(provider["api"], "openai-completions")
+        self.assertEqual(provider["models"][0]["api"], "openai-completions")
+        self.assertEqual(provider["models"][0]["input"], ["text"])
+        self.assertEqual(provider["models"][0]["cost"], {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0})
+
+
+@unittest.skipUnless(shutil.which("helm") and os.environ.get("CETIRUN_OPENCLAW_BIN"),
+                     "set CETIRUN_OPENCLAW_BIN to an OpenClaw 2026.9.6 executable")
+class OpenClawDoctorKeepsGatewayModelNamesTests(unittest.TestCase):
+    """Runs OpenClaw's own doctor on the rendered configuration, as the chart does at each start."""
+
+    def doctor(self, config):
+        with tempfile.TemporaryDirectory() as home:
+            path = Path(home) / ".openclaw" / "openclaw.json"
+            path.parent.mkdir()
+            path.write_text(json.dumps(config))
+            env = {**OFFLINE, "HOME": home, "OPENAI_API_KEY": "sk-example", "OPENCLAW_HOME": home}
+            result = subprocess.run(
+                [os.environ["CETIRUN_OPENCLAW_BIN"], "doctor", "--fix", "--non-interactive", "--yes"],
+                env=env, text=True, capture_output=True, timeout=300, check=False, cwd=home,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return json.loads(path.read_text())
+
+    def test_doctor_keeps_the_names_under_cetirun(self):
+        config = rendered_openclaw_config(retired_name_values())
+        expected = gateway_model_names(config, "cetirun")
+        self.assertEqual(gateway_model_names(self.doctor(config), "cetirun"), expected)
+
+    def test_doctor_rewrites_the_names_under_openai(self):
+        # The configuration of earlier charts: the reason for the provider cetirun.
+        text = json.dumps(rendered_openclaw_config(retired_name_values())).replace('"cetirun/', '"openai/')
+        config = json.loads(text)
+        config["models"]["providers"] = {"openai": config["models"]["providers"].pop("cetirun")}
+        names = gateway_model_names(self.doctor(config), "openai")
+        self.assertNotIn("openai/gpt-4.1-mini", [names["primary"], *names["allow"], *names["models"]])
+        self.assertNotIn("gpt-4.1-mini", names["catalog"])
 
 
 if __name__ == "__main__":

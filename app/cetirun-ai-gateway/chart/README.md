@@ -352,7 +352,8 @@ are matched in any letter case.
 The console examines neither prefix. As a result, do not add models under
 these prefixes in the console. The operator does not include such shared models
 in the model list that it configures for Agents. It does the same for names
-under `openai/`, which the agent chart refuses as a provider prefix. It also
+under `openai/` and `cetirun/`, which the agent chart refuses as provider
+prefixes. It also
 does the same for names with whitespace or with more than 256 characters.
 Shared models under other provider prefixes are listed like any other.
 

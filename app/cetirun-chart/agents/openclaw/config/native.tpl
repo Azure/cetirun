@@ -63,8 +63,12 @@ Licensed under the MIT License.
 {{- $gatewayRouted := true }}
 {{- $nativeGateway := true }}
 {{- $_ := set $config "auth" (dict "profiles" (dict)) }}
-{{- $providerPrefix := "openai" }}
-{{- $modelFull := printf "openai/%s" $model }}
+{{- /* The Gateway is the provider cetirun, not openai: OpenClaw's doctor
+   rewrites the model names of the provider openai that OpenClaw thinks are
+   retired, such as gpt-4.1-mini, in the configuration and in the provider's
+   catalog, so the Agent asked the Gateway for a model it does not have. */}}
+{{- $providerPrefix := "cetirun" }}
+{{- $modelFull := printf "%s/%s" $providerPrefix $model }}
 {{- /* Models the platform AI Gateway offers this Agent. Each becomes a model
    of the Gateway provider, with its limits, and is allowed; the rest of the
    configuration keeps naming the default model. */}}
@@ -101,9 +105,8 @@ Licensed under the MIT License.
 {{- if $gatewayRouted }}
 {{- /* OpenClaw sends short internal tasks, such as session titles and
    activity recaps, to a utility model. Unset, it derives the small model of
-   the primary model's provider, OpenAI's for the Gateway provider, which
-   the Gateway does not offer, so those requests fail. The Agent's default
-   model serves them instead. */}}
+   the primary model's provider, which the Gateway does not offer, so those
+   requests fail. The Agent's default model serves them instead. */}}
 {{- $_ := set $defaultsCurrent "utilityModel" $modelFull }}
 {{- end }}
 {{- $_ := set $agentsCurrent "defaults" $defaultsCurrent }}
@@ -112,8 +115,13 @@ Licensed under the MIT License.
 {{- if .Values.secrets.apiBase }}
 {{- $providerModels := list }}
 {{- $listed := false }}
+{{- /* OpenClaw has no catalog of its own for the provider cetirun, so each
+   model states how OpenClaw calls it: Chat Completions, the transport that
+   OpenClaw used for the Gateway as the provider openai, and no cost, as the
+   Gateway keeps the spend. */}}
+{{- $zeroCost := dict "input" 0 "output" 0 "cacheRead" 0 "cacheWrite" 0 }}
 {{- range $gatewayModels }}
-{{- $entry := dict "id" .id "name" (.name | default .id) }}
+{{- $entry := dict "id" .id "name" (.name | default .id) "api" "openai-completions" "cost" $zeroCost }}
 {{- if .contextWindow }}
 {{- $_ := set $entry "contextWindow" (int .contextWindow) }}
 {{- end }}
@@ -121,11 +129,11 @@ Licensed under the MIT License.
 {{- $_ := set $entry "maxTokens" (int .maxTokens) }}
 {{- end }}
 {{- /* A model the Gateway reports as accepting images gets them with a
-   request. Without input, OpenClaw takes the value from its own catalog,
-   which knows only some model names; for the rest, another model describes
-   images. */}}
+   request. Another model describes images for the rest. */}}
 {{- if has .id (dig "visionModels" (list) $.Values.aiGateway) }}
 {{- $_ := set $entry "input" (list "text" "image") }}
+{{- else }}
+{{- $_ := set $entry "input" (list "text") }}
 {{- end }}
 {{- if eq .id $model }}
 {{- $listed = true }}
@@ -133,14 +141,14 @@ Licensed under the MIT License.
 {{- $providerModels = append $providerModels $entry }}
 {{- end }}
 {{- if not $listed }}
-{{- $providerModels = append $providerModels (dict "id" $model "name" $model) }}
+{{- $providerModels = append $providerModels (dict "id" $model "name" $model "api" "openai-completions" "cost" $zeroCost "input" (list "text")) }}
 {{- end }}
-{{- $providerEntry := dict "baseUrl" .Values.secrets.apiBase "models" $providerModels }}
+{{- $providerEntry := dict "baseUrl" .Values.secrets.apiBase "api" "openai-completions" "models" $providerModels }}
 {{- if $gatewayRouted }}
 {{- /* Bind the Gateway provider to the Agent's virtual key, which the chart
-   passes in OPENAI_API_KEY. OpenClaw otherwise prefers a stored openai
-   profile over that variable, and an upgraded home may keep the owner's
-   own: it would be sent to the Gateway instead. */}}
+   passes in OPENAI_API_KEY. OpenClaw otherwise prefers a stored profile
+   over that variable, and an upgraded home may keep the owner's own: it
+   would be sent to the Gateway instead. */}}
 {{- $_ := set $providerEntry "auth" "api-key" }}
 {{- $_ := set $providerEntry "apiKey" (dict "source" "env" "provider" "default" "id" "OPENAI_API_KEY") }}
 {{- end }}

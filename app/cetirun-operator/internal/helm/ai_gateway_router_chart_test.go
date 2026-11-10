@@ -38,16 +38,77 @@ func TestOpenClawListsAModelRouterByItsName(t *testing.T) {
 		t.Fatalf("router entry = %v", router)
 	}
 	defaults := openClawAgentDefaults(t, rendered)
-	if primary := defaults["model"].(map[string]any)["primary"]; primary != "openai/"+testRouterGatewayModel {
+	if primary := defaults["model"].(map[string]any)["primary"]; primary != "cetirun/"+testRouterGatewayModel {
 		t.Fatalf("primary model = %v, want the router's Gateway name", primary)
 	}
 	allowed := defaults["modelPolicy"].(map[string]any)["allow"].([]any)
 	found := false
 	for _, ref := range allowed {
-		found = found || ref == "openai/"+testRouterGatewayModel
+		found = found || ref == "cetirun/"+testRouterGatewayModel
 	}
 	if !found {
 		t.Fatalf("the router must be allowed: %v", allowed)
+	}
+}
+
+// OpenClaw's doctor rewrites the model names of the provider openai that it
+// thinks are retired, such as gpt-4.1-mini, so the Gateway is the provider
+// cetirun, and each model states what OpenClaw's catalog gave the provider
+// openai (issue #500).
+func TestOpenClawNamesTheGatewayProviderCetirun(t *testing.T) {
+	input := aiGatewayInput("openclaw", "openai")
+	input["aiGateway"].(map[string]any)["models"] = []any{
+		map[string]any{"id": "gpt-4.1-mini", "name": "gpt-4.1-mini", "contextWindow": 1047576, "maxTokens": 32768},
+		map[string]any{"id": "gpt-6-sol", "name": "gpt-6-sol"},
+	}
+	input["aiGateway"].(map[string]any)["visionModels"] = []any{"gpt-6-sol"}
+	input["secrets"].(map[string]any)["model"] = "gpt-4.1-mini"
+	rendered, err := renderAIGateway(t, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providers := openClawProviders(t, rendered)
+	if len(providers) != 1 || providers["cetirun"] == nil {
+		t.Fatalf("providers = %v, want only cetirun", providers)
+	}
+	provider := providers["cetirun"]
+	if provider["api"] != "openai-completions" {
+		t.Fatalf("provider api = %v", provider["api"])
+	}
+	zero := map[string]any{"input": float64(0), "output": float64(0), "cacheRead": float64(0), "cacheWrite": float64(0)}
+	wantInput := map[string][]any{"gpt-4.1-mini": {"text"}, "gpt-6-sol": {"text", "image"}}
+	for _, entry := range provider["models"].([]any) {
+		model := entry.(map[string]any)
+		id, _ := model["id"].(string)
+		if model["api"] != "openai-completions" || !reflect.DeepEqual(model["cost"], zero) || !reflect.DeepEqual(model["input"], wantInput[id]) {
+			t.Fatalf("model %s = %v", id, model)
+		}
+		if _, set := model["reasoning"]; set {
+			t.Fatalf("model %s states reasoning, which the chart does not know: %v", id, model)
+		}
+	}
+	defaults := openClawAgentDefaults(t, rendered)
+	if defaults["model"].(map[string]any)["primary"] != "cetirun/gpt-4.1-mini" || defaults["utilityModel"] != "cetirun/gpt-4.1-mini" {
+		t.Fatalf("defaults = %v", defaults)
+	}
+	wantRefs := []any{"cetirun/gpt-4.1-mini", "cetirun/gpt-6-sol"}
+	if allowed := defaults["modelPolicy"].(map[string]any)["allow"]; !reflect.DeepEqual(allowed, wantRefs) {
+		t.Fatalf("allowed = %v", allowed)
+	}
+	for _, ref := range wantRefs {
+		if _, ok := defaults["models"].(map[string]any)[ref.(string)]; !ok {
+			t.Fatalf("models = %v, want %s", defaults["models"], ref)
+		}
+	}
+}
+
+func TestOpenClawRefusesAGatewayModelWithTheProviderPrefix(t *testing.T) {
+	for _, id := range []string{"openai/gpt-4.1-mini", "cetirun/gpt-4.1-mini"} {
+		input := aiGatewayInput("openclaw", "openai")
+		input["aiGateway"].(map[string]any)["models"] = []any{map[string]any{"id": id, "name": id}}
+		if _, err := renderAIGateway(t, input); err == nil {
+			t.Fatalf("the chart rendered the model %s", id)
+		}
 	}
 }
 
@@ -71,9 +132,10 @@ func visionInput(agentType string, vision ...any) map[string]any {
 }
 
 // A model the operator lists as accepting images gets them with a request:
-// OpenClaw takes input text and image, Hermes supports_vision. The others
-// carry nothing, so OpenClaw keeps its own catalog's value, and Hermes still
-// asks the model to describe an image. A release the operator prepares
+// OpenClaw takes input text and image, Hermes supports_vision. For the
+// others, OpenClaw takes input text only, as it has no catalog for the
+// Gateway provider, and Hermes still asks the model to describe an image. A
+// release the operator prepares
 // renders the configuration with the operator's renderer, standalone Helm
 // with the chart's; both read the same template.
 func TestAgentsSendImagesToTheModelsThatAcceptThem(t *testing.T) {
@@ -91,7 +153,7 @@ func TestAgentsSendImagesToTheModelsThatAcceptThem(t *testing.T) {
 				model := entry.(map[string]any)
 				inputs[model["id"].(string)] = model["input"]
 			}
-			if !reflect.DeepEqual(inputs[testRouterGatewayModel], []any{"text", "image"}) || inputs["gpt-6-sol"] != nil {
+			if !reflect.DeepEqual(inputs[testRouterGatewayModel], []any{"text", "image"}) || !reflect.DeepEqual(inputs["gpt-6-sol"], []any{"text"}) {
 				t.Fatalf("OpenClaw inputs = %v", inputs)
 			}
 			rendered, err = renderer.render(t, visionInput("hermes", testRouterGatewayModel))

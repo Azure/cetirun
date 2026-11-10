@@ -410,8 +410,9 @@ func (c *aiGatewayCatalog) seed(shared []aiGatewayCatalogModel, decision []strin
 const aiGatewayModelNameLimit = 256
 
 // aiGatewaySharedModelUsable reports whether a shared model name can be given
-// to Agents: the agent chart rejects names with the provider prefix Agents
-// use and names over its length limit, and the Gateway chart reserves the
+// to Agents: the agent chart rejects names with the provider prefixes Agents
+// use (openai/, and cetirun/ for OpenClaw) and names over its length limit,
+// and the Gateway chart reserves the
 // cetirun- and copilot/ prefixes in any letter case, copilot/ for the key
 // aliases of the Agents' own Copilot models. The console does not check them.
 func aiGatewaySharedModelUsable(name string) bool {
@@ -419,8 +420,8 @@ func aiGatewaySharedModelUsable(name string) bool {
 		return false
 	}
 	lower := strings.ToLower(name)
-	return !strings.HasPrefix(name, "openai/") && !strings.HasPrefix(lower, "cetirun-") &&
-		!strings.HasPrefix(lower, aiGatewayCopilotModelPrefix)
+	return !strings.HasPrefix(name, "openai/") && !strings.HasPrefix(name, "cetirun/") &&
+		!strings.HasPrefix(lower, "cetirun-") && !strings.HasPrefix(lower, aiGatewayCopilotModelPrefix)
 }
 
 // fillRouterLimits gives each shared router that states no limit of its own
