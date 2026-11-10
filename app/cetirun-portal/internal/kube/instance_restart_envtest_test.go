@@ -127,6 +127,36 @@ func TestRetainedRestartThroughServedAPI(t *testing.T) {
 			}
 		}
 	})
+	t.Run("proven pre-bootstrap suspension uses only the Agent intent", func(t *testing.T) {
+		preBootstrap := sampleInstance()
+		preBootstrap.Name, preBootstrap.UID, preBootstrap.ResourceVersion, preBootstrap.Generation = "prebootstrap-suspension", "", "", 0
+		preBootstrap.Spec.SandboxRef = "sample-sandbox"
+		preBootstrap.Finalizers = []string{api.Finalizer, api.SandboxHoldFinalizer}
+		preBootstrap.Status = api.AgentStatus{}
+		if err := kc.Create(ctx, preBootstrap, client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
+			t.Fatal(err)
+		}
+		preBootstrap.Status = api.AgentStatus{Phase: api.PhaseFailed, Policy: &api.PolicyStatus{}}
+		if err := kc.Status().Update(ctx, preBootstrap); err != nil {
+			t.Fatal(err)
+		}
+		version := InstanceVersion{UID: preBootstrap.UID, ResourceVersion: preBootstrap.ResourceVersion}
+		updated, err := NewClient(kc).SetInstanceSuspendedByName(ctx, preBootstrap.Name, version, true, nil)
+		if err != nil || !updated.Spec.Suspended || updated.Generation != preBootstrap.Generation+1 ||
+			updated.Status.Phase != api.PhaseFailed || updated.Status.Policy == nil {
+			t.Fatalf("served pre-bootstrap suspension did not preserve the failed diagnostic: %#v, %v", updated, err)
+		}
+		if err := kc.Get(ctx, client.ObjectKey{Name: InstanceNamespace(preBootstrap.Name)}, &corev1.Namespace{}); !apierrors.IsNotFound(err) {
+			t.Fatalf("Portal pre-bootstrap suspension wrote a namespace: %v", err)
+		}
+		retry, err := NewClient(kc).SetInstanceSuspendedByName(ctx, preBootstrap.Name, version, true, nil)
+		if err != nil || retry.ResourceVersion != updated.ResourceVersion || retry.Generation != updated.Generation {
+			t.Fatalf("pre-bootstrap suspend retry wrote a second intent: %v", err)
+		}
+		if _, err := NewClient(kc).SetInstanceSuspendedByName(ctx, preBootstrap.Name, version, false, nil); !errors.Is(err, ErrInstanceChanged) {
+			t.Fatalf("stale pre-bootstrap request reversed the intent: %v", err)
+		}
+	})
 	if err := kc.Delete(ctx, current, client.Preconditions{UID: &current.UID, ResourceVersion: &current.ResourceVersion}); err != nil {
 		t.Fatal(err)
 	}

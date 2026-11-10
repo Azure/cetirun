@@ -23,6 +23,8 @@ type toolAuthorizationError struct {
 	status int
 }
 
+var errPortalBindingRuntimeNotReady = errors.New("Agent runtime is not ready")
+
 func (e toolAuthorizationError) Error() string { return e.code }
 
 func toolAuthorizationFailure(code string, status int) error {
@@ -38,9 +40,15 @@ func ownerFromPortal(r *http.Request) (Owner, error) {
 }
 
 func (s *Server) portalBindingAgent(r *http.Request, owner Owner) (Agent, error) {
-	agent, err := s.store.getAgent(r.Context(), r.PathValue("name"))
-	if err != nil || agent.Deleting || !sameOwner(Owner{agent.OwnerTenantID, agent.OwnerObjectID}, owner) || subtle.ConstantTimeCompare([]byte(agent.UID), []byte(r.Header.Get("X-CetiRun-Instance-UID"))) != 1 {
+	agent, err := s.store.readAgent(r.Context(), r.PathValue("name"))
+	if err != nil {
+		return Agent{}, err
+	}
+	if agent.Deleting || !sameOwner(Owner{agent.OwnerTenantID, agent.OwnerObjectID}, owner) || subtle.ConstantTimeCompare([]byte(agent.UID), []byte(r.Header.Get("X-CetiRun-Instance-UID"))) != 1 {
 		return Agent{}, errors.New("instance ownership is invalid")
+	}
+	if agent.Namespace == "" {
+		return Agent{}, errPortalBindingRuntimeNotReady
 	}
 	return agent, nil
 }

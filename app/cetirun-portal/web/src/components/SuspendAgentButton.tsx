@@ -53,7 +53,7 @@ export function SuspendAgentButton({ instance }: { instance: Instance }) {
       <Text role="status" style={{ flexBasis: "100%", order: 1 }}>{instance.suspensionUnavailableReason}</Text>}
     {instance.suspended === true && <Text role="status" style={{ flexBasis: "100%", order: 1 }}>
       Suspension requested. This view does not confirm Pod termination or removal of every access path.
-      The Agent, HOME and Gateway key are retained.
+      The Agent and any existing HOME files or Gateway key are retained.
     </Text>}
     {instance.suspended === false && instance.suspendAvailable && !instance.restartAvailable &&
       <Text role={instance.phase === "Failed" ? "alert" : "status"} style={{ flexBasis: "100%", order: 1 }}>
@@ -69,7 +69,7 @@ export function SuspendAgentButton({ instance }: { instance: Instance }) {
           <DialogTitle>{action} Agent</DialogTitle>
           <DialogContent>
             {request?.suspended
-              ? "Request suspension of this Agent? Active sessions will be interrupted. The Agent, HOME files and existing Gateway key are retained."
+              ? "Request suspension of this Agent? Active sessions will be interrupted. The Agent and any existing HOME files or Gateway key are retained."
               : "Request resumption with the current configuration? Existing restart or administrator migration requests continue through the controller; this does not create another operation."}
             <Text block>Acceptance changes the requested intent, not the observed workload state.</Text>
             {change.isError && <Text block role="alert">

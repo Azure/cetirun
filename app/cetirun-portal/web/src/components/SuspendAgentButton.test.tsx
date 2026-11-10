@@ -41,7 +41,7 @@ describe("SuspendAgentButton", () => {
   it("confirms only the originally displayed Agent UID and version", () => {
     const view = render(<SuspendAgentButton instance={instance} />);
     fireEvent.click(screen.getByRole("button", { name: "Suspend Agent" }));
-    expect(screen.getByText(/HOME files and existing Gateway key are retained/)).toBeInTheDocument();
+    expect(screen.getByText(/any existing HOME files or Gateway key are retained/)).toBeInTheDocument();
     view.rerender(<SuspendAgentButton instance={{ ...instance, uid: "replacement-uid", resourceVersion: "8" }} />);
     fireEvent.click(screen.getByRole("button", { name: "Suspend", exact: true }));
     expect(mutation.mutate).toHaveBeenCalledWith({

@@ -5,6 +5,8 @@ package kube
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -13,7 +15,11 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/agentconfig"
 	"github.com/Azure/CetiRun/app/internal/chataccess"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -73,6 +79,89 @@ func (c *Client) CheckSuspensionHome(ctx context.Context, instance *api.Agent) e
 	return ErrSuspensionHomeRequired
 }
 
+// CheckSuspension verifies either the current persistent HOME, or the narrow
+// first-start case where no HOME can exist yet. The latter is deliberately
+// conservative: any durable bootstrap, preparation, grant, namespace or
+// lifecycle evidence falls back to the normal retained-HOME requirement.
+func (c *Client) CheckSuspension(ctx context.Context, instance *api.Agent) error {
+	err := c.CheckSuspensionHome(ctx, instance)
+	if !errors.Is(err, ErrSuspensionHomeUnverified) {
+		return err
+	}
+	eligible, proofErr := c.preBootstrapSuspensionEligible(ctx, instance)
+	if proofErr != nil || !eligible {
+		return err
+	}
+	return nil
+}
+
+func (c *Client) preBootstrapSuspensionEligible(ctx context.Context, instance *api.Agent) (bool, error) {
+	// This exception applies only to a governed Agent that has not started an
+	// execution lifetime. Policy diagnostics are intentionally not inspected:
+	// a failed policy prerequisite is the useful diagnosis the owner retains.
+	if instance.Spec.SandboxRef == "" || instance.Spec.RestartRequestID != "" || instance.Status.ObservedRestartRequestID != "" ||
+		instance.Spec.PlannedMigration != nil || instance.Status.PlannedMigration != nil ||
+		slices.Contains(instance.Finalizers, api.SandboxPreparationFinalizer) ||
+		slices.Contains(instance.Finalizers, api.SandboxBootstrapFinalizer) {
+		return false, nil
+	}
+	if preBootstrapSuspensionHasHistory(instance) {
+		return false, nil
+	}
+	namespace := &corev1.Namespace{}
+	if err := c.client.Get(ctx, client.ObjectKey{Name: InstanceNamespace(instance.Name)}, namespace); err == nil {
+		return false, nil
+	} else if !apierrors.IsNotFound(err) {
+		return false, err
+	}
+	for _, key := range []client.ObjectKey{
+		{Namespace: c.sandboxStateNamespace, Name: sandboxBootstrapReceiptName(instance.UID)},
+		{Namespace: c.sandboxStateNamespace, Name: sandboxPreparationReceiptName(instance.UID)},
+		{Namespace: c.sandboxStateNamespace, Name: sandboxGrantJournalName(instance.UID)},
+	} {
+		state := &corev1.ConfigMap{}
+		if err := c.client.Get(ctx, key, state); err == nil {
+			return false, nil
+		} else if !apierrors.IsNotFound(err) {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// preBootstrapSuspensionHasHistory rejects status that proves an execution
+// lifetime already progressed. Policy is intentionally excluded: a failed
+// prerequisite is the diagnostic that this narrow pre-bootstrap pause keeps.
+func preBootstrapSuspensionHasHistory(instance *api.Agent) bool {
+	if instance.Status.Namespace != "" || instance.Status.HelmReleaseName != "" ||
+		instance.Status.AIGateway != nil || instance.Status.Sandbox != nil ||
+		instance.Status.HelmMaintenance != nil || instance.Status.RegistryCredentials != nil ||
+		instance.Status.Phase == api.PhaseReady {
+		return true
+	}
+	for _, condition := range []string{api.ConditionReady, api.ConditionPodReady, api.ConditionSandboxReady, api.ConditionIngressReady, api.ConditionHelmDeployed} {
+		if apimeta.IsStatusConditionTrue(instance.Status.Conditions, condition) {
+			return true
+		}
+	}
+	return false
+}
+
+func sandboxBootstrapReceiptName(uid types.UID) string {
+	sum := sha256.Sum256([]byte(uid))
+	return "sandbox-bootstrap-" + hex.EncodeToString(sum[:20])
+}
+
+func sandboxPreparationReceiptName(uid types.UID) string {
+	sum := sha256.Sum256([]byte(uid))
+	return "sandbox-preparation-" + hex.EncodeToString(sum[:20])
+}
+
+func sandboxGrantJournalName(uid types.UID) string {
+	sum := sha256.Sum256([]byte(uid))
+	return "sandbox-grants-" + hex.EncodeToString(sum[:24])
+}
+
 func canChangeSuspension(instance *api.Agent) bool {
 	return instance.UID != "" && instance.ResourceVersion != "" && instance.DeletionTimestamp.IsZero() &&
 		!slices.Contains(instance.Finalizers, api.SandboxPreparationFinalizer)
@@ -116,7 +205,7 @@ func (c *Client) SetInstanceSuspendedByName(ctx context.Context, name string, ve
 		return nil, ErrInstanceChanged
 	}
 	if suspended {
-		if err := c.CheckSuspensionHome(ctx, instance); err != nil {
+		if err := c.CheckSuspension(ctx, instance); err != nil {
 			return nil, err
 		}
 	}

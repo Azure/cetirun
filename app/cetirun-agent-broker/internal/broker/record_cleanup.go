@@ -21,8 +21,11 @@ func (k *kubeClient) deleteAgentRecords(ctx context.Context, agent Agent) error 
 			return nil
 		}
 	}
-	// Unsupported runtimes rely on namespace/Agent garbage collection.
-	if k.agentNamespaces && agent.Namespace != "" && (!agent.UnsupportedRuntime || nativeAgentCandidate(agent)) {
+	// Ordinary Custom namespaces use the immutable Custom ownership receipt.
+	// They retain the unsupported-runtime boundary for credential issuance, but
+	// their Broker-owned binding records must be removed before the namespace is
+	// deleted. Other unsupported runtimes still rely on garbage collection.
+	if k.agentNamespaces && agent.Namespace != "" && (!agent.UnsupportedRuntime || nativeAgentCandidate(agent) || ordinaryCustomAgent(agent)) {
 		target, err := k.agentRecordStore(ctx, agent.UID)
 		if err != nil && !errors.Is(err, errNotFound) {
 			return err

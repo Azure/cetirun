@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -32,11 +33,273 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 type sharedSandboxInstaller struct {
 	*nativeSandboxInstaller
 	beforeApply func(*helm.PreparedRelease) error
+}
+
+func TestReconciledSandboxSuspendsBeforeBootstrap(t *testing.T) {
+	ctx := context.Background()
+	f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, "openclaw", true, false)
+	agent := f.current(t)
+	agent.Spec.Suspended = true
+	agent.Generation++
+	if err := f.kube.Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		f.reconcileOK(t)
+	}
+	current := f.current(t)
+	if current.Status.Phase != api.PhaseSuspended || current.Status.ObservedGeneration != current.Generation ||
+		current.Status.AccessURL != "" {
+		t.Fatalf("pre-bootstrap suspension did not preserve the stopped lifecycle: %#v", current.Status)
+	}
+	if f.installer.stages != 0 {
+		t.Fatal("pre-bootstrap suspension rendered or applied a workload")
+	}
+	if err := f.kube.Get(ctx, client.ObjectKey{Name: instanceNamespace(current.Name)}, &corev1.Namespace{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("pre-bootstrap suspension created a namespace: %v", err)
+	}
+	if _, _, err := f.r.readSandboxBootstrap(ctx, current); !apierrors.IsNotFound(err) {
+		t.Fatalf("pre-bootstrap suspension created a bootstrap receipt: %v", err)
+	}
+	current.Spec.Suspended = false
+	current.Generation++
+	if err := f.kube.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcileOK(t)
+	if err := f.kube.Get(ctx, client.ObjectKey{Name: instanceNamespace(current.Name)}, &corev1.Namespace{}); err != nil {
+		t.Fatalf("resume did not restart normal bootstrap: %v", err)
+	}
+}
+
+func TestReconciledSandboxSuspensionAfterReceiptBeforeFinalizerStaysPending(t *testing.T) {
+	ctx := context.Background()
+	f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, "openclaw", true, false)
+	bootstrap := f.r.sandboxBootstrapKey(f.current(t))
+	suspended := false
+	f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.CreateOption) error {
+			if err := c.Create(ctx, object, options...); err != nil {
+				return err
+			}
+			configMap, isReceipt := object.(*corev1.ConfigMap)
+			if !isReceipt || suspended || client.ObjectKeyFromObject(configMap) != bootstrap {
+				return nil
+			}
+			current := &api.Agent{}
+			if err := c.Get(ctx, client.ObjectKey{Name: f.agent.Name}, current); err != nil {
+				return err
+			}
+			current.Spec.Suspended = true
+			current.Generation++
+			if err := c.Update(ctx, current); err != nil {
+				return err
+			}
+			suspended = true
+			return nil
+		},
+	})
+	if _, err := f.reconcile(); err == nil {
+		t.Fatal("receipt-before-finalizer suspension race did not interrupt bootstrap")
+	}
+	if !suspended {
+		t.Fatal("bootstrap receipt was not created before the injected suspension")
+	}
+	f.reconcileOK(t)
+	current := f.current(t)
+	if current.Status.Phase != api.PhasePending || current.Status.AccessURL != "" {
+		t.Fatalf("interrupted pre-bootstrap suspension was not held pending: %#v", current.Status)
+	}
+	condition := meta.FindStatusCondition(current.Status.Conditions, api.ConditionSandboxReady)
+	if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "SuspensionPending" {
+		t.Fatalf("interrupted pre-bootstrap suspension did not report pending evidence: %#v", current.Status.Conditions)
+	}
+	if err := f.kube.Get(ctx, client.ObjectKey{Name: instanceNamespace(current.Name)}, &corev1.Namespace{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("interrupted pre-bootstrap suspension created a namespace: %v", err)
+	}
+	if f.installer.stages != 0 {
+		t.Fatal("interrupted pre-bootstrap suspension rendered or applied a workload")
+	}
+}
+
+func TestReconciledSandboxSuspensionAfterFinalizerBeforeNamespaceStaysPending(t *testing.T) {
+	ctx := context.Background()
+	f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, "openclaw", true, false)
+	suspended := false
+	f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+		Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, options ...client.PatchOption) error {
+			agent, isAgent := object.(*api.Agent)
+			if err := c.Patch(ctx, object, patch, options...); err != nil {
+				return err
+			}
+			if !isAgent || suspended || !controllerutil.ContainsFinalizer(agent, sandbox.BootstrapFinalizer) {
+				return nil
+			}
+			current := &api.Agent{}
+			if err := c.Get(ctx, client.ObjectKey{Name: f.agent.Name}, current); err != nil {
+				return err
+			}
+			current.Spec.Suspended = true
+			current.Generation++
+			if err := c.Update(ctx, current); err != nil {
+				return err
+			}
+			suspended = true
+			return nil
+		},
+	})
+	if _, err := f.reconcile(); err == nil {
+		t.Fatal("finalizer-before-namespace suspension race did not interrupt bootstrap")
+	}
+	if !suspended {
+		t.Fatal("bootstrap finalizer was not persisted before the injected suspension")
+	}
+	current := f.current(t)
+	if !controllerutil.ContainsFinalizer(current, sandbox.BootstrapFinalizer) {
+		t.Fatal("bootstrap finalizer was lost during the interrupted bootstrap")
+	}
+	if err := f.kube.Get(ctx, client.ObjectKey{Name: instanceNamespace(current.Name)}, &corev1.Namespace{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("finalizer-before-namespace suspension created a namespace: %v", err)
+	}
+	if f.installer.stages != 0 {
+		t.Fatal("finalizer-before-namespace suspension rendered or applied a workload")
+	}
+}
+
+func TestReconciledSandboxSuspensionDoesNotAdoptReplacedNamespace(t *testing.T) {
+	ctx := context.Background()
+	f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, "openclaw", true, false)
+	current := f.current(t)
+	namespace := &corev1.Namespace{}
+	if err := f.kube.Get(ctx, client.ObjectKey{Name: instanceNamespace(current.Name)}, namespace); err != nil {
+		t.Fatal(err)
+	}
+	namespace.Finalizers = nil
+	if err := f.kube.Update(ctx, namespace); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.kube.Delete(ctx, namespace); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.kube.Delete(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: namespace.Name}}); err != nil && !apierrors.IsNotFound(err) {
+		t.Fatal(err)
+	}
+	if err := f.kube.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace.Name, UID: "replacement-namespace"}}); err != nil {
+		t.Fatal(err)
+	}
+	current.Spec.Suspended = true
+	current.Generation++
+	if err := f.kube.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	stages, writes := f.installer.stages, 0
+	f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.CreateOption) error {
+			if _, isAgent := object.(*api.Agent); !isAgent {
+				writes++
+			}
+			return c.Create(ctx, object, options...)
+		},
+		Update: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.UpdateOption) error {
+			if _, isAgent := object.(*api.Agent); !isAgent {
+				writes++
+			}
+			return c.Update(ctx, object, options...)
+		},
+	})
+	f.reconcileOK(t)
+	current = f.current(t)
+	if current.Status.Phase != api.PhasePending || current.Status.AccessURL != "" || writes != 0 || f.installer.stages != stages {
+		t.Fatalf("suspension adopted or repaired a replaced namespace: status=%#v writes=%d stages=%d", current.Status, writes, f.installer.stages-stages)
+	}
+}
+
+func TestReconciledSandboxSuspensionWithHistoricalEvidenceStaysPending(t *testing.T) {
+	ctx := context.Background()
+	f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, "openclaw", true, false)
+	agent := f.current(t)
+	agent.Spec.Suspended = true
+	agent.Generation++
+	if err := f.kube.Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	agent = f.current(t)
+	agent.Status.Sandbox = &api.SandboxStatus{}
+	if err := f.kube.Status().Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcileOK(t)
+	current := f.current(t)
+	if current.Status.Phase != api.PhasePending || current.Status.AccessURL != "" {
+		t.Fatalf("historical execution evidence did not hold suspension pending: %#v", current.Status)
+	}
+	if err := f.kube.Get(ctx, client.ObjectKey{Name: instanceNamespace(current.Name)}, &corev1.Namespace{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("historical execution evidence bootstrapped a namespace: %v", err)
+	}
+	if f.installer.stages != 0 {
+		t.Fatal("historical execution evidence rendered or applied a workload")
+	}
+}
+
+func TestReconciledSandboxSuspendsAfterPreBootstrapSkillsFailure(t *testing.T) {
+	ctx := context.Background()
+	f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, "openclaw", true, false,
+		func(r *AgentReconciler, kube client.Client) {
+			teams := &api.TeamList{}
+			if err := kube.List(ctx, teams); err != nil || len(teams.Items) != 1 {
+				t.Fatal("pre-bootstrap skills fixture requires one Team:", err)
+			}
+			team := &teams.Items[0]
+			team.Spec.SkillStorage = &api.SkillStorageSpec{ResourceGroup: "skills-example", StorageAccount: "publishedskills", ContainerName: "skills-v1"}
+			if err := kube.Update(ctx, team); err != nil {
+				t.Fatal(err)
+			}
+			catalog := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "skills-catalog", Namespace: r.OperatorNamespace},
+				Data: map[string]string{SandboxSkillsCatalogKey: `{"version":"v1","teams":{"other-team":{"teamUID":"other-team-uid","revision":"v1","source":{"resourceGroup":"skills-example","storageAccount":"publishedskills","containerName":"skills-v1","storageClassName":"azureblob-nfs-premium","storageSize":"1Gi"}}}}`}}
+			if err := kube.Create(ctx, catalog); err != nil {
+				t.Fatal(err)
+			}
+			r.SandboxPreparation.bootstrap.SkillsCatalogConfigMapName = catalog.Name
+			r.SandboxPreparation.Prerequisites.(*KubernetesSandboxPrerequisites).SkillsCatalogConfigMapName = catalog.Name
+		},
+	)
+	if _, err := f.reconcile(); err == nil {
+		t.Fatal("missing Team skills publication did not fail before bootstrap")
+	}
+	failed := f.current(t)
+	if !controllerutil.ContainsFinalizer(failed, sandbox.HoldFinalizer) {
+		t.Fatalf("pre-bootstrap skills failure did not retain the hold: %#v", failed.Finalizers)
+	}
+	if err := f.kube.Get(ctx, client.ObjectKey{Name: instanceNamespace(failed.Name)}, &corev1.Namespace{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("pre-bootstrap skills failure created a namespace: %v", err)
+	}
+	if _, _, err := f.r.readSandboxBootstrap(ctx, failed); !apierrors.IsNotFound(err) {
+		t.Fatalf("pre-bootstrap skills failure created a bootstrap receipt: %v", err)
+	}
+	// This is the same persisted intent a successful Portal suspension request
+	// writes after its independent no-lifetime proof.
+	failed.Spec.Suspended = true
+	failed.Generation++
+	if err := f.kube.Update(ctx, failed); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcileOK(t)
+	current := f.current(t)
+	if current.Status.Phase != api.PhaseSuspended || current.Status.AccessURL != "" {
+		t.Fatalf("pre-bootstrap skills failure was not safely suspended: %#v", current.Status)
+	}
+	if err := f.kube.Get(ctx, client.ObjectKey{Name: instanceNamespace(current.Name)}, &corev1.Namespace{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("suspending the failed pre-bootstrap Agent created a namespace: %v", err)
+	}
+	if f.installer.stages != 0 {
+		t.Fatal("suspending the failed pre-bootstrap Agent rendered or applied a workload")
+	}
 }
 
 func (i *sharedSandboxInstaller) ResolveImageUpgrade(_, _, _, _, image, _ string) (string, error) {

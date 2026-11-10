@@ -240,17 +240,34 @@ func (k *kubeClient) request(ctx context.Context, method, endpoint string, body 
 }
 
 func (k *kubeClient) getAgent(ctx context.Context, name string) (Agent, error) {
+	agent, err := k.readAgent(ctx, name)
+	if err != nil {
+		return Agent{}, err
+	}
+	if agent.Namespace == "" {
+		return Agent{}, errors.New("Agent resource is not ready")
+	}
+	return agent, nil
+}
+
+// readAgent reads an Agent without treating its runtime namespace as an
+// identity field. Callers that need a workload must use getAgent or enforce
+// their own readiness contract.
+func (k *kubeClient) readAgent(ctx context.Context, name string) (Agent, error) {
 	if !dnsLabel(name) {
 		return Agent{}, errors.New("instance name is invalid")
 	}
 	var document agentDocument
 	_, err := k.request(ctx, http.MethodGet, "/apis/cetirun.microsoft.com/v1alpha1/agents/"+url.PathEscape(name), nil, &document)
 	if err != nil {
-		return Agent{}, err
+		if errors.Is(err, errNotFound) {
+			return Agent{}, err
+		}
+		return Agent{}, fmt.Errorf("%w: Agent lookup: %v", errDependencyUnavailable, err)
 	}
 	agent := agentFromDocument(document)
-	if agent.UID == "" || agent.Namespace == "" {
-		return Agent{}, errors.New("Agent resource is not ready")
+	if agent.UID == "" || agent.Name != name {
+		return Agent{}, errNotFound
 	}
 	return agent, nil
 }

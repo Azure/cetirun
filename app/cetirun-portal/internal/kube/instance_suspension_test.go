@@ -17,6 +17,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -64,6 +65,95 @@ func TestOwnerSuspensionRejectsEphemeralHome(t *testing.T) {
 			if err := fc.Get(context.Background(), client.ObjectKeyFromObject(agent), agent); err != nil ||
 				!reflect.DeepEqual(agent.Spec, before.Spec) {
 				t.Fatal("rejected suspension changed intent:", err)
+			}
+		})
+	}
+}
+
+func TestOwnerSuspensionAllowsProvenPreBootstrapSandbox(t *testing.T) {
+	ctx := context.Background()
+	agent := restartableInstance()
+	agent.Spec.SandboxRef = "sample-sandbox"
+	// This mirrors the failed governed bootstrap: policy diagnostics and its
+	// hold finalizer may exist, but no runtime lifetime was created.
+	agent.Status = api.AgentStatus{Phase: api.PhaseFailed, Policy: &api.PolicyStatus{}}
+	agent.Finalizers = []string{api.Finalizer, api.SandboxHoldFinalizer}
+	fc := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(agent).Build()
+	if err := fc.Get(ctx, client.ObjectKeyFromObject(agent), agent); err != nil {
+		t.Fatal(err)
+	}
+	version := InstanceVersion{UID: agent.UID, ResourceVersion: agent.ResourceVersion}
+	updated, err := NewClient(fc).SetInstanceSuspendedByName(ctx, agent.Name, version, true, nil)
+	if err != nil || !updated.Spec.Suspended {
+		t.Fatalf("proven pre-bootstrap suspension failed: %v", err)
+	}
+	for index, makeState := range []func(*api.Agent) client.Object{
+		func(agent *api.Agent) client.Object {
+			return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: InstanceNamespace(agent.Name)}}
+		},
+		func(agent *api.Agent) client.Object {
+			return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "cetirun-system", Name: sandboxBootstrapReceiptName(agent.UID)}}
+		},
+		func(agent *api.Agent) client.Object {
+			return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "cetirun-system", Name: sandboxPreparationReceiptName(agent.UID)}}
+		},
+		func(agent *api.Agent) client.Object {
+			return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "cetirun-system", Name: sandboxGrantJournalName(agent.UID)}}
+		},
+	} {
+		fresh := restartableInstance()
+		fresh.Name = fmt.Sprintf("alice-%d", index)
+		fresh.UID = types.UID(fmt.Sprintf("agent-uid-%d", index))
+		fresh.Spec.SandboxRef = "sample-sandbox"
+		fresh.Status = api.AgentStatus{Phase: api.PhaseFailed, Policy: &api.PolicyStatus{}}
+		fresh.Finalizers = []string{api.Finalizer, api.SandboxHoldFinalizer}
+		state := makeState(fresh)
+		if err := fc.Create(ctx, state); err != nil {
+			t.Fatal(err)
+		}
+		if err := fc.Create(ctx, fresh); err != nil {
+			t.Fatal(err)
+		}
+		if err := fc.Get(ctx, client.ObjectKeyFromObject(fresh), fresh); err != nil {
+			t.Fatal(err)
+		}
+		_, err := NewClient(fc).SetInstanceSuspendedByName(ctx, fresh.Name, InstanceVersion{UID: fresh.UID, ResourceVersion: fresh.ResourceVersion}, true, nil)
+		if !errors.Is(err, ErrSuspensionHomeUnverified) {
+			t.Fatalf("state %T allowed pre-bootstrap suspension: %v", state, err)
+		}
+		if err := fc.Delete(ctx, state); err != nil {
+			t.Fatal(err)
+		}
+		if err := fc.Delete(ctx, fresh); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestOwnerSuspensionRejectsPreBootstrapHistory(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		observe func(*api.Agent)
+	}{
+		{"enforced Sandbox", func(agent *api.Agent) { agent.Status.Sandbox = &api.SandboxStatus{} }},
+		{"Helm handoff", func(agent *api.Agent) { agent.Status.HelmMaintenance = &api.HelmMaintenanceStatus{} }},
+		{"registry credentials", func(agent *api.Agent) { agent.Status.RegistryCredentials = &api.RegistryCredentialsStatus{} }},
+		{"ready phase", func(agent *api.Agent) { agent.Status.Phase = api.PhaseReady }},
+		{"ready condition", func(agent *api.Agent) {
+			agent.Status.Conditions = []metav1.Condition{{Type: api.ConditionSandboxReady, Status: metav1.ConditionTrue}}
+		}},
+		{"deployed chart", func(agent *api.Agent) {
+			agent.Status.Conditions = []metav1.Condition{{Type: api.ConditionHelmDeployed, Status: metav1.ConditionTrue}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			agent := restartableInstance()
+			agent.Spec.SandboxRef = "sample-sandbox"
+			agent.Status = api.AgentStatus{Policy: &api.PolicyStatus{}}
+			tc.observe(agent)
+			fc := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(agent).Build()
+			if err := NewClient(fc).CheckSuspension(context.Background(), agent); !errors.Is(err, ErrSuspensionHomeUnverified) {
+				t.Fatalf("historical execution evidence allowed pre-bootstrap suspension: %v", err)
 			}
 		})
 	}

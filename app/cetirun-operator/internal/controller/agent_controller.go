@@ -336,6 +336,11 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		return result, stderrors.Join(err, holdErr)
 	}
 	commonCustom := reconciledSandbox && instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom
+	if reconciledSandbox {
+		if handled, result, err := r.suspendUnbootstrappedReconciledSandbox(ctx, instance); handled || err != nil {
+			return result, err
+		}
+	}
 	if allowed, result, err := r.reconcileMigration(ctx, instance, reconciledSandbox); !allowed {
 		return result, err
 	}

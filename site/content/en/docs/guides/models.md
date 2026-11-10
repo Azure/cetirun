@@ -353,6 +353,12 @@ up to the maximum of the Policy. Refer to
 
 ### Smart-routing models
 
+In the linked Policy's **Allowed shared models** picker, administrators can
+select router aliases from its Teams alongside Gateway catalog models. Each
+alias shows its Team and registration state. Grant the shared tier models
+separately, and allow Copilot when a tier requires it; selecting an alias does
+not grant its underlying models automatically.
+
 A Team can also define its own smart-routing models in the Portal. See
 [Configure a team](../teams/#smart-routing). An instance that can use one of
 these models lists it under its name, such as `auto-team`. The create form

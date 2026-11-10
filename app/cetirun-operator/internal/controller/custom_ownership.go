@@ -15,6 +15,7 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
+	"github.com/Azure/CetiRun/app/internal/agenttools"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -49,6 +50,11 @@ func (r *AgentReconciler) customRecordKey(instance *api.Agent, purpose string) t
 	if namespace == "" {
 		namespace = "cetirun-system"
 	}
+	if purpose == "ownership" {
+		return types.NamespacedName{Namespace: namespace, Name: agenttools.CustomOwnershipRecordName(string(instance.UID))}
+	}
+	// Other records keep their established names; only the ownership receipt is
+	// shared with the Broker.
 	hash := sha256.Sum256([]byte(instance.UID))
 	return types.NamespacedName{Namespace: namespace, Name: "custom-" + purpose + "-" + hex.EncodeToString(hash[:16])}
 }
@@ -190,6 +196,23 @@ func (r *AgentReconciler) deleteCustom(ctx context.Context, instance *api.Agent)
 	}
 	if ns.UID != receipt.NamespaceUID {
 		return ctrl.Result{}, fmt.Errorf("Custom cleanup namespace UID mismatch")
+	}
+	configured, configErr := r.connectionsMCPBrokerStorageEnabled()
+	if configErr != nil {
+		return ctrl.Result{}, configErr
+	}
+	if configured {
+		// Custom does not use Agent Identity to establish this grant. The
+		// immutable ownership receipt and the namespace UID fence are checked
+		// before the Broker can remove its Agent-scoped records.
+		if err := r.ensureConnectionsMCPBrokerCleanupRBAC(ctx, instance); err != nil {
+			return ctrl.Result{}, fmt.Errorf("prepare Broker cleanup for Custom Agent: %w", err)
+		}
+		if !agentIdentityRequested(instance) && (instance.Status.AgentIdentity == nil || instance.Status.AgentIdentity.Phase == api.AgentIdentityPhaseDisabled) {
+			if err := r.deleteAgentAuthorization(ctx, string(instance.UID)); err != nil {
+				return ctrl.Result{}, fmt.Errorf("delete Custom Agent Broker records: %w", err)
+			}
+		}
 	}
 	if ns.DeletionTimestamp.IsZero() {
 		// Deleting this verified dedicated namespace also removes its Helm
