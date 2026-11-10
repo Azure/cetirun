@@ -21,10 +21,18 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func withIngressMTLS(t *testing.T, kind string, desktop ...bool) func(*AgentReconciler, client.Client) {
+	t.Helper()
+	return withIngressMTLSPins(t, kind, false, desktop...)
+}
+
+// withIngressMTLSPins registers UID-only pins and immutable Secrets when
+// uidOnly is set; otherwise it keeps the legacy UID and version pins.
+func withIngressMTLSPins(t *testing.T, kind string, uidOnly bool, desktop ...bool) func(*AgentReconciler, client.Client) {
 	t.Helper()
 	return func(r *AgentReconciler, kube client.Client) {
 		ctx := context.Background()
@@ -48,11 +56,17 @@ func withIngressMTLS(t *testing.T, kind string, desktop ...bool) func(*AgentReco
 			t.Fatal(err)
 		}
 		ref := func(object client.Object) ingressmtls.Reference {
-			return ingressmtls.Reference{Namespace: object.GetNamespace(), Name: object.GetName(),
-				UID: object.GetUID(), ResourceVersion: object.GetResourceVersion()}
+			reference := ingressmtls.Reference{Namespace: object.GetNamespace(), Name: object.GetName(), UID: object.GetUID()}
+			if !uidOnly {
+				reference.ResourceVersion = object.GetResourceVersion()
+			}
+			return reference
 		}
 		server := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "agent-ingress-tls", Namespace: instanceNamespace(agent.Name)}}
 		clientSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "gateway-agent-example", Namespace: "platform"}}
+		if uidOnly {
+			server.Immutable, clientSecret.Immutable = ptr.To(true), ptr.To(true)
+		}
 		gateway := &istio.Gateway{ObjectMeta: metav1.ObjectMeta{Name: "ingress", Namespace: "platform"}, Spec: istioapi.Gateway{
 			Selector: map[string]string{"app": "managed-ingress"},
 			Servers: []*istioapi.Server{{Port: &istioapi.Port{Number: 443, Protocol: "HTTPS", Name: "https"},

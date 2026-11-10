@@ -149,8 +149,7 @@ Add `chatClients` to the Custom binding. Web UI-only bindings leave it empty:
     "secret": {
       "namespace": "portal-system",
       "name": "custom-chat-client",
-      "uid": "example-chat-secret-uid",
-      "resourceVersion": "100"
+      "uid": "example-chat-secret-uid"
     },
     "uri": "spiffe://example.com/portal/example-agent-uid",
     "podLabels": {"app": "cetirun-portal"}
@@ -248,20 +247,17 @@ every identity/version with the values of the approved live object:
     "serverSecret": {
       "namespace": "cetirun-example",
       "name": "agent-ingress-tls",
-      "uid": "example-server-secret-uid",
-      "resourceVersion": "100"
+      "uid": "example-server-secret-uid"
     },
     "clientSecret": {
       "namespace": "managed-ingress",
       "name": "gateway-example-client",
-      "uid": "example-client-secret-uid",
-      "resourceVersion": "101"
+      "uid": "example-client-secret-uid"
     },
     "gateway": {
       "namespace": "managed-ingress",
       "name": "shared-ingress",
-      "uid": "example-gateway-uid",
-      "resourceVersion": "102"
+      "uid": "example-gateway-uid"
     }
   }]
 }
@@ -280,10 +276,63 @@ chart-version pins. This makes sure that the prerequisite bootstrap does not
 depend on the runtime to run first.
 
 No TLS workload is authorized until both Secrets and the Gateway match their
-registered UID/resourceVersion pins. The operator reads Secret metadata for
-these approvals, not certificate or key contents. The key is mounted only by
-Envoy. The application receives only the public certificate and trust bundle
-for readiness checks.
+registered pins. The operator does not read certificate or key contents for
+these approvals. The key is mounted only by Envoy. The application receives
+only the public certificate and trust bundle for readiness checks.
+
+### Pin forms
+
+Each `serverSecret`, `clientSecret`, `gateway` and Chat client `secret`
+reference has one of two forms:
+
+| Form | What it pins | What stops the Agent |
+| --- | --- | --- |
+| UID only (no `resourceVersion`), recommended | The object UID. A pinned Secret must be immutable. | Replacement or deletion of the object, a Secret that is not immutable, or a change to the Gateway servers or selector |
+| UID and `resourceVersion` | The exact object version | Every change to the object, including a label or annotation change |
+
+With the UID-only form:
+
+- Label and annotation changes do not stop the Agent. This includes the
+  `helm.sh/chart` label that a `cetirun-istio` chart upgrade writes on the
+  shared Gateway.
+- The operator reads each pinned Secret only to examine its `immutable` field.
+  It does not log, hash or copy the Secret data. The operator ServiceAccount
+  already has `get` permission on Secrets.
+- The execution pins the Gateway configuration with a content digest, and the
+  operator examines the HTTPS server and the selector. A change to them stops
+  the Agent.
+
+Create each pinned Secret as immutable. For example:
+
+```bash
+kubectl create secret generic agent-ingress-tls -n cetirun-example \
+  --from-file=tls.crt=server.crt --from-file=tls.key=server.key \
+  --from-file=ca.crt=client-ca.crt --dry-run=client -o yaml \
+  | kubectl patch --local -f - --type merge -p '{"immutable":true}' -o yaml \
+  | kubectl apply -f -
+```
+
+You can also make an existing Secret immutable:
+
+```bash
+kubectl patch secret agent-ingress-tls -n cetirun-example \
+  --type merge -p '{"immutable":true}'
+```
+
+Then read the UID that you register:
+
+```bash
+kubectl get secret agent-ingress-tls -n cetirun-example -o jsonpath='{.metadata.uid}'
+```
+
+Registrations that already have a `resourceVersion` keep the strict behavior.
+To change to the UID-only form, remove the `resourceVersion` fields and make
+the Secrets immutable. This changes the execution revision, so the Agent
+restarts one time.
+
+If an approval is stale, the Agent stays `Pending`, and its `Ready` and
+`SandboxReady` conditions have the reason `IngressMTLSApprovalStale`. The
+condition message names the kind, namespace and name of the stale object.
 
 Hermes validates API and Webapp listener authority before every supervised
 gateway start, in both ordinary and mTLS modes. Platform values supply the API
@@ -314,9 +363,11 @@ For leaf rotation, CA changes, Gateway changes, or revocation, use the
 1. Stop/suspend the affected Agent. Then make sure that the shutdown is
    acknowledged. The acknowledged shutdown includes the HOME/writer checks
    that already exist and the release of its source reservation.
-2. Provision the replacement certificate material externally.
-3. Update the approved Secret UID/resourceVersion pins and Gateway pin through
-   the configuration process that the administrator already has.
+2. Provision the replacement certificate material externally. With UID-only
+   pins, create a new immutable Secret. You cannot change the data of an
+   immutable Secret, so a rotation always gives a new UID.
+3. Update the approved Secret pins and the Gateway pin through the
+   configuration process that the administrator already has.
 4. Resume the Agent. Before you treat access as restored, examine the
    replacement Pod, readiness, route, and actual TLS handshake.
 
@@ -326,7 +377,9 @@ authorize terminal access. The shutdown must still be acknowledged.
 
 This implementation does not promise restart-free rotation. Unapproved Secret
 changes, replacement, deletion, or unavailable pinned Gateway inputs stop the
-workload and withdraw its route. They are not adopted by name. Secret metadata
+workload and withdraw its route. They are not adopted by name. With UID-only
+pins, metadata-only changes do not stop the workload (see
+[Pin forms](#pin-forms)). Secret metadata
 events enqueue affected Agents. Active mTLS Agents also reconcile every five
 seconds. These are control-plane reconciliation bounds, not instantaneous
 dataplane revocation guarantees.
@@ -336,7 +389,7 @@ If TLS prerequisites later become unavailable before the first apply, the
 pending checkpoint that already exists can be cancelled safely. This allows
 normal retry, suspension and deletion. If reads of the same Secret are
 restored, the Secret keeps its approval. A recreated Secret must get a new
-UID/version approval. For a genuinely submitted or uncertain apply, shutdown
+approval for its new UID. For a genuinely submitted or uncertain apply, shutdown
 evidence is still necessary, even when no StatefulSet is now visible.
 
 Each final apply first claims the expectation's resource version with an
@@ -358,9 +411,22 @@ readiness. The public certificate probe examines validity and the active Envoy
 certificate. Expiry cannot produce a ready endpoint indefinitely.
 
 TLS session resumption is disabled. Authenticated downstream/upstream
-connections are capped at five minutes. A shutdown is still necessary to
-immediately revoke the connections that exist. The removal of a CA alone is
-not an instantaneous disconnect.
+connections are capped at five minutes (300 seconds). A shutdown is still
+necessary to immediately revoke the connections that exist. The removal of a
+CA alone is not an instantaneous disconnect.
+
+The connection cap also applies to the Terminal. ttyd starts one shell for each
+connection, so after five minutes the Terminal reconnects to a new shell. The
+shell history and the commands that run in the old shell are lost. The Control
+UI and the Hermes Webapp reconnect without a new sign-in. To keep a Terminal
+session, run this command after you open the Terminal and again after each
+reconnect:
+
+```bash
+tmux new -A -s main
+```
+
+The tmux session and its commands continue in the Agent container.
 
 Cleanup uses the ownership and journal rules that already exist. HOME stays
 governed by the retention policy that it already has. Cleanup does not delete

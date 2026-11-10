@@ -37,11 +37,57 @@ const (
 )
 
 // Reference approves an existing object, not a name to discover or adopt.
+//
+// A reference with a resourceVersion pins that exact version: any change,
+// including a metadata-only change, makes the approval stale. A reference
+// without a resourceVersion pins the object UID only. The shared Gateway
+// content is then checked separately, and a Secret must be immutable, so
+// that only its metadata can change while its UID stays the same.
 type Reference struct {
 	Namespace       string    `json:"namespace"`
 	Name            string    `json:"name"`
 	UID             types.UID `json:"uid"`
-	ResourceVersion string    `json:"resourceVersion"`
+	ResourceVersion string    `json:"resourceVersion,omitempty"`
+}
+
+// UIDOnly reports whether the reference pins the object UID without a version.
+func (r Reference) UIDOnly() bool {
+	return r.ResourceVersion == ""
+}
+
+// Matches reports whether a live object identity satisfies the reference.
+// It does not check Secret immutability; callers that read Secrets must.
+func (r Reference) Matches(uid types.UID, resourceVersion string) bool {
+	return r.UID != "" && uid == r.UID && (r.UIDOnly() || resourceVersion == r.ResourceVersion)
+}
+
+// ErrApprovalStale reports that an approved object was replaced or changed.
+var ErrApprovalStale = errors.New("mTLS approval no longer matches its approved object")
+
+// StaleError names the object whose approval is stale. Object names are not
+// secret; Secret contents are never part of the error.
+type StaleError struct {
+	Kind      string
+	Namespace string
+	Name      string
+	Detail    string
+}
+
+func (e *StaleError) Error() string {
+	message := fmt.Sprintf("mTLS approval for %s %s/%s is stale", e.Kind, e.Namespace, e.Name)
+	if e.Detail != "" {
+		message += ": " + e.Detail
+	}
+	return message
+}
+
+func (e *StaleError) Is(target error) bool {
+	return target == ErrApprovalStale
+}
+
+// Stale returns an ErrApprovalStale error for the referenced object.
+func (r Reference) Stale(kind, detail string) error {
+	return &StaleError{Kind: kind, Namespace: r.Namespace, Name: r.Name, Detail: detail}
 }
 
 type Registration struct {
@@ -92,8 +138,8 @@ func (r Reference) Validate() error {
 	if len(validation.IsDNS1123Label(r.Namespace)) != 0 ||
 		len(validation.IsDNS1123Subdomain(r.Name)) != 0 || r.UID == "" ||
 		len(validation.IsValidLabelValue(string(r.UID))) != 0 ||
-		r.ResourceVersion == "" || strings.TrimSpace(r.ResourceVersion) != r.ResourceVersion {
-		return fmt.Errorf("mTLS references require explicit namespace, name, UID and resourceVersion")
+		strings.TrimSpace(r.ResourceVersion) != r.ResourceVersion {
+		return fmt.Errorf("mTLS references require explicit namespace, name and UID, and an optional exact resourceVersion")
 	}
 	return nil
 }

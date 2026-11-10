@@ -15,6 +15,7 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
@@ -1006,6 +1007,18 @@ func (r *AgentReconciler) holdReconciledSandbox(ctx context.Context, agent *api.
 		phase: api.PhasePending, reason: "SandboxHeld",
 		message: "Current Sandbox authorization or prerequisites are unavailable",
 	})
+}
+
+// holdReconciledIngressMTLS holds an Agent whose mTLS prerequisites failed.
+// A stale approval names the object so that an administrator can register
+// its current identity; other failures keep the generic hold status.
+func (r *AgentReconciler) holdReconciledIngressMTLS(ctx context.Context, agent *api.Agent, cause error) (ctrl.Result, error) {
+	if !errors.Is(cause, ingressmtls.ErrApprovalStale) {
+		return r.holdReconciledSandbox(ctx, agent)
+	}
+	_, reason, message := sandboxStatusFailure(cause)
+	status := reconciledSandboxHoldStatus{phase: api.PhasePending, reason: reason, message: message}
+	return r.holdReconciledSandboxWithStatus(ctx, agent, status, status)
 }
 
 type reconciledSandboxHoldStatus struct {

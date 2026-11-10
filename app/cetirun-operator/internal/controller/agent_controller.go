@@ -708,7 +708,18 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed,
 			metav1.ConditionFalse, "ChartNotInstalled", "Helm chart not installed yet")
 	}
-	if instance.Status.Phase == "" || instance.Status.Phase == cetirunv1alpha1.PhasePending {
+	if reconciledSandbox && instance.Status.Phase == cetirunv1alpha1.PhasePending {
+		// A held common-executor Agent stays Pending until this pass applies
+		// or holds it again. Writing Provisioning first would make every pass
+		// of a steady hold write two alternating phases. Keep the phase in
+		// memory; a later status write in this pass persists it.
+		instance.Status.Phase = cetirunv1alpha1.PhaseProvisioning
+		if creating {
+			if err := r.updateStatus(ctx, instance); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	} else if instance.Status.Phase == "" || instance.Status.Phase == cetirunv1alpha1.PhasePending {
 		logger.V(1).Info("Setting phase to Provisioning", "alias", instance.Spec.User.Alias, "currentPhase", instance.Status.Phase)
 		if err := r.setPhase(ctx, instance, cetirunv1alpha1.PhaseProvisioning); err != nil {
 			return ctrl.Result{}, err
@@ -995,7 +1006,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 				return r.reconciledSandboxFailure(ctx, instance, err)
 			}
 			if reconciledSandbox && stderrors.Is(err, errSandboxIngressMTLS) {
-				result, holdErr := r.holdReconciledSandbox(ctx, instance)
+				result, holdErr := r.holdReconciledIngressMTLS(ctx, instance, err)
 				return result, stderrors.Join(err, holdErr)
 			}
 			if reconciledSandbox && stderrors.Is(err, errSandboxSourceChanged) {

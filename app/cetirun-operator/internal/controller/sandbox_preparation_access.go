@@ -100,8 +100,7 @@ func (r *AgentReconciler) sandboxSourceAccess(attempt *sandboxPreparationAttempt
 		}
 		matchesTLSReference := func(ref ingressmtls.Reference) bool {
 			return source.APIVersion == "v1" && source.ValidIdentity() &&
-				source.Namespace == ref.Namespace && source.Name == ref.Name &&
-				source.UID == ref.UID && source.ResourceVersion == ref.ResourceVersion
+				source.MatchesApproval(ref.Namespace, ref.Name, ref.UID, ref.ResourceVersion)
 		}
 		endpointSecret := false
 		if plan := attempt.input.Controls.IngressMTLS; plan != nil {

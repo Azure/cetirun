@@ -197,6 +197,18 @@ func (r *AgentReconciler) readSandboxSource(ctx context.Context, source sandboxw
 		}
 		return current, nil
 	}
+	if source.ImmutableSecret {
+		// A UID-pinned Secret is read only to confirm that it is still the
+		// approved immutable object. Its data is never logged, hashed or copied.
+		secret := &corev1.Secret{}
+		if err := r.customReader().Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: source.Name}, secret); err != nil {
+			return source, err
+		}
+		if !sandboxworkload.ImmutableSecretMatches(source, secret) {
+			return source, fmt.Errorf("%w: %s", errSandboxSourceChanged, sandboxSourceKey(source))
+		}
+		return source, nil
+	}
 	object := &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: source.APIVersion, Kind: source.Kind}}
 	if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: source.Name}, object); err != nil {
 		return source, err
