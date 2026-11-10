@@ -117,6 +117,7 @@ SKILL_MARKETPLACE_SECRET_KEYS = {"none": (), "token": ("token",), "ssh": ("ssh-p
 # turns it on. make deploy does not call Azure: the Kusto cluster, its
 # databases and the ingestor's identity exist before the deployment.
 OBSERVABILITY = "cetirun-observability"
+OBSERVABILITY_INGESTOR = "cetirun-adx-mon-ingestor"
 OBSERVABILITY_FIELDS = {
     "observability": ("clusterName", "adx", "ingestorClientId"),
     "observability.adx": ("endpoint", "databases"),
@@ -1546,6 +1547,12 @@ class Deployment:
             return value.get("apiVersion"), value.get("kind"), metadata.get("namespace"), metadata.get("name")
         return self.ingress is not None and identity(doc) in {identity(value) for value in self.ingress.documents}
 
+    def observability_tls_secret(self):
+        """Name of the ADX-Mon ingestor's TLS Secret, as the observability chart names it."""
+        chart = self.values["platform"].get(OBSERVABILITY, {})
+        name = ((chart.get("ingestor") or {}).get("tls") or {}).get("secretName")
+        return name or f"{OBSERVABILITY_INGESTOR}-tls"
+
     def check_retained_postgresql(self):
         storage = self.config["platform"].get("postgresqlStorage")
         if not storage:
@@ -1716,7 +1723,11 @@ class Deployment:
                         and metadata["name"] == "oauth2-proxy-sessions"
                         and not self.resource("Deployment", "oauth2-proxy-sessions", namespace)
                         and not self.resource("PersistentVolumeClaim", "oauth2-proxy-sessions", namespace))
-                    if not adding_sessions:
+                    # Turning the ADX-Mon collection on for an installed platform adds the
+                    # ingestor's TLS Secret; once the ingestor exists, the Secret is kept.
+                    adding_observability = (name == "platform" and metadata["name"] == self.observability_tls_secret()
+                        and not self.resource("StatefulSet", OBSERVABILITY_INGESTOR, namespace))
+                    if not adding_sessions and not adding_observability:
                         raise ValueError(f"Retained Secret {namespace}/{metadata['name']} is missing; refusing regeneration")
         if not self.values["platform"]["cetirun-operator"]["enabled"]:
             if "platform" not in self.existing_releases:

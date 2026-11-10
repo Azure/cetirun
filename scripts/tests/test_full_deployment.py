@@ -1664,6 +1664,24 @@ class ObservabilityTests(DeploymentFixture, unittest.TestCase):
         self.assertIs(values["platform"]["cetirun-observability"]["enabled"], True)
 
     @unittest.skipUnless(shutil.which("helm"), "requires existing Helm for real local chart rendering")
+    def test_turning_it_on_later_adds_the_ingestor_secret_once(self):
+        deployment = self.deployment(name="observability-off")
+        deployment.execute()
+        updated = self.deployment(self.observability_config(), "observability-on")
+        for field in ("objects", "keys", "installed", "live", "mesh"):
+            setattr(updated, field, copy.deepcopy(getattr(deployment, field)))
+        updated.execute()
+        secret = ("secret", "cetirun-system", "cetirun-adx-mon-ingestor-tls")
+        self.assertIn(secret, updated.objects)
+        self.assertIn(("statefulset", "cetirun-system", "cetirun-adx-mon-ingestor"), updated.objects)
+        # Once the ingestor exists, a lost Secret is not generated again.
+        updated.objects.pop(secret)
+        updated.writes.clear()
+        with self.assertRaisesRegex(ValueError, "cetirun-adx-mon-ingestor-tls is missing; refusing regeneration"):
+            updated.execute()
+        self.assertEqual(updated.writes, [])
+
+    @unittest.skipUnless(shutil.which("helm"), "requires existing Helm for real local chart rendering")
     def test_render_uses_the_release_images_and_needs_no_external_reference(self):
         deployment = self.deployment(self.observability_config(), "observability")
         documents = deployment.documents["platform"]
