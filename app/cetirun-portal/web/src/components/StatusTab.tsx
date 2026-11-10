@@ -8,6 +8,7 @@ import {
   tokens,
 } from "@fluentui/react-components";
 import type { StatusResponse } from "../types/instance";
+import { ChartUnavailableNotice } from "./ChartUnavailableNotice";
 import { thStyle, tdStyle } from "./tableStyles";
 
 function conditionBadgeColor(status: string): "success" | "danger" | "informative" {
@@ -26,9 +27,12 @@ function phaseBadgeColor(phase: string): "success" | "warning" | "danger" | "inf
 export function StatusTab({
   data,
   isLoading,
+  showChartNotice = true,
 }: {
   data: StatusResponse | undefined;
   isLoading: boolean;
+  /** Show the chart download warning. Pages that show it elsewhere turn it off. */
+  showChartNotice?: boolean;
 }) {
   if (isLoading) {
     return <Spinner size="small" label="Loading status..." />;
@@ -39,6 +43,7 @@ export function StatusTab({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24, paddingTop: 12 }}>
+      {showChartNotice && <ChartUnavailableNotice conditions={data.conditions} />}
       {/* Conditions */}
       <section>
         <Text weight="semibold" size={400} as="h3" style={{ marginBottom: 8, display: "block" }}>

@@ -43,14 +43,17 @@ func (r *AgentReconciler) preparationFailed(ctx context.Context, instance *api.A
 	if !errors.As(err, &download) || !chartInstalledForGeneration(instance) {
 		return r.rejectAgentConfig(ctx, instance, err)
 	}
-	log.FromContext(ctx).Error(err, "Agent chart download failed; the deployed release is unchanged",
-		"retryAfter", chartUnavailableRetry)
 	previous := instance.Status.DeepCopy()
-	message := fmt.Sprintf("Agent chart %s could not be downloaded from the registry; "+
-		"the deployed release is unchanged and the operator will retry", download.Version)
+	message := chartUnavailableMessage(download)
 	condition := meta.FindStatusCondition(instance.Status.Conditions, api.ConditionAgentConfigReady)
 	reported := condition != nil && condition.Status == metav1.ConditionFalse &&
 		condition.Reason == chartUnavailableReason && condition.Message == message
+	logger := log.FromContext(ctx).WithValues("class", string(download.Class()), "retryAfter", chartUnavailableRetry)
+	if reported {
+		logger.V(1).Info("Agent chart download failed again; the deployed release is unchanged", "error", err.Error())
+	} else {
+		logger.Error(err, "Agent chart download failed; the deployed release is unchanged")
+	}
 	setCondition(&instance.Status.Conditions, api.ConditionAgentConfigReady,
 		metav1.ConditionFalse, chartUnavailableReason, message)
 
@@ -89,6 +92,25 @@ func (r *AgentReconciler) preparationFailed(ctx context.Context, instance *api.A
 		return ctrl.Result{}, observeErr
 	}
 	return ctrl.Result{RequeueAfter: chartUnavailableRetry}, nil
+}
+
+// chartUnavailableHints tell the owner and the administrator what to check
+// for each kind of chart download failure.
+var chartUnavailableHints = map[helm.ChartDownloadClass]string{
+	helm.ChartDownloadUnauthorized: "check the chart-pull credential",
+	helm.ChartDownloadNotFound:     "check that the registry has this chart version",
+	helm.ChartDownloadNetwork:      "check that the registry is reachable",
+	helm.ChartDownloadUnknown:      "see the operator log",
+}
+
+// chartUnavailableMessage is the condition message for a chart that could not
+// be downloaded. It names the kind of failure, but never the registry URL or
+// the cause text, which can quote a signed storage URL.
+func chartUnavailableMessage(download *helm.ChartDownloadError) string {
+	class := download.Class()
+	return fmt.Sprintf("Agent chart %s could not be downloaded from the registry (%s: %s); "+
+		"the deployed release is unchanged and the operator will retry",
+		download.Version, class, chartUnavailableHints[class])
 }
 
 // chartInstalledForGeneration reports whether the Agent's chart was installed

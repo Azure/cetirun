@@ -61,8 +61,10 @@ func agentConfigMessage(ctx context.Context, err error) string {
 	if !errors.As(err, &download) {
 		return err.Error()
 	}
-	log.FromContext(ctx).Error(err, "Agent chart download failed")
-	return fmt.Sprintf("Agent chart %s could not be downloaded from the registry; the operator will retry", download.Version)
+	log.FromContext(ctx).Error(err, "Agent chart download failed", "class", string(download.Class()))
+	class := download.Class()
+	return fmt.Sprintf("Agent chart %s could not be downloaded from the registry (%s: %s); the operator will retry",
+		download.Version, class, chartUnavailableHints[class])
 }
 
 // User and deployment overrides cannot inject a prepared plan or replace its
