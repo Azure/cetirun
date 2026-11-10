@@ -274,7 +274,13 @@ func (r *AgentReconciler) verifyPolicyAcceptance(ctx context.Context, policy *ap
 		return policyDependency("AgentPolicy acceptance observation is unavailable for generation %d", policy.Generation)
 	}
 	if accepted.Status == metav1.ConditionFalse {
-		return fmt.Errorf("effective AgentPolicy is not accepted")
+		if accepted.Reason == policyRegistrationIncompatibleReason {
+			// Only the platform registration changed since this generation was
+			// accepted: block the key and stop compute, but keep the key so the
+			// Agent recovers when the registration is corrected.
+			return policyDependency("effective AgentPolicy is not accepted: %s: %s", accepted.Reason, accepted.Message)
+		}
+		return fmt.Errorf("effective AgentPolicy is not accepted: %s: %s", accepted.Reason, accepted.Message)
 	}
 	if accepted.Status != metav1.ConditionTrue {
 		return policyDependency("AgentPolicy acceptance observation has an unrecognized status")

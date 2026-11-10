@@ -95,7 +95,7 @@ func Compile(input CompileInput) (*Plan, error) {
 			}
 		}
 		if found == nil || found.Namespace == "" || len(found.IPs) == 0 || len(requested.Ports) == 0 {
-			return nil, fmt.Errorf("%w: Connections requires a registered managed destination", ErrUnavailable)
+			return nil, controlFailure(ErrUnavailable, "Connections requires a registered managed destination")
 		}
 		ports, err := canonicalPorts(requested.Ports, resolution.Capabilities)
 		if err != nil {
@@ -103,7 +103,7 @@ func Compile(input CompileInput) (*Plan, error) {
 		}
 		for _, port := range ports {
 			if port.Protocol != corev1.ProtocolTCP || port.Port == 53 {
-				return nil, fmt.Errorf("%w: Connections requires fixed TCP service ports", ErrUnsupportedControl)
+				return nil, controlFailure(ErrUnsupportedControl, "Connections requires fixed TCP service ports")
 			}
 		}
 		input.ConnectionsMCP = &Destination{Peer: *found, Ports: ports}
@@ -120,10 +120,10 @@ func Compile(input CompileInput) (*Plan, error) {
 	var mtls *ingressmtls.Plan
 	if resolution.AgentPolicy.Network.Ingress.RequireMTLS {
 		if !input.NativeExecution || platform.IngressMTLS == nil {
-			return nil, fmt.Errorf("%w: managed ingress mTLS requires native execution and certificate registration", ErrUnsupportedControl)
+			return nil, controlFailure(ErrUnsupportedControl, "managed ingress mTLS requires native execution and certificate registration")
 		}
 		if len(validation.IsDNS1123Label(input.ServiceName)) != 0 {
-			return nil, fmt.Errorf("%w: mTLS requires the resolved native Service name", ErrUnavailable)
+			return nil, controlFailure(ErrUnavailable, "mTLS requires the resolved native Service name")
 		}
 		mtls, err = platform.IngressMTLS.Resolve(binding.AgentUID, input.Namespace, input.ServiceName)
 		if err != nil {
@@ -137,7 +137,7 @@ func Compile(input CompileInput) (*Plan, error) {
 	var proxyDigest string
 	if len(resolution.AgentPolicy.Network.BlockedFQDNs) != 0 {
 		if !input.NativeExecution || platform.EgressSNI == nil {
-			return nil, fmt.Errorf("%w: observed-SNI capture requires the common executor and registered images", ErrUnsupportedControl)
+			return nil, controlFailure(ErrUnsupportedControl, "observed-SNI capture requires the common executor and registered images")
 		}
 		egress, err = platform.EgressSNI.Resolve(resolution.AgentPolicy.Network.BlockedFQDNs,
 			slices.Contains(resolution.Capabilities.IPFamilies, corev1.IPv4Protocol),
@@ -260,7 +260,7 @@ func Compile(input CompileInput) (*Plan, error) {
 // identity or enforcement. An Accepted policy is not an execution permit.
 func ValidatePolicyConfiguration(policy *api.AgentPolicy, capabilities sandbox.Capabilities, platform Platform) error {
 	if policy == nil || policy.UID == "" || !policy.DeletionTimestamp.IsZero() {
-		return fmt.Errorf("%w: a persisted non-terminating policy is required", ErrUnavailable)
+		return controlFailure(ErrUnavailable, "a persisted non-terminating policy is required")
 	}
 	if err := validateControlInput(policy.Spec, platform); err != nil {
 		return err
@@ -300,13 +300,13 @@ func ValidatePolicyConfiguration(policy *api.AgentPolicy, capabilities sandbox.C
 func supportedPolicy(policy api.AgentPolicySpec, capabilities sandbox.Capabilities) error {
 	if policy.Security.ReadOnlyRootFilesystem == nil ||
 		(policy.Network.Ingress.Mode != api.AgentPolicyIngressAuthenticated && policy.Network.Ingress.Mode != api.AgentPolicyIngressDisabled) {
-		return fmt.Errorf("%w: policy must be normalized before support evaluation", ErrUnsupportedControl)
+		return controlFailure(ErrUnsupportedControl, "policy must be normalized before support evaluation")
 	}
 	if len(policy.Network.BlockedFQDNs) != 0 && !capabilities.BlockedFQDNs {
-		return fmt.Errorf("%w: observed-SNI blocking is not registered", ErrUnsupportedControl)
+		return controlFailure(ErrUnsupportedControl, "observed-SNI blocking is not registered")
 	}
 	if policy.Network.Ingress.RequireMTLS && (capabilities.Profile != sandbox.ProfileNativeSingleStart || !capabilities.MutualTLS) {
-		return fmt.Errorf("%w: managed ingress mTLS requires an explicitly registered native endpoint", ErrUnsupportedControl)
+		return controlFailure(ErrUnsupportedControl, "managed ingress mTLS requires an explicitly registered native endpoint")
 	}
 	if errs := sandbox.CheckNetworkCapabilities(capabilities); len(errs) != 0 {
 		return fmt.Errorf("%w: %v", ErrUnsupportedControl, errs.ToAggregate())
@@ -322,7 +322,7 @@ func supportedPolicy(policy api.AgentPolicySpec, capabilities sandbox.Capabiliti
 		policy.KubernetesAccess != nil && !capabilities.KubernetesAccess ||
 		policy.EntraID.Enabled && !capabilities.EntraID ||
 		*policy.Security.ReadOnlyRootFilesystem && !capabilities.ReadOnlyRootFilesystem {
-		return fmt.Errorf("%w: a requested policy control is not qualified", ErrUnsupportedControl)
+		return controlFailure(ErrUnsupportedControl, "a requested policy control is not qualified")
 	}
 	return nil
 }
