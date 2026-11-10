@@ -279,7 +279,6 @@ test("OpenClaw turns that cannot use Memory start no helper for context or the b
 });
 
 test("OpenClaw admits channels and automated turns to Memory by default", async t => {
-  const f = await openclawFixture(t);
   const contexts = [
     channelContext("slack", "group"), channelContext("discord", "channel"), channelContext("telegram", "direct"),
     channelContext("new-channel"), controlUiContext({ senderId: "webchat-ui" }),
@@ -290,6 +289,8 @@ test("OpenClaw admits channels and automated turns to Memory by default", async 
     controlUiContext({ inputProvenance: { kind: "inter_session", sourceTool: "sessions_send" } }),
   ];
   for (const [i, source] of contexts.entries()) {
+    // Isolate sources so prior captures cannot evict the seed from bounded navigation.
+    const f = await openclawFixture(t);
     const ctx = { ...source, sessionId: `admitted-${i}`, runId: `admitted-${i}`, workspaceDir: f.workspace, assertInvocationCurrent() {} };
     const result = await f.hooks.get("before_prompt_build")({ prompt: "Remember my preference: not an attested owner statement", messages: [] }, ctx);
     assert.ok(result.prependContext.includes("Private fixture marker"), JSON.stringify(source));
@@ -297,9 +298,9 @@ test("OpenClaw admits channels and automated turns to Memory by default", async 
     assert.equal(capture.details.ok, true, JSON.stringify(capture.details));
     const query = await f.tool(ctx).execute(`query-${i}`, { command: "query", payload: { queryTerms: [`Channel fact ${i}`] } });
     assert.equal(query.details.ok, true);
+    const core = await f.bridge.session(f.binding).tool({ command: "query", payload: { view: "core", queryTerms: [] } });
+    assert.equal(core.data.hits.length, 0, "automated/channel input asserted an owner preference");
   }
-  const core = await f.bridge.session(f.binding).tool({ command: "query", payload: { view: "core", queryTerms: [] } });
-  assert.equal(core.data.hits.length, 0, "automated/channel input asserted an owner preference");
 });
 
 test("OpenClaw intersects configured and environment access limits using native metadata", async t => {
