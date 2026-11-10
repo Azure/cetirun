@@ -92,11 +92,12 @@ func (r *AgentReconciler) customRuntimeValues(instance *api.Agent, team *api.Tea
 	if instance.Spec.GatewayTokenSecretRef != "" || instance.Spec.Tailscale != nil {
 		return nil, fmt.Errorf("UnsupportedFeature: Custom does not support native credentials or Tailscale")
 	}
-	if err := runtimebindings.ValidateOverrides(r.CetiRunHelmValues); err != nil {
+	shared := runtimebindings.SharedValues(r.CetiRunHelmValues)
+	if err := runtimebindings.ValidateOverrides(shared); err != nil {
 		return nil, fmt.Errorf("CETIRUN_HELM_VALUES platform configuration: %w", err)
 	}
 	values := platformRuntimeDefaults(instance.Name)
-	for key, value := range r.CetiRunHelmValues {
+	for key, value := range shared {
 		values[key] = deepMerge(values[key], value)
 	}
 	// With the Skill Marketplace, Team marketplace skills are dropped here, not
