@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Azure/CetiRun/app/internal/agenttools"
 )
 
 func stageOAuthTransaction(t *testing.T, f *authorizationFixture, tx *connectionTransaction) string {
@@ -222,6 +224,13 @@ func TestUsageIncludesBindingsOfDeletingAndUnsupportedAgents(t *testing.T) {
 				f.agent.Spec.SandboxRef = "shared"
 			case "unsupported":
 				f.agent.Spec.Agent.Type = "custom"
+				agent := agentFromDocument(f.agent)
+				immutable := true
+				f.customReceipt = &configMapDocument{Immutable: &immutable, Data: map[string]string{"ownership": `{"agentName":"agent","agentUID":"` + agent.UID + `","namespace":"agents","namespaceUID":"namespace-agent"}`}}
+				f.customReceipt.Metadata.Name = agenttools.CustomOwnershipRecordName(agent.UID)
+				f.customReceipt.Metadata.Namespace = "cetirun-system"
+				f.customReceipt.Metadata.OwnerReferences = []ownerReference{agentRecordOwner(agent)}
+				f.store.nativeOperatorNamespace = "cetirun-system"
 			}
 			usage, err := f.store.usage(ctx, connection)
 			if err != nil || usage.CanRemove || len(usage.Agents) != 1 || usage.Agents[0].InstanceUID != namespaceAgentUID {

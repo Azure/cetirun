@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+
+	"github.com/Azure/CetiRun/app/internal/agenttools"
 )
 
 const recordLabelPrefix = "agenttools.cetirun.microsoft.com/"
@@ -47,19 +49,74 @@ func (k *kubeClient) recordStoreForAgent(ctx context.Context, agent Agent) (*kub
 	if _, err := k.request(ctx, http.MethodGet, "/api/v1/namespaces/"+url.PathEscape(agent.Namespace), nil, &namespace); err != nil {
 		return nil, err
 	}
-	owned := false
-	for _, owner := range namespace.Metadata.OwnerReferences {
-		if owner == agentRecordOwner(agent) {
-			owned = true
+	if ordinaryCustomAgent(agent) {
+		// Custom namespaces deliberately do not use an Agent OwnerReference, and
+		// a foreign OwnerReference must not bypass the receipt proof.
+		if err := k.customRecordNamespaceOwned(ctx, agent, namespace.Metadata); err != nil {
+			return nil, err
 		}
-	}
-	if !owned {
-		return nil, errors.New("Agent namespace ownership is invalid")
+	} else {
+		owned := false
+		for _, owner := range namespace.Metadata.OwnerReferences {
+			if owner == agentRecordOwner(agent) {
+				owned = true
+			}
+		}
+		if !owned {
+			return nil, errors.New("Agent namespace ownership is invalid")
+		}
 	}
 	copy := *k
 	copy.namespace, copy.agentNamespaces, copy.recordAgent = agent.Namespace, false, &agent
 	copy.recordNamespaceDeleting = namespace.Metadata.DeletionTimestamp != nil
 	return &copy, nil
+}
+
+func ordinaryCustomAgent(agent Agent) bool {
+	return !agent.PolicyManaged && agent.RuntimeType == "custom"
+}
+
+type configMapDocument struct {
+	Metadata struct {
+		Name            string           `json:"name"`
+		Namespace       string           `json:"namespace"`
+		OwnerReferences []ownerReference `json:"ownerReferences"`
+	} `json:"metadata"`
+	Immutable *bool             `json:"immutable"`
+	Data      map[string]string `json:"data"`
+}
+
+// customRecordNamespaceOwned validates the immutable operator receipt in
+// addition to the namespace annotation. The annotation alone is writable by a
+// namespace administrator and is never authority for Broker record access.
+func (k *kubeClient) customRecordNamespaceOwned(ctx context.Context, agent Agent, namespace secretMetadata) error {
+	if namespace.Annotations["cetirun.microsoft.com/agent-uid"] != agent.UID {
+		return errors.New("Custom Agent namespace ownership is invalid")
+	}
+	name := agenttools.CustomOwnershipRecordName(agent.UID)
+	var receipt configMapDocument
+	path := "/api/v1/namespaces/" + url.PathEscape(k.nativeOperatorNamespace) + "/configmaps/" + url.PathEscape(name)
+	if _, err := k.request(ctx, http.MethodGet, path, nil, &receipt); err != nil {
+		return err
+	}
+	ownerMatches := len(receipt.Metadata.OwnerReferences) == 1 && receipt.Metadata.OwnerReferences[0] == agentRecordOwner(agent)
+	// During orphan deletion Kubernetes can remove the owner reference from
+	// the receipt before the Broker's final cleanup call. That narrow case is
+	// safe only for the deleting live Agent and only after all UID checks below.
+	ownerlessDeleting := agent.Deleting && len(receipt.Metadata.OwnerReferences) == 0
+	if receipt.Metadata.Name != name || receipt.Metadata.Namespace != k.nativeOperatorNamespace || receipt.Immutable == nil || !*receipt.Immutable ||
+		(!ownerMatches && !ownerlessDeleting) {
+		return errors.New("Custom ownership receipt is invalid")
+	}
+	raw, ok := receipt.Data["ownership"]
+	if !ok {
+		return errors.New("Custom ownership receipt is invalid")
+	}
+	proof, err := agenttools.ParseCustomOwnershipNamespace(raw)
+	if err != nil || !proof.Matches(agent.Name, agent.UID, namespace.Name, namespace.UID) {
+		return errors.New("Custom ownership receipt does not match the Agent namespace")
+	}
+	return nil
 }
 
 func recordOwnedBy(secret secretDocument, agent Agent) bool {

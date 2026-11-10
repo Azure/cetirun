@@ -53,6 +53,14 @@ func (s *Server) bindingAgent(w http.ResponseWriter, r *http.Request) (Owner, Ag
 	}
 	agent, err := s.portalBindingAgent(r, owner)
 	if err != nil {
+		if errors.Is(err, errPortalBindingRuntimeNotReady) {
+			writeAPIError(w, http.StatusConflict, "runtime_not_ready", "The Agent runtime is not ready yet", correlationID(r))
+			return Owner{}, Agent{}, false
+		}
+		if errors.Is(err, errDependencyUnavailable) {
+			writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Agent runtime lookup is unavailable", correlationID(r))
+			return Owner{}, Agent{}, false
+		}
 		writeAPIError(w, http.StatusForbidden, "forbidden", "The instance owner binding is invalid", correlationID(r))
 		return Owner{}, Agent{}, false
 	}

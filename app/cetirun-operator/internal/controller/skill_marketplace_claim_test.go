@@ -366,7 +366,7 @@ func TestSkillMarketplaceSkillsSelectTheSkillsClaim(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			team.Spec.Skills = test.skills
-			if got := sandboxSkillsMode(true, "", agent(test.kind), team); got != test.want {
+			if got := sandboxSkillsMode(true, agent(test.kind), team); got != test.want {
 				t.Fatalf("skills mode = %q, want %q", got, test.want)
 			}
 		})

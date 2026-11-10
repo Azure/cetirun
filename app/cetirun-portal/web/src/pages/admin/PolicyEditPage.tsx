@@ -22,6 +22,7 @@ import { InternalNetworkRules, formatInternalNetworkRules, parseInternalNetworkR
 import { useFeatures } from "../../hooks/useFeatures";
 import { useSkillMarketplace } from "../../hooks/useSkillMarketplace";
 import { SkillChecklist } from "./SkillChecklist";
+import { listTeams } from "../../api/adminTeam";
 import { useAIGatewayCatalog } from "../../hooks/useAIGateway";
 import { AdminConfigurationErrorMessage } from "../../components/AdminConfigurationErrorMessage";
 
@@ -50,21 +51,35 @@ export function toggleAllowedSkill(text: string, name: string, checked: boolean)
   return [...kept, name].join("\n");
 }
 
-function SharedModelPicker({ value, onChange }: { value: string; onChange: (models: string[]) => void }) {
+function SharedModelPicker({ policyName, value, onChange }: { policyName?: string; value: string; onChange: (models: string[]) => void }) {
   const catalog = useAIGatewayCatalog(true);
+  const teams = useQuery({ queryKey: ["admin", "teams"], queryFn: listTeams, enabled: !!policyName });
   const [search, setSearch] = useState("");
   const known = catalog.data?.known === true;
-  const models = known ? [...new Set(catalog.data!.sharedModels.map((model) => model.name))].sort((a, b) => a.localeCompare(b)) : [];
+  const routerDetails = new Map<string, string[]>();
+  for (const team of teams.data ?? []) {
+    if (!policyName || team.deleting || team.agentPolicyRef !== policyName) continue;
+    for (const router of team.modelRouters ?? []) {
+      const registered = team.modelRouterStatus?.find((status) => status.name === router.name)?.ready === true;
+      routerDetails.set(router.name, [...(routerDetails.get(router.name) ?? []),
+        `Team ${team.name}: ${registered ? "registered" : "registration pending"}`]);
+    }
+  }
+  const models = [...new Set([
+    ...(known ? catalog.data!.sharedModels.map((model) => model.name) : []), ...routerDetails.keys(),
+  ])].sort((a, b) => a.localeCompare(b));
   const selected = lines(value);
   const filtered = models.filter((model) => model.toLowerCase().includes(search.toLowerCase()));
 
   return <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-    <Field label="Allowed shared models" hint="Search and select models from the Gateway catalog. These models also decide the owners' GitHub Copilot models that are the same models: a Copilot model is offered only when this list allows a shared model that is that model.">
+    <Field label="Allowed shared models" hint="Search shared models and routers from Teams linked to this Policy. Router tiers still require their own grants. These models also decide the owners' GitHub Copilot models that are the same models: a Copilot model is offered only when this list allows a shared model that is that model.">
       <Combobox multiselect selectedOptions={selected} value={search} placeholder="Search models"
-        disabled={!known || models.length === 0} style={{ width: "100%" }}
+        disabled={models.length === 0} style={{ width: "100%" }}
         onChange={(event) => setSearch(event.target.value)}
         onOptionSelect={(_, data) => { onChange(data.selectedOptions); setSearch(""); }}>
-        {filtered.map((model) => <Option key={model} value={model}>{model}</Option>)}
+        {filtered.map((model) => <Option key={model} value={model} text={model}>
+          {model}{routerDetails.has(model) && <Text block size={200}>{routerDetails.get(model)!.join("; ")}</Text>}
+        </Option>)}
         {filtered.length === 0 && <Option disabled>No models match your search</Option>}
       </Combobox>
     </Field>
@@ -72,6 +87,7 @@ function SharedModelPicker({ value, onChange }: { value: string; onChange: (mode
       {selected.map((model) => <li key={model} style={{ display: "flex", alignItems: "center", gap: 8, paddingBlock: 4 }}>
         <div style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>
           <Text>{model}</Text>
+          {routerDetails.has(model) && <Text block size={200}>{routerDetails.get(model)!.join("; ")}</Text>}
           {known && !models.includes(model) && <Text block size={200}>Not listed in the current catalog</Text>}
         </div>
         <Button type="button" appearance="subtle" aria-label={`Remove ${model}`}
@@ -82,8 +98,10 @@ function SharedModelPicker({ value, onChange }: { value: string; onChange: (mode
     {catalog.isError && <MessageBar intent="warning">Failed to load the model catalog. Your selections have been kept. Try refreshing.</MessageBar>}
     {!catalog.isPending && !catalog.isError && !known && <Text>The Gateway model catalog is not available yet.</Text>}
     {known && models.length === 0 && <Text>No shared models are listed in the Gateway catalog.</Text>}
-    <Button type="button" style={{ alignSelf: "flex-start" }} disabled={catalog.isFetching}
-      onClick={() => { void catalog.refetch(); }}>Refresh models</Button>
+    {policyName && teams.isPending && <Spinner size="tiny" label="Loading Team routers..." />}
+    {policyName && teams.isError && <MessageBar intent="warning">Failed to load Team routers. Your selections have been kept. Try refreshing.</MessageBar>}
+    <Button type="button" style={{ alignSelf: "flex-start" }} disabled={catalog.isFetching || (!!policyName && teams.isFetching)}
+      onClick={() => { void catalog.refetch(); if (policyName) void teams.refetch(); }}>Refresh models</Button>
   </div>;
 }
 
@@ -274,7 +292,7 @@ export function PolicyEditPage() {
       const copilot = data.checked;
       setForm({ ...form, copilot, budgetEnabled: copilot || form.sharedModels.trim() !== "" ? form.budgetEnabled : false });
     }} />
-    <SharedModelPicker key={`models-${name || "__new__"}`} value={form.sharedModels} onChange={(models) => {
+    <SharedModelPicker key={`models-${name || "__new__"}`} policyName={name} value={form.sharedModels} onChange={(models) => {
       const sharedModels = models.join("\n");
       setForm({ ...form, sharedModels, budgetEnabled: form.copilot || sharedModels.trim() !== "" ? form.budgetEnabled : false });
     }} />

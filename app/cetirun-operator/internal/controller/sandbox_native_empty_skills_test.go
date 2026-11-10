@@ -48,12 +48,30 @@ func TestNativePublishedSkillsRejectsRuntimePackageRequests(t *testing.T) {
 }
 
 func TestNativeSandboxEmptySkillsLifecycle(t *testing.T) {
+	for _, catalog := range []string{"", "skills-catalog"} {
+		t.Run("catalog="+catalog, func(t *testing.T) { testNativeSandboxEmptySkillsLifecycle(t, catalog) })
+	}
+}
+
+func testNativeSandboxEmptySkillsLifecycle(t *testing.T, catalog string) {
 	f := newNativeSandboxSkillsFixture(t, true, nil)
 	ctx := context.Background()
 	source := f.r.SandboxPreparation.Prerequisites.(*KubernetesSandboxPrerequisites)
-	source.SkillsClaimName, f.r.SandboxPreparation.bootstrap.SkillsClaimName = "", ""
+	if catalog == "" {
+		source.SkillsClaimName, f.r.SandboxPreparation.bootstrap.SkillsClaimName = "", ""
+	}
+	source.SkillsCatalogConfigMapName, f.r.SandboxPreparation.bootstrap.SkillsCatalogConfigMapName = catalog, catalog
+	if catalog != "" {
+		if err := f.kube.Create(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: catalog, Namespace: f.r.OperatorNamespace},
+			Data: map[string]string{SandboxSkillsCatalogKey: `{"version":"v1","teams":{"other-team":{"teamUID":"other-team-uid","revision":"v1","source":{"resourceGroup":"example","storageAccount":"exampleskills","containerName":"skills","storageClassName":"azureblob-nfs-premium","storageSize":"1Gi"}}}}`}}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	reader := interceptor.NewClient(f.kube, interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+			if _, ok := object.(*corev1.ConfigMap); ok && catalog != "" && key.Name == catalog {
+				return fmt.Errorf("empty skills unexpectedly read the global publication catalog")
+			}
 			if _, ok := object.(*corev1.PersistentVolume); ok {
 				return fmt.Errorf("empty skills unexpectedly read a publication volume")
 			}
@@ -324,8 +342,8 @@ func TestNativeSandboxEmptySkillsRejectsInconsistentPrerequisites(t *testing.T) 
 		"requested skill": func(_ *nativeSandboxFixture, a *sandboxPreparationAttempt) {
 			a.agent.Spec.SkillOverrides.Add = []string{"example-skill"}
 		},
-		"configured catalog": func(f *nativeSandboxFixture, _ *sandboxPreparationAttempt) {
-			f.r.SandboxPreparation.bootstrap.SkillsCatalogConfigMapName = "skills-catalog"
+		"shared skill storage": func(_ *nativeSandboxFixture, a *sandboxPreparationAttempt) {
+			a.team.Spec.SkillStorage = &api.SkillStorageSpec{ResourceGroup: "example", StorageAccount: "exampleskills", ContainerName: "skills"}
 		},
 		"default held path": func(f *nativeSandboxFixture, _ *sandboxPreparationAttempt) {
 			f.r.SandboxPreparation.NativeExecution = false
@@ -345,6 +363,73 @@ func TestNativeSandboxEmptySkillsRejectsInconsistentPrerequisites(t *testing.T) 
 			change(f, attempt)
 			if err := f.r.sandboxPreparationInput(context.Background(), attempt); err == nil {
 				t.Fatal("inconsistent internal empty-skills prerequisite was accepted")
+			}
+		})
+	}
+}
+
+func TestNativeEmptySkillsBootstrapModeCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name, marker                string
+		claim, wantEmpty, wantError bool
+	}{
+		{name: "new empty receipt survives catalog enablement", marker: "empty", wantEmpty: true},
+		{name: "legacy receipt retains supplied claim", claim: true},
+		{name: "legacy receipt cannot lose supplied claim", wantError: true},
+		{name: "unknown marker is rejected", marker: "unknown", wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			f := newNativeSandboxSkillsFixture(t, true, nil)
+			f.projectGateway(t)
+			agent := f.current(t)
+			record, receipt, err := f.r.readSandboxBootstrap(ctx, agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if receipt.Version != "v1" || record.Annotations[sandboxBootstrapSkillsModeAnnotation] != string(w.SkillsModeEmpty) {
+				t.Fatal("new empty bootstrap did not explicitly record its storage selection")
+			}
+			if tc.marker == "" {
+				delete(record.Annotations, sandboxBootstrapSkillsModeAnnotation)
+			} else {
+				record.Annotations[sandboxBootstrapSkillsModeAnnotation] = tc.marker
+			}
+			if err := f.kube.Update(ctx, record); err != nil {
+				t.Fatal(err)
+			}
+			source := f.r.SandboxPreparation.Prerequisites.(*KubernetesSandboxPrerequisites)
+			source.SkillsCatalogConfigMapName = "later-global-catalog"
+			var claim *corev1.PersistentVolumeClaim
+			if tc.claim {
+				claim = testfixture.New("openclaw").Input.Skills.DeepCopy()
+				claim.Name, claim.Namespace = source.SkillsClaimName, instanceNamespace(agent.Name)
+				claim.UID, claim.ResourceVersion = "", ""
+				claim.OwnerReferences = []metav1.OwnerReference{w.AgentOwner(agent.Name, agent.UID)}
+				if err := f.kube.Create(ctx, claim); err != nil {
+					t.Fatal(err)
+				}
+			}
+			team := &api.Team{}
+			if err := f.kube.Get(ctx, client.ObjectKey{Name: agent.Spec.Team}, team); err != nil {
+				t.Fatal(err)
+			}
+			got, err := source.Resolve(ctx, agent, team)
+			if tc.wantError {
+				if err == nil {
+					t.Fatal("invalid or missing retained skills authority was accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantEmpty {
+				if got.SkillsMode != w.SkillsModeEmpty || got.Skills.UID != "" {
+					t.Fatal("catalog enablement replaced explicit empty skills")
+				}
+			} else if got.SkillsMode != "" || claim == nil || got.Skills.UID != claim.UID {
+				t.Fatal("legacy external claim was replaced with empty skills")
 			}
 		})
 	}

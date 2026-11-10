@@ -6,10 +6,13 @@ package handler
 import (
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/auth"
 )
+
+const agentGenerationHeader = "X-CetiRun-Agent-Generation"
 
 func (h *InstanceHandler) SuspendInstance(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.ClaimsFromContext(r.Context())
@@ -42,6 +45,18 @@ func (h *InstanceHandler) setInstanceSuspended(w http.ResponseWriter, r *http.Re
 	version, ok := h.readInstanceVersion(w, r)
 	if !ok {
 		return
+	}
+	if values := r.Header.Values(agentGenerationHeader); len(values) != 0 {
+		if len(values) != 1 {
+			writeError(w, http.StatusBadRequest, "invalid_generation", "Agent generation header must contain one positive integer")
+			return
+		}
+		generation, err := strconv.ParseInt(values[0], 10, 64)
+		if err != nil || generation < 1 {
+			writeError(w, http.StatusBadRequest, "invalid_generation", "Agent generation header must be a positive integer")
+			return
+		}
+		version.Generation = generation
 	}
 	instance, err := h.Kube.SetInstanceSuspendedByName(r.Context(), name, version, suspended,
 		func(current *api.Agent) error {
