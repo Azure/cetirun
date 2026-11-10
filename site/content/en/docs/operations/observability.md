@@ -117,6 +117,13 @@ template creates neither.
 - The roles `User` and `Ingestor` for that identity on each of the three
   databases. The ingestor creates the tables and its own functions when data
   first arrives. It needs no `Admin` role.
+- The `admins` role of that identity on the functions `prom_increase`,
+  `prom_rate` and `prom_delta` of the metrics database. The ingestor alters
+  them each time it starts, and Kusto lets only a function's creator or an
+  admin alter it. The cluster template creates the functions and grants the
+  role. If you prepare the databases yourself, run for each function:
+  `.add function prom_increase admins ('aadapp=<ingestor-client-id>;<tenant-id>')`.
+  Without the role, only the first CetiRun cluster's ingestor starts.
 - Outbound HTTPS from the platform namespace to the Kusto cluster, its
   `ingest-` endpoint, the Azure Storage endpoints of ADX ingestion, and Entra
   ID.

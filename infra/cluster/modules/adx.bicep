@@ -8,10 +8,12 @@
 // clusters can share one Kusto cluster: each one's rows carry its name in the
 // Cluster column.
 //
-// The ingestor creates the tables and the query functions on first use, so it
+// The ingestor creates the tables and its query functions on first use, so it
 // is a database User (create tables and functions) and Ingestor (write data),
-// not an Admin. Retention, caching and batching are database properties that
-// this module owns.
+// not an Admin. ADX-Mon also alters three functions at every start; this
+// module creates them and makes the ingestor their admin, so that several
+// clusters' ingestors can share the metrics database. Retention, caching and
+// batching are database properties that this module owns.
 
 @description('Name of the Kusto cluster: 4 to 22 lowercase letters and digits, starting with a letter.')
 @minLength(4)
@@ -78,7 +80,10 @@ param agentLogsViewers array = []
 // commands that can also run on a Kusto cluster made without this module;
 // their comment lines are left out here.
 var logsFunctions = join(filter(split(loadTextContent('adx/cetirun-logs.kql'), '\n'), line => !startsWith(line, '//')), '\n')
-var metricsFunctions = join(filter(split('${loadTextContent('adx/cetirun-metrics.kql')}\n${replace(loadTextContent('adx/cetirun-health.kql'), '__LOGS_DATABASE__', logsDatabaseName)}', '\n'), line => !startsWith(line, '//')), '\n')
+var metricsFunctions = join(filter(split('${loadTextContent('adx/cetirun-metrics.kql')}\n${replace(loadTextContent('adx/cetirun-health.kql'), '__LOGS_DATABASE__', logsDatabaseName)}\n${loadTextContent('adx/adxmon-functions.kql')}', '\n'), line => !startsWith(line, '//')), '\n')
+// Each CetiRun cluster's ingestor alters ADX-Mon's functions at start, which
+// needs it to be their admin; a second cluster's deployment adds its own.
+var adxmonFunctionAdmins = empty(ingestorClientId) ? '' : join(map(['prom_increase', 'prom_rate', 'prom_delta'], name => format('.add function {0} admins (\'aadapp={1};{2}\') \'ADX-Mon ingestor\'', name, ingestorClientId, tenantId)), '\n\n')
 var agentLogsFunctions = replace(join(filter(split(loadTextContent('adx/cetirun-agents.kql'), '\n'), line => !startsWith(line, '//')), '\n'), '__LOGS_DATABASE__', logsDatabaseName)
 
 var databases = [
@@ -92,7 +97,7 @@ var databases = [
     name: metricsDatabaseName
     retentionDays: metricsRetentionDays
     agentLogs: false
-    functions: metricsFunctions
+    functions: join(filter([metricsFunctions, adxmonFunctionAdmins], part => !empty(part)), '\n\n')
   }
   {
     name: agentLogsDatabaseName
