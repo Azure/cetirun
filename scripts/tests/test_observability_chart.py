@@ -4,6 +4,7 @@
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tomllib
@@ -61,7 +62,22 @@ class ObservabilityChartTests(unittest.TestCase):
         self.assertIs(scrape["default-drop-metrics"], True)
         self.assertIn("^litellm_", scrape["keep-metrics"])
         self.assertEqual(scrape["scrape-interval"], 60)
-        self.assertEqual(scrape["drop-metrics"], ["^adxmon_table_backlog_(limit_bytes|limit_segments|enforced)$"])
+        keep = [re.compile(pattern) for pattern in scrape["keep-metrics"]]
+        drop = [re.compile(pattern) for pattern in scrape["drop-metrics"]]
+
+        def collected(name):
+            return any(p.search(name) for p in keep) and not any(p.search(name) for p in drop)
+
+        # What CollectionHealth() and the docs read is collected.
+        for name in ("adxmon_table_backlog_rejected_records", "adxmon_table_backlog_rejected_bytes",
+                     "adxmon_table_backlog_oldest_age_seconds", "adxmon_collector_logs_dropped",
+                     "adxmon_collector_wal_segments_max_age_seconds", "adxmon_ingestor_health_status",
+                     "kube_pod_container_status_restarts_total", "kube_pod_status_phase", "kube_node_status_condition"):
+            self.assertTrue(collected(name), name)
+        # Series that repeat each Pod's spec or each table's backlog every minute are not.
+        for name in ("adxmon_table_backlog_bytes", "adxmon_table_backlog_limit_bytes", "kube_pod_tolerations",
+                     "kube_pod_container_info", "kube_pod_status_qos_class", "container_network_receive_bytes_total"):
+            self.assertFalse(collected(name), name)
         self.assertFalse([pattern for pattern in scrape["keep-metrics"] if "network" in pattern])
         self.assertEqual(config["add-labels"], {"cluster": "example"})
         urls = [target["url"] for target in scrape["static-scrape-target"]]
