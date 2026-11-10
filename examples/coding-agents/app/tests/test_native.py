@@ -232,7 +232,7 @@ class EventTests(unittest.TestCase):
             "copilot": [
                 {"type": "assistant.message_delta", "data": {"deltaContent": "implemented"}},
                 {"type": "assistant.message", "data": {"content": "implemented"}},
-                {"type": "session.idle"},
+                {"type": "result", "exitCode": 0},
             ],
             "claude": [
                 {"type": "stream_event", "event": {"delta": {"type": "text_delta", "text": "implemented"}}},
@@ -283,6 +283,33 @@ class EventTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "native_run_cancelled")
         self.assertFalse(events.complete)
 
+    def test_copilot_requires_successful_root_result(self):
+        events = native.Events("copilot", lambda _text: None)
+        for event in (
+            {"type": "session.idle", "data": {}},
+            {"type": "assistant.idle", "data": {}},
+            {"type": "result", "exitCode": 0, "agentId": "child"},
+        ):
+            events.accept(json.dumps(event))
+            self.assertFalse(events.complete)
+        events.accept(json.dumps({"type": "result", "exitCode": 0}))
+        self.assertTrue(events.complete)
+
+    def test_copilot_failed_or_malformed_result_is_not_success(self):
+        cases = [({"type": "result"}, "invalid_native_event")]
+        cases += [({"type": "result", "exitCode": value}, "invalid_native_event")
+                  for value in (None, False, "0", 0.0)]
+        cases += [({"type": "result", "exitCode": value}, "native_run_failed")
+                  for value in (1, 130)]
+        for event, code in cases:
+            with self.subTest(event=event):
+                events = native.Events("copilot", lambda _text: None)
+                events.accept(json.dumps({"type": "assistant.message_delta", "data": {"deltaContent": "partial"}}))
+                with self.assertRaises(native.RuntimeErrorCode) as caught:
+                    events.accept(json.dumps(event))
+                self.assertEqual(caught.exception.code, code)
+                self.assertFalse(events.complete)
+
 
 class ProcessTests(unittest.TestCase):
     def invoke(self, code, runtime="codex", deadline=3, cancelled=lambda: False):
@@ -315,6 +342,32 @@ print(json.dumps({'type':'turn.completed'}))
     def test_exit_zero_without_completion_is_incomplete(self):
         with self.assertRaises(native.RuntimeErrorCode) as caught:
             self.invoke("print('{\"type\":\"thread.started\"}')")
+        self.assertEqual(caught.exception.code, "native_run_incomplete")
+
+    def test_copilot_result_and_process_exit_must_both_succeed(self):
+        stream = """
+import json,sys
+sys.stdin.read()
+print(json.dumps({'type':'assistant.message_delta','data':{'deltaContent':'completed reply'}}))
+print(json.dumps({'type':'assistant.message','data':{'content':'completed reply'}}))
+print(json.dumps({'type':'result','exitCode':0}))
+"""
+        result, output = self.invoke(stream, runtime="copilot")
+        self.assertEqual(result, "completed reply")
+        self.assertEqual(output, [result])
+        with self.assertRaises(native.RuntimeErrorCode) as caught:
+            self.invoke(stream + "sys.exit(1)\n", runtime="copilot")
+        self.assertEqual(caught.exception.code, "native_run_failed")
+
+    def test_copilot_text_and_idle_without_result_remain_incomplete(self):
+        stream = """
+import json,sys
+sys.stdin.read()
+print(json.dumps({'type':'assistant.message_delta','data':{'deltaContent':'partial reply'}}))
+print(json.dumps({'type':'session.idle','data':{}}))
+"""
+        with self.assertRaises(native.RuntimeErrorCode) as caught:
+            self.invoke(stream, runtime="copilot")
         self.assertEqual(caught.exception.code, "native_run_incomplete")
 
     def test_deadline_and_cancellation_stop_child(self):

@@ -260,8 +260,8 @@ def command(runtime, gateway, model, interactive=False, context=None):
             if context["canonical"].is_dir():
                 args += ["--add-dir", str(context["canonical"])]
         if not interactive:
+            # Copilot ignores stdin when -p/--prompt is also supplied.
             args += [
-                "-p", "Complete the coding task supplied on stdin in the current workspace.",
                 "--output-format", "json", "--stream", "on", "--trust-folder",
                 "--allow-tool", "read", "--allow-tool", "write",
                 "--allow-tool", "shell", "--no-ask-user",
@@ -383,6 +383,12 @@ class Events:
                 elif kind == "session.idle":
                     if data.get("aborted"):
                         raise RuntimeErrorCode("native_run_cancelled")
+                elif kind == "result":
+                    # CLI JSONL ends with result; SDK idle is not CLI completion.
+                    if type(event.get("exitCode")) is not int:
+                        raise RuntimeErrorCode("invalid_native_event")
+                    if event["exitCode"] != 0:
+                        raise RuntimeErrorCode("native_run_failed")
                     self.complete = True
         except (ValueError, KeyError, TypeError, AttributeError):
             raise RuntimeErrorCode("invalid_native_event") from None

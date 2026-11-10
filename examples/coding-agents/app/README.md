@@ -78,7 +78,10 @@ SSE 在运行中发送文本事件及 15 秒 keepalive。每帧连同 JSON escap
 8 MiB。历史消息完整传入，超限明确拒绝；交互式终端没有 HTTP 任务期限。
 不自动排队或 replay。失败的 stream 发送固定错误码，不发送成功 finish / `[DONE]`。
 若连接已经断开，则无法再投递错误帧，客户端应将缺失成功完成标志视为失败。
-Copilot root idle 与子 Agent idle 区分；被取消的 idle 不算成功。
+Copilot 从 stdin 接收完整任务，不同时传 `-p`（该参数会使 CLI 忽略 stdin）。
+Copilot 以 root `result` 的 `exitCode: 0` 加进程成功退出作为完成标志；
+正文、`assistant.idle`、`session.idle` 或子 Agent 事件都不能单独表示成功。
+被取消的 idle 和失败 result 仍明确报错。
 Native stderr 不输出到 HTTP；内部 token/tool 预算仍需平台和 Runtime 配置。
 只支持文本消息，不支持多模态、外部 tools 或多 completion。
 
@@ -97,15 +100,29 @@ for runtime in copilot claude codex; do
     docker run --rm --platform linux/amd64 --network none --read-only \
       --tmpfs /tmp:rw,exec,nosuid,nodev,size=768m \
       --mount type=bind,source="$PWD",target=/opt/cetirun-coding,readonly \
-      -e PYTHONDONTWRITEBYTECODE=1 --entrypoint python3 \
+      -e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 --entrypoint python3 \
       "cetirun-$runtime:local" /opt/cetirun-coding/tests/native_probe.py "$runtime" "$mode"
   done
 done
 ```
 
 该检查只访问容器内的合成 Gateway，并在推理前返回合成错误；检查实际模型请求中的
-Gateway 路由、平台主指令、技能发现、Memory 关闭及 no-capture MCP 环境传递。
+Gateway 路由、用户任务透传、平台主指令、技能发现、Memory 关闭及 no-capture MCP 环境传递。
 Memory helper 也是合成 fixture，不访问真实私有 store，不进行服务商收费调用。
+
+Copilot 另有实际 CLI 的 HTTP/JSONL 完成契约回归：
+
+```bash
+docker run --rm --platform linux/amd64 --network none --read-only \
+  --cap-drop ALL --security-opt no-new-privileges \
+  --tmpfs /tmp:rw,exec,nosuid,nodev,size=768m \
+  --mount type=bind,source="$PWD",target=/opt/cetirun-coding,readonly \
+  -e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 --entrypoint python3 \
+  cetirun-copilot:local /opt/cetirun-coding/tests/copilot_probe.py -v
+```
+
+该检查由合成 Responses endpoint 返回固定文本，不运行真实模型；使用真实 Copilot CLI
+验证长对话/Unicode 透传、JSON 与 SSE 成功终态、失败不发送 `[DONE]` 且不重放。
 
 直接下载遇到 504 时，可以先通过获准的官方 release 下载流程把三个公开
 artifact 保存到构建缓存目录，然后：
@@ -133,7 +150,7 @@ coding-tui --model '<authorized-model-id>'
 ## 当前实测结果与未完成事项
 
 三个镜像均已本地构建，官方 CLI 版本、关键参数和非 root 用户已经检查。
-24 个原生适配器测试通过，包含真实 Python 子进程的 stdin、文件创建、
+28 个原生适配器测试通过，包含真实 Python 子进程的 stdin、文件创建、
 stream/授权/失败/取消、旧配置保留、Memory 限制、Unicode SSE 分段、传输失败、
 请求边界、完整历史和 HTTP/TUI 期限区分；这些测试不是服务商推理测试。
 固定版本的三个真实 CLI 在实际构建镜像中另通过 6 组离线
