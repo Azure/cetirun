@@ -21,9 +21,14 @@ func stageOAuthTransaction(t *testing.T, f *authorizationFixture, tx *connection
 	t.Helper()
 	id := "oauth-" + tx.StateHash[:40]
 	tx.Status = "pending"
-	record := &connectionRecord{Connection: Connection{ID: id, Owner: f.grant.Owner, Provider: tx.Provider, Mode: modeDelegated, Revision: 1}, Transaction: tx}
+	record := &connectionRecord{Connection: Connection{ID: id, Owner: f.grant.Owner, Provider: tx.Provider, Mode: connectionMode(Connection{Mode: tx.Mode}), Revision: 1}, Transaction: tx}
 	if err := f.server.store.putOAuthRecord(context.Background(), "authorization", record, ""); err != nil {
 		t.Fatal(err)
+	}
+	if tx.TargetConnectionID != "" {
+		if err := f.server.store.beginReconnect(context.Background(), f.grant.Owner, *tx); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return id
 }
@@ -102,6 +107,10 @@ func TestOAuthStartIsIndependentAndReconnectCancellationPreservesCredential(t *t
 		t.Fatal("reconnect did not start")
 	}
 	after, _, _ := f.server.store.getConnection(context.Background(), before.Connection.ID)
+	if after.CurrentAuthorizationID != start.AuthorizationID {
+		t.Fatal("reconnect did not register its current authorization")
+	}
+	after.CurrentAuthorizationID = ""
 	if !reflect.DeepEqual(before, after) {
 		t.Fatal("starting reconnect modified the live connection")
 	}
