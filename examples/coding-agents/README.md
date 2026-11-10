@@ -1,6 +1,6 @@
 # CetiRun Coding Agent Runtimes
 
-**English** | [简体中文](README.zh.md)
+**English**
 
 Run **GitHub Copilot CLI, Claude Code, and Codex CLI as three independent,
 managed CetiRun Agents on Azure Kubernetes Service (AKS)**. Each Agent has its
@@ -404,8 +404,7 @@ bootstrap credentials, kubeconfigs, or deployment evidence containing secrets.
 | --- | --- |
 | [`app/`](app/README.md) | Real runtime adapter, build instructions, HTTP/SSE behavior, and application limits |
 | [`app/profiles/`](app/profiles/) | Native Copilot, Claude Code, and Codex role templates |
-| [`docs/architecture.svg`](docs/architecture.svg) | English-only architecture diagram shared by both READMEs |
-| [`docs/solution.zh-CN.md`](docs/solution.zh-CN.md) | Historical design and native-agent semantics; current deployment status is documented here |
+| [`docs/architecture.svg`](docs/architecture.svg) | English-only architecture diagram |
 | [`examples/coding-runtime/`](examples/coding-runtime/README.md) | Earlier offline interface demonstration, explicitly labeled `OFFLINE MOCK`; not the deployed application |
 | [`../../app/`](../../app/) | Platform source in the same repository |
 | `.deployment/` | Ignored local configuration, scripts, credentials, and deployment receipts |

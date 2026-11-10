@@ -66,7 +66,10 @@ Runtime 配置控制；本例只约束外层时间、输出和并发。
 先自行安装并验证获准的 CLI 版本，在其原生流程完成登录。不自动安装、
 读取 token 文件、共享凭据或使用 `--yolo`/跳过全部权限。
 本机只确认了 Copilot CLI 的 help；Claude/Codex CLI 及真实模型未运行验证。
-参数与角色格式以 [方案中的官方来源](../../docs/solution.zh-CN.md#官方来源) 为基准。
+参数与角色格式以官方文档为基准：
+[Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/create-custom-agents-for-cli)、
+[Claude Code](https://code.claude.com/docs/en/sub-agents) 和
+[Codex](https://developers.openai.com/codex/subagents)。
 
 先查看命令计划，不启动 CLI、不调用模型：
 
