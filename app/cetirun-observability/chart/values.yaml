@@ -59,8 +59,20 @@ metrics:
     - ^cetirun_
     - ^controller_runtime_reconcile_(total|errors_total)$
     - ^workqueue_(depth|retries_total|longest_running_processor_seconds)$
-    # Kubernetes objects (kube-state-metrics)
-    - ^kube_
+    # Kubernetes objects (kube-state-metrics): Pod phase, readiness, restarts
+    # and termination reasons, requests and limits, node conditions and
+    # capacity, workload replicas, volume claims and failed Jobs. Other
+    # kube-state-metrics series repeat the Pod spec once per Pod and minute.
+    - ^kube_pod_status_(phase|reason|ready)$
+    - ^kube_pod_(info|owner)$
+    - ^kube_pod_container_status_(restarts_total|waiting_reason|terminated_reason|last_terminated_reason)$
+    - ^kube_pod_container_resource_(requests|limits)$
+    - ^kube_node_(info|spec_unschedulable|status_condition|status_allocatable|status_capacity)$
+    - ^kube_deployment_(spec_replicas|status_replicas_available)$
+    - ^kube_statefulset_(replicas|status_replicas_ready)$
+    - ^kube_daemonset_status_(number_ready|desired_number_scheduled|number_unavailable)$
+    - ^kube_persistentvolumeclaim_(status_phase|resource_requests_storage_bytes)$
+    - ^kube_job_status_failed$
     # Containers (kubelet cAdvisor and resource metrics). Kata Pods report
     # their containers too. Network metrics are left out: Pods on the host
     # network report every interface of the node.
@@ -72,10 +84,11 @@ metrics:
     # ADX-Mon itself: backlog, drops and upload failures
     - ^adxmon_
   # -- Regular expressions of metric names that are dropped even when a keep
-  # expression matches them. By default, ADX-Mon's per-table limits, which
-  # repeat its configuration for every table.
+  # expression matches them. By default, ADX-Mon's per-table backlog series,
+  # one set for every destination table, except the refused records and bytes
+  # and the age of the oldest unsent data, which CollectionHealth() reads.
   drop:
-    - ^adxmon_table_backlog_(limit_bytes|limit_segments|enforced)$
+    - ^adxmon_table_backlog_(bytes|segments|would_reject|throttled|throttled_seconds|limit_bytes|limit_segments|enforced)$
 
 collector:
   # -- Host directory of the collector's write-ahead log and log file
