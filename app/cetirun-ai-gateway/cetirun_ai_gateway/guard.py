@@ -207,6 +207,13 @@ CLASSIFIER_ORIGIN = "autorouter_classifier"
 # Decisions API, the only API a decision model answers.
 LOGGING_OBJECT = "litellm_logging_obj"
 DECISIONS_CALL_TYPES = frozenset(("adecisions", "decisions", "asystemone", "systemone"))
+# The request fields that ask a model to reason: the Chat Completions form and
+# the Responses API form. The providers whose support for them the guard does
+# not look up: another LiteLLM proxy (an Agent's GitHub Copilot routes) knows
+# its own models, and a provider that signs in on lookup would start a sign-in
+# in the Gateway.
+REASONING_PARAMETERS = ("reasoning_effort", "reasoning")
+UNCHECKED_REASONING_PROVIDERS = frozenset(("litellm_proxy", "github_copilot", "chatgpt"))
 # The proxy's module, which holds the live router. Read from sys.modules only:
 # the callback never imports the proxy itself.
 PROXY_SERVER_MODULE = "litellm.proxy.proxy_server"
@@ -702,6 +709,77 @@ def strip_refused_no_reasoning(request_kwargs, deployments):
     request_kwargs.pop("reasoning_effort", None)
     return True
 
+
+def deployment_provider(deployment):
+    """The deployment's model without the provider prefix, its provider, and its base_model, or None.
+
+    The provider is litellm_params.custom_llm_provider, else the prefix of
+    litellm_params.model. base_model comes from litellm_params or model_info,
+    without its provider prefix.
+    """
+    params = deployment.get("litellm_params") if isinstance(deployment, dict) else None
+    model = params.get("model") if isinstance(params, dict) else None
+    if not isinstance(model, str) or not model:
+        return None
+    provider = params.get("custom_llm_provider")
+    if "/" in model:
+        prefix, name = model.split("/", 1)
+        provider = provider if isinstance(provider, str) and provider else prefix
+    else:
+        name = model
+    if not isinstance(provider, str) or not provider:
+        return None
+    info = deployment.get("model_info")
+    base = params.get("base_model") or (info.get("base_model") if isinstance(info, dict) else None)
+    base = base.split("/", 1)[1] if isinstance(base, str) and "/" in base else base
+    return name, provider, base if isinstance(base, str) and base else None
+
+
+def refuses_reasoning(deployment):
+    """Whether LiteLLM knows that the deployment takes no reasoning parameters.
+
+    LiteLLM's own rule: the OpenAI parameters it supports for the model, by
+    get_supported_openai_params, do not include reasoning_effort. A model that
+    does not reason, such as gpt-4.1-mini on Azure, then gets LiteLLM's 400
+    UnsupportedParamsError. When LiteLLM does not know the model (None), cannot
+    tell, or the provider signs in on lookup or is another LiteLLM proxy (an
+    Agent's GitHub Copilot routes), the deployment does not refuse: the request
+    stays as the client sent it.
+    """
+    found = deployment_provider(deployment)
+    if found is None:
+        return False
+    name, provider, base = found
+    if provider in UNCHECKED_REASONING_PROVIDERS:
+        return False
+    try:
+        from litellm.litellm_core_utils.get_supported_openai_params import get_supported_openai_params
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        supported = get_supported_openai_params(model=name, custom_llm_provider=provider, base_model=base)
+    except Exception:  # noqa: BLE001
+        return False
+    return isinstance(supported, (list, tuple)) and "reasoning_effort" not in supported
+
+
+def strip_refused_reasoning(request_kwargs, deployments):
+    """Remove the reasoning parameters that every deployment refuses, in place; the names removed.
+
+    reasoning_effort in the Chat Completions form, and the reasoning object in
+    the Responses API form. Removed only when all of the deployments refuse
+    them: when one of them reasons, it may serve the request, and it then keeps
+    the effort that the client asked for. This is what LiteLLM's drop_params
+    does for these parameters, without the other parameters drop_params drops.
+    """
+    present = [name for name in REASONING_PARAMETERS if request_kwargs.get(name) is not None]
+    if not present or not deployments or not all(map(refuses_reasoning, deployments)):
+        return []
+    for name in present:
+        request_kwargs.pop(name, None)
+    return present
+
+
 def access_groups(deployment):
     """The access groups a deployment belongs to."""
     info = deployment.get("model_info") if isinstance(deployment, dict) else None
@@ -1179,7 +1257,8 @@ class Guard(CustomLogger):
         affinity applies to the model, unmarked or shortened encrypted reasoning
         is removed from a Responses API request first. A fallback after a
         deployment refused the request's encrypted reasoning is ended here, so
-        the client gets that first error. A request to a model that reasons loses
+        the client gets that first error. A request to models that do not reason
+        loses its reasoning parameters, a request to a model that reasons
         the sampling parameters the model refuses, and a request to Azure OpenAI
         the fields it refuses in items that another provider returned.
         """
@@ -1243,7 +1322,15 @@ class Guard(CustomLogger):
                         "%d characters from a request %s %s; Azure OpenAI refuses both.",
                         statuses, "" if statuses == 1 else "s", ids, "" if ids == 1 else "s", AZURE_MAX_ITEM_ID,
                         target, model)
-            # First: without the effort of none, the model reasons, and the sampling
+            # A model that does not reason refuses every reasoning parameter: removed
+            # when every deployment refuses them, so a router's tier without reasoning
+            # answers too.
+            dropped = strip_refused_reasoning(request_kwargs, kept)
+            if dropped:
+                verbose_proxy_logger.warning(
+                    "CetiRun guard: removed %s from a request %s %s, which does not reason.",
+                    ", ".join(dropped), target, model)
+            # Then: without the effort of none, the model reasons, and the sampling
             # parameters it then refuses go too.
             if strip_refused_no_reasoning(request_kwargs, kept):
                 verbose_proxy_logger.warning(

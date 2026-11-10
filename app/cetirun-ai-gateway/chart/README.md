@@ -394,6 +394,12 @@ another OpenAI-compatible endpoint. `base_model` is not a substitute for this
 setting. Neither setting is necessary for a deployment that has the name of its
 model, for example `azure/gpt-5.4-nano` or `openai/gpt-5.4-nano`.
 
+The Gateway's guard removes the reasoning effort from a request when LiteLLM
+identifies no deployment of the model as a reasoning model. A model that does
+not reason, such as `gpt-4.1-mini`, then answers the request instead of the
+400. This also applies to a router's tier. Refer to
+[The guard callback](#the-guard-callback).
+
 The chart does not set LiteLLM's `drop_params`. If it is set, each 400 becomes
 a request that is sent without the reasoning effort, and nothing tells the
 client.
@@ -2214,6 +2220,24 @@ these actions:
   a warning for each request that it changes. The table decides, so a wrong
   entry lets `none` through. Refer to
   [Prices are not pinned to the image by default](#known-gaps).
+- It removes `reasoning_effort` from a Chat Completions request, and the
+  `reasoning` object from a Responses API request, when no deployment that can
+  serve the request reasons. LiteLLM decides with its own
+  `get_supported_openai_params`: a deployment does not reason when the list
+  for its model, provider, and `base_model` does not include
+  `reasoning_effort`. Otherwise LiteLLM refuses the request with a 400
+  (`UnsupportedParamsError`). For example, an Agent sends a reasoning effort to
+  a router, because the router is one model in its catalog. On a test cluster,
+  a router sent such a request to a tier with `gpt-4.1-mini`, and the request
+  failed.
+
+  The guard does not change the request when one of the deployments reasons,
+  because that deployment can serve the request. It also does not change the
+  request for a GitHub Copilot route, or when LiteLLM does not know the model.
+  The Gateway logs a warning for each request that it changes. An Azure
+  deployment of a reasoning model under a name of your own needs `base_model`,
+  as [Reasoning models](#reasoning-models) tells. Without it, the guard removes
+  the effort, and the model reasons at its default effort.
 - It lets a request fail over from the deployment that its key is kept on.
   Refer to [A key stays on its deployment](#a-key-stays-on-its-deployment).
 - It removes fields that Azure OpenAI refuses from the items of a Responses
