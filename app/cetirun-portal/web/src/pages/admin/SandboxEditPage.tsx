@@ -10,6 +10,13 @@ import { AdminConfigurationErrorMessage } from "../../components/AdminConfigurat
 
 type SandboxForm = SandboxUpsertRequest & SandboxSpec;
 
+const runtimeOrder: SandboxSpec["type"][] = ["kata", "gvisor", "container"];
+const runtimeLabels: Record<SandboxSpec["type"], string> = {
+  kata: "Kata",
+  gvisor: "gVisor",
+  container: "Container (runc, shared node kernel)",
+};
+
 const emptyForm: SandboxForm = {
   name: "", type: "kata",
   resources: {
@@ -32,6 +39,16 @@ export function SandboxEditPage() {
   const homeAccessModes = storageOptions.data?.homeAccessModes[form.type] ?? [];
   const selectedStorageClassIsApproved = classes.some((item) => item.name === form.storage.home.storageClassName);
   const selectedAccessModeIsSupported = homeAccessModes.includes(form.storage.home.accessMode);
+  // Only runtimes the platform registered appear in the storage options.
+  const registeredTypes = runtimeOrder.filter((type) => (storageOptions.data?.homeAccessModes[type]?.length ?? 0) > 0);
+  const selectedTypeIsRegistered = registeredTypes.includes(form.type);
+  const runtimeOptionsReady = !!storageOptions.data && !storageOptions.isFetching && !storageOptions.isError;
+  useEffect(() => {
+    if (!isCreate || !storageOptions.data || storageOptions.isError) return;
+    const registered = runtimeOrder.filter((type) => (storageOptions.data.homeAccessModes[type]?.length ?? 0) > 0);
+    if (registered.length === 0 || registered.includes(form.type)) return;
+    setForm((current) => ({ ...current, type: registered[0] }));
+  }, [isCreate, storageOptions.data, storageOptions.isError, form.type]);
   useEffect(() => {
     if (existing) setForm({ name: existing.name, uid: existing.uid, resourceVersion: existing.resourceVersion, type: existing.type, resources: existing.resources, storage: existing.storage });
   }, [existing]);
@@ -74,12 +91,16 @@ export function SandboxEditPage() {
       <Title2>{isCreate ? "New Sandbox" : `Sandbox: ${name}`}</Title2>
       <Text>A Sandbox defines reusable runtime, resource and storage settings. The selected runtime requires an explicitly registered RuntimeClass and verified handler; the StorageClass must also be approved.</Text>
       <Field label="Name" required><Input value={form.name || ""} disabled={!isCreate} onChange={(_, data) => setForm(current => ({ ...current, name: data.value }))} placeholder="e.g. standard" required /></Field>
-      <Field label="Runtime" required><Select value={form.type} onChange={event => {
+      <Field label="Runtime" required hint="Only runtimes that the platform registered are listed."><Select value={form.type} disabled={!runtimeOptionsReady} onChange={event => {
         const type = event.target.value as SandboxSpec["type"];
         setForm(current => ({ ...current, type }));
       }}>
-        <option value="kata">Kata</option><option value="gvisor">gVisor</option><option value="container">Container (runc, shared node kernel)</option>
+        {runtimeOrder.filter((type) => !registeredTypes.includes(type) && (type === form.type || type === existing?.type)).map((type) =>
+          <option key={type} value={type}>{runtimeLabels[type]}{runtimeOptionsReady ? " (not registered)" : ""}</option>)}
+        {registeredTypes.map((type) => <option key={type} value={type}>{runtimeLabels[type]}</option>)}
       </Select></Field>
+      {runtimeOptionsReady && registeredTypes.length === 0 && <MessageBar intent="warning">No Sandbox runtime is registered. Register a runtime before creating a Sandbox.</MessageBar>}
+      {runtimeOptionsReady && registeredTypes.length > 0 && !selectedTypeIsRegistered && <MessageBar intent="warning">The {runtimeLabels[form.type]} runtime is not registered. Agents cannot start in this Sandbox until it is registered.</MessageBar>}
       {form.type === "container" && <MessageBar intent="warning">Ordinary containers share the node kernel and do not provide Kata VM isolation. AgentPolicy, HOME ownership and lifecycle controls still apply. Resource limits are per container; no VM overhead is added automatically.</MessageBar>}
       {!isCreate && <Text size={300}>Changing this configuration does not convert a running Agent to another runtime. Use a separate Sandbox and a new Agent for a different backend.</Text>}
       {(["agent", "helpers"] as const).map(container => <div key={container} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
