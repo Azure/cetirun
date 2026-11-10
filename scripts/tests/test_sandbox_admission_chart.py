@@ -568,6 +568,47 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                 "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"],
             }])
 
+    def test_native_execution_protects_the_ai_gateway_peer_label(self):
+        admission = self.enforced_values(podsEnabled=True)
+        sources = {
+            "enabled": True, "platformConfigMapName": "sandbox-platform",
+            "bootstrapOwnedPrerequisites": True,
+        }
+        policy_key = ("ValidatingAdmissionPolicy", "cetirun-sandbox-protected-peer")
+        binding_key = ("ValidatingAdmissionPolicyBinding", "cetirun-sandbox-protected-peer")
+        baseline = self.render(admission, values={"sandboxSources": sources, "aiGateway": {"enabled": True}})
+        self.assertNotIn(policy_key, baseline)
+        self.assertNotIn(binding_key, baseline)
+        native = {**sources, "nativeExecution": True}
+        configured = self.render(admission, values={"sandboxSources": native, "aiGateway": {"enabled": True}})
+        policy, binding = configured[policy_key], configured[binding_key]
+        self.assertEqual(policy["spec"]["failurePolicy"], "Fail")
+        self.assertEqual(policy["spec"]["matchConstraints"]["resourceRules"], [{
+            "operations": ["CREATE", "UPDATE"], "apiGroups": [""], "apiVersions": ["v1"],
+            "resources": ["pods"], "scope": "Namespaced",
+        }])
+        expressions = " ".join(rule["expression"] for rule in policy["spec"]["validations"])
+        self.assertIn('"system:serviceaccount:kube-system:replicaset-controller"', expressions)
+        self.assertIn("oldLabels", expressions)
+        self.assertIn('"sandbox.cetirun.microsoft.com/peer"', policy["spec"]["variables"][0]["expression"])
+        self.assertEqual(binding["spec"]["policyName"], "cetirun-sandbox-protected-peer")
+        self.assertEqual(binding["spec"]["validationActions"], ["Deny"])
+        self.assertEqual(binding["spec"]["matchResources"]["namespaceSelector"]["matchExpressions"], [{
+            "key": "kubernetes.io/metadata.name", "operator": "In", "values": ["cetirun-system"],
+        }])
+        separate = self.render(admission, values={
+            "sandboxSources": native, "aiGateway": {"enabled": True, "peerNamespaces": ["models-a", "models-b"]},
+        })
+        self.assertEqual(
+            separate[binding_key]["spec"]["matchResources"]["namespaceSelector"]["matchExpressions"][0]["values"],
+            ["models-a", "models-b"],
+        )
+        for invalid in ("models", ["Not_A_Namespace"], [7]):
+            with self.subTest(peerNamespaces=invalid):
+                self.assert_rejected(admission, "aiGateway.peerNamespaces", values={
+                    "sandboxSources": native, "aiGateway": {"enabled": True, "peerNamespaces": invalid},
+                })
+
     def test_native_finalization_permission_survives_disabling_starts(self):
         admission = self.enforced_values(podsEnabled=True)
         for sources in (

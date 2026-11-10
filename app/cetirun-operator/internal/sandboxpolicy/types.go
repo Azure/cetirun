@@ -29,7 +29,12 @@ const (
 	RevisionAnnotation      = "sandbox.cetirun.microsoft.com/revision"
 	BindingAnnotation       = "sandbox.cetirun.microsoft.com/binding"
 	GrantRevisionAnnotation = "sandbox.cetirun.microsoft.com/grant-revision"
-	EntraAudience           = "api://AzureADTokenExchange"
+	// PeerLabel is the protected label that the AI Gateway chart sets on its
+	// Pods, with the value PeerAIGateway. A selector-bound AI Gateway peer
+	// must select it; the operator chart admission policy restricts its writers.
+	PeerLabel     = "sandbox.cetirun.microsoft.com/peer"
+	PeerAIGateway = "ai-gateway"
+	EntraAudience = "api://AzureADTokenExchange"
 )
 
 var (

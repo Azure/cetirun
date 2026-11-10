@@ -337,6 +337,13 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 				if err := validateServiceSelector(dest.Peer); err != nil {
 					return platform, err
 				}
+				// Any identity that can create or relabel Pods in the Gateway
+				// namespace could match ordinary chart labels. Require the
+				// protected label that the operator chart admission policy
+				// reserves for Pods that the ReplicaSet controller creates.
+				if _, protected := dest.Peer.PodSelector[PeerLabel]; !protected {
+					return platform, fmt.Errorf("%w: a selector-bound AI Gateway peer must select the protected %s Pod label", ErrUnsupportedControl, PeerLabel)
+				}
 			}
 			dest.Ports, err = canonicalPorts(dest.Ports, capabilities)
 			if err != nil {

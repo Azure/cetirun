@@ -26,6 +26,10 @@ spec:
         {{- end }}
       labels:
         {{- include "cetirun-ai-gateway.gatewaySelectorLabels" . | nindent 8 }}
+        {{- /* Sandbox peer selectors trust this protected label. The operator
+        chart admission policy lets only the ReplicaSet controller create Pods
+        with it in this namespace. It is not part of the Deployment selector. */}}
+        sandbox.cetirun.microsoft.com/peer: ai-gateway
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

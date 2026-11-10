@@ -616,7 +616,8 @@ complete platform registration:
         "podSelector": {
           "app.kubernetes.io/name": "cetirun-ai-gateway",
           "app.kubernetes.io/instance": "example",
-          "app.kubernetes.io/component": "gateway"
+          "app.kubernetes.io/component": "gateway",
+          "sandbox.cetirun.microsoft.com/peer": "ai-gateway"
         }
       },
       "ports": [{"port": 4000, "protocol": "TCP"}]
@@ -628,8 +629,39 @@ complete platform registration:
 Replace these synthetic values with the approved Service addresses and exact
 selectors for the target installation. Keep the peer UID stable; do not use a
 Pod UID. A selector must contain valid Pod labels and an exact namespace.
-Tenants must not be able to create or relabel matching Pods in that namespace.
-The platform owns that protection and the Service-to-Pod association.
+
+A selector-bound AI Gateway peer must select the protected label
+`sandbox.cetirun.microsoft.com/peer: ai-gateway`. The registration is refused
+without it. The AI Gateway chart sets this label on the Gateway Pods only, not
+on PostgreSQL or Valkey. Without the protected label, any identity that can
+create or relabel Pods in the Gateway namespace could receive Agent traffic.
+
+With `sandboxSources.nativeExecution` on, the operator chart installs the
+ValidatingAdmissionPolicy `cetirun-sandbox-protected-peer`. In the namespaces
+of `aiGateway.peerNamespaces` (by default the operator namespace), it:
+
+- Lets only the ReplicaSet controller create Pods with that label.
+- Refuses an update that adds, changes or removes that label on a Pod.
+
+This policy does not stop an identity that can change the Gateway Deployment
+or ReplicaSet, because the ReplicaSet controller then creates the Pods. Make
+sure that only platform administrators can create Pods, or change Deployments
+and ReplicaSets, in the Gateway namespace. For each ServiceAccount, user and
+group that has access to that namespace, run:
+
+```bash
+kubectl auth can-i create pods -n cetirun-system --as system:serviceaccount:<namespace>:<name>
+kubectl auth can-i patch pods -n cetirun-system --as system:serviceaccount:<namespace>:<name>
+kubectl auth can-i patch deployments.apps -n cetirun-system --as system:serviceaccount:<namespace>:<name>
+kubectl auth can-i create replicasets.apps -n cetirun-system --as system:serviceaccount:<namespace>:<name>
+```
+
+The DNS selector selects Pods that the cluster platform manages, for example
+`k8s-app: kube-dns` in `kube-system`. CetiRun cannot label them, so the DNS
+selector relies on platform RBAC alone. Run the same checks for `kube-system`.
+Only cluster administrators and system components can create, patch or own
+Pods there. The platform owns this protection and the Service-to-Pod
+association.
 
 Selector-bound DNS/Gateway entries must contain only Service IPs within the
 registered `serviceCIDRs`, outside `podCIDRs`. Do not pin backend Pod IPs.
@@ -648,6 +680,13 @@ claim support for node-local DNS or host-networked backends.
 Upgrade all Operator/admission readers before adopting these selectors. Change
 the protected platform registration through the normal configuration-change
 and lifecycle workflow; do not rewrite active expectations or reservations.
+
+A selector-bound AI Gateway registration from an earlier release does not
+select the protected label, and the operator refuses it. Before you upgrade
+the operator, upgrade the AI Gateway chart: its Pods restart one time with the
+label. Then add the label to the registration in the same change as the
+operator upgrade. Until the registration selects the label, Agents that use it
+stay held.
 After that transition, a Pod rollout or scale-out does not change the
 registration or the Agent's network-policy revision. Changing Service IPs,
 selectors, namespaces, or peer UIDs still requires a coordinated update.
