@@ -79,7 +79,7 @@ func TestCetiAdminExecBindingMutationAndDeletion(t *testing.T) {
 }
 
 func TestCetiAdminDeletionPreservesAuthorityGuards(t *testing.T) {
-	for _, target := range []string{"installation", "source", "invalid-installation", "stale-caller"} {
+	for _, target := range []string{"installation", "source", "invalid-installation", "stale-caller", "receipt-secret", "marked-secret"} {
 		t.Run(target, func(t *testing.T) {
 			f := newCetiAdminFixture(t)
 			ctx := context.Background()
@@ -108,6 +108,16 @@ func TestCetiAdminDeletionPreservesAuthorityGuards(t *testing.T) {
 			case "stale-caller":
 				user = f.actor
 				user.UID = "previous-service-account"
+			case "receipt-secret", "marked-secret":
+				group, kind, resource = "", "Secret", "secrets"
+				annotations := map[string]string{nativeAuthRotationAnnotation: "retained-rotation-12345678"}
+				if target == "marked-secret" {
+					annotations[cetiadmin.AnnotationSourceUID] = string(f.source.UID)
+				} else {
+					user = f.actor
+				}
+				object = &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: f.target.Spec.GatewayTokenSecretRef,
+					Namespace: f.target.Status.Namespace, Annotations: annotations}, Type: corev1.SecretTypeOpaque}
 			}
 			response := f.guard.Validate(ctx, adminRequest(t, admissionv1.Delete, group, kind, resource, nil, object, user))
 			if response.Allowed {
@@ -141,12 +151,55 @@ func TestCetiAdminRetainedRotationMarkerProtection(t *testing.T) {
 				case "delete":
 					operation, next = admissionv1.Delete, nil
 				}
-				request := adminRequest(t, operation, group, kind, resource, next, old, authenticationv1.UserInfo{Username: "portal"})
+				user := authenticationv1.UserInfo{Username: "portal", Groups: []string{"system:authenticated"}}
+				if kind == "Secret" {
+					user.Username = "system:serviceaccount:kube-system:namespace-controller"
+				}
+				request := adminRequest(t, operation, group, kind, resource, next, old, user)
 				response := f.guard.Validate(context.Background(), request)
-				if want := kind == "Agent" && mutation == "delete"; response.Allowed != want {
+				if want := mutation == "delete"; response.Allowed != want {
 					t.Fatalf("allowed=%v, want %v: %v", response.Allowed, want, response.Result)
 				}
 			})
 		}
+	}
+}
+
+func TestCetiAdminLiveNamespaceSecretReceiptProtection(t *testing.T) {
+	for _, mutation := range []string{"delete", "data", "create", "replace", "remove"} {
+		t.Run(mutation, func(t *testing.T) {
+			f := newCetiAdminFixture(t)
+			ctx := context.Background()
+			namespace := &corev1.Namespace{}
+			if err := f.kube.Get(ctx, client.ObjectKey{Name: f.target.Status.Namespace}, namespace); err != nil {
+				t.Fatal(err)
+			}
+			if !namespace.DeletionTimestamp.IsZero() {
+				t.Fatal("this case requires a live namespace")
+			}
+			old := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: f.target.Spec.GatewayTokenSecretRef, Namespace: namespace.Name,
+				Annotations: map[string]string{nativeAuthRotationAnnotation: "retained-rotation-12345678"}},
+				Type: corev1.SecretTypeOpaque, Data: map[string][]byte{"CETIRUN_AUTH_KEY": []byte("synthetic-key")}}
+			next := old.DeepCopy()
+			var nextObject, oldObject client.Object = next, old
+			operation := admissionv1.Update
+			switch mutation {
+			case "delete":
+				operation, nextObject = admissionv1.Delete, nil
+			case "data":
+				next.Data["CETIRUN_AUTH_KEY"] = []byte("synthetic-replacement")
+			case "create":
+				operation, oldObject = admissionv1.Create, nil
+			case "replace":
+				next.Annotations[nativeAuthRotationAnnotation] = "replacement-rotation-12345678"
+			case "remove":
+				next.Annotations = nil
+			}
+			user := authenticationv1.UserInfo{Username: "system:serviceaccount:operator-test:broker", Groups: []string{"system:authenticated"}}
+			response := f.guard.Validate(ctx, adminRequest(t, operation, "", "Secret", "secrets", nextObject, oldObject, user))
+			if want := mutation == "delete" || mutation == "data"; response.Allowed != want {
+				t.Fatalf("allowed=%v, want %v: %v", response.Allowed, want, response.Result)
+			}
+		})
 	}
 }
