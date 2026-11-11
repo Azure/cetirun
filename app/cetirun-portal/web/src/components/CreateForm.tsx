@@ -57,6 +57,15 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   const gatewayModels = gatewayOn;
   const catalog = options?.gateway;
   const catalogKnown = !!catalog?.known;
+  const customImages = catalog?.customImages;
+  let customAvailabilityMessage = "";
+  if (custom && options) {
+    if (customImages == null) {
+      customAvailabilityMessage = "Custom image approvals are not available yet. Ask an administrator to check the Custom runtime configuration.";
+    } else if (customImages.length === 0) {
+      customAvailabilityMessage = "No Custom images are approved. Ask an administrator to enable the runtime and approve an image digest before creating an Agent.";
+    }
+  }
   const routedAgentTypes = catalog?.agentTypes ?? null;
   const agentTypesUnknown = gatewayModels && catalogKnown && routedAgentTypes === null;
   const chartUnsupported =
@@ -108,7 +117,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   const identitySupported = agentType !== "custom" || !!options?.agentIdentity.customAllowed;
   const effectiveIdentity = identitySupported && !!options?.agentIdentity.allowed && (options.agentIdentity.required || agentIdentityEnabled);
   const creationBlocked = createMutation.isPending || featuresLoading || !!featuresError || !options ||
-    optionsQuery.isFetching || !!options.blocked || !allowedAgentTypes.includes(agentType) ||
+    optionsQuery.isFetching || !!options.blocked || !!customAvailabilityMessage || !allowedAgentTypes.includes(agentType) ||
     (options.agentIdentity.required && (!options.agentIdentity.allowed || !identitySupported)) ||
     (gatewayModels && (!catalogKnown || noModelSource || chartUnsupported || agentTypesUnknown));
 
@@ -126,6 +135,10 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
     }
     if (custom && webUI && httpPort === undefined) {
       setValidationError("A port is required when Web UI is enabled.");
+      return;
+    }
+    if (custom && !customImages?.includes(image.trim())) {
+      setValidationError("Choose an approved Custom image pinned by sha256 digest. Tags and unapproved images cannot run.");
       return;
     }
     setValidationError("");
@@ -208,14 +221,21 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
           Image updates retain HOME and require a compatible image. Platform-provided model access uses the AI Gateway.
         </MessageBar>
       )}
+      {customAvailabilityMessage && <MessageBar intent="warning">{customAvailabilityMessage}</MessageBar>}
       <Field
         label={custom || privateRegistry ? "Agent Image" : "Agent Image (optional)"}
         hint={custom
-          ? "Use an image supported by the configured runtime. The image keeps its own entrypoint."
+          ? "Choose an approved sha256 image reference from the suggestions. The image keeps its own entrypoint."
           : "Leave empty for the platform default. Overrides must be qualified for the selected agent type."}
         required={custom || privateRegistry}
       >
-        <Input value={image} onChange={(_, data) => setImage(data.value)} maxLength={2048} placeholder="registry.example.com/team/agent:version" required={custom || privateRegistry} />
+        <Input value={image} onChange={(_, data) => setImage(data.value)} maxLength={2048}
+          list={custom ? "approved-custom-images" : undefined}
+          placeholder={custom ? "registry.example.com/team/agent@sha256:<approved-digest>" : "registry.example.com/team/agent:version"}
+          required={custom || privateRegistry} />
+        {custom && <datalist id="approved-custom-images">
+          {customImages?.map((approved) => <option key={approved} value={approved} />)}
+        </datalist>}
       </Field>
       {custom && (
         <>

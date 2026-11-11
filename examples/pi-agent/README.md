@@ -145,7 +145,8 @@ its published `cetirun-terminal` image. The Operator provisions the terminal
 ServiceAccount, restricted exec access, routing, and storage. Keep the current
 gateway configuration. `ttyd.gatewayServiceAccount` must match its identity.
 
-An administrator enables Custom provisioning and approves the exact image.
+Custom provisioning is enabled by default; an administrator approves the exact
+image digest before an Agent can start.
 Custom platform model access always uses the AI Gateway.
 The Operator provisions the Agent's Virtual Key and private Gateway access.
 The image receives `OPENAI_BASE_URL` and a Secret-backed `OPENAI_API_KEY`.

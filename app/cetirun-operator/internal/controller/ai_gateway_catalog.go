@@ -836,7 +836,10 @@ func (r *AgentReconciler) writeAIGatewayCatalog(ctx context.Context, shared []ai
 	}
 	view := r.aiGatewayCatalog.sharedRouters()
 	catalog := cetirunv1alpha1.AIGatewayCatalog{SharedModels: view.describe(shared), DecisionModels: view.decisionModels(),
-		GitHubCopilot: r.aiGatewayCopilotOffered()}
+		GitHubCopilot: r.aiGatewayCopilotOffered(), CustomImages: []string{}}
+	if provider, ok := r.CustomBindings.(interface{ ApprovedImages() []string }); ok {
+		catalog.CustomImages = provider.ApprovedImages()
+	}
 	key := types.NamespacedName{Namespace: namespace, Name: cetirunv1alpha1.AIGatewayCatalogConfigMap}
 	configMap := &corev1.ConfigMap{}
 	err := r.Get(ctx, key, configMap)

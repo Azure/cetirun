@@ -46,7 +46,8 @@ extension copy in the final stage. HOME and user credentials are not changed.
 ## Deploy
 
 Use Operator, CRD, runtime chart, and Portal versions that match and have Custom
-Web UI support. An administrator enables the runtime and approves the image:
+Web UI support. Custom provisioning is enabled by default; an administrator
+approves the image digest:
 
 ```yaml
 cetirun-operator:

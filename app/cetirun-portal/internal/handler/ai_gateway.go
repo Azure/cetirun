@@ -70,6 +70,8 @@ type AIGatewayCopilotResponse struct {
 
 // AIGatewayCatalogResponse is the JSON response for GET /api/v1/ai-gateway/catalog.
 type AIGatewayCatalogResponse struct {
+	// CustomImages are the operator's approved digests, null until published.
+	CustomImages []string `json:"customImages"`
 	// Known is false until the operator has published the catalog.
 	Known        bool                                    `json:"known"`
 	SharedModels []cetirunv1alpha1.AIGatewayCatalogModel `json:"sharedModels"`
@@ -159,7 +161,7 @@ func (h *InstanceHandler) sharedModelCatalog(ctx context.Context) AIGatewayCatal
 		agentTypes = catalog.Routing.AgentTypes
 	}
 	return AIGatewayCatalogResponse{Known: known, SharedModels: catalog.SharedModels, DecisionModels: catalog.DecisionModels,
-		GitHubCopilot: catalog.GitHubCopilot, AgentTypes: agentTypes}
+		GitHubCopilot: catalog.GitHubCopilot, AgentTypes: agentTypes, CustomImages: catalog.CustomImages}
 }
 
 // GetAIGatewayCatalog handles GET /api/v1/ai-gateway/catalog: the shared
@@ -215,6 +217,14 @@ func (h *InstanceHandler) validateAIGatewaySelection(w http.ResponseWriter, r *h
 	}
 	if newAgent && !slices.Contains(catalog.AgentTypes, agentType) {
 		return reject(http.StatusConflict, "agent_chart_unsupported", "This deployment's agent chart does not route "+agentTypeNames[agentType]+" agents through the AI Gateway. Ask an administrator to upgrade the agent chart.")
+	}
+	if newAgent && agentType == cetirunv1alpha1.AgentTypeCustom {
+		if catalog.CustomImages == nil {
+			return reject(http.StatusServiceUnavailable, "custom_images_unknown", "The operator has not published Custom image approvals yet. Ask an administrator to check the Custom runtime configuration.")
+		}
+		if req.Agent == nil || !slices.Contains(catalog.CustomImages, req.Agent.Image.Value) {
+			return reject(http.StatusConflict, "custom_image_not_approved", "Choose an approved Custom image pinned by sha256 digest. If none are available, ask an administrator to approve one.")
+		}
 	}
 	sharedAvailable, copilotAvailable := len(catalog.SharedModels) > 0, catalog.GitHubCopilot
 	if !sharedAvailable && !copilotAvailable {

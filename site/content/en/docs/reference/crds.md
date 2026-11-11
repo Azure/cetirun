@@ -89,11 +89,16 @@ For minimal YAML, see [first instance](../../getting-started/first-instance/).
 The operator resolves Hermes and OpenClaw images and ports through the Harness
 interface. The `vibe` username is necessary for their profiles. Custom uses a
 separate runtime path that supports non-default usernames. Without a binding
-provider, it reports `CustomBindingsPending`. The Operator chart enables the
+provider, it reports `CustomRuntimeDisabled`. The Operator chart enables the
 `customRuntime` Kubernetes provider by default, but administrators must still
-approve image digests and their numeric UID/GID. Its empty default approval
+approve image digests. Numeric `imageUsers` entries are required for FQDN
+capture, not every Custom Agent. Its empty default approval
 list authorizes no images. Portal Custom self-service is enabled by default
 and can be restricted through `features.allowedAgentTypes`.
+The Portal requires a published image approval before creation. The Operator
+reports `CustomImageNotApproved` if a directly submitted Agent is not approved
+or its approval was withdrawn; it retries after the configuration changes.
+Other unavailable binding prerequisites report `CustomBindingsPending`.
 
 Private images use `agent.registrySecretRef.name` to refer to a Portal-managed
 source Secret. Before the operator copies the Secret to the runtime namespace
