@@ -46,8 +46,8 @@ operator then installs one agent chart release for each Agent.
 | Component | Source | Responsibility |
 | --- | --- | --- |
 | Platform chart | [app/cetirun-platform]({{< repo "app/cetirun-platform" "tree" >}}) | Installs the operator, the Portal, the AI Gateway, Connections MCP, and the observability chart as one release |
-| Observability chart | [app/cetirun-observability]({{< repo "app/cetirun-observability" "tree" >}}) | ADX-Mon collection of logs, events, and metrics into Azure Data Explorer. Off by default |
-| Infrastructure | [infra]({{< repo "infra" "tree" >}}) | Bicep for AKS, Azure Blob NFS, and monitoring, and cert-manager configuration for public TLS |
+| Observability chart | [app/cetirun-observability]({{< repo "app/cetirun-observability" "tree" >}}) | ADX-Mon collection of logs, events, and metrics into Azure Data Explorer. `make deploy` installs it with the platform |
+| Infrastructure | [infra]({{< repo "infra" "tree" >}}) | Bicep for AKS, Azure Blob NFS, and Azure Data Explorer, and cert-manager configuration for public TLS |
 
 ## Control path
 

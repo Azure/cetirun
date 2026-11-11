@@ -354,7 +354,7 @@ By default, these stores can contain conversation content:
 | --- | --- | --- |
 | AI Gateway database (`LiteLLM_SpendLogs`) | The request and the response of each model call, for seven days by default | `spendLogs.storePrompts` and `spendLogs.retention` of the AI Gateway chart |
 | AI Gateway content database (optional) | With `content.enabled: true`, the complete request and response of each call, in the Azure Data Explorer database `CetiRunContent`, for seven days in the cluster template. The spend log then keeps no content | `content.enabled` of the AI Gateway chart, and the readers with the `Viewer` role on that database |
-| Container logs | The output of the session logger and of the Agents. Container Insights or the optional ADX-Mon collection can copy them to Azure | `logger.enabled` of the agent chart, and the collection settings of the cluster |
+| Container logs | The output of the session logger and of the Agents. The ADX-Mon collection copies it to the Azure Data Explorer database `CetiRunAgents` | `logger.enabled` of the agent chart, and `logs.agents.enabled` of the `cetirun-observability` chart |
 | Memory | The notes of each Agent, in its HOME | `memoryContext.enabled` of the operator chart, `true` by default |
 | HOME | Sessions, files, configuration, and the browser profile of the desktop | The Agent lifecycle |
 | Portal Chat history | The conversations of an owner with a Custom Agent in Portal Chat, in the IndexedDB database `cetirun-portal-chat` of the owner's browser | `global.portalChat.enabled` of the platform chart. `make deploy` sets it to `true` |

@@ -22,7 +22,8 @@ prerequisites first.
 
 - [Install CetiRun](../getting-started/platform/) — prerequisites and
   installation order
-- [Infrastructure](infrastructure/) — AKS and Azure Blob NFS
+- [Infrastructure](infrastructure/) — AKS, Azure Blob NFS, and the Azure Data
+  Explorer resources of the ADX-Mon collection
 - [Public DNS and TLS](public-ingress/) — one public hostname and an automatic
   certificate through the platform deployment
 - [Policy-bound Teams](policy-teams/) — the cluster, admission, and platform

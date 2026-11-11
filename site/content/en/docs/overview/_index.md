@@ -48,8 +48,8 @@ page, read the [Glossary](../concepts/glossary/).
   [CetiAdmin](../operations/cetiadmin/), an operations Agent that is on by
   default, can read the Secrets of each standard Agent and run commands in its
   Pod.
-  Optional ADX-Mon collection sends logs, events, and metrics to Azure Data
-  Explorer.
+  The ADX-Mon collection, which `make deploy` installs, sends logs, events,
+  and metrics to Azure Data Explorer.
 
 The Kubernetes API has the cluster-scoped resources `Agent`, `Team`,
 `Sandbox`, and `AgentPolicy`. For the components and how they work together,
@@ -86,6 +86,9 @@ complete list, read
 - **Artifacts:** a container registry from which the cluster can pull the
   CetiRun images and charts.
 - **DNS:** a DNS name for the apex domain.
+- **Observability:** an Azure Data Explorer cluster with the logs, metrics,
+  and Agent logs databases of the ADX-Mon collection, and the managed identity
+  of its ingestor. By default, the cluster template creates them.
 - **CetiAdmin:** its owner, its monthly budget, and its access to the
   Kubernetes API. To install without CetiAdmin, set `cetiadmin.enabled: false`.
 - **Operations:** the people who operate the deployment, and their Azure and
