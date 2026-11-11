@@ -1,6 +1,6 @@
 module github.com/Azure/CetiRun/app/cetirun-agent-broker
 
-go 1.27.3
+go 1.27.4
 
 require github.com/Azure/CetiRun/app/internal v0.1.1
 
