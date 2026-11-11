@@ -281,8 +281,8 @@ instances keep their configuration. A removed router is unregistered.
 The registrations appear in the Gateway's console under their internal
 `cetirun-router-` names. Change them on the Team, not in the console. The
 operator does not watch the console for edits. The Gateway's request log also
-shows a Team's router under that internal name. The Log Analytics queries in
-the Gateway chart's
+shows a Team's router under that internal name. The queries in the Gateway
+chart's
 [Measuring the routers]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#measuring-the-routers)
 section also show the router under that name. The Team's
 `status.modelRouters[].gatewayModel` gives the router that each name belongs

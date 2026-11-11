@@ -364,7 +364,8 @@ longer reads `DOMAIN` or `VALUES_FILE`. It installs these Helm releases:
 - The Agent Broker, in its own credential namespace
 - The platform release, in `cetirun-system` by default. It contains the
   operator, the Sandbox admission server, the portal, the AI Gateway with
-  PostgreSQL and Valkey, and Connections MCP.
+  PostgreSQL and Valkey, Connections MCP, and the ADX-Mon collection of logs
+  and metrics.
 
 OpenClaw and Hermes Agents take their models from the AI Gateway. For the
 shared models and the Gateway console, refer to the
@@ -390,6 +391,11 @@ Before the first run, make sure that these items exist:
 - The StorageClasses for the HOME of Custom Agents, for the Gateway's
   PostgreSQL, and for shared skills. Also the Blob storage of shared skills.
   Refer to [Storage](../../operations/storage/).
+- The Azure Data Explorer resources of the ADX-Mon collection: a Kusto cluster
+  with the logs, metrics, and Agent logs databases, and the ingestor's managed
+  identity with its roles and federated credential. By default, the cluster
+  template creates them. Refer to
+  [Observability with ADX-Mon](../../operations/observability/#prerequisites).
 - The Secrets of the AI Gateway. The commands below create them.
 - The Microsoft-Decision-1 deployment that the smart-routing model `auto`
   uses to classify requests. Deploy the model in an Azure AI Foundry resource,
@@ -426,9 +432,9 @@ Before the first run, make sure that these items exist:
 `make deploy` examines the objects of this list in the cluster, and the images
 and charts in the registry. If one of them does not exist, the run stops before
 it writes. `make deploy` does not call Azure or Microsoft Graph. As a result,
-it does not find a wrong Entra ID, a missing Key Vault key, or a Decision-1
-deployment that does not work. These problems occur only when a component uses
-the resource.
+it does not find a wrong Entra ID, a missing Key Vault key or Kusto database,
+or a Decision-1 deployment that does not work. These problems occur only when
+a component uses the resource.
 
 The AI Gateway reads the provider keys of its models from a Secret. It also
 uses a Secret with its master key, salt key, and console password, and a

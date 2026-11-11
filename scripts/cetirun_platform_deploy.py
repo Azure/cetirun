@@ -112,10 +112,11 @@ SKILL_MARKETPLACE_FIELDS = {
 }
 # Keys that the marketplace reads from the repository credentials Secret.
 SKILL_MARKETPLACE_SECRET_KEYS = {"none": (), "token": ("token",), "ssh": ("ssh-privatekey", "known_hosts")}
-# The optional ADX-Mon collection of logs, events and metrics into Azure Data
-# Explorer. Only the top-level observability block of the environment file
-# turns it on. make deploy does not call Azure: the Kusto cluster, its
-# databases and the ingestor's identity exist before the deployment.
+# The ADX-Mon collection of logs, events and metrics into Azure Data Explorer,
+# CetiRun's only observability path. The top-level observability block of the
+# environment file is required. make deploy does not call Azure: the Kusto
+# cluster, its databases and the ingestor's identity exist before the
+# deployment.
 OBSERVABILITY = "cetirun-observability"
 OBSERVABILITY_INGESTOR = "cetirun-adx-mon-ingestor"
 OBSERVABILITY_FIELDS = {
@@ -300,13 +301,11 @@ def skill_marketplace(config, platform):
 
 
 def observability(config):
-    """Platform values of the optional ADX-Mon collection, from its own input block."""
+    """Platform values of the ADX-Mon collection, from its own input block."""
     switch = f"{OBSERVABILITY}.enabled"
     if "observability" not in config:
-        if get_value(config["platform"].get("values", {}), switch):
-            raise ValueError(f"platform.values.{switch} needs the top-level observability block, "
-                             "which names the Kusto cluster and the ingestor identity")
-        return {switch: False}
+        raise ValueError("observability is required: ADX-Mon collects the platform's and the Agents' logs, events and "
+                         "metrics into Azure Data Explorer. Name the Kusto cluster, its databases and the ingestor identity")
     block = mapping(config["observability"], "observability")
     adx = mapping(block.get("adx", {}), "observability.adx")
     databases = mapping(adx.get("databases", {}), "observability.adx.databases")

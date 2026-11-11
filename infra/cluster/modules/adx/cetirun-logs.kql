@@ -23,7 +23,17 @@
         CallOrigin = tostring(Body['call_origin']),
         RoutingTier = tostring(Body['routing_tier']),
         RoutingCause = tostring(Body['routing_cause']),
+        RoutingScore = toreal(Body['routing_score']),
+        // An escalation keyword or the length of the prompt moved the call
+        // one tier up.
+        RoutingEscalated = tobool(Body['routing_escalated']),
+        ClassifierModel = tostring(Body['classifier_model']),
+        ClassifierCost = toreal(Body['classifier_cost']),
+        // A call LiteLLM made after an attempt of the request failed: the model
+        // the request was for, and the class of the first failure.
         FallbackFrom = tostring(Body['fallback_from']),
+        AttemptedFallbacks = tolong(Body['attempted_fallbacks']),
+        FallbackCause = tostring(Body['fallback_cause']),
         Stream = tobool(Body['stream']),
         Model = tostring(Body['model']),
         ProviderModel = tostring(Body['provider_model']),

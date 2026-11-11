@@ -143,8 +143,8 @@ does not change the Gateway projection of the Policy. See the Gateway chart's
 [Smart routing]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#smart-routing)
 section. Its
 [Measuring the routers]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#measuring-the-routers)
-part has Log Analytics queries that show how requests were routed. A Team's own
-routers are described under
+part has queries of the ADX-Mon collection that show how requests were routed.
+A Team's own routers are described under
 [Smart-routing models](#smart-routing-models).
 
 The create form offers both sources, and both are on by default. Every new
