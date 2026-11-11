@@ -10,9 +10,15 @@ continues to work.
 
 > **Warning:** On the tailnet, the portal does not check your Microsoft Entra
 > sign-in or the ownership of the Agent. Each device that the tailnet ACLs
-> allow can connect to the Agent. Before you add Tailscale, ask your tailnet
-> administrator to limit the ACLs so that only your own devices can reach the
-> Agent.
+> allow can connect to the Agent. The gateway token and the Hermes API key in
+> the [sign-in table](#connect) protect only the OpenClaw gateway and the
+> Hermes API. By default, the terminal (port 7681) and the desktop (ports 6080
+> and 5900) of the Agent also accept connections on its tailnet address. They
+> do not ask for a token, a key, or a password.
+>
+> Before you add Tailscale, ask your tailnet administrator to limit the ACLs
+> so that only your own devices can reach the Agent, on all ports. A limit on
+> the HTTPS port only is not sufficient when other rules allow the other ports.
 
 ## Before you begin
 
@@ -153,6 +159,12 @@ the persistent home.
 | OpenClaw | `http://localhost:18789` | Gateway. Its configured `/ui/<agent-name>` base path still applies. |
 | Hermes | `http://localhost:8642` | API server that uses `API_SERVER_KEY`, not the Webapp on 9120 |
 
+Tailscale Serve publishes only the target in this table. The other listeners
+of the Pod also accept connections on its tailnet address. Without ingress
+mTLS, ttyd (port 7681), websockify (port 6080), and x11vnc (port 5900) listen
+on all interfaces and do not require a credential. Limit the tailnet ACLs by
+device and by port.
+
 Do not expose the Hermes Webapp directly. Hermes 0.22.7 rejects an
 unauthenticated non-loopback Webapp. CetiRun configures the Hermes built-in
 password provider in addition to the platform access path.
@@ -160,7 +172,7 @@ password provider in addition to the platform access path.
 The container uses kernel networking and creates `/dev/net/tun`. The chart adds
 `NET_ADMIN` for Tailscale. Examine these privileges together with the
 RuntimeClass and the network policy. CetiRun runs Tailscale Serve outside
-OpenClaw. As a result, Gateway token and device authentication are still
+OpenClaw. As a result, gateway token and device authentication are still
 necessary on this access path. When Tailscale is enabled, the generated
 OpenClaw configuration trusts only the exact `127.0.0.1` source of the Serve
 proxy in the container.
@@ -175,4 +187,5 @@ Sources: [portal Secret updates]({{< repo "app/cetirun-portal/internal/kube/clie
 [chart enablement]({{< repo "app/cetirun-chart/templates/_helpers.tpl" >}}),
 [StatefulSet]({{< repo "app/cetirun-chart/templates/statefulset.yaml" >}}),
 [OpenClaw startup]({{< repo "app/cetirun-chart/agents/openclaw/bootstrap/entrypoint.sh" >}}),
-and [Hermes startup]({{< repo "app/cetirun-chart/agents/hermes/bootstrap/hermes-entrypoint.sh" >}}).
+[Hermes startup]({{< repo "app/cetirun-chart/agents/hermes/bootstrap/hermes-entrypoint.sh" >}}),
+and [desktop startup]({{< repo "app/cetirun-chart/configs/desktop-entrypoint.sh" >}}).
