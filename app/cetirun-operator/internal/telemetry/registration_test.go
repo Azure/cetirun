@@ -8,6 +8,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +25,7 @@ import (
 // kinds a no-match error, unless failure is set.
 type stubCache struct {
 	cache.Cache
+	mu        sync.Mutex
 	installed map[string]bool
 	failure   error
 	informers map[string]*stubInformer
@@ -39,6 +42,8 @@ func (i *stubInformer) AddEventHandler(toolscache.ResourceEventHandler) (toolsca
 }
 
 func (c *stubCache) GetInformer(_ context.Context, object client.Object, _ ...cache.InformerGetOption) (cache.Informer, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.failure != nil {
 		return nil, c.failure
 	}
@@ -53,6 +58,19 @@ func (c *stubCache) GetInformer(_ context.Context, object client.Object, _ ...ca
 		c.informers[name] = &stubInformer{}
 	}
 	return c.informers[name], nil
+}
+
+// WaitForCacheSync and List: the cache holds no objects.
+func (c *stubCache) WaitForCacheSync(context.Context) bool { return true }
+
+func (c *stubCache) List(context.Context, client.ObjectList, ...client.ListOption) error { return nil }
+
+func (c *stubCache) install(names ...string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, name := range names {
+		c.installed[name] = true
+	}
 }
 
 func kindName(object client.Object) string {
@@ -80,9 +98,7 @@ func TestRegistrationWaitsForMissingResources(t *testing.T) {
 		t.Fatalf("Snapshot without the CetiRun resources: %v", err)
 	}
 
-	for _, kind := range kinds {
-		c.installed[kind.logType] = true
-	}
+	c.install(LogTypeAgent, LogTypeTeam, LogTypeAgentPolicy, LogTypeSandbox)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := r.RunRegistration(ctx, c, 10*time.Millisecond); err != nil {
@@ -109,5 +125,31 @@ func TestRegistrationStopsOnOtherErrors(t *testing.T) {
 	r := &Recorder{Writer: NewWriter(&bytes.Buffer{}), Events: EventsNone, Log: logr.Discard()}
 	if err := r.Register(context.Background(), c); err == nil {
 		t.Fatal("Register hid an error that is not a missing resource")
+	}
+}
+
+func TestResourcesInstalledLaterGetASnapshotAtOnce(t *testing.T) {
+	c := &stubCache{installed: map[string]bool{}}
+	var out bytes.Buffer
+	r := &Recorder{Writer: NewWriter(&out), Events: EventsNone, Log: logr.Discard()}
+	if err := r.Register(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- r.RunRegistration(ctx, c, 10*time.Millisecond) }()
+	time.Sleep(50 * time.Millisecond)
+	if strings.Contains(syncedOutput(r, &out), LogTypeSnapshot) {
+		t.Fatal("a snapshot before the resources exist")
+	}
+	c.install(LogTypeAgent, LogTypeTeam, LogTypeAgentPolicy, LogTypeSandbox)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range kinds {
+		if !strings.Contains(out.String(), `"kind":"`+kind.logType+`"`) {
+			t.Fatalf("no completed %s snapshot once the resources appeared", kind.logType)
+		}
 	}
 }

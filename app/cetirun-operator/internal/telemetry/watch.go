@@ -5,7 +5,10 @@ package telemetry
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -32,6 +35,13 @@ type Recorder struct {
 	last map[string]string
 	// registered holds the inventory kinds whose handlers are added.
 	registered map[string]bool
+	// deleted holds the UIDs deleted while a snapshot runs, nil otherwise.
+	deleted map[string]bool
+
+	// snapshotMu lets one snapshot run at a time.
+	snapshotMu sync.Mutex
+	// newID returns a snapshot ID; random unless a test sets it.
+	newID func() string
 }
 
 // inventory is one kind of inventory object.
@@ -135,6 +145,13 @@ func (r *Recorder) RunRegistration(ctx context.Context, c cache.Cache, interval 
 		if missing == 0 {
 			if reported {
 				r.Log.Info("the CetiRun resources are installed; inventory records start")
+				// A complete snapshot of the new kinds now, not after the
+				// snapshot interval.
+				if c.WaitForCacheSync(ctx) {
+					if err := r.Snapshot(ctx, c); err != nil {
+						r.Log.Error(err, "write the inventory snapshot")
+					}
+				}
 			}
 			return nil
 		}
@@ -151,8 +168,26 @@ func (r *Recorder) RunRegistration(ctx context.Context, c cache.Cache, interval 
 }
 
 // Snapshot writes every inventory object again, so that the latest state of
-// each one stays within the retention of the logs.
+// each one stays within the retention of the logs. Each entry carries the
+// snapshot's ID; once every object of a kind is written, a LogTypeSnapshot
+// record says that the kind's snapshot is complete. A query then takes the
+// objects of the latest complete snapshot, and the changes after it started,
+// as the current ones: an object deleted while this program was not running
+// is absent from its next snapshot. A kind whose list or writes fail gets no
+// completion record, and its previous snapshot stays the latest.
 func (r *Recorder) Snapshot(ctx context.Context, reader client.Reader) error {
+	r.snapshotMu.Lock()
+	defer r.snapshotMu.Unlock()
+	r.mu.Lock()
+	r.deleted = map[string]bool{}
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		r.deleted = nil
+		r.mu.Unlock()
+	}()
+	id := r.snapshotID()
+	var failed error
 	for _, kind := range kinds {
 		if !r.isRegistered(kind.logType) {
 			continue
@@ -161,18 +196,53 @@ func (r *Recorder) Snapshot(ctx context.Context, reader client.Reader) error {
 		if err != nil {
 			return err
 		}
+		started := r.Writer.now().UTC()
 		if err := reader.List(ctx, list); err != nil {
-			return fmt.Errorf("list %s: %w", kind.logType, err)
+			failed = errors.Join(failed, fmt.Errorf("list %s: %w", kind.logType, err))
+			continue
 		}
+		written, complete := 0, true
 		for _, object := range items(list) {
-			r.inventory(kind, object, ActionSnapshot)
+			wrote, err := r.writeInventory(kind, object, ActionSnapshot, id)
+			if err != nil {
+				failed = errors.Join(failed, fmt.Errorf("write a %s snapshot entry: %w", kind.logType, err))
+				complete = false
+				break
+			}
+			if wrote {
+				written++
+			}
+		}
+		if !complete {
+			continue
+		}
+		if err := r.Writer.Write(LogTypeSnapshot, Record{Snapshot: &SnapshotRecord{
+			ID: id, Kind: kind.logType, Started: started.Format(time.RFC3339Nano), Objects: written,
+		}}); err != nil {
+			failed = errors.Join(failed, fmt.Errorf("complete the %s snapshot: %w", kind.logType, err))
 		}
 	}
-	return nil
+	return failed
 }
 
-// RunSnapshots writes a snapshot at each interval until the context ends.
-func (r *Recorder) RunSnapshots(ctx context.Context, reader client.Reader, interval time.Duration) error {
+func (r *Recorder) snapshotID() string {
+	if r.newID != nil {
+		return r.newID()
+	}
+	id := make([]byte, 8)
+	_, _ = rand.Read(id)
+	return hex.EncodeToString(id)
+}
+
+// RunSnapshots writes a snapshot once the cache has synced, then at each
+// interval until the context ends. The first one repairs the inventory after
+// a time without this program: what was deleted meanwhile is absent from it.
+func (r *Recorder) RunSnapshots(ctx context.Context, c cache.Cache, interval time.Duration) error {
+	if c.WaitForCacheSync(ctx) {
+		if err := r.Snapshot(ctx, c); err != nil {
+			r.Log.Error(err, "write the inventory snapshot")
+		}
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -180,7 +250,7 @@ func (r *Recorder) RunSnapshots(ctx context.Context, reader client.Reader, inter
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			if err := r.Snapshot(ctx, reader); err != nil {
+			if err := r.Snapshot(ctx, c); err != nil {
 				r.Log.Error(err, "write the inventory snapshot")
 			}
 		}
@@ -198,35 +268,51 @@ func (r *Recorder) event(object any) {
 }
 
 func (r *Recorder) inventory(kind inventory, object any, action string) {
+	if _, err := r.writeInventory(kind, object, action, ""); err != nil {
+		r.Log.Error(err, "write an inventory record", "kind", kind.logType)
+	}
+}
+
+// writeInventory writes the record of one object and says whether it wrote
+// one. An upsert that changes no recorded field writes nothing. Neither does a
+// snapshot entry of an object deleted since the snapshot started: it would
+// follow the delete record and make the object current again. The lock is
+// held while the record is written, so a delete and a snapshot entry of one
+// object are written in the order they are decided.
+func (r *Recorder) writeInventory(kind inventory, object any, action, snapshotID string) (bool, error) {
 	value, ok := object.(client.Object)
 	if !ok {
-		return
+		return false, nil
 	}
 	record := kind.record(value)
 	encoded, err := json.Marshal(record)
 	if err != nil {
-		r.Log.Error(err, "encode an inventory record", "kind", kind.logType)
-		return
+		return false, fmt.Errorf("encode a %s record: %w", kind.logType, err)
 	}
 	key := string(value.GetUID())
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	if action == ActionSnapshot && r.deleted[key] {
+		return false, nil
+	}
 	if r.last == nil {
 		r.last = map[string]string{}
 	}
 	unchanged := r.last[key] == string(encoded)
 	if action == ActionDelete {
 		delete(r.last, key)
+		if r.deleted != nil {
+			r.deleted[key] = true
+		}
 	} else {
 		r.last[key] = string(encoded)
 	}
-	r.mu.Unlock()
 	if action == ActionUpsert && unchanged {
-		return
+		return false, nil
 	}
 	record.Action = action
-	if err := r.Writer.Write(kind.logType, record); err != nil {
-		r.Log.Error(err, "write an inventory record", "kind", kind.logType)
-	}
+	record.SnapshotID = snapshotID
+	return true, r.Writer.Write(kind.logType, record)
 }
 
 func listOf(object client.Object) (client.ObjectList, error) {
