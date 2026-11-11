@@ -469,6 +469,10 @@ func TestRegistrySuspensionDoesNotNeedCredentialsOrHelm(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = r.Delete(ctx, source)
+			agent.Status.ObservedGeneration = agent.Generation
+			if err := r.Status().Update(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
 			agent.Spec.Suspended = true
 			agent.Finalizers = []string{api.Finalizer}
 			_ = r.Update(ctx, agent)
@@ -479,6 +483,9 @@ func TestRegistrySuspensionDoesNotNeedCredentialsOrHelm(t *testing.T) {
 			_ = r.Get(ctx, client.ObjectKeyFromObject(agent), agent)
 			if sts.UID != uid || *sts.Spec.Replicas != 0 || agent.Status.Phase != api.PhaseSuspended || sts.Spec.PersistentVolumeClaimRetentionPolicy.WhenScaled != appsv1.RetainPersistentVolumeClaimRetentionPolicyType {
 				t.Fatal("suspension depended on credentials or changed storage ownership")
+			}
+			if agent.Status.ObservedGeneration != 0 {
+				t.Fatal("legacy registry suspension did not invalidate the deployment cache for resume")
 			}
 			if err := r.Get(ctx, client.ObjectKeyFromObject(route), route); !apierrors.IsNotFound(err) {
 				t.Fatal("native ingress remained after suspension")

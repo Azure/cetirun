@@ -159,7 +159,7 @@ func TestConfigurationUpdateRecoversAfterPortalRestart(t *testing.T) {
 						case *api.AgentPolicy:
 							spec := *current.Spec.DeepCopy()
 							spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeOpenClaw}
-							return portal.UpdateAgentPolicySpec(ctx, current.Name, spec, AgentPolicyVersion(version))
+							return portal.UpdateAgentPolicySpec(ctx, current.Name, spec, AgentPolicyVersion{UID: version.UID, ResourceVersion: version.ResourceVersion})
 						default:
 							panic("unknown fixture kind")
 						}

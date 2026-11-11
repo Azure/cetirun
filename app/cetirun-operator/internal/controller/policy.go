@@ -392,18 +392,14 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 	if err != nil {
 		return nil, err
 	}
-	credentialRevision, err := policyHash(struct {
-		Version   string                       `json:"version"`
-		PolicyUID types.UID                    `json:"policyUID"`
-		Enabled   bool                         `json:"enabled"`
-		Identity  api.AgentPolicyAgentIdentity `json:"identity"`
-	}{"credential-policy-v2", policy.UID, agentIdentityRequested(agent), policy.Spec.AgentIdentity})
+	// An identity-free Agent has no credential grant to reproject when the
+	// policy merely allows identity. Required/forbidden identity was checked
+	// above; actual identity cleanup is still checked by credentialPolicyVerified.
+	credentialRevision, err := inactiveCredentialPolicyRevision(policy.UID, api.AgentPolicyAgentIdentity{})
 	if err != nil {
 		return nil, err
 	}
-	// Only an active credential projection needs identity/owner-bound evidence.
-	// Keep the existing inactive-domain input hash so enabling this executor
-	// does not reproject unrelated identity-free workloads.
+	// Active credential grants retain the complete identity/owner-bound evidence.
 	if agentIdentityRequested(agent) {
 		credentialRevision = credentialPolicyProjection(agent, team, policy).Revision()
 	}
@@ -707,7 +703,8 @@ func policyReprojectionMustHold(agent *api.Agent, resolution *policyResolution) 
 	}
 	if existing.Enforcement.Sandbox.DesiredRevision != resolution.sandboxRevision ||
 		existing.Enforcement.Gateway.DesiredRevision != resolution.gatewayRevision ||
-		existing.Enforcement.Credential.DesiredRevision != resolution.credentialRevision {
+		(existing.Enforcement.Credential.DesiredRevision != resolution.credentialRevision &&
+			!inactiveCredentialRevisionUpgrade(agent, resolution)) {
 		return true
 	}
 	return !policyEnforcementVerified(agent, resolution)

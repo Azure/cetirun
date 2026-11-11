@@ -149,6 +149,10 @@ class GatewayModeTest(unittest.TestCase):
         request_log.handler = self.handler
         guard = types.ModuleType("cetirun_ai_gateway.guard")
         guard.handler = self.guard
+        content = types.ModuleType("cetirun_ai_gateway.content")
+        self.content = object()
+        # Like the real one: a callback only when the chart names a content database.
+        content.from_environment = lambda environ, log=None: self.content if environ.get("CETIRUN_CONTENT_ENDPOINT") else None
         self.modules = {
             "litellm": litellm,
             "litellm.proxy": proxy,
@@ -157,6 +161,7 @@ class GatewayModeTest(unittest.TestCase):
             "cetirun_ai_gateway": package,
             "cetirun_ai_gateway.request_log": request_log,
             "cetirun_ai_gateway.guard": guard,
+            "cetirun_ai_gateway.content": content,
         }
 
     def start(self, environ, args=None):
@@ -206,6 +211,18 @@ class GatewayModeTest(unittest.TestCase):
     def test_one_worker_is_accepted(self):
         self.start({"CETIRUN_REQUEST_LOG": "true", "NUM_WORKERS": "1"}, ["--port", "4000", "--num_workers", "1"])
         self.assertEqual(self.events[:2], [("callback", self.guard), ("callback", self.handler)])
+
+    def test_content_is_registered_when_the_chart_names_a_database(self):
+        self.start({"CETIRUN_REQUEST_LOG": "true", "CETIRUN_CONTENT_ENDPOINT": "https://example.kusto.windows.net",
+                    "CETIRUN_CONTENT_DATABASE": "CetiRunContent", "CETIRUN_CONTENT_CLUSTER": "example"})
+        self.assertEqual(self.events, [
+            ("callback", self.guard), ("callback", self.handler), ("callback", self.content),
+            ("run", self.ARGS, "litellm", False)])
+
+    def test_content_does_not_need_the_request_log(self):
+        self.start({"CETIRUN_CONTENT_ENDPOINT": "https://example.kusto.windows.net",
+                    "CETIRUN_CONTENT_DATABASE": "CetiRunContent", "CETIRUN_CONTENT_CLUSTER": "example"})
+        self.assertEqual(self.events, [("callback", self.guard), ("callback", self.content), ("run", self.ARGS, "litellm", False)])
 
     def test_a_litellm_without_the_spend_log_setting_does_not_start(self):
         del self.proxy_server.disable_spend_logs

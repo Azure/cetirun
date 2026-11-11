@@ -380,8 +380,8 @@ func TestCustomPendingCompletionPreservesSuspendAndDeletion(t *testing.T) {
 			sts := &appsv1.StatefulSet{}
 			if err := s.client.Get(context.Background(), types.NamespacedName{Namespace: s.provider.bindings.Namespace.Name,
 				Name: "openclaw-" + s.agent.Name + "-cetirun"}, sts); err != nil || *sts.Spec.Replicas != 0 ||
-				s.current().Status.Phase != api.PhaseSuspended {
-				t.Fatal("pending completion prevented suspension")
+				s.current().Status.Phase != api.PhasePending {
+				t.Fatal("pending completion must delay acknowledgement without preventing workload shutdown")
 			}
 		}
 		s.restart()

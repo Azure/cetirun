@@ -187,7 +187,10 @@ func (h *CetiAdminHandler) Validate(ctx context.Context, request admission.Reque
 	if response, handled := h.protectNativeAuthMarker(request, snapshot); handled {
 		return response
 	}
-	if request.Resource.Group == api.GroupVersion.Group && request.Resource.Resource == "agents" {
+	// DELETE carries only OldObject. Binding revocation belongs to the Operator's
+	// cleanup path; the caller and installation guards still apply to deletion.
+	if request.Resource.Group == api.GroupVersion.Group && request.Resource.Resource == "agents" &&
+		(request.Operation == admissionv1.Create || request.Operation == admissionv1.Update) {
 		var next, old metav1.PartialObjectMetadata
 		_ = decodeJSON(request.Object.Raw, &next, false)
 		_ = decodeJSON(request.OldObject.Raw, &old, false)
@@ -211,6 +214,11 @@ func (h *CetiAdminHandler) Validate(ctx context.Context, request admission.Reque
 }
 
 func (h *CetiAdminHandler) protectNativeAuthMarker(request admission.Request, snapshot cetiAdminSnapshot) (admission.Response, bool) {
+	if request.Resource.Group == api.GroupVersion.Group && request.Resource.Resource == "agents" &&
+		request.Operation != admissionv1.Create && request.Operation != admissionv1.Update {
+		// A retained rotation intent must not prevent normal Agent deletion.
+		return admission.Response{}, false
+	}
 	if (request.Resource.Group != api.GroupVersion.Group || request.Resource.Resource != "agents") &&
 		(request.Resource.Group != "" || request.Resource.Resource != "secrets") {
 		return admission.Response{}, false

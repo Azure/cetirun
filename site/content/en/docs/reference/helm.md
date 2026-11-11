@@ -13,7 +13,8 @@ RuntimeClass, or identity integrations are available.
 ## Offline rendering
 
 If Helm is already installed, this loop examines both agent templates from the
-repository root. It uses synthetic models, credentials, and image repositories:
+repository root. It uses synthetic models, credentials, AI Gateway values, and
+image repositories:
 
 ```bash
 for agent in openclaw hermes; do
@@ -21,6 +22,9 @@ for agent in openclaw hermes; do
     --namespace cetirun-example --set-string agentType="$agent" \
     --set-string secrets.model=example-model \
     --set-string secrets.openclawGatewayToken=example-token \
+    --set-string aiGateway.keySecretName=example-gateway-key \
+    --set-string secrets.apiBase=http://ai-gateway.example.com/v1 \
+    --set-string hermes.env.HERMES_WEBAPP_PUBLIC_URL=https://example.com/ui/example-runtime \
     --set-string openclaw.image.repository=registry.example.com/openclaw-gateway \
     --set-string hermes.image.repository=registry.example.com/hermes-gateway \
     --set-string desktop.image.repository=registry.example.com/cetirun-desktop \
@@ -28,10 +32,14 @@ for agent in openclaw hermes; do
 done
 ```
 
-Do not deploy these placeholders. A local render does not pull images, query
-Secrets that already exist, run init containers or hooks, or examine cluster
-APIs. The chart metadata values `version: 0.1.0` and `appVersion: 0.1.0` are not
-evidence of published artifacts. The connected admission and registry checks
+Do not deploy these placeholders. The chart refuses to render without
+`aiGateway.keySecretName`. Hermes also must have `secrets.apiBase` and
+`hermes.env.HERMES_WEBAPP_PUBLIC_URL`. For the Agents that the operator
+manages, the operator supplies these values.
+
+A local render does not pull images, query Secrets that already exist, run init
+containers or hooks, or examine cluster APIs. The chart metadata values `version: 0.1.0` and
+`appVersion: 0.1.0` are not evidence of published artifacts. The connected admission and registry checks
 and the Helm installation that mutates the cluster are separate steps in
 [platform setup](../../getting-started/platform/).
 
@@ -265,9 +273,33 @@ The chart enables the OpenClaw doctor init step through
 a startup mutation, not a read-only diagnostic. The `doctor.enabled` alias must
 also be true for the step to run. Hermes does not run this init container.
 
-`openclaw.acpx` configures the installed agent communication plugin. Before you
-use it, examine its permissions, allowed adapters, and optional command
-overrides.
+`openclaw.acpx` configures the installed agent communication plugin (ACPX).
+The plugin is enabled by default:
+
+| Value | Default |
+| --- | --- |
+| `openclaw.acpx.enabled` | `true` |
+| `openclaw.acpx.dispatch.enabled` | `true` |
+| `openclaw.acpx.allowedAgents` | `claude`, `codex`, and `opencode` |
+| `openclaw.acpx.permissionMode` | `approve-all` |
+
+With these defaults, OpenClaw can start sessions of the `claude`, `codex`, and
+`opencode` adapters through ACP. `approve-all` approves the tool requests of
+these sessions without a prompt. To change this behavior, set one of these
+values:
+
+- `openclaw.acpx.permissionMode: approve-reads` approves only read requests.
+- `openclaw.acpx.permissionMode: deny-all` refuses all tool requests.
+- `openclaw.acpx.enabled: false` disables the plugin.
+
+For the Agents that the operator manages, set these values in the operator's
+deployment-wide `cetirun.helmValues`. Before you use the plugin, also examine
+its optional command overrides in `openclaw.acpx.agents`.
+
+`openclaw.git.azureDevOps.enabled` is also `true` by default. At
+initialization, it installs a Git credential helper that gets Azure DevOps
+tokens through `az account get-access-token`. Refer to
+[Skills](../../concepts/configuration/#skills).
 
 `hermes.config`, `hermes.env`, and `hermes.gateway` configure Hermes. Model and
 provider values are rendered into the native format of the selected agent.
@@ -314,12 +346,15 @@ allow rules. It is not an HTTPS-only policy or an immutable block on every
 private address.
 
 `execRestriction` renders `admissionregistration.k8s.io/v1` policy and binding
-resources. It does not examine the availability of the cluster API. Before
-installation, examine its
-[fixed service-account exception]({{< repo "app/cetirun-chart/templates/deny-exec-policy.yaml" >}})
-and the necessary administrator access. This exception is not a general
-cluster-admin exception. Do not disable the exec restriction as a
-troubleshooting shortcut.
+resources. It does not examine the availability of the cluster API.
+
+The [policy template]({{< repo "app/cetirun-chart/templates/deny-exec-policy.yaml" >}})
+has no fixed service-account exception. When CetiAdmin is enabled, the operator
+adds an exception for the CetiAdmin service account at runtime, as
+[CetiAdmin](../../operations/cetiadmin/#exec-exception) describes. The policy
+covers only `pods/exec`. Before installation, examine the necessary
+administrator access. Do not disable the exec restriction as a troubleshooting
+shortcut.
 
 The [logger script]({{< repo "app/cetirun-chart/configs/session-logger.sh" >}})
 tails recent OpenClaw session JSONL files or the Hermes gateway log to stdout.
@@ -349,6 +384,7 @@ agent values are still under `cetirun-operator.cetirun.helmValues`.
 | `istio.enabled` | `false`. It must be `true` to acknowledge the separately installed Istio prerequisites. It does not install Istio. |
 | `istio.oauth2Proxy.name`, `namespace` | `oauth2-proxy`, `cetirun-istio`. `make deploy` sets `namespace` to the namespace of the CetiRun Istio release. |
 | `cetirun-operator.enabled`, `cetirun-portal.enabled` | `true`. You can disable each component. |
+| `cetirun-operator.cetiadmin` | CetiAdmin. `enabled` is `true`, and an enabled CetiAdmin needs inputs. See [CetiAdmin values](#cetiadmin-values). |
 | `cetirun-operator.namespace` | `cetirun-system`. Align it with the Helm release namespace. This is necessary for the bundled AI Gateway. |
 | `cetirun-portal.aiGateway.catalogNamespace` | `cetirun-system`. It must equal `cetirun-operator.namespace`, where the operator publishes the shared models. `make deploy` sets both from `platform.namespace`. A standalone portal keeps its own value. |
 | `cetirun-ai-gateway.enabled` | `true`. Disable it only when a Gateway is installed separately in the operator namespace. `make deploy` refuses `false`. |
@@ -428,12 +464,14 @@ Source: [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}})
 | --- | --- |
 | `replicaCount`, `leaderElection` | `2`, `true` |
 | `domainSuffix` | The deployment domain. It is necessary. |
+| `cetiadmin` | CetiAdmin. `enabled` is `true`, and an enabled CetiAdmin needs inputs and admission prerequisites. See [CetiAdmin values](#cetiadmin-values). |
 | `namespace` | `cetirun-system`. The operator resource templates use it directly. |
 | `istioRevision` | Empty. The operator then detects the revision automatically. |
 | `istioGateway` | `aks-istio-ingress/cetirun-gateway`. Agent VirtualServices use it. |
 | `cetirun.chart.repoURL`, `cetirun.chart.version` | An accessible OCI agent chart and its version |
 | `cetirun.defaultModel` | `gpt-6-astra`. Select a model that is available to the Copilot accounts of your users. |
 | `cetirun.helmValues` | Deployment-wide agent values |
+| `aiGateway.defaultBudget` | `10000`. The monthly budget in USD that the operator writes when it creates the Gateway key of a standard Agent. Later changes in the Gateway are kept. Policy-bound Agents use the budget of their Agent Policy, and CetiAdmin uses `cetiadmin.model.initialMonthlyBudgetUSD`. |
 | `acrDockerSecret` | The registry Secret in the operator namespace, for the Helm client of the operator |
 | `image` | The operator image pin. The pull policy is `IfNotPresent`. An empty tag uses `appVersion`. |
 | `imagePullSecrets` | The values declare it, but the chart does not render it into the operator Deployment. |
@@ -713,6 +751,40 @@ deployment default.
 Each instance's `spec.helm.version` is pinned during the first reconciliation.
 As a result, a change to the operator's default chart version alone does not
 upgrade the instances that already exist.
+
+### CetiAdmin values
+
+`cetiadmin` configures [CetiAdmin](../../operations/cetiadmin/), the Hermes
+operations Agent that the operator installs. The platform chart and
+`make deploy` use the same values under `cetirun-operator.cetiadmin`.
+
+| Value | Purpose / default |
+| --- | --- |
+| `cetiadmin.enabled` | `true`. To install the operator without CetiAdmin, set `false`. |
+| `cetiadmin.instanceName` | `cetiadmin`, at most 44 characters. The name of the Agent and of its Team. The Agent runs in the namespace `cetirun-<instanceName>`. |
+| `cetiadmin.owner.alias`, `owner.tenantID`, `owner.objectID` | Empty. Necessary when CetiAdmin is enabled. The Portal alias, the Entra tenant ID, and the Entra object ID of an owner that already exists. |
+| `cetiadmin.model.default`, `model.initialMonthlyBudgetUSD`, `model.githubCopilot` | `auto`, empty, and `false`. The budget is necessary when CetiAdmin is enabled. It is a nonnegative decimal string, for example `"100"`. |
+| `cetiadmin.kubernetes.apiServer`, `kubernetes.caConfigMapName` | `https://kubernetes.default.svc` and `kube-root-ca.crt` |
+| `cetiadmin.kubernetes.apiAudience`, `kubernetes.apiEgressCIDRs` | Empty and `[]`. Both are necessary when CetiAdmin is enabled: a token audience that the API server accepts and that is different from the Connections MCP audience, and the endpoint addresses of the API server as `/32` or `/128` CIDRs. |
+| `cetiadmin.platformReadNamespaces` | `[]`. Other namespaces for read-only diagnostics. |
+| `cetiadmin.monitor.enabled` | `false`. Scheduled health checks. `monitor.deliver` is `local` or `slack`. |
+| `cetiadmin.runtime.version`, `runtime.image`, `runtime.port` | Empty. CetiAdmin then uses the runtime chart and the Hermes profile of the same release. |
+| `cetiadmin.sharedSkills.enabled`, `azureWorkloadIdentity.enabled` | `false` |
+| `cetiadmin.hookTimeoutSeconds` | `600`. The wait budget of the CetiAdmin hooks. Helm's own `--timeout` must also allow this duration. |
+
+An enabled CetiAdmin also needs the admission server, even when
+`sandboxAdmission.enabled` is `false`. The chart refuses to render until these
+items are available:
+
+- Kubernetes 1.37 or later
+- `sandboxAdmission.tlsSecretName`
+- `sandboxAdmission.caBundle`
+- At least one entry in `sandboxAdmission.adminUsers` or
+  `sandboxAdmission.adminGroups`
+- `domainSuffix` and `aiGateway.enabled: true`
+
+For a complete example, refer to
+[Configure CetiAdmin]({{< repo "app/cetirun-platform/README.md" >}}#configure-cetiadmin).
 
 ## Portal chart
 

@@ -321,7 +321,7 @@ export function PolicyEditPage() {
     <Divider />
     <section aria-label="Identity" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <Text weight="semibold">Identity</Text>
-      <Field label="Agent Identity" hint="An independent Microsoft Entra directory identity for access through Connections. Optional lets users choose; Required enables it for every new Agent.">
+      <Field label="Agent Identity" hint="An independent Microsoft Entra directory identity for access through Connections. Optional lets users choose without enabling it on existing Agents. Required also applies to existing Agents and stops any without it. Disabled denies Agents that request it.">
         <Select value={form.agentIdentityMode} onChange={(event) => setForm({ ...form, agentIdentityMode: event.target.value as PolicyFormState["agentIdentityMode"] })}>
           <option value="disabled">Disabled</option><option value="optional">Optional</option><option value="required">Required</option>
         </Select>

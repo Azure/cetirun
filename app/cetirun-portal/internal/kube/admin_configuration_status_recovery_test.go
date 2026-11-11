@@ -21,14 +21,14 @@ import (
 func TestTeamUpdateRecoversStatusOnlySupersededReservation(t *testing.T) {
 	for _, boundary := range []string{"before-authoritative-read", "before-update", "reserved-after-transition-failure"} {
 		t.Run(boundary, func(t *testing.T) {
-			for _, order := range []string{"fresh-first", "stale-then-fresh"} {
+			for _, order := range []string{"fresh-first", "stale-then-fresh", "generation-retry"} {
 				t.Run(order, func(t *testing.T) {
 					ctx := context.Background()
 					authority := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
 						Namespace: "cetirun-system", Name: "configuration-coordination", UID: "authority-uid",
 						Finalizers: []string{"sandbox.cetirun.microsoft.com/coordination"},
 					}, Data: map[string]string{"coordination.json": `{"version":1,"executions":[],"changes":[]}`}}
-					team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid"}, Spec: api.TeamSpec{
+					team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid", Generation: 1}, Spec: api.TeamSpec{
 						AgentPolicyRef: "standard", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard",
 					}}
 					storage := fake.NewClientBuilder().WithScheme(newScheme()).WithStatusSubresource(team).WithObjects(authority, team).Build()
@@ -36,6 +36,9 @@ func TestTeamUpdateRecoversStatusOnlySupersededReservation(t *testing.T) {
 						t.Fatal(err)
 					}
 					original := ConfigurationVersion{UID: team.UID, ResourceVersion: team.ResourceVersion}
+					if order == "generation-retry" {
+						original.Generation = team.Generation
+					}
 
 					journalChanges := func() []struct {
 						Phase string `json:"phase"`
@@ -151,6 +154,11 @@ func TestTeamUpdateRecoversStatusOnlySupersededReservation(t *testing.T) {
 					}
 
 					fresh := ConfigurationVersion{UID: current.UID, ResourceVersion: current.ResourceVersion}
+					if order == "generation-retry" {
+						// The reviewed configuration is still current. Recovery must
+						// prove the old operation superseded before a new submission.
+						fresh = original
+					}
 					if order == "stale-then-fresh" {
 						attemptsBeforeRecovery := teamUpdateAttempts
 						if _, err := newPortal().UpdateTeamSpec(ctx, current.Name, desired, original); !errors.Is(err, ErrConfigurationChanged) {

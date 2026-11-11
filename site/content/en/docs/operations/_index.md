@@ -36,6 +36,7 @@ and side effects.
 - [Istio authentication and egress](istio/)
 - [Entra Agent Identity setup](entra-agent-identity/) — Blueprint, federation and Azure/Microsoft authorization
 - [Identity provider setup](identity-providers/) — GitHub App, GitHub OAuth and Google OAuth
+- [CetiAdmin](cetiadmin/) — the operations Agent that the operator installs by default, its access, and how to disable it
 
 ## Troubleshooting
 

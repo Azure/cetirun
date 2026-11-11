@@ -435,6 +435,7 @@ class ReleaseInventoryTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, f"{step['displayName']}: {result.stderr}")
 
     def test_actual_builders_build_each_image_once_without_push(self):
+        self.env.pop("ACCEPT_VSCODE_SERVER_LICENSE_TERMS")
         result = subprocess.run(["make", "build-images"], env=self.env, cwd=ROOT, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         builds = [command for command in self.commands() if command[:2] == ["buildx", "build"]]
@@ -448,6 +449,35 @@ class ReleaseInventoryTests(unittest.TestCase):
         self.assertIn(self.image("cetirun-base"), builds[0])
         vscode = next(command for command in builds if self.image("cetirun-vscode") in command)
         self.assertIn("ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true", vscode)
+
+    def test_release_cli_defaults_to_license_acceptance(self):
+        self.env.pop("ACCEPT_VSCODE_SERVER_LICENSE_TERMS")
+        self.run_release("build-images")
+        vscode = next(command for command in self.commands()
+                      if command[:2] == ["buildx", "build"] and self.image("cetirun-vscode") in command)
+        self.assertIn("ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true", vscode)
+
+    def test_vscode_builder_defaults_to_license_acceptance(self):
+        self.env.pop("ACCEPT_VSCODE_SERVER_LICENSE_TERMS")
+        result = subprocess.run(["bash", "scripts/vscode-docker-build.sh"], env={**self.env, "PUSH": "false"},
+                                cwd=ROOT, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(self.commands()), 1)
+        self.assertIn("ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true", self.commands()[0])
+
+    def test_license_override_stops_build_entrypoints_before_docker(self):
+        commands = (
+            ["make", "build-images"],
+            [sys.executable, "-B", str(SCRIPT), "build-images"],
+            ["bash", "scripts/vscode-docker-build.sh"],
+        )
+        for value in ("false", "", "invalid"):
+            for command in commands:
+                with self.subTest(value=value, command=command):
+                    result = subprocess.run(command, env={**self.env, "ACCEPT_VSCODE_SERVER_LICENSE_TERMS": value},
+                                            cwd=ROOT, capture_output=True, text=True, timeout=30)
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(self.commands(), [])
 
     def test_sbom_generator_override_reaches_all_attestation_builders(self):
         generator = "registry.example.com/tools/sbom-generator@sha256:" + "a" * 64
@@ -535,7 +565,7 @@ class ReleaseInventoryTests(unittest.TestCase):
                 self.env[key] = previous
 
     def test_optional_vscode_exclusion_skips_license_gate_and_image(self):
-        self.env.pop("ACCEPT_VSCODE_SERVER_LICENSE_TERMS")
+        self.env["ACCEPT_VSCODE_SERVER_LICENSE_TERMS"] = "false"
         plan = json.loads(self.run_release("plan", "--exclude-image", "cetirun-vscode").stdout)
         self.assertNotIn("cetirun-vscode", {entry["name"] for entry in plan["images"]})
         self.run_release("build-images", "--exclude-image", "cetirun-vscode")

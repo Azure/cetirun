@@ -24,6 +24,7 @@ logging, telemetry, and network activity across every component.
 | Agent activity | Prompts, responses, files, tool arguments/results, session history, and user/team context | Agent process and workspace storage. Configured model, tool, and channel services. The AI Gateway's database, for seven days by default. Possibly container logs. |
 | Authentication material | Gateway/API keys, provider credentials, OAuth device-flow state, and optional Tailscale credentials | Kubernetes Secrets, mounted configuration, agent home files, process memory, and the services that authenticate them |
 | Browser and terminal | Commands/output, visited pages, downloads, screenshots, browsing history, and browser login state | Workspace processes and storage. Websites or services that the browser/tools contact. Terminal/desktop streams that go to the user. |
+| CetiAdmin | The operations Agent, enabled by default. It can read the Secrets and, through `kubectl exec`, the HOME files of each standard Agent, which does not run in a Sandbox. It can also read the Pod logs and diagnostic resources of the Agents that it manages. Refer to [CetiAdmin](site/content/en/docs/operations/cetiadmin.md). | The CetiAdmin Agent and its HOME. Its model context, the configured model provider, and the AI Gateway's database, for seven days by default. |
 
 The portal does not show only public metadata. Its authorized instance response
 can include gateway tokens, a Hermes API server key, the CetiRun auth helper
@@ -113,6 +114,23 @@ With `spendLogs.storePrompts: false`, each record contains only the metadata.
 This setting does not remove the content of records that are already stored.
 A `general_settings` block that is saved in the console can override it.
 
+With `content.enabled: true`, the Gateway writes the request and the response
+of each call to an Azure Data Explorer database instead (`CetiRunContent` when
+the cluster template creates it), and the spend log keeps no content, whatever
+`spendLogs.storePrompts` says. Calls that LiteLLM makes itself, health check
+probes and auto router classifier calls, are not written. The content is
+complete, not shortened, except
+that inline images and files and encrypted reasoning are replaced by notes with
+their type and size. Each record names the Agent, its owner and Team, and the
+LiteLLM user and Team of the key. The Gateway writes and reads it with its own
+workload identity; the ADX-Mon collector and ingestor have no access to that
+database. The console's request pages read a call's content from there and show
+it to administrators, and to other console users only for their own calls and
+Teams. People with the `Viewer` role on that database can read every call.
+The database keeps the content for its retention, seven days in the cluster
+template. Content written while ADX cannot be reached is lost after three
+attempts, and while the Gateway's queue is full.
+
 When these rows and the stored health-check results are older than
 `spendLogs.retention`, LiteLLM deletes them. The default value is seven days,
 and the check occurs every hour. An empty retention keeps them.
@@ -151,10 +169,17 @@ container into its `ContainerInventory` table. This copy includes values that
 come from Kubernetes Secrets. The cluster helper creates the settings in
 `infra/cluster/container-azm-ms-agentconfig.yaml`, which disable that
 collection for the cluster. On a cluster that already has agent settings, the
-helper examines them to find if they disable that collection. CetiRun
-containers that keep credentials in their environment disable it for
-themselves with `AZMON_COLLECT_ENV=False`. A cluster that runs the add-on
-without these settings collects those values.
+helper examines them to find if they disable that collection.
+
+Some CetiRun containers that keep credentials in their environment also
+disable the collection for themselves with `AZMON_COLLECT_ENV=False`. They are
+the AI Gateway with its bundled PostgreSQL and Valkey, each Agent's GitHub
+Copilot proxy, and OAuth2 Proxy with its Valkey session store. Two other
+containers keep credentials in their environment but do not set the variable.
+The credentials of the Agent runtime container include the Gateway key and the
+native authentication keys of the Agent. The Broker keeps the OAuth client
+secrets of its GitHub and Google providers when you configure them. A cluster
+that runs the add-on without the cluster-wide settings collects these values.
 
 The Istio chart sets `egress.accessLog.enabled` to `true` by default. Its Envoy
 filters write traffic metadata to stdout. This metadata includes timestamps,

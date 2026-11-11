@@ -16,6 +16,8 @@ bash scripts/cetirun-helm-test.sh
 helm template cetirun app/cetirun-chart \
   --set agentType=openclaw \
   --set-string secrets.model=example-model \
+  --set-string aiGateway.keySecretName=example-model-key \
+  --set-string secrets.apiBase=http://gateway.example.com/v1 \
   --set-string secrets.openclawGatewayToken=dev-token
 ```
 
@@ -24,11 +26,15 @@ To examine Hermes:
 ```bash
 helm template cetirun app/cetirun-chart \
   --set agentType=hermes \
-  --set-string secrets.model=example-model
+  --set-string secrets.model=example-model \
+  --set-string aiGateway.keySecretName=example-model-key \
+  --set-string secrets.apiBase=http://gateway.example.com/v1 \
+  --set-string hermes.env.HERMES_WEBAPP_PUBLIC_URL=https://example.com/ui/cetirun
 ```
 
-`example-model` and `dev-token` are render-only placeholders. The chart must
-have an explicit model. Do not apply this output to a cluster.
+All values are render-only placeholders. For the values that the chart must
+have, refer to [Offline rendering](../../reference/helm/#offline-rendering). Do
+not apply this output to a cluster.
 
 ## Check the documentation
 

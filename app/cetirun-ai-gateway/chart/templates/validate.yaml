@@ -14,4 +14,5 @@ offending value, rather than producing a Gateway that starts and misbehaves.
 {{- include "cetirun-ai-gateway.validateProviderCredentials" . -}}
 {{- include "cetirun-ai-gateway.validateMetrics" . -}}
 {{- include "cetirun-ai-gateway.validateRequestRecords" . -}}
+{{- include "cetirun-ai-gateway.validateContent" . -}}
 {{- end -}}
