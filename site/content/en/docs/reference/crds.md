@@ -288,10 +288,25 @@ Portal administrators can create and edit Teams with `agentPolicyRef`,
 `sandboxRefs`, and `defaultSandboxRef`. The Portal accepts only complete
 bindings and validates the referenced resources. It also makes sure that the
 default is in the allowed Sandbox set and that the Policy allows the Team
-Skills. The Team DTO returns these fields together with `uid` and
-`resourceVersion`. Updates and deletes must send those two version fields. A
-stale version returns `409 Conflict`, and a request without those version fields
-returns `428 Precondition Required`.
+Skills. The Team DTO returns these fields together with `uid`, `resourceVersion`,
+and `generation`. Updates and deletes must send `uid` and `resourceVersion` and
+should also send the reviewed generation in the `X-CetiRun-Team-Generation`
+header. The API also accepts a JSON `generation` field; if both are supplied,
+they must match. With a generation, status-only
+updates do not invalidate the request; a changed configuration or replacement
+Team returns `409 Conflict`. Without a generation, the exact resource version
+is still required for older clients. Missing required version fields return
+`428 Precondition Required`; an explicitly supplied generation must be a positive
+integer, or the request returns `400 Bad Request`.
+
+The Portal browser uses the header and keeps the existing JSON body shape.
+Older Portal replicas ignore this header and apply the exact resource-version
+check during a rolling upgrade. JSON generation fields require an updated
+backend because older replicas reject unknown body fields.
+
+The Portal uses the latest resource version for a conditional write after it
+checks the reviewed configuration. A race during submission can still conflict;
+uncertain coordinated writes retain their existing recovery requirements.
 
 The Teams list shows compatibility for the saved Policy and all selected
 Sandboxes. Expand a Team to see its overall compatibility, labeled Policy and
@@ -306,8 +321,10 @@ from Team compatibility. None of these observations proves that an Agent applied
 its Policy or is ready to run.
 
 The Operator records this report in the optional `Team.status.compatibility`
-field. It examines saved configurations every 15 seconds and after Policy or
-Sandbox changes. The report identifies the Team, Policy, and each Sandbox by
+field. It examines saved configurations at most 15 seconds apart and after Policy
+or Sandbox changes. An unchanged report keeps its timestamps until five seconds
+before expiry, when it is renewed. Changed results are published immediately.
+The report identifies the Team, Policy, and each Sandbox by
 name, UID, and generation, with `checkedAt` and `validUntil` timestamps. The
 report expires after 30 seconds. The Portal shows `Pending` when no report
 exists and `Unknown` when an observation expires or a referenced version
@@ -317,6 +334,12 @@ The report is for display. It does not change the Team `Accepted` condition or
 authorize Agent execution. The admin Team API includes the report, the Team
 generation, and deletion state. The Sandbox API also returns generation,
 observed generation, and conditions.
+
+The Team editor preserves unsaved input across background refreshes. If the
+saved configuration changes, it keeps the draft and asks you to discard it and
+reload before saving. Status-only refreshes do not replace the draft. The Team
+deletion dialog shows errors inside the dialog; after a configuration conflict,
+reload and review the current Team before confirming deletion again.
 
 Edit pages show field validation and errors from the current save. They do not
 examine unsaved drafts or show saved status as a draft result. Kubernetes

@@ -591,7 +591,7 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertNotIn(f"- name: {step}\n", jobs["go-api-tests"])
         for step in ("Download Operator API test modules", "Verify generated API artifacts",
                      "Test Agent API admission", "Download Portal API test modules",
-                     "Test Portal lifecycle and Sandbox API contracts"):
+                     "Test Portal lifecycle and configuration API contracts"):
             self.assertIn(f"- name: {step}\n", jobs["go-api-tests"])
             self.assertNotIn(f"- name: {step}\n", jobs["go-unit-tests"])
         self.assertIn("go -C ../internal mod download", jobs["go-api-tests"])
@@ -649,14 +649,14 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("continue-on-error:", text)
         self.assertNotRegex(text, r"git (?:apply|commit|push)")
 
-    def test_portal_lifecycle_and_sandbox_use_the_existing_isolated_admission_job(self):
+    def test_portal_lifecycle_and_configuration_use_the_existing_isolated_admission_job(self):
         text = (validate.ROOT / ".github/workflows/operator-ci.yml").read_text()
         steps = {
             step.splitlines()[0]: step
             for step in text.split("\n      - name: ")[1:]
         }
         download = steps["Download Portal API test modules"]
-        check = steps["Test Portal lifecycle and Sandbox API contracts"]
+        check = steps["Test Portal lifecycle and configuration API contracts"]
         self.assertIn("app/cetirun-portal/go.sum", text)
         self.assertIn("working-directory: app/cetirun-portal", download)
         self.assertIn("run: go mod download", download)
@@ -665,7 +665,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn('GOFLAGS: "-mod=readonly"', check)
         self.assertIn("KUBECONFIG: /dev/null", check)
         self.assertIn('USE_EXISTING_CLUSTER: "false"', check)
-        self.assertIn("run: go test -tags=envtest ./internal/kube ./internal/handler -run '^Test(RetainedRestartThroughServedAPI|SandboxDefaultsThroughPortalAndServedAPI)$' -count=1", check)
+        self.assertIn("run: go test -tags=envtest ./internal/kube ./internal/handler -run '^Test(RetainedRestartThroughServedAPI|SandboxDefaultsThroughPortalAndServedAPI|TeamGenerationThroughPortalAndServedAPI)$' -count=1", check)
         self.assertLess(text.index('echo "KUBEBUILDER_ASSETS=$tools_dir"'), text.index(download))
         self.assertLess(text.index(download), text.index(check))
         self.assertNotIn("continue-on-error:", check)
