@@ -36,7 +36,9 @@ const config = {
     { id: "model", name: "Synthetic fixture", input: ["text"], reasoning: false, contextWindow: 8192, maxTokens: 512,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
   ] } } },
-  plugins: { allow: ["cetirun-memory-context"], load: { paths: [path.join(process.env.MEMORY_TEST_ASSETS, "adapters/openclaw")] }, entries: { "cetirun-memory-context": { enabled: true, hooks: { allowConversationAccess: true } } } },
+  plugins: { allow: ["cetirun-memory-context"], load: { paths: [path.join(process.env.MEMORY_TEST_ASSETS, "adapters/openclaw")] }, entries: { "cetirun-memory-context": {
+    enabled: true, hooks: { allowConversationAccess: true }, config: { owner_access: { platforms: ["webchat", "slack", "cron"] } },
+  } } },
 };
 try {
   // Loading the real package catches manifest, import and host registration
@@ -77,6 +79,16 @@ try {
   assert.equal(context.channel, "webchat");
   const enabled = await buildPrompt({ prompt: "Synthetic ordinary task", developerInstructions: "Synthetic fixture contract.", messages: [], ctx: context });
   assert.ok(enabled.prompt.includes("PRIVATE-MEMORY-FIXTURE-CONTENT"), "native builder did not run the Memory plugin");
+  for (const [name, fields] of [
+    ["group", { trigger: "user", messageProvider: "slack", channel: "slack", senderId: "fixture-sender", channelContext: { chat: { type: "group" } } }],
+    ["cron", { trigger: "cron", jobId: "fixture-job" }],
+  ]) {
+    const channel = { ...context, ...fields, sessionId: `sdk-${name}`, sessionKey: `agent:main:${name}:fixture`, runId: `sdk-${name}` };
+    const result = await buildPrompt({ prompt: "Synthetic channel task", developerInstructions: "Synthetic fixture contract.", messages: [], ctx: channel });
+    assert.ok(result.prompt.includes("PRIVATE-MEMORY-FIXTURE-CONTENT"), `${name} did not receive Memory by default`);
+    const query = await factory({ ...channel, assertInvocationCurrent() {} }).execute(`${name}-query`, { command: "query", payload: { queryTerms: ["preference"] } });
+    assert.equal(query.details.ok, true, JSON.stringify(query.details));
+  }
   const disabled = await buildPrompt({ prompt: "/memory off", developerInstructions: "Synthetic fixture contract.", messages: [], ctx: { ...context, runId: "sdk-off" } });
   assert.ok(!disabled.prompt.includes("PRIVATE-MEMORY-FIXTURE-CONTENT"), "native prompt-only input ignored off");
   const denied = await factory({ ...context, runId: "sdk-off", assertInvocationCurrent() {} }).execute("off-query", { command: "query", payload: { queryTerms: ["preference"] } });

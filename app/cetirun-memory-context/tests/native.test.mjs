@@ -93,7 +93,7 @@ function channelContext(provider, chatType, overrides = {}) {
     ...overrides });
 }
 
-test("OpenClaw treats only the owner's operator turns as private", () => {
+test("OpenClaw keeps owner-statement provenance narrower than Memory access", () => {
   const cases = [
     ["Control UI or TUI turn", controlUiContext(), true],
     ["dashboard session", controlUiContext({ sessionKey: "agent:main:dashboard:fixture", channelId: "agent:main:dashboard:fixture" }), true],
@@ -111,6 +111,7 @@ test("OpenClaw treats only the owner's operator turns as private", () => {
     ["person's input relayed from another session", controlUiContext({ inputProvenance: { kind: "external_user", sourceSessionKey: "agent:main:other" } }), false],
     ["sub-agent session", controlUiContext({ sessionKey: "agent:main:subagent:fixture" }), false],
     ["cron session", controlUiContext({ sessionKey: "agent:main:cron:fixture-job" }), false],
+    ["ACP session", controlUiContext({ sessionKey: "agent:main:acp:fixture" }), false],
     ["webchat turn routed to another channel", controlUiContext({ channel: "slack" }), false],
     ["voice transcript from a paired node", controlUiContext({ messageProvider: "node", channel: "node",
       inputProvenance: { kind: "external_user", sourceChannel: "voice", sourceTool: "gateway.voice.transcript" } }), false],
@@ -171,7 +172,7 @@ test("OpenClaw hooks use native origin, refresh context, and preserve unrelated 
   const denied = await factory({ ...ctx, runId: "run-3" }).execute("native-write-2", { command: "capture", payload: { note: note(f) } });
   assert.equal(denied.details.reason, "CaptureProhibited");
   const shared = await hooks.get("before_prompt_build")({ ...event, currentUserMessageId: "shared-request" }, { ...channelContext("slack", "group"), runId: "run-4", workspaceDir: f.workspace, sessionId: "web-session" });
-  assert.ok(!shared.prependContext.includes("Private fixture marker"));
+  assert.ok(shared.prependContext.includes("Private fixture marker"));
   await hooks.get("agent_end")({ success: true }, { ...ctx, runId: "run-4" });
   assert.equal(modelCalls, 0);
   hooks.get("session_end")({}, ctx);
@@ -203,14 +204,20 @@ test("OpenClaw asset failures disable Memory without an unhandled rejection", as
   assert.match((await hooks.get("before_prompt_build")({}, {})).prependSystemContext, /Memory is unavailable/);
 });
 
-async function openclawFixture(t, bridgeOverride) {
+async function openclawFixture(t, bridgeOverride, options = {}) {
   const f = await fixture(t), hooks = new Map();
   await f.bridge.session(f.binding).tool({ command: "capture", payload: { note: note(f) } }, "seed");
+  Object.assign(f.env, options.env);
+  const entries = new Map();
+  let time = 1000;
   let factory;
-  registerMemory({ runtime: { version: "2026.9.6" }, on: (name, fn) => hooks.set(name, fn),
-    registerTool: registration => { factory = registration.create; } }, { bridge: bridgeOverride?.(f.bridge) ?? f.bridge });
+  registerMemory({ runtime: { version: "2026.9.6", agent: { session: {
+    getSessionEntry: options.getSessionEntry ?? (({ sessionKey }) => entries.get(sessionKey)),
+  } } }, pluginConfig: options.config, on: (name, fn) => hooks.set(name, fn),
+    registerTool: registration => { factory = registration.create; } }, { bridge: bridgeOverride?.(f.bridge) ?? f.bridge, env: f.env, now: () => time });
   const ctx = controlUiContext({ sessionId: "sdk-shape", runId: "owner-1", workspaceDir: f.workspace, assertInvocationCurrent() {} });
-  return { ...f, hooks, ctx, tool: context => factory(context) };
+  entries.set(ctx.sessionKey, { sessionId: ctx.sessionId });
+  return { ...f, hooks, ctx, entries, advance: () => ++time, tool: context => factory(context) };
 }
 
 test("OpenClaw embedded prompt-only owner input immediately disables Memory", async t => {
@@ -226,7 +233,7 @@ test("OpenClaw internal restrictions do not become owner preferences", async t =
   const event = { prompt: "Synthetic owner task", messages: [] };
   await f.hooks.get("before_prompt_build")(event, f.ctx);
   const internal = await f.hooks.get("before_prompt_build")(event, { ...f.ctx, runId: "internal", inputProvenance: { kind: "internal_system", sourceTool: "fixture" } });
-  assert.ok(!internal.prependContext.includes("Private fixture marker"));
+  assert.ok(internal.prependContext.includes("Private fixture marker"));
   const resumed = await f.hooks.get("before_prompt_build")(event, { ...f.ctx, runId: "owner-2" });
   assert.ok(resumed.prependContext.includes("Private fixture marker"), "internal turn permanently disabled owner Memory");
 });
@@ -241,9 +248,10 @@ test("OpenClaw outbound guard is armed before asynchronous injection accounting"
   await f.hooks.get("before_prompt_build")({ prompt: "Synthetic task", messages: [] }, f.ctx);
   const accounting = f.hooks.get("llm_input")({}, f.ctx);
   try {
-    for (const toolName of ["message", "sessions_send", "sessions_spawn"]) {
+    for (const toolName of ["message", "sessions_send"]) {
       assert.ok(f.hooks.get("before_tool_call")({ toolName }, f.ctx)?.requireApproval, `${toolName} raced the Memory guard`);
     }
+    assert.equal(f.hooks.get("before_tool_call")({ toolName: "sessions_spawn" }, f.ctx), undefined);
   } finally { release(); await accounting; }
 });
 
@@ -255,7 +263,7 @@ test("OpenClaw turns that cannot use Memory start no helper for context or the b
       async ownerPreference(text) { calls.push("ownerPreference"); return session.ownerPreference(text); },
       async context(options) { calls.push("context"); return session.context(options); },
       async boundary() { calls.push("boundary"); return session.boundary(); } };
-  } }));
+  } }), { config: { owner_access: { platforms: ["webchat"] } } });
   const group = { ...channelContext("slack", "group"), sessionId: "group-session", runId: "group-1", workspaceDir: f.workspace };
   const shared = await f.hooks.get("before_prompt_build")({ prompt: "Synthetic group question", messages: [] }, group);
   assert.match(shared.prependContext, /not available in this conversation/);
@@ -268,6 +276,216 @@ test("OpenClaw turns that cannot use Memory start no helper for context or the b
   assert.ok((await f.hooks.get("before_prompt_build")({ prompt: "/memory on", messages: [] }, on)).prependContext.includes("Private fixture marker"));
   await f.hooks.get("agent_end")({ success: true }, on);
   assert.deepEqual(calls, ["ownerPreference", "context", "boundary"]);
+});
+
+test("OpenClaw admits channels and automated turns to Memory by default", async t => {
+  const contexts = [
+    channelContext("slack", "group"), channelContext("discord", "channel"), channelContext("telegram", "direct"),
+    channelContext("new-channel"), controlUiContext({ senderId: "webchat-ui" }),
+    controlUiContext({ trigger: "cron", jobId: "scheduled-job", sessionKey: "agent:main:cron:scheduled-job" }),
+    controlUiContext({ trigger: "heartbeat" }), controlUiContext({ trigger: "memory" }),
+    controlUiContext({ sessionKey: "agent:main:acp:fixture" }),
+    controlUiContext({ inputProvenance: { kind: "internal_system", sourceTool: "fixture" } }),
+    controlUiContext({ inputProvenance: { kind: "inter_session", sourceTool: "sessions_send" } }),
+  ];
+  for (const [i, source] of contexts.entries()) {
+    // Isolate sources so prior captures cannot evict the seed from bounded navigation.
+    const f = await openclawFixture(t);
+    const ctx = { ...source, sessionId: `admitted-${i}`, runId: `admitted-${i}`, workspaceDir: f.workspace, assertInvocationCurrent() {} };
+    const result = await f.hooks.get("before_prompt_build")({ prompt: "Remember my preference: not an attested owner statement", messages: [] }, ctx);
+    assert.ok(result.prependContext.includes("Private fixture marker"), JSON.stringify(source));
+    const capture = await f.tool(ctx).execute(`capture-${i}`, { command: "capture", payload: { note: { ...note(f), title: `Channel fact ${i}` } } });
+    assert.equal(capture.details.ok, true, JSON.stringify(capture.details));
+    const query = await f.tool(ctx).execute(`query-${i}`, { command: "query", payload: { queryTerms: [`Channel fact ${i}`] } });
+    assert.equal(query.details.ok, true);
+    const core = await f.bridge.session(f.binding).tool({ command: "query", payload: { view: "core", queryTerms: [] } });
+    assert.equal(core.data.hits.length, 0, "automated/channel input asserted an owner preference");
+  }
+});
+
+test("OpenClaw intersects configured and environment access limits using native metadata", async t => {
+  const f = await openclawFixture(t, undefined, {
+    config: { owner_access: { platforms: ["slack", "telegram"], senders: { slack: ["allowed"] }, chats: { slack: ["allowed-chat"] }, chat_types: { slack: ["direct"] } } },
+    env: { CETIRUN_MEMORY_OWNER_ACCESS: JSON.stringify({ platforms: ["slack"] }) },
+  });
+  const ctx = { ...channelContext("slack", "direct"), sessionId: "allowed", senderId: "allowed", chatId: "allowed-chat", workspaceDir: f.workspace };
+  const prompt = { prompt: "Synthetic request", messages: [] };
+  assert.ok((await f.hooks.get("before_prompt_build")(prompt, ctx)).prependContext.includes("Private fixture marker"));
+  for (const [i, changes] of [
+    { senderId: "someone-else" }, { chatId: "another-chat" },
+    { channelContext: { chat: { type: "group" } } }, { channelContext: {} },
+    { senderId: undefined, channelContext: {} }, { channel: "telegram", messageProvider: "telegram" },
+  ].entries()) {
+    const blocked = { ...ctx, ...changes, sessionId: `blocked-${i}` };
+    const result = await f.hooks.get("before_prompt_build")({ ...prompt, owner_access: {}, senderId: "allowed" }, blocked);
+    assert.match(result.prependContext, /not available in this conversation/);
+  }
+  const off = { ...ctx, runId: "channel-off" };
+  assert.match((await f.hooks.get("before_prompt_build")({ prompt: "/memory off", messages: [] }, off)).prependContext, /off for this conversation/);
+  const on = { ...ctx, runId: "channel-on" };
+  assert.ok((await f.hooks.get("before_prompt_build")({ prompt: "/memory on", messages: [] }, on)).prependContext.includes("Private fixture marker"));
+});
+
+test("OpenClaw rejects malformed access settings instead of opening Memory", () => {
+  for (const owner_access of [null, [], { platforms: "slack" }, { platforms: ["*"] }, { cron: "false" }, { senders: null },
+    { senders: { slack: "owner" } }, { chats: { slack: [""] } }, { unknown: true }]) {
+    assert.throws(() => registerMemory({ pluginConfig: { owner_access } }, { env: {} }), /MemoryOwnerAccessInvalid/);
+    assert.throws(() => registerMemory({}, { env: { CETIRUN_MEMORY_OWNER_ACCESS: JSON.stringify(owner_access) } }), /MemoryOwnerAccessInvalid/);
+  }
+  assert.throws(() => registerMemory({}, { env: { CETIRUN_MEMORY_OWNER_ACCESS: "{" } }));
+  assert.throws(() => registerMemory({}, { env: { CETIRUN_MEMORY_NO_MEMORY: "maybe" } }), /MemoryRestrictionsInvalid/);
+});
+
+test("OpenClaw startup read/write restrictions cannot be relaxed by memory on", async t => {
+  for (const name of ["CETIRUN_MEMORY_NO_CAPTURE", "CETIRUN_MEMORY_NO_MEMORY"]) {
+    const f = await openclawFixture(t, undefined, { env: { [name]: "true" } });
+    const result = await f.hooks.get("before_prompt_build")({ prompt: "/memory on", messages: [] }, f.ctx);
+    assert.equal(result.prependContext.includes("Private fixture marker"), name === "CETIRUN_MEMORY_NO_CAPTURE");
+    const capture = await f.tool(f.ctx).execute("restricted-write", { command: "capture", payload: { note: note(f) } });
+    assert.equal(capture.details.reason, name === "CETIRUN_MEMORY_NO_CAPTURE" ? "CaptureProhibited" : "MemoryDisabled");
+  }
+});
+
+function nativeChild(f, parent, name) {
+  const ctx = { ...parent, sessionId: name, sessionKey: `agent:main:subagent:${name}`, runId: `${name}-run`,
+    workspaceDir: path.join(f.workspace, name) };
+  f.entries.set(ctx.sessionKey, { sessionId: ctx.sessionId, spawnedBy: parent.sessionKey, parentSessionId: parent.sessionId,
+    createdVia: "spawn", createdAt: f.advance() });
+  return ctx;
+}
+
+test("OpenClaw native children inherit scope and transitive restrictions without gaining owner provenance", async t => {
+  const f = await openclawFixture(t);
+  const start = (ctx, prompt = "Synthetic task") => f.hooks.get("before_prompt_build")({ prompt, messages: [] }, ctx);
+  await start(f.ctx);
+  const child = nativeChild(f, f.ctx, "child"), queued = nativeChild(f, f.ctx, "queued");
+  assert.ok((await start(child, "Remember my preference: child cannot attest this")).prependContext.includes("Private fixture marker"));
+  const capture = await f.tool(child).execute("child-write", { command: "capture", payload: { note: note(f) } });
+  assert.equal(capture.details.ok, true, JSON.stringify(capture.details));
+  const grandchild = nativeChild(f, child, "grandchild");
+  assert.ok((await start(grandchild)).prependContext.includes("Private fixture marker"));
+  const core = await f.bridge.session(f.binding).tool({ command: "query", payload: { view: "core", queryTerms: [] } });
+  assert.equal(core.data.hits.length, 0);
+
+  await start({ ...f.ctx, runId: "parent-no-capture" }, "/memory no-capture");
+  for (const original of [child, grandchild]) {
+    const ctx = { ...original, runId: `${original.runId}-restricted` };
+    assert.ok((await start(ctx, "/memory on")).prependContext.includes("Private fixture marker"));
+    const denied = await f.tool(ctx).execute("child-restricted-write", { command: "capture", payload: { note: note(f) } });
+    assert.equal(denied.details.reason, "CaptureProhibited");
+  }
+  await start({ ...f.ctx, runId: "parent-off" }, "/memory off");
+  assert.match((await start({ ...child, runId: "child-off" }, "/memory on")).prependContext, /off for this conversation/);
+  f.advance();
+  await start({ ...f.ctx, runId: "parent-on" }, "/memory on");
+  assert.match((await start({ ...child, runId: "child-still-off" })).prependContext, /off for this conversation/);
+  assert.match((await start(queued)).prependContext, /not available in this conversation/);
+  assert.ok((await start(nativeChild(f, f.ctx, "fresh-child"))).prependContext.includes("Private fixture marker"));
+});
+
+test("OpenClaw retains background child grants after completion but revokes them on interruption and reset", async t => {
+  for (const action of ["interrupt", "reset", "source", "scope"]) {
+    const f = await openclawFixture(t);
+    const prompt = { prompt: "Synthetic task", messages: [] };
+    await f.hooks.get("before_prompt_build")(prompt, f.ctx);
+    const child = nativeChild(f, f.ctx, "child");
+    await f.hooks.get("before_prompt_build")(prompt, child);
+    await f.hooks.get("agent_end")({ success: true }, f.ctx);
+    assert.ok((await f.hooks.get("before_prompt_build")(prompt, { ...child, runId: "background" })).prependContext.includes("Private fixture marker"));
+    const resumed = { ...f.ctx, runId: "parent-resumed" };
+    await f.hooks.get("before_prompt_build")(prompt, resumed);
+    if (action === "interrupt") await f.hooks.get("agent_end")({ success: false }, resumed);
+    if (action === "reset") f.hooks.get("before_reset")({}, resumed);
+    if (action === "source") await f.hooks.get("before_prompt_build")(prompt, { ...resumed, runId: "changed-source", senderId: "another-sender" });
+    if (action === "scope") await f.hooks.get("before_prompt_build")(prompt, { ...resumed, runId: "changed-scope", workspaceDir: path.join(f.workspace, "other-project") });
+    assert.match((await f.hooks.get("before_prompt_build")(prompt, { ...child, runId: "revoked" })).prependContext, /not available in this conversation/, action);
+  }
+});
+
+test("OpenClaw child access requires current native lineage and a fresh parent grant", async t => {
+  const f = await openclawFixture(t);
+  const prompt = { prompt: "Synthetic task", messages: [] };
+  await f.hooks.get("before_prompt_build")(prompt, f.ctx);
+  for (const [i, changes] of [
+    { sessionId: "another-incarnation" }, { parentSessionId: "another-parent" }, { createdVia: "client" },
+    { createdAt: 999 }, { createdAt: undefined }, { spawnedBy: "agent:main:unknown" },
+  ].entries()) {
+    const child = nativeChild(f, f.ctx, `invalid-${i}`);
+    Object.assign(f.entries.get(child.sessionKey), changes);
+    assert.match((await f.hooks.get("before_prompt_build")({ ...prompt, parentSessionId: f.ctx.sessionId }, child)).prependContext, /not available in this conversation/);
+  }
+  const missing = nativeChild(f, f.ctx, "missing");
+  f.entries.delete(missing.sessionKey);
+  assert.match((await f.hooks.get("before_prompt_build")(prompt, missing)).prependContext, /not available in this conversation/);
+  const replacedParent = nativeChild(f, f.ctx, "replaced-parent");
+  f.entries.set(f.ctx.sessionKey, { sessionId: "replacement-parent" });
+  assert.match((await f.hooks.get("before_prompt_build")(prompt, replacedParent)).prependContext, /not available in this conversation/);
+});
+
+test("OpenClaw can explicitly disable child, cron and ACP access", async t => {
+  const f = await openclawFixture(t, undefined, { config: { owner_access: { subagents: false, cron: false, acp: false } } });
+  const prompt = { prompt: "Synthetic task", messages: [] };
+  await f.hooks.get("before_prompt_build")(prompt, f.ctx);
+  assert.ok(f.hooks.get("before_tool_call")({ toolName: "sessions_spawn" }, f.ctx)?.requireApproval);
+  for (const ctx of [nativeChild(f, f.ctx, "disabled-child"),
+    { ...f.ctx, sessionId: "cron", sessionKey: "agent:main:cron:fixture", trigger: "cron" },
+    { ...f.ctx, sessionId: "acp", sessionKey: "agent:main:acp:fixture" }]) {
+    assert.match((await f.hooks.get("before_prompt_build")(prompt, ctx)).prependContext, /not available in this conversation/);
+  }
+});
+
+test("OpenClaw metadata read failures invalidate an existing Memory session", async t => {
+  let fail = false, f;
+  f = await openclawFixture(t, undefined, { getSessionEntry: ({ sessionKey }) => {
+    if (fail) throw new Error("Synthetic metadata failure");
+    return f.entries.get(sessionKey);
+  } });
+  const prompt = { prompt: "Synthetic task", messages: [] };
+  await f.hooks.get("before_prompt_build")(prompt, f.ctx);
+  const child = nativeChild(f, f.ctx, "child");
+  await f.hooks.get("before_prompt_build")(prompt, child);
+  fail = true;
+  await assert.rejects(f.hooks.get("before_prompt_build")(prompt, f.ctx), /Synthetic metadata failure/);
+  assert.equal((await f.tool(child).execute("after-failure", { command: "query", payload: { queryTerms: ["Private fixture"] } })).isError, true);
+});
+
+test("OpenClaw parent restrictions cancel a child's pending private-context injection", async t => {
+  let release, entered;
+  const pending = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  const f = await openclawFixture(t, bridge => ({ ...bridge, session(binding, signal) {
+    const session = bridge.session(binding, signal);
+    return { ...session, async context(options) {
+      const result = await session.context(options);
+      if (binding.parentSessionId) { entered(); await pending; }
+      return result;
+    } };
+  } }));
+  const prompt = { prompt: "Synthetic task", messages: [] };
+  await f.hooks.get("before_prompt_build")(prompt, f.ctx);
+  const child = nativeChild(f, f.ctx, "pending-child");
+  const injection = f.hooks.get("before_prompt_build")(prompt, child);
+  await started;
+  try {
+    await f.hooks.get("before_prompt_build")({ prompt: "/memory off", messages: [] }, { ...f.ctx, runId: "parent-off" });
+  } finally { release(); }
+  assert.equal(await injection, undefined, "private context escaped after the parent disabled Memory");
+});
+
+test("OpenClaw Memory tool cancellation revokes descendants but a settled signal does not", async t => {
+  const f = await openclawFixture(t);
+  const prompt = { prompt: "Synthetic task", messages: [] };
+  await f.hooks.get("before_prompt_build")(prompt, f.ctx);
+  const child = nativeChild(f, f.ctx, "child");
+  await f.hooks.get("before_prompt_build")(prompt, child);
+  const settled = new AbortController();
+  assert.equal((await f.tool(f.ctx).execute("settled", { command: "status", payload: {} }, settled.signal)).isError, false);
+  settled.abort();
+  assert.equal((await f.tool(child).execute("still-allowed", { command: "status", payload: {} })).isError, false);
+  const cancelled = new AbortController();
+  cancelled.abort();
+  assert.equal((await f.tool(f.ctx).execute("cancelled", { command: "status", payload: {} }, cancelled.signal)).isError, true);
+  assert.equal((await f.tool(child).execute("revoked", { command: "status", payload: {} })).isError, true);
 });
 
 test("pinned Hermes host APIs load the adapter and execute bounded native calls", { skip: !process.env.MEMORY_HERMES_SOURCE }, async t => {
