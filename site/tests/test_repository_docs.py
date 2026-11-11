@@ -127,6 +127,33 @@ class RepositoryDocsTests(unittest.TestCase):
             <= anchors
         )
 
+    def test_hugo_heading_attributes(self):
+        anchors = check_site.markdown_anchors(
+            "## Restart your Agent {#restart-while-retaining-home}\n"
+            "## Restart your Agent\n"
+            "## Intro {#example .wide}\n"
+            "## Example\n"
+            "## Notes {.wide}\n"
+            "## The {name}\n"
+        )
+        self.assertEqual(
+            anchors,
+            {
+                "restart-while-retaining-home",
+                "restart-your-agent",
+                "example",
+                "example-1",
+                "notes",
+                "the-name",
+            },
+        )
+        self.write("README.md", "[Restart](guide.md#restart-while-retaining-home)\n")
+        self.write(
+            "guide.md",
+            "# Guide\n\n## Restart your Agent {#restart-while-retaining-home}\n",
+        )
+        self.assertEqual(check_site.check_repository_links(self.root), [])
+
     def test_missing_trademark_statement_fails(self):
         self.write("README.md", "# CetiRun\n")
         self.assertIn(

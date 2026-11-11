@@ -5,6 +5,8 @@
 
 import importlib.util
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -205,6 +207,40 @@ class ContentTests(unittest.TestCase):
 
     def test_current_toolchain(self):
         self.assertEqual(check_site.check_toolchain(SCRIPT.parents[1]), [])
+
+
+class StyleReportTests(unittest.TestCase):
+    def run_script(self, *arguments):
+        return subprocess.run(
+            [sys.executable, "-B", str(SCRIPT), *arguments],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_style_report_needs_no_build(self):
+        result = self.run_script("--style-report")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for rule in check_site.STYLE_RULES:
+            self.assertRegex(
+                result.stdout, rf"(?m)^{rule.name} +{rule.level} +\d+ +\d+$"
+            )
+
+    def test_site_check_still_needs_a_build(self):
+        result = self.run_script()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--public and --base-url are required", result.stderr)
+
+    def test_report_names_pending_rules_without_findings(self):
+        pending = [rule for rule in check_site.STYLE_RULES if rule.level == "pending"]
+        finding = check_site.StyleFinding(pending[0], 3, "text")
+        report = check_site.format_style_report({"content/en/docs/a.md": [finding]})
+        self.assertIn("content/en/docs/a.md\n  pending: line 3:", report)
+        ready = report.splitlines()[-1]
+        self.assertNotIn(pending[0].name, ready)
+        for rule in pending:
+            if rule.name != pending[0].name:
+                self.assertIn(rule.name, ready)
 
 
 class ToolchainTests(unittest.TestCase):
