@@ -689,6 +689,10 @@ const (
 
 // AIGatewayCatalog is the content of the catalog ConfigMap.
 type AIGatewayCatalog struct {
+	// CustomImages are the exact image references approved by the enabled
+	// Custom provider. Empty denies creation; null means approval is unknown.
+	// The operator rechecks approval before provisioning each Agent.
+	CustomImages []string `json:"customImages"`
 	// SharedModels are the models every Agent with shared models can use.
 	// While the Gateway blocks requests for unpriced models, they leave out
 	// the models it would refuse.

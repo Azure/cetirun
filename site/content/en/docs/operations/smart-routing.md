@@ -275,8 +275,8 @@ kubectl logs -n cetirun-system -c gateway --since=15m --tail=-1 \
 | `provider_model` | The deployment that answered, such as `azure/my-gpt-deployment` |
 | `spend` | What the request cost |
 
-For Container Insights, the Gateway chart README has Log Analytics queries for
-these lines in
+The Gateway chart README has queries of the ADX-Mon collection for these lines
+in
 [Measuring the routers]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#measuring-the-routers).
 The queries show the share of each tier, its spend, and its latency. A client
 that calls the Gateway with its own key also gets the tier in response headers.

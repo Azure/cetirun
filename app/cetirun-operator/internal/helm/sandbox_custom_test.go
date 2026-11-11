@@ -32,6 +32,7 @@ func customSandboxRenderInput(port *int32, webUI bool) (w.Input, map[string]any)
 			{Name: "HOME", Value: "/home/worker"},
 			{Name: "OPENAI_BASE_URL", Value: input.GatewayAPIBase},
 			{Name: "OPENAI_API_KEY", CredentialSlot: "model"},
+			{Name: "CETIRUN_GATEWAY_MODEL_LIMITS", Value: `{"version":1,"models":[]}`},
 		},
 	}
 	if port != nil {

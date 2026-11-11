@@ -628,6 +628,38 @@ func TestUpgradeInstance_Success(t *testing.T) {
 	}
 }
 
+func TestUpgradeCustomInstanceKeepsItsPinnedImageAndRetainedConfiguration(t *testing.T) {
+	inst := sampleInstance()
+	inst.Spec.Suspended = true
+	inst.Spec.Agent = cetirunv1alpha1.HarnessSpec{
+		Type:     cetirunv1alpha1.AgentTypeCustom,
+		Image:    ptr.To("registry.example.com/cetirun-pi-agent@sha256:" + strings.Repeat("a", 64)),
+		Username: ptr.To("vibe"),
+		Port:     ptr.To(int32(8080)),
+	}
+	inst.Spec.Helm.Version = "0.1.17"
+	inst.Status.Namespace = "cetirun-alice"
+	want := inst.DeepCopy()
+	want.Spec.Helm.Version = "0.1.18"
+	fc := newFakeClient(inst, operatorDeployment("0.1.18"))
+	c := NewClient(fc)
+
+	result, err := c.UpgradeInstanceByName(context.Background(), inst.Name,
+		InstanceVersion{UID: inst.UID, ResourceVersion: inst.ResourceVersion})
+	if err != nil {
+		t.Fatalf("UpgradeInstanceByName failed: %v", err)
+	}
+	if result.UID != want.UID || result.Spec.Agent.Image == nil || *result.Spec.Agent.Image != *want.Spec.Agent.Image ||
+		result.Spec.Helm.Version != want.Spec.Helm.Version || !result.Spec.Suspended || result.Status.Namespace != want.Status.Namespace {
+		t.Fatalf("chart upgrade changed Custom image or retained configuration: %#v", result)
+	}
+	stored, err := c.GetInstanceByName(context.Background(), inst.Name)
+	if err != nil || stored.UID != want.UID || stored.Spec.Agent.Image == nil || *stored.Spec.Agent.Image != *want.Spec.Agent.Image ||
+		stored.Spec.Helm.Version != want.Spec.Helm.Version || !stored.Spec.Suspended || stored.Status.Namespace != want.Status.Namespace {
+		t.Fatalf("persisted Custom upgrade changed retained configuration: %v %#v", err, stored)
+	}
+}
+
 func TestUpgradeInstance_AlreadyLatest(t *testing.T) {
 	inst := sampleInstance()
 	inst.Spec.Helm.Version = "0.1.18"

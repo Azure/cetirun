@@ -77,9 +77,26 @@ describe("SSE framing", () => {
   describe("chat terminal failures", () => {
     afterEach(() => vi.unstubAllGlobals());
 
-    it.each(["agent_reported_error", "agent_stream_interrupted"])(
+    it.each([
+      [
+        "agent_reported_error",
+        "The Agent reported a failed response. Earlier tool actions may have completed; the request will not be replayed.",
+      ],
+      [
+        "model_limits_unavailable",
+        "The Agent cannot verify the selected model's limits. The request will not be retried.",
+      ],
+      [
+        "context_budget_exceeded",
+        "The conversation exceeds the selected model's context budget. Earlier tool actions may have completed; the request will not be retried.",
+      ],
+      [
+        "agent_stream_interrupted",
+        "The response was interrupted. The Agent may still be running.",
+      ],
+    ])(
       "preserves %s without trusting the upstream message or replaying",
-      async (code) => {
+      async (code, message) => {
         const fetcher = vi.fn().mockResolvedValue(
           new Response(
             `data: ${JSON.stringify({ error: { code, message: "secret-sentinel" } })}\n\n`,
@@ -98,14 +115,44 @@ describe("SSE framing", () => {
         await expect(result).rejects.toBeInstanceOf(ChatError);
         await expect(result).rejects.toMatchObject({
           code,
-          message:
-            code === "agent_reported_error"
-              ? "The Agent reported a failed response. Earlier tool actions may have completed; the request will not be replayed."
-              : "The response was interrupted. The Agent may still be running.",
+          message,
         });
         expect(fetcher).toHaveBeenCalledTimes(1);
       },
     );
+
+    it("uses the fixed model-budget message for non-stream failures", async () => {
+      const fetcher = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "model_limits_unavailable",
+              message: "secret-sentinel",
+            },
+          }),
+          {
+            status: 502,
+            headers: { "Content-Type": "application/json" },
+          },
+        ),
+      );
+      vi.stubGlobal("fetch", fetcher);
+      const result = sendChat(
+        { name: "fixture", uid: "fixture-uid", scope: "fixture-scope" },
+        "fixture-model",
+        [{ role: "user", content: "Synthetic request." }],
+        "fixture-request",
+        new AbortController().signal,
+        async () => {},
+      );
+      await expect(result).rejects.toMatchObject({
+        code: "model_limits_unavailable",
+        message:
+          "The Agent cannot verify the selected model's limits. The request will not be retried.",
+      });
+      await expect(result).rejects.not.toThrow("secret-sentinel");
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
   });
   it("does not mistake a network chunk for a complete event", () => {
     const parser = new EventParser();

@@ -128,7 +128,8 @@ func TestPatchWebUITransitionsPreserveOtherAgentFields(t *testing.T) {
 		port *int32
 	}{
 		{`{}`, true, true, ptr.To[int32](8080)},
-		{`{"image":"registry.example.com/agent:1"}`, true, true, ptr.To[int32](8080)},
+		{`{"image":"registry.example.com/agent:1"}`, false, true, ptr.To[int32](8080)},
+		{`{"image":"registry.example.com/agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`, true, true, ptr.To[int32](8080)},
 		{`{"webUI":false}`, true, false, ptr.To[int32](8080)},
 		{`{"webUI":null}`, true, false, ptr.To[int32](8080)},
 		{`{"webUI":true,"port":9090}`, true, true, ptr.To[int32](9090)},

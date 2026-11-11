@@ -201,11 +201,21 @@ KUBEBUILDER_ASSETS=/path/to/local/envtest \
 The API-server regression uses the rendered control-plane admission contract
 and real RBAC to delete suspended Custom, OpenClaw, and Hermes Agents with
 retained old image and Chart pins and a previous native-auth rotation marker.
+The OpenClaw and Hermes fixtures also retain a rotation receipt on their native
+auth Secret. Secret cleanup uses a separate ServiceAccount with namespace-scoped
+deletion permissions, not the Operator or administrator identity.
 It checks binding withdrawal while the Agent is still deleting, rejects
 binding edits by an ordinary Portal identity, and runs normal Operator
 finalizer cleanup. It simulates the Kubernetes
 namespace/PVC controllers that envtest does not run; it does not qualify
 physical storage reclamation, runtime images, or live cluster behavior.
+
+Receipt annotations protect rotation writes, not the Secret's lifetime. An
+identity with Secret deletion permission can also delete a receipt-bearing
+Secret in a live namespace. The admission unit tests cover that boundary and
+data updates that retain the receipt, while rejecting unauthorized receipt
+creation, replacement, or removal. CetiAdmin's own deletion restrictions and
+installation-marker protection still apply.
 
 ### Custom terminal
 

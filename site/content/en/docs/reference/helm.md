@@ -394,7 +394,7 @@ agent values are still under `cetirun-operator.cetirun.helmValues`.
 | `cetirun-ai-gateway.priceTable` | `remote`. When a Gateway pod starts, LiteLLM downloads the current price table from GitHub. It uses the copy in the image as a fallback. `bundled` uses only the copy in the image. This is for a cluster without internet access, or for prices pinned to the image. New models and price changes then arrive only with a new image. While the Gateway blocks unpriced models, these limits apply. A shared model that is not in that copy must have a declared price. A GitHub Copilot model that is newer than the image is not offered. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#known-gaps). |
 | `cetirun-ai-gateway.requestLog.enabled` | `true`. One JSON line for each model call on the Gateway's stdout, for the cluster's log collection. The line has the caller, model, tokens, spend, and time data. It carries no request or response content. |
 | `cetirun-ai-gateway.spendLogs.enabled`, `spendLogs.storePrompts`, `spendLogs.retention` | `true`, `true`, and `7d`. LiteLLM writes a row for each call to `LiteLLM_SpendLogs`. With `storePrompts`, the row also holds the prompt and the response of the call. Set `storePrompts: false` to keep only the metadata of the call. The request log pages of the LiteLLM console read this table. Every hour, each Gateway pod deletes rows older than the retention, together with the stored health check results. The first time is an hour after the pod starts. Spend, budgets, and daily usage totals are kept longer than the retention. It is disabled only together with the request log. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#litellms-spend-log). |
-| `cetirun-ai-gateway.metrics.enabled` | `true` in the platform. The Gateway chart defaults to `false`. It serves LiteLLM's Prometheus metrics on port 9090 of each Gateway pod, without authentication. If the Gateway itself listens on 9090, it uses port 9091. `metrics.podMonitor.enabled` is also `true` in the platform. It adds a PodMonitor for Azure Monitor managed Prometheus when the cluster serves its API. |
+| `cetirun-ai-gateway.metrics.enabled` | `true` in the platform. The Gateway chart defaults to `false`. It serves LiteLLM's Prometheus metrics on port 9090 of each Gateway pod, without authentication. If the Gateway itself listens on 9090, it uses port 9091. The pods carry the annotations with which the ADX-Mon collection scrapes that port. |
 | `cetirun-ai-gateway.router.routingStrategy` | `simple-shuffle`. This sets how one deployment of a model is selected. You can also use `least-busy`, `latency-based-routing`, `usage-based-routing-v2`, or `cost-based-routing`. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#choosing-a-deployment). |
 | `cetirun-ai-gateway.router.failover`, `router.continuationAffinity` | `true`. If several deployments are behind one model name, a request that failed on one is sent one more time to another. This is not a retry, and it works with `simple-shuffle` only. In that case, a Responses API continuation goes to the deployment that stored the earlier response. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#routing). |
 | `cetirun-ai-gateway.router.encryptedContentAffinity`, `router.deploymentAffinity` | `true`. It keeps each Responses API conversation on the deployment that encrypted its reasoning. It also keeps each key on the deployment that served it last. This is for the provider's prompt cache. When that deployment fails, the conversation's requests fail with it. This continues until the deployment is in cooldown or the health checks mark it unhealthy. The conversation moves only at that time, without its encrypted reasoning. Keep health checks enabled. A cooldown lasts five seconds. Deployment affinity is off for models with deployments that set `order`. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#encrypted-reasoning-stays-with-its-resource). |
@@ -450,7 +450,7 @@ are important when you install the chart alone:
 | `redis.bundled.enabled`, `redis.host`, `redis.passwordSecret.existingSecret` | `true`, empty, empty. To use your own Redis or Valkey, set `false` and a host. The connection does not use TLS. `make deploy` refuses `false`. |
 | `service.type`, `service.port` | `ClusterIP`, `4000`. The chart creates no Ingress. |
 | `resources`, `postgresql.bundled.resources`, `redis.bundled.resources` | `{}`. Nothing is reserved. See [Resources]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#resources). |
-| `metrics.enabled`, `metrics.podMonitor.enabled` | `false`, `false`. The platform chart sets both to `true`. |
+| `metrics.enabled`, `metrics.podMonitor.enabled` | `false`, `false`. The platform chart sets `metrics.enabled` to `true`. `podMonitor.enabled` adds a PodMonitor of the Prometheus Operator (`monitoring.coreos.com/v1`) when the cluster serves its API. |
 
 The other values, for example `priceTable`, `spendLogs`, `router`, and
 `budgetExceededStatusCode`, have the defaults that the `cetirun-ai-gateway`
@@ -881,9 +881,9 @@ Agents' claims and volumes. Its ClusterRole already has these permissions.
 
 Source: [observability values]({{< repo "app/cetirun-observability/chart/values.yaml" >}}).
 The platform chart installs it with the `cetirun-observability` values, which
-are off by default. `make deploy` sets the first four rows from the
-`observability` block of the environment file. For the procedure, see
-[Observability with ADX-Mon](../../operations/observability/).
+are off by default. `make deploy` turns it on, and sets the first four rows
+from the required `observability` block of the environment file. For the
+procedure, see [Observability with ADX-Mon](../../operations/observability/).
 
 | Value | Purpose / default |
 | --- | --- |

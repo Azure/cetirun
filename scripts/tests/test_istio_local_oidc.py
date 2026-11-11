@@ -76,6 +76,7 @@ ENTRA_ARGS = [
     "--skip-jwt-bearer-tokens=true",
     "--silence-ping-logging=true",
     "--footer=-",
+    "--custom-templates-dir=/etc/oauth2-proxy/templates",
 ]
 
 

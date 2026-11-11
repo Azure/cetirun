@@ -1529,7 +1529,8 @@ func (r *AgentReconciler) prepareCustomHelmMaintenance(ctx context.Context, agen
 		RestartRequestID: agent.Spec.RestartRequestID, Namespace: objectReference(namespace), ApprovedType: "custom", ApprovedImage: *agent.Spec.Agent.Image,
 		PolicyRevision: provider.revision, Home: runtimebindings.Home{Name: receipt.Home, FSGroup: provider.config.FSGroup, Claim: receipt.HomeClaim},
 		Context: runtimebindings.Context{ObjectReference: objectReference(snapshot), Files: files},
-		Model:   runtimebindings.ModelAccess{ObjectReference: objectReference(model), Key: aiGatewayKeySecretField, BaseURL: r.AIGateway.URL + "/v1"},
+		Model: runtimebindings.ModelAccess{ObjectReference: objectReference(model), Key: aiGatewayKeySecretField, BaseURL: r.AIGateway.URL + "/v1",
+			GatewayModels: r.aiGatewayCustomModels(agent)},
 		Network: runtimebindings.Network{Revision: provider.revision + ":gateway:" + string(service.UID), Gateway: runtimebindings.Peer{Namespace: gatewayNamespace, PodLabels: selector},
 			GatewayPort: int32(gatewayPort), DNS: runtimebindings.Peer{Namespace: "kube-system", PodLabels: map[string]string{"k8s-app": "kube-dns"}}}}
 	if agent.Spec.Agent.RegistrySecretRef != nil {

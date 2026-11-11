@@ -24,6 +24,11 @@ const baseInstance: Instance = {
 };
 
 const mockUpdate = vi.hoisted(() => vi.fn());
+const approvedImage = "registry.example.com/assistant@sha256:" + "b".repeat(64);
+const mockCatalog = vi.hoisted(() => ({
+  data: { customImages: [] as string[] | null }, isFetching: false, isError: false,
+}));
+vi.mock("../hooks/useAIGateway", () => ({ useAIGatewayCatalog: () => mockCatalog }));
 const mockFeatures = vi.hoisted(() => ({ data: { tailscaleEnabled: false, agentIdentityEnabled: false, agentToolsEnabled: false } }));
 const mockSuspension = vi.hoisted(() => ({
   mutate: vi.fn(), reset: vi.fn(), isPending: false, isError: false, error: new Error("Connection interrupted"),
@@ -53,6 +58,9 @@ vi.mock("./ToolAuthorizationBlock", () => ({
 describe("OverviewSection", () => {
   beforeEach(() => {
     mockUpdate.mockClear();
+    mockCatalog.data.customImages = [approvedImage];
+    mockCatalog.isFetching = false;
+    mockCatalog.isError = false;
     mockFeatures.data = { tailscaleEnabled: false, agentIdentityEnabled: false, agentToolsEnabled: false };
     mockSuspension.mutate.mockClear();
     mockSuspension.isError = false;
@@ -152,27 +160,59 @@ describe("OverviewSection", () => {
   });
 
   it.each(["custom", "hermes", "openclaw"] as const)("updates only the %s image with the displayed instance version", (type) => {
+    const image = type === "custom" ? approvedImage : "registry.example.com/assistant:2";
     const instance = { ...baseInstance, agent: { type, image: "registry.example.com/assistant:1", username: "vibe", port: 8080 } };
     renderInRouter(<OverviewSection instance={instance} />);
     fireEvent.click(screen.getByRole("button", { name: "Edit Agent" }));
     expect(screen.getByLabelText("Agent Image")).not.toHaveAttribute("readonly");
     expect(screen.getByLabelText("Agent Username")).toHaveAttribute("readonly");
-    fireEvent.change(screen.getByLabelText("Agent Image"), { target: { value: " registry.example.com/assistant:2 " } });
+    if (type === "custom") {
+      expect(screen.getByLabelText("Agent Image")).toHaveAttribute("list", "edit-approved-custom-images");
+      expect(document.querySelector("#edit-approved-custom-images option")).toHaveValue(approvedImage);
+    }
+    fireEvent.change(screen.getByLabelText("Agent Image"), { target: { value: ` ${image} ` } });
     fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
-    expect(mockUpdate).toHaveBeenCalledWith({ uid: "test-agent-uid", resourceVersion: "7", agent: { image: "registry.example.com/assistant:2" } }, expect.anything());
+    expect(mockUpdate).toHaveBeenCalledWith({ uid: "test-agent-uid", resourceVersion: "7", agent: { image } }, expect.anything());
   });
 
   it.each(["custom", "hermes", "openclaw"] as const)("does not clear a pinned %s image", (type) => {
+    const image = type === "custom" ? approvedImage : "registry.example.com/assistant:2";
     renderInRouter(<OverviewSection instance={{ ...baseInstance, agent: { type, image: "registry.example.com/assistant:1" } }} />);
     fireEvent.click(screen.getByRole("button", { name: "Edit Agent" }));
     fireEvent.change(screen.getByLabelText("Agent Image"), { target: { value: "   " } });
     fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
     expect(mockUpdate).not.toHaveBeenCalled();
     expect(screen.getByText("A pinned Agent image cannot be cleared.")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Agent Image"), { target: { value: "registry.example.com/assistant:2" } });
+    fireEvent.change(screen.getByLabelText("Agent Image"), { target: { value: image } });
     expect(screen.queryByText("A pinned Agent image cannot be cleared.")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
-    expect(mockUpdate).toHaveBeenCalledWith({ uid: "test-agent-uid", resourceVersion: "7", agent: { image: "registry.example.com/assistant:2" } }, expect.anything());
+    expect(mockUpdate).toHaveBeenCalledWith({ uid: "test-agent-uid", resourceVersion: "7", agent: { image } }, expect.anything());
+  });
+
+  it.each(["registry.example.com/assistant:latest", "registry.example.com/assistant@sha256:" + "c".repeat(64)])("rejects an unapproved Custom image update: %s", (image) => {
+    renderInRouter(<OverviewSection instance={{ ...baseInstance, agent: { type: "custom", image: approvedImage } }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit Agent" }));
+    fireEvent.change(screen.getByLabelText("Agent Image"), { target: { value: image } });
+    fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(screen.getByText(/Tags and unapproved images cannot run/)).toBeInTheDocument();
+  });
+
+  it.each(["unknown", "loading", "error", "empty"])("keeps unrelated edits available when Custom approvals are %s", (state) => {
+    mockCatalog.data.customImages = state === "unknown" ? null : state === "empty" ? [] : [approvedImage];
+    mockCatalog.isFetching = state === "loading";
+    mockCatalog.isError = state === "error";
+    const image = "registry.example.com/assistant@sha256:" + "a".repeat(64);
+    renderInRouter(<OverviewSection instance={{ ...baseInstance, agent: { type: "custom", image } }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit Agent" }));
+    fireEvent.change(screen.getByLabelText("Agent Image"), { target: { value: approvedImage } });
+    fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(screen.getByText(state === "empty" ? /Tags and unapproved images cannot run/ : /Custom image approvals are not available/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Agent Image"), { target: { value: image } });
+    fireEvent.change(screen.getByLabelText("Display Name"), { target: { value: "Renamed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
+    expect(mockUpdate).toHaveBeenCalledWith({ uid: "test-agent-uid", resourceVersion: "7", displayName: "Renamed" }, expect.anything());
   });
 
   it("keeps the version that was opened for editing when fresh data arrives", () => {

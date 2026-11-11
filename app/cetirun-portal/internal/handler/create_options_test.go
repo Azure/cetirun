@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -20,6 +21,44 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
+
+func TestCustomCreateRequiresPublishedImageApproval(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		images []string
+		image  string
+		code   string
+	}{
+		{"unknown approvals", nil, managementImage, "custom_images_unknown"},
+		{"no approved images", []string{}, managementImage, "custom_image_not_approved"},
+		{"different digest", []string{replacementImage}, managementImage, "custom_image_not_approved"},
+		{"tag reference", []string{managementImage}, "registry.example.com/team/assistant:latest", "custom_image_not_approved"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cm := catalogConfigMap("gpt-6")
+			var catalog api.AIGatewayCatalog
+			if err := json.Unmarshal([]byte(cm.Data[api.AIGatewayCatalogKey]), &catalog); err != nil {
+				t.Fatal(err)
+			}
+			catalog.CustomImages = tc.images
+			raw, err := json.Marshal(catalog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cm.Data[api.AIGatewayCatalogKey] = string(raw)
+			w, fc := createAgent(t, gatewayConfig(), `{"agent":{"type":"custom","image":"`+tc.image+`"}}`, cm)
+			if w.Code < 400 || errorCode(t, w) != tc.code {
+				t.Fatalf("unapproved create: %d %s", w.Code, w.Body.String())
+			}
+			assertNoCreationWrites(t, fc)
+			h := &InstanceHandler{Kube: kube.NewClient(fc), Config: gatewayConfig()}
+			options := readCreateOptions(t, h, "")
+			if !reflect.DeepEqual(options.Gateway.CustomImages, tc.images) {
+				t.Fatalf("form approvals = %#v, want %#v", options.Gateway.CustomImages, tc.images)
+			}
+		})
+	}
+}
 
 func creationPolicy() (*api.Team, *api.AgentPolicy) {
 	team := gatewayTeam("policy-team")

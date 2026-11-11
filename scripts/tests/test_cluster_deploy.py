@@ -1,11 +1,13 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-"""Tests for cluster version preflight and Container Insights agent settings.
+"""Tests for cluster version preflight, Container Insights agent settings, and the monitoring of the template.
 
 deploy.sh runs against stand-ins for az and kubectl that log their arguments.
 The settings are created on a cluster that has none; settings a cluster
 already has are checked and never replaced, since replacing them would drop
-the cluster's own collection settings.
+the cluster's own collection settings. The compiled template turns Container
+Insights and managed Prometheus off, and creates Azure Data Explorer for the
+ADX-Mon collection by default.
 """
 
 import json
@@ -287,6 +289,33 @@ class CompiledVersionTests(unittest.TestCase):
                         self.assertEqual(result.returncode, 0, result.stderr)
                         self.assertIn(f"preflight passed: {expected}", result.stdout)
             self.assertEqual(list(temp.iterdir()), [params], "Compilation must not leave generated files")
+
+
+@unittest.skipUnless(shutil.which("bicep"), "Bicep CLI is required for compilation regression tests")
+class CompiledMonitoringTests(unittest.TestCase):
+    def test_azure_monitor_is_off_and_azure_data_explorer_is_the_default(self):
+        compiled = subprocess.run(["bicep", "build", str(ROOT / "infra/cluster/main.bicep"), "--stdout", "--no-restore"],
+                                  capture_output=True, text=True, check=True)
+        template = json.loads(compiled.stdout)
+        self.assertEqual(template["parameters"]["adxMode"]["defaultValue"], "create")
+        for name in ("enableContainerInsights", "enablePrometheusMetrics", "logAnalyticsWorkspaceId"):
+            self.assertNotIn(name, template["parameters"])
+
+        def resources(node):
+            items = node.get("resources", [])
+            for resource in items.values() if isinstance(items, dict) else items:
+                yield resource
+                yield from resources(resource.get("properties", {}).get("template", {}))
+
+        everything = list(resources(template))
+        monitoring = [resource["type"] for resource in everything if resource["type"].split("/")[0].lower()
+                      in ("microsoft.operationalinsights", "microsoft.monitor", "microsoft.insights")]
+        self.assertEqual(monitoring, [], "No workspace or data collection rule")
+        clusters = [resource for resource in everything if resource["type"] == "Microsoft.ContainerService/managedClusters"]
+        self.assertEqual(len(clusters), 1)
+        # Off explicitly, so that a deployment over a cluster from an earlier template turns them off.
+        self.assertIs(clusters[0]["properties"]["addonProfiles"]["omsagent"]["enabled"], False)
+        self.assertIs(clusters[0]["properties"]["azureMonitorProfile"]["metrics"]["enabled"], False)
 
 
 if __name__ == "__main__":
