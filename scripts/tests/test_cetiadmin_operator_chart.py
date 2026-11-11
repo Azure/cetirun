@@ -450,7 +450,7 @@ class CetiAdminOperatorChartTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="cetiadmin-umbrella-") as directory:
             base = Path(directory)
             for relative in ("cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart",
-                             "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart"):
+                             "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart", "cetirun-observability/chart"):
                 shutil.copytree(ROOT / "app" / relative, base / relative, ignore=shutil.ignore_patterns("charts"))
             chart = base / "cetirun-platform"
             subprocess.run(["helm", "dependency", "build", "--skip-refresh", str(chart)],

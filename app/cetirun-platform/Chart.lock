@@ -11,5 +11,8 @@ dependencies:
 - name: cetirun-ai-gateway
   repository: file://../cetirun-ai-gateway/chart
   version: 0.1.1
-digest: sha256:52b7bb66339213fccc20821e6a072bf57fa1e614506ae3fb59c2c8846b20b078
-generated: "2026-10-23T09:40:20.176050992+08:00"
+- name: cetirun-observability
+  repository: file://../cetirun-observability/chart
+  version: 0.1.1
+digest: sha256:3a252f41af92340c78288ef66833e1e4f02e0d971dc7a7285849ddcbdba6aa8d
+generated: "2026-11-09T15:12:46.9150675+08:00"

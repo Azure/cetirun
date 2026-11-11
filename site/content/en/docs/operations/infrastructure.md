@@ -44,7 +44,7 @@ value.
 | Availability zones | `1`, `2`, `3` on all three pools |
 | Networking | Azure CNI overlay, Cilium, load-balancer outbound |
 | Pod / Service / DNS ranges | `10.244.0.0/16`, `172.16.0.0/16`, `172.16.0.10` |
-| Monitoring | Container Insights and Prometheus enabled |
+| Monitoring | Container Insights and Prometheus enabled; both off when `adxMode` is `create` or `existing` |
 
 The cluster template defaults to Kubernetes 1.37, the minimum for Sandbox and
 CetiAdmin admission. The cluster helper checks the effective `kubernetesVersion`
@@ -261,10 +261,12 @@ configure Entra, Broker/MCP or admission certificates, and it does not change
 the cluster template.
 
 By default, the cluster parameters enable Container Insights and Prometheus
-metrics. Examine the workspace and data-collection resources, the retention,
-the access roles, and the costs. If `logAnalyticsWorkspaceId` is empty, the
-template creates a Log Analytics workspace with 30-day retention, even if
-`enableContainerInsights` is false. The template enables the cluster's
+metrics. With `adxMode` `create` or `existing`, both are off by default, and
+the [ADX-Mon collection](../observability/) replaces them; set them
+explicitly to keep them. Examine the workspace and data-collection resources,
+the retention, the access roles, and the costs. If `logAnalyticsWorkspaceId` is
+empty and Container Insights is on, the template creates a Log Analytics
+workspace with 30-day retention. The template enables the cluster's
 monitoring add-on with its data collection rule. Container Insights collects
 this data through that add-on:
 
@@ -308,3 +310,49 @@ workspace.
 
 The agent chart’s session logger is also enabled by default. Before you onboard
 users, see [Security](../../security/).
+
+On Kata node pools with the node image `AKSAzureLinux-V3katagen2-202610.30.1`
+or later, the monitoring add-on collects no container logs or metrics from those
+nodes: its pods there restart in a loop because the node kernel has no legacy
+iptables `nat` table. The platform and the Agents run on these nodes. To
+collect from them, use the [ADX-Mon collection](../observability/).
+
+## Azure Data Explorer
+
+The template can also create the Azure resources of the optional
+[ADX-Mon collection](../observability/). Set `adxMode`:
+
+| `adxMode` | Effect |
+|---|---|
+| `none` | The default: no Azure Data Explorer resources |
+| `create` | A new Kusto cluster `adxClusterName` in `adxResourceGroupName`, with the three databases |
+| `existing` | The three databases in the existing Kusto cluster `adxClusterName` |
+
+A new Kusto cluster goes to the AKS region unless `adxLocation` names
+another. Not every region offers every Kusto SKU; the default Dev SKU, for
+example, is not offered in every region.
+
+With `create` or `existing`, the template also creates these resources:
+
+- The databases `CetiRunLogs`, `CetiRunMetrics` and `CetiRunAgents`, with the
+  retention of `adxLogsRetentionDays`, `adxMetricsRetentionDays` and
+  `adxAgentLogsRetentionDays`, 7 days in the hot cache, and 30 seconds of
+  ingestion batching.
+- The query functions in `infra/cluster/modules/adx/*.kql`.
+- The user-assigned managed identity `<clusterName>-adx-ingestor` in the
+  cluster resource group, with a federated credential for the ingestor's
+  service account in `observabilityNamespace`.
+- The roles `User` and `Ingestor` of that identity on the three databases.
+- The role `Viewer` for the principals in `adxViewers` on the logs and metrics
+  databases, and for the principals in `adxAgentLogsViewers` on the Agent logs
+  database.
+
+The default SKU, `Dev(No SLA)_Standard_E2a_v4`, has one engine node and no SLA.
+Use it for evaluation. A cluster with no ingestion or queries for five days
+stops, and you must start it again. The outputs `adxClusterUri` and
+`adxIngestorClientId` are the inputs of the `observability` block of the
+`make deploy` environment file.
+
+The resource group of an existing or a new Kusto cluster must exist before the
+deployment, unless it is the cluster resource group. Kusto cluster names are
+unique in Azure.

@@ -197,7 +197,7 @@ class ConnectionsMCPChartTests(unittest.TestCase):
     def test_full_stack_uses_separate_broker_and_native_mcp(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
-            for relative in ("cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart", "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart", "cetirun-agent-broker/chart"):
+            for relative in ("cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart", "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart", "cetirun-agent-broker/chart", "cetirun-observability/chart"):
                 shutil.copytree(ROOT / "app" / relative, base / relative, ignore=shutil.ignore_patterns("charts"))
             subprocess.run(["helm", "dependency", "build", "--skip-refresh", str(base / "cetirun-platform")], env=OFFLINE, check=True, capture_output=True, timeout=30)
             chart = base / "cetirun-platform"

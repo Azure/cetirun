@@ -153,7 +153,7 @@ make publish REGISTRY=registry.example.com VERSION=0.1.1 \
   GIT_SHA="$(git rev-parse HEAD)" ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true
 ```
 
-The command builds and pushes the 13 images and 8 charts of
+The command builds and pushes the 14 images and 9 charts of
 [`scripts/release-artifacts.json`]({{< repo "scripts/release-artifacts.json" >}}).
 These include the operator, Portal, AI Gateway, Broker, OpenClaw, Hermes, and
 VS Code Server images, and the platform, Istio, and Agent (`helm/cetirun`)
@@ -174,7 +174,7 @@ python3 -B scripts/cetirun-release.py publish \
   --exclude-image cetirun-vscode
 ```
 
-This selection publishes 12 images and all 8 charts. The normal `make publish`
+This selection publishes 13 images and all 9 charts. The normal `make publish`
 path deliberately keeps the complete inventory and still requires the license
 acceptance. Use the same selection in the environment file:
 

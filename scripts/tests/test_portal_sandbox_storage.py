@@ -139,7 +139,7 @@ class DeploymentWiringTests(unittest.TestCase):
             base = Path(temporary)
             for relative in (
                 "cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart",
-                "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart",
+                "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart", "cetirun-observability/chart",
             ):
                 shutil.copytree(ROOT / "app" / relative, base / relative, ignore=shutil.ignore_patterns("charts"))
             chart = base / "cetirun-platform"
