@@ -686,7 +686,8 @@ select the protected label, and the operator refuses it. Before you upgrade
 the operator, upgrade the AI Gateway chart: its Pods restart one time with the
 label. Then add the label to the registration in the same change as the
 operator upgrade. Until the registration selects the label, Agents that use it
-stay held.
+stay held. When the registration is not valid, the AgentPolicy `Accepted`
+condition and the Agent `PolicyResolved` condition show the reason.
 After that transition, a Pod rollout or scale-out does not change the
 registration or the Agent's network-policy revision. Changing Service IPs,
 selectors, namespaces, or peer UIDs still requires a coordinated update.

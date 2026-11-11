@@ -9,6 +9,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -290,6 +291,17 @@ func TestNativeGatewaySelectorRequiresProtectedLabel(t *testing.T) {
 	delete(input.Platform.Topology.Gateway[0].Peer.PodSelector, PeerLabel)
 	if err := ValidatePlatform(input.Platform, input.Resolution.Capabilities); !errors.Is(err, ErrUnsupportedControl) {
 		t.Fatal("a Gateway selector without a protected label was accepted:", err)
+	}
+	// The refusal has a fixed reason that status can show. It never quotes the
+	// registered selector.
+	input.Platform.Topology.Gateway[0].Peer.PodSelector = map[string]string{"selector-canary.example.com/key": "value-canary-5d1f"}
+	err := ValidatePlatform(input.Platform, input.Resolution.Capabilities)
+	want := "a selector-bound AI Gateway peer must select the protected " + PeerLabel + " Pod label"
+	if detail := PublicDetail(err, ErrUnsupportedControl); detail != want || PublicDetail(err, nil) != want {
+		t.Fatalf("the refusal has no fixed public reason: %q", detail)
+	}
+	if strings.Contains(err.Error(), "canary") {
+		t.Fatalf("the refusal quoted the registered selector: %v", err)
 	}
 	// DNS selectors select platform-managed Pods that CetiRun cannot label.
 	input = rolloutEgressFixture()

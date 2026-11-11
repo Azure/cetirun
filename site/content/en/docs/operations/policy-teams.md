@@ -322,6 +322,8 @@ An installation that already uses a selector-bound Gateway entry without the
 protected label must upgrade the AI Gateway chart first. Its Pods restart one
 time with the label. Then add the label to the Gateway entry when you upgrade
 the operator. Until then, Agents that use the entry stay held.
+When the registration is not valid, the AgentPolicy `Accepted` condition and
+the Agent `PolicyResolved` condition show the reason.
 This mode requires the native Cilium profile and stable Service IPs within
 `serviceCIDRs`, not backend Pod IPs. Service address, selector, namespace, or
 peer identity changes still require a coordinated registration update. A

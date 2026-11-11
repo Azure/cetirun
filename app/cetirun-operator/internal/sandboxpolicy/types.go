@@ -47,9 +47,9 @@ var (
 )
 
 // controlError carries a fixed explanation of a classified failure. The
-// explanation is a constant written in this package and never contains values
-// from a policy or registration, so status writers can show it. Its Error text
-// is the same as the earlier fmt.Errorf("%w: <detail>", sentinel) form.
+// explanation is a constant written in code and never contains values from a
+// policy or registration, so status writers can show it. Its Error text is the
+// same as the earlier fmt.Errorf("%w: <detail>", sentinel) form.
 type controlError struct {
 	sentinel error
 	detail   string
@@ -62,14 +62,23 @@ func controlFailure(sentinel error, detail string) error {
 	return &controlError{sentinel: sentinel, detail: detail}
 }
 
+// ControlFailure returns a failure of class sentinel with a fixed explanation
+// that PublicDetail returns. Other packages, for example the platform
+// registration loader, use it. The detail must be constant text written in
+// code, never values from a policy or registration.
+func ControlFailure(sentinel error, detail string) error {
+	return controlFailure(sentinel, detail)
+}
+
 // PublicDetail returns the first fixed explanation in err whose class is
-// sentinel, or an empty string. It never returns text from user input.
+// sentinel, or an empty string. A nil sentinel accepts every class. It never
+// returns text from user input.
 func PublicDetail(err, sentinel error) string {
 	switch current := err.(type) {
 	case nil:
 		return ""
 	case *controlError:
-		if current.sentinel == sentinel {
+		if sentinel == nil || current.sentinel == sentinel {
 			return current.detail
 		}
 		return ""

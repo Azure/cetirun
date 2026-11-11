@@ -185,7 +185,7 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 	} {
 		name, values := inventory.name, inventory.values
 		if len(*values) == 0 {
-			return platform, fmt.Errorf("%w: %s exclusion inventory is required", ErrUnavailable, name)
+			return platform, controlFailure(ErrUnavailable, name+" exclusion inventory is required")
 		}
 		for i, value := range *values {
 			prefix, err := parsePrefix(value, capabilities)
@@ -342,7 +342,7 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 				// protected label that the operator chart admission policy
 				// reserves for Pods that the ReplicaSet controller creates.
 				if _, protected := dest.Peer.PodSelector[PeerLabel]; !protected {
-					return platform, fmt.Errorf("%w: a selector-bound AI Gateway peer must select the protected %s Pod label", ErrUnsupportedControl, PeerLabel)
+					return platform, controlFailure(ErrUnsupportedControl, "a selector-bound AI Gateway peer must select the protected "+PeerLabel+" Pod label")
 				}
 			}
 			dest.Ports, err = canonicalPorts(dest.Ports, capabilities)

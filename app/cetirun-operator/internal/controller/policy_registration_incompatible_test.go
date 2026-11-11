@@ -5,11 +5,16 @@ package controller
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -46,7 +51,9 @@ func selectorEgressForTest(t *testing.T, f *nativeSandboxFixture, selector bool)
 		for backend, platform := range document.Platforms {
 			if selector {
 				platform.Topology.DNS[0].PodSelector = map[string]string{"k8s-app": "kube-dns"}
-				platform.Topology.Gateway[0].Peer.PodSelector = map[string]string{"app.kubernetes.io/name": "cetirun-ai-gateway"}
+				platform.Topology.Gateway[0].Peer.PodSelector = map[string]string{
+					"app.kubernetes.io/name": "cetirun-ai-gateway", sandboxpolicy.PeerLabel: sandboxpolicy.PeerAIGateway,
+				}
 			} else {
 				platform.Topology.DNS[0].PodSelector = nil
 				platform.Topology.Gateway[0].Peer.PodSelector = nil
@@ -204,5 +211,149 @@ func TestPolicyDenialReportsKeyRevocationOnce(t *testing.T) {
 	}
 	if revoked != 1 {
 		t.Fatalf("AIGatewayKeyRevoked events = %d, want 1", revoked)
+	}
+}
+
+// TestUnusableRegistrationShowsItsReason reproduces a held native Agent whose
+// only status was "AgentPolicy acceptance observation is unavailable": the
+// selector-bound Gateway peer of an earlier registration does not select the
+// protected label, so the registration cannot be used.
+func TestUnusableRegistrationShowsItsReason(t *testing.T) {
+	const canary = "value-canary-5d1f"
+	reason := "invalid Sandbox platform declaration: a selector-bound AI Gateway peer must select the protected " +
+		sandboxpolicy.PeerLabel + " Pod label"
+	ctx := context.Background()
+	f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, "openclaw", true, false, withReconciledCoordination(t))
+	config := f.r.SandboxPreparation
+	policyController := &AgentPolicyReconciler{
+		Client: f.kube, APIReader: f.kube, NativeExecution: true,
+		Source: config.Configuration, Now: config.Now, MaxSnapshotAge: config.MaxSnapshotAge,
+	}
+	team := &api.Team{}
+	if err := f.kube.Get(ctx, client.ObjectKey{Name: f.current(t).Spec.Team}, team); err != nil {
+		t.Fatal(err)
+	}
+	policyKey := client.ObjectKey{Name: team.Spec.AgentPolicyRef}
+	policy := &api.AgentPolicy{}
+	assess := func() (*metav1.Condition, error) {
+		t.Helper()
+		_, err := policyController.Reconcile(ctx, ctrl.Request{NamespacedName: policyKey})
+		if getErr := f.kube.Get(ctx, policyKey, policy); getErr != nil {
+			t.Fatal(getErr)
+		}
+		return apimeta.FindStatusCondition(policy.Status.Conditions, api.ConditionAgentPolicyAccepted), err
+	}
+	if accepted, err := assess(); err != nil || accepted == nil || accepted.Status != metav1.ConditionTrue {
+		t.Fatalf("the fixture policy was not accepted: %+v, %v", accepted, err)
+	}
+	settleReadyForTest(t, f)
+	before := f.current(t)
+	gatewaySelector := func(selector map[string]string) {
+		updateContainerPlatformForTest(t, f.r, f.kube, func(document *SandboxPlatformConfiguration) {
+			for backend, platform := range document.Platforms {
+				platform.Topology.Gateway[0].Peer.PodSelector = selector
+				document.Platforms[backend] = platform
+			}
+		})
+	}
+
+	gatewaySelector(map[string]string{"app.kubernetes.io/instance": canary})
+	accepted, err := assess()
+	if !errors.Is(err, sandboxpolicy.ErrUnsupportedControl) || !strings.Contains(err.Error(), reason) || strings.Contains(err.Error(), canary) {
+		t.Fatalf("the AgentPolicy reconcile error does not carry only the fixed reason: %v", err)
+	}
+	if accepted == nil || accepted.Status != metav1.ConditionUnknown || accepted.Reason != "PrerequisitesUnavailable" ||
+		accepted.Message != "Current platform support inventory is unavailable: "+reason+"." {
+		t.Fatalf("the AgentPolicy does not show why the registration cannot be used: %+v", accepted)
+	}
+	for range 2 {
+		_, _ = f.reconcile()
+	}
+	held := f.current(t)
+	resolved := apimeta.FindStatusCondition(held.Status.Conditions, api.ConditionPolicyResolved)
+	want := fmt.Sprintf("AgentPolicy acceptance observation is unavailable for generation %d: PrerequisitesUnavailable: %s",
+		policy.Generation, accepted.Message)
+	if held.Status.Phase == api.PhaseReady || resolved == nil || resolved.Reason != "DependencyUnavailable" || resolved.Message != want {
+		t.Fatalf("the held Agent does not show why: phase=%s condition=%+v", held.Status.Phase, resolved)
+	}
+	for _, condition := range held.Status.Conditions {
+		if strings.Contains(condition.Message, canary) {
+			t.Fatalf("an Agent condition quoted the registration: %+v", condition)
+		}
+	}
+	if held.Status.AIGateway == nil || held.Status.AIGateway.KeyID != before.Status.AIGateway.KeyID ||
+		held.Status.AIGateway.Phase == api.AIGatewayPhaseDeleting {
+		t.Fatalf("an unusable registration revoked the key: %+v", held.Status.AIGateway)
+	}
+
+	gatewaySelector(nil)
+	if accepted, err := assess(); err != nil || accepted == nil || accepted.Status != metav1.ConditionTrue {
+		t.Fatalf("the corrected registration did not accept the policy: %+v, %v", accepted, err)
+	}
+	settleReadyForTest(t, f)
+	if recovered := f.current(t); recovered.Status.AIGateway == nil || recovered.Status.AIGateway.KeyID != before.Status.AIGateway.KeyID {
+		t.Fatalf("the Agent did not recover with its key: %+v", recovered.Status.AIGateway)
+	}
+}
+
+// TestPolicyDependencyShowsTheObservedCondition checks the Agent text when the
+// Team or AgentPolicy condition is not usable for the current generation.
+func TestPolicyDependencyShowsTheObservedCondition(t *testing.T) {
+	ctx := context.Background()
+	policyFor := func(generation, observed int64, condition metav1.Condition) *api.AgentPolicy {
+		condition.Type = api.ConditionAgentPolicyAccepted
+		return &api.AgentPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid", Generation: generation},
+			Spec:       api.AgentPolicySpec{Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeOpenClaw}}},
+			Status:     api.AgentPolicyStatus{ObservedGeneration: observed, Conditions: []metav1.Condition{condition}},
+		}
+	}
+	unavailable := metav1.Condition{Status: metav1.ConditionUnknown, ObservedGeneration: 3, Reason: "PrerequisitesUnavailable",
+		Message: "Current platform support inventory is unavailable: a fixed reason."}
+	refused := metav1.Condition{Status: metav1.ConditionFalse, ObservedGeneration: 2, Reason: "UnsupportedControl",
+		Message: "A requested control has no supported, qualified implementation."}
+	long := unavailable
+	long.Message = strings.Repeat("M", 40000)
+	r := &AgentReconciler{}
+	for _, tc := range []struct {
+		name   string
+		policy *api.AgentPolicy
+		want   string
+	}{
+		{"unknown", policyFor(3, 3, unavailable),
+			"AgentPolicy acceptance observation is unavailable for generation 3: PrerequisitesUnavailable: Current platform support inventory is unavailable: a fixed reason."},
+		{"another generation", policyFor(3, 3, refused),
+			"AgentPolicy acceptance observation is unavailable for generation 3; the last observation is for generation 2: UnsupportedControl: A requested control has no supported, qualified implementation."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := r.verifyPolicyAcceptance(ctx, tc.policy); !isPolicyDependencyError(err) || err.Error() != tc.want {
+				t.Fatalf("unexpected dependency: %v", err)
+			}
+		})
+	}
+	if err := r.verifyPolicyAcceptance(ctx, policyFor(3, 3, long)); !isPolicyDependencyError(err) ||
+		utf8.RuneCountInString(err.Error()) > maxConditionSummary+128 {
+		t.Fatalf("the dependency text is not bounded: %d characters", utf8.RuneCountInString(err.Error()))
+	}
+
+	// A pending generation is assessed again; the Agent shows that result.
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	r.SandboxPreparation = &SandboxPreparation{NativeExecution: true, Now: func() time.Time { return now },
+		Configuration: SandboxConfigurationSourceFunc(func(context.Context) (SandboxConfigurationSnapshot, error) {
+			return SandboxConfigurationSnapshot{ObservedAt: now}, nil
+		})}
+	accepted := metav1.Condition{Status: metav1.ConditionTrue, ObservedGeneration: 2, Reason: "PolicyAccepted", Message: "Accepted."}
+	want := "AgentPolicy observation is pending for generation 3: UnsupportedControl: A requested control has no supported, qualified implementation."
+	if err := r.verifyPolicyAcceptance(ctx, policyFor(3, 2, accepted)); !isPolicyDependencyError(err) || err.Error() != want {
+		t.Fatalf("the pending generation does not show its assessment: %v", err)
+	}
+
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "engineering", Generation: 4}, Status: api.TeamStatus{
+		ObservedGeneration: 4, Conditions: []metav1.Condition{{Type: api.ConditionTeamAccepted, Status: metav1.ConditionUnknown,
+			ObservedGeneration: 4, Reason: "DependenciesUnavailable", Message: "Team Policy or Sandbox bindings cannot currently be verified."}},
+	}}
+	want = "Team acceptance observation is unavailable for generation 4: DependenciesUnavailable: Team Policy or Sandbox bindings cannot currently be verified."
+	if err := r.verifyTeamAcceptance(ctx, team); !isPolicyDependencyError(err) || err.Error() != want {
+		t.Fatalf("the Team dependency does not show its condition: %v", err)
 	}
 }

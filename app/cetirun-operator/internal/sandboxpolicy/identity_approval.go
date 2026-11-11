@@ -25,10 +25,10 @@ func ValidateIdentityApprovals(inventory []ApprovedIdentity) error {
 			len(validation.IsDNS1123Label(identity.Namespace)) != 0 ||
 			identity.ServiceAccountName == "default" || len(validation.IsDNS1123Subdomain(identity.ServiceAccountName)) != 0 ||
 			!identityValue(identity.Revision) || (!identity.Kubernetes && identity.Entra == nil) {
-			return fmt.Errorf("%w: approvals require a complete Agent binding and an unshared dedicated ServiceAccount", ErrUnapprovedGrant)
+			return controlFailure(ErrUnapprovedGrant, "approvals require a complete Agent binding and an unshared dedicated ServiceAccount")
 		}
 		if identity.Entra != nil && (!identityValue(identity.Entra.ClientID) || !identityValue(identity.Entra.TenantID)) {
-			return fmt.Errorf("%w: Entra approval requires explicit client and tenant identifiers", ErrUnapprovedGrant)
+			return controlFailure(ErrUnapprovedGrant, "Entra approval requires explicit client and tenant identifiers")
 		}
 		agents[identity.AgentUID], accounts[account] = true, true
 	}
