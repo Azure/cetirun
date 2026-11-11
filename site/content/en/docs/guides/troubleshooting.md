@@ -12,9 +12,15 @@ send, refer to [Ask your administrator for help](#ask-your-administrator-for-hel
 
 | What you see | Cause | What to do |
 | --- | --- | --- |
-| The sign-in page rejects your account. | Your account is not in the group that the portal allows. | Ask your administrator for access. |
+| A CetiRun page shows "This sign-in attempt could not be completed." | The sign-in did not complete, or your account is not in the group that the portal allows. | Select **Sign in** on the page. If the page shows again, ask your administrator for access. |
+| A CetiRun page shows "Sign-in is temporarily unavailable." | The authentication service cannot complete the sign-in. | Wait a moment. Then select **Sign in**. If the problem continues, ask your administrator. |
 | "Invalid user identity: must be a lowercase DNS-1123 label ..." | The portal uses the part of your account name before `@` as your alias. This part must start with a letter, contain only letters, digits, or hyphens, and end with a letter or a digit. It can have a maximum of 63 characters. For example, `first.last` is not a valid alias. | Ask your administrator. You cannot change the alias in the portal. |
 | "Session expired, please refresh the page" | Your portal session ended. | Refresh the page, and sign in again. |
+
+On a CetiRun sign-in error page, select **Sign in**. Do not refresh the page,
+because a refresh can repeat the failed sign-in. **Sign in** starts a new
+sign-in and then opens the portal home page. If the page shows a request ID,
+send it to your administrator.
 
 ## You cannot create an Agent
 
@@ -27,6 +33,8 @@ send, refer to [Ask your administrator for help](#ask-your-administrator-for-hel
 | "No models are available for new agents under the selected Team's Policy and deployment settings." | No model source is available for the selected Team. | Select another Team, or ask your administrator to examine model access. |
 | "The AI Gateway has not published its models yet. Try again in a minute." | The platform did not finish its start. | Wait one minute, and try again. |
 | "The operator has not read its agent chart yet. Try again in a minute." | The platform did not finish its start. | Wait one minute, and try again. |
+| "No Custom images are approved. ..." or "Custom image approvals are not available yet. ..." | Your administrator did not approve a Custom image, or the platform did not publish the approved images yet. | Ask your administrator. |
+| "Choose an approved Custom image pinned by sha256 digest. ..." | The image is not one of the approved images. A tag is not sufficient. | In **Agent Image**, select one of the images that the field suggests. |
 
 ## The Agent does not become ready
 
@@ -49,8 +57,9 @@ the reason and a next step.
 
 Then open the **Status** tab. In the **Conditions** table, find the rows with
 the status `False`. The **Reason** and **Message** columns tell you which step
-fails. For example, `CustomBindingsPending` tells you that a Custom Agent
-waits until an administrator approves its image.
+fails. For example, `CustomImageNotApproved` tells you that the image of a
+Custom Agent is not approved. This can occur when an administrator removes the
+approval of the image.
 
 If the phase is **Failed**, or if the Agent stays in one phase for more than
 10 minutes, send the rows to your administrator.
@@ -149,10 +158,12 @@ Send these items to your administrator:
 - The phase, and the governance status if the portal shows one.
 - The rows of the **Status** tab with the status `False`.
 - The time when the problem started, and what you did before it.
+- For a sign-in problem, the request ID that the sign-in error page shows.
 
 Do not send keys, tokens, passwords, or the text of private conversations.
 
 Sources: [governance status]({{< repo "app/cetirun-portal/web/src/components/GovernanceNotice.tsx" >}}),
 [model section]({{< repo "app/cetirun-portal/web/src/components/AIGatewayBlock.tsx" >}}),
 [creation form]({{< repo "app/cetirun-portal/web/src/components/CreateForm.tsx" >}}),
+[sign-in error page]({{< repo "infra/istio/files/oauth2-error.html" >}}),
 and [runtime chart values]({{< repo "app/cetirun-chart/values.yaml" >}}).

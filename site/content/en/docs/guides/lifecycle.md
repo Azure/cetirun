@@ -30,7 +30,7 @@ For the data that each action keeps or removes, refer to
 | **Display Name** | Change the name that the portal shows. Leave the field blank to show the Agent name. |
 | **Team** | Nothing. Only an administrator can change the Team, and only while the Agent is suspended. |
 | **Agent Type** and **Agent Username** | Nothing. These values cannot change after you create the Agent. |
-| **Agent Image** | Enter another image. The platform must approve the image, and the image must be compatible with the Agent type. You cannot remove an image after it is set. |
+| **Agent Image** | Enter another image. The platform must approve the image, and the image must be compatible with the Agent type. For a Custom Agent, select one of the approved images that the field suggests. You cannot remove an image after it is set. |
 | **HTTP Port (optional)** | For a Hermes or OpenClaw Agent, keep the field empty. An empty field uses the default port of the pinned agent chart version. |
 | **Gateway Token** | Enter a new gateway token for OpenClaw. Leave the field empty to keep the current token. |
 | **Tailscale Auth Key** | Enter a new Tailscale key, or select **Disable Tailscale**. The dialog shows this field only for Hermes and OpenClaw, and only when the deployment allows Tailscale. |

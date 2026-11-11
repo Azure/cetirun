@@ -56,7 +56,7 @@ a Custom Agent, get these values from your administrator:
 
 | Field | What to enter |
 | --- | --- |
-| **Agent Image** | The image. The deployment must approve it. Until an administrator approves the image, the Agent waits. For a standard Agent, the **Status** tab then shows `CustomBindingsPending`. |
+| **Agent Image** | One of the approved images. The field suggests them. An approved image includes its `sha256` digest, for example `registry.example.com/team/agent@sha256:<digest>`. The portal does not accept a tag or an image that is not approved. When no image is approved, the form shows a warning, and you cannot create a Custom Agent. |
 | **Agent Username** | A Linux user that exists in the image and is not `root`. The home directory is `/home/<username>`. You cannot change the username later. |
 | **Serve Web UI** | On, if the image serves a browser interface. The portal then shows **Web UI** for the Agent. The image must serve `/ui/<agent-name>/` and `/healthz`. |
 | **Web UI Port** or **HTTP Port (optional)** | The port of the Web UI, or the port of the Chat API. Leave the port empty for an Agent without an HTTP endpoint. |
