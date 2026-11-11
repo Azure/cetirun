@@ -101,6 +101,10 @@ type ModelBinding struct {
 	// images (aiGateway.visionModels). Empty for charts that do not declare
 	// the value.
 	GatewayVisionModels []string
+	// GatewayReasoningModels are the IDs of the GatewayModels that reason
+	// (aiGateway.reasoningModels). Empty for charts that do not declare the
+	// value.
+	GatewayReasoningModels []string
 }
 
 type ConnectionsMCPBinding struct {

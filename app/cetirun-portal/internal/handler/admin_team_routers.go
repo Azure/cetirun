@@ -28,10 +28,13 @@ type TeamModelRouterDTO struct {
 }
 
 // TeamModelRouterStatusDTO is the operator's report on one router.
+// NonReasoningModels are the tier models that do not reason, a hint for the
+// administrator.
 type TeamModelRouterStatusDTO struct {
-	Name    string `json:"name"`
-	Ready   bool   `json:"ready"`
-	Message string `json:"message,omitempty"`
+	Name               string   `json:"name"`
+	Ready              bool     `json:"ready"`
+	Message            string   `json:"message,omitempty"`
+	NonReasoningModels []string `json:"nonReasoningModels,omitempty"`
 }
 
 const maxTeamModelRouters = 10
@@ -51,7 +54,8 @@ func toTeamModelRouterDTOs(team *cetirunv1alpha1.Team) ([]TeamModelRouterDTO, []
 	}
 	var statuses []TeamModelRouterStatusDTO
 	for _, status := range team.Status.ModelRouters {
-		statuses = append(statuses, TeamModelRouterStatusDTO{Name: status.Name, Ready: status.Ready, Message: status.Message})
+		statuses = append(statuses, TeamModelRouterStatusDTO{Name: status.Name, Ready: status.Ready, Message: status.Message,
+			NonReasoningModels: status.NonReasoningModels})
 	}
 	return routers, statuses
 }

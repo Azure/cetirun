@@ -127,6 +127,50 @@ func (plan modelRouterPlan) tierModels() ([]string, []string) {
 	return slices.Compact(shared), slices.Compact(copilot)
 }
 
+// nonReasoningModels are the router's tier models, as the tiers name them and
+// sorted, that do not reason according to the Gateway, for the Team's status:
+// a hint that the router does not reason as a whole (modelRouterReasoning). A
+// shared tier counts by the catalog. A copilot/<ID> tier counts by its GitHub
+// Copilot model (copilotRouteReasons), when the price table is known and has
+// an entry for the model; one that joins a shared model also counts by that
+// shared model, which the Agent's requests for the tier may reach too.
+func (plan modelRouterPlan) nonReasoningModels(shared []aiGatewayCatalogModel, table *aigateway.PriceTable) []string {
+	reasons := make(map[string]bool, len(shared))
+	for _, model := range shared {
+		reasons[model.Name] = model.Reasoning
+	}
+	var names []string
+	for _, model := range plan.router.Tiers.Models() {
+		id, isCopilot := strings.CutPrefix(model, copilotTierPrefix)
+		name := model
+		if isCopilot {
+			name = plan.tierNames[model]
+		}
+		sharedReasons, isShared := reasons[name]
+		notReasoning := isShared && !sharedReasons
+		if isCopilot && table != nil {
+			if base, priced := copilotBaseModel(id, table.Priced); priced && !copilotRouteReasons(id, base, *table) {
+				notReasoning = true
+			}
+		}
+		if notReasoning && !slices.Contains(names, model) {
+			names = append(names, model)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+// usesCopilotTiers reports whether a ready router among the plans has a
+// copilot/<ID> tier, whose reasoning the price table tells.
+func usesCopilotTiers(plans []modelRouterPlan) bool {
+	return slices.ContainsFunc(plans, func(plan modelRouterPlan) bool {
+		return plan.problem == "" && slices.ContainsFunc(plan.router.Tiers.Models(), func(model string) bool {
+			return strings.HasPrefix(model, copilotTierPrefix)
+		})
+	})
+}
+
 // modelRouterTierNames are the CRD's tier names, in tier order.
 var modelRouterTierNames = []string{"simple", "medium", "complex", "reasoning"}
 
@@ -373,7 +417,7 @@ func (r *TeamModelRouterReconciler) Reconcile(ctx context.Context, request ctrl.
 		if team == nil {
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, r.report(ctx, team, nil, nil, "The AI Gateway is not enabled, so model routers are not registered")
+		return ctrl.Result{}, r.report(ctx, team, nil, nil, "The AI Gateway is not enabled, so model routers are not registered", nil)
 	}
 	gateway, err := r.Agents.aiGatewayClient(ctx)
 	if err == nil {
@@ -387,7 +431,7 @@ func (r *TeamModelRouterReconciler) Reconcile(ctx context.Context, request ctrl.
 	}
 	if err != nil {
 		if team != nil {
-			_ = r.report(ctx, team, nil, nil, "The AI Gateway cannot be reached; model routers are checked again shortly")
+			_ = r.report(ctx, team, nil, nil, "The AI Gateway cannot be reached; model routers are checked again shortly", nil)
 		}
 		return ctrl.Result{}, err
 	}
@@ -434,7 +478,15 @@ func (r *TeamModelRouterReconciler) Reconcile(ctx context.Context, request ctrl.
 		})
 	}
 	if team != nil {
-		if err := r.report(ctx, team, requested, failures, ""); err != nil {
+		// The price table tells whether a copilot/<ID> tier reasons; without
+		// it, such a tier is left out of the hint.
+		var table *aigateway.PriceTable
+		if usesCopilotTiers(requested) {
+			if read, err := r.Agents.priceTable(ctx, gateway); err == nil {
+				table = &read
+			}
+		}
+		if err := r.report(ctx, team, requested, failures, "", table); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -523,7 +575,8 @@ func routerGatewayNameOf(id string) string {
 
 // report writes the Team's router status and its ModelRoutersReady
 // condition. unavailable, when set, explains why nothing could be checked.
-func (r *TeamModelRouterReconciler) report(ctx context.Context, team *api.Team, plans []modelRouterPlan, failures map[string]string, unavailable string) error {
+// table is the Gateway's price table, nil when it could not be read.
+func (r *TeamModelRouterReconciler) report(ctx context.Context, team *api.Team, plans []modelRouterPlan, failures map[string]string, unavailable string, table *aigateway.PriceTable) error {
 	before := team.DeepCopy()
 	if len(team.Spec.ModelRouters) == 0 {
 		team.Status.ModelRouters = nil
@@ -539,6 +592,10 @@ func (r *TeamModelRouterReconciler) report(ctx context.Context, team *api.Team, 
 			})
 		}
 	}
+	var shared []aiGatewayCatalogModel
+	if len(plans) > 0 {
+		shared, _ = r.Agents.aiGatewayCatalog.shared()
+	}
 	for _, plan := range plans {
 		status := api.TeamModelRouterStatus{Name: plan.router.Name, GatewayModel: plan.gatewayName, Ready: true}
 		switch {
@@ -552,6 +609,7 @@ func (r *TeamModelRouterReconciler) report(ctx context.Context, team *api.Team, 
 			problems = append(problems, status.Message)
 		} else {
 			status.SharedModels, status.CopilotModels = plan.tierModels()
+			status.NonReasoningModels = plan.nonReasoningModels(shared, table)
 		}
 		statuses = append(statuses, status)
 	}
@@ -619,6 +677,7 @@ func (r *AgentReconciler) aiGatewayModelRouterGrant(ctx context.Context, client 
 			status.Granted, status.Model = true, plan.gatewayName
 			status.ContextWindow, status.MaxTokens = modelRouterLimits(instance, plan, shared, routes)
 			status.Vision = modelRouterVision(plan, shared, routes)
+			status.Reasoning = modelRouterReasoning(plan, shared, routes)
 			groups = append(groups, plan.gatewayName)
 		}
 		statuses = append(statuses, status)
@@ -723,6 +782,31 @@ func modelRouterVision(plan modelRouterPlan, shared []aiGatewayCatalogModel, rou
 	return true
 }
 
+// modelRouterReasoning reports whether the Agent can set a reasoning effort
+// for the router, by the rule modelRouterVision applies to images: every tier
+// reasons. A tier counts as the Gateway name it is registered as: the shared
+// model of that name, when it is one, and the Agent's own Copilot routes
+// registered under it, when it has any, must all reason. A tier that is
+// neither does not.
+func modelRouterReasoning(plan modelRouterPlan, shared []aiGatewayCatalogModel, routes []api.AIGatewayCopilotRoute) bool {
+	sharedReasoning := map[string]bool{}
+	for _, model := range shared {
+		sharedReasoning[model.Name] = model.Reasoning
+	}
+	routeReasoning := aiGatewayCopilotRouteReasoning(routes)
+	for _, model := range plan.router.Tiers.Models() {
+		if name, ok := plan.tierNames[model]; ok {
+			model = name
+		}
+		fromShared, isShared := sharedReasoning[model]
+		fromRoutes, isRoute := routeReasoning[model]
+		if !isShared && !isRoute || isShared && !fromShared || isRoute && !fromRoutes {
+			return false
+		}
+	}
+	return true
+}
+
 // aiGatewayAgentTeam reads the Agent's Team for its routers; nil without one.
 func (r *AgentReconciler) aiGatewayAgentTeam(ctx context.Context, instance *api.Agent) (*api.Team, error) {
 	if instance.Spec.Team == "" {
@@ -791,6 +875,7 @@ func aiGatewayRouterEntries(instance *api.Agent) []aiGatewayModelEntry {
 			}
 			entries = append(entries, aiGatewayModelEntry{
 				ID: id, Name: router.Name, ContextWindow: router.ContextWindow, MaxTokens: router.MaxTokens, Vision: router.Vision,
+				Reasoning: router.Reasoning,
 			})
 		}
 	}
@@ -829,13 +914,17 @@ func aiGatewayRouterDefault(instance *api.Agent) string {
 
 // aiGatewayRouterRevision is the part of the Agent's model configuration the
 // routers contribute beyond their names in status.models: their names, limits
-// and whether they accept images, so a change to any rolls the configuration.
+// and whether they accept images or reason, so a change to any rolls the
+// configuration.
 func aiGatewayRouterRevision(instance *api.Agent) string {
 	var parts []string
 	for _, entry := range aiGatewayRouterEntries(instance) {
 		part := fmt.Sprintf("%s=%s:%d:%d", entry.ID, entry.Name, entry.ContextWindow, entry.MaxTokens)
 		if entry.Vision {
 			part += ":vision"
+		}
+		if entry.Reasoning {
+			part += ":reasoning"
 		}
 		parts = append(parts, part)
 	}

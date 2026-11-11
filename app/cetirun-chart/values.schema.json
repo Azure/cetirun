@@ -363,6 +363,13 @@
                     "maxItems": 256,
                     "items": {"type": "string", "minLength": 1, "maxLength": 256}
                 },
+                "reasoningModels": {
+                    "type": "array",
+                    "description": "Ids of the models in models that reason",
+                    "default": [],
+                    "maxItems": 256,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 256}
+                },
                 "hermes": {
                     "type": "object",
                     "description": "Hermes on the Gateway",

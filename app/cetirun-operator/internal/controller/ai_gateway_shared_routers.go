@@ -234,6 +234,7 @@ func (r *AgentReconciler) aiGatewaySharedRouterGrant(instance *api.Agent, policy
 	}
 	limits := r.aiGatewaySharedRouterLimits(instance)
 	vision := r.aiGatewaySharedRouterVision(instance)
+	reasoning := r.aiGatewaySharedRouterReasoning(instance)
 	for _, name := range view.names() {
 		reason := view.refusal(name, allowed)
 		if reason != "" {
@@ -246,6 +247,7 @@ func (r *AgentReconciler) aiGatewaySharedRouterGrant(instance *api.Agent, policy
 				status.Model = name
 				status.ContextWindow, status.MaxTokens = limits[name][0], limits[name][1]
 				status.Vision = vision[name]
+				status.Reasoning = reasoning[name]
 			}
 			decision.statuses = append(decision.statuses, status)
 		}
@@ -293,6 +295,27 @@ func (r *AgentReconciler) aiGatewaySharedRouterVision(instance *api.Agent) map[s
 	return vision
 }
 
+// aiGatewaySharedRouterReasoning reports, by name, whether the Agent is
+// configured to set a reasoning effort for each router configured in the
+// Gateway, by the rule aiGatewaySharedRouterVision applies to images: the
+// router's entry in the catalog reasons (fillRouterReasoning), and none of the
+// Agent's own Copilot routes under the names of the router's models does not
+// (aiGatewayRouterReasoningFolds).
+func (r *AgentReconciler) aiGatewaySharedRouterReasoning(instance *api.Agent) map[string]bool {
+	shared, known := r.aiGatewayCatalog.shared()
+	if !known {
+		return nil
+	}
+	reasoning := make(map[string]bool, len(shared))
+	for _, model := range shared {
+		reasoning[model.Name] = model.Reasoning
+	}
+	for name, reasons := range r.aiGatewayRouterReasoningFolds(shared, r.aiGatewayConfiguredCopilotRoutes(instance)) {
+		reasoning[name] = reasons
+	}
+	return reasoning
+}
+
 // withoutGroups leaves the given groups out of groups.
 func withoutGroups(groups, drop []string) []string {
 	if len(drop) == 0 {
@@ -302,21 +325,23 @@ func withoutGroups(groups, drop []string) []string {
 }
 
 // currentSharedRouterStatuses gives the granted routers configured in the
-// Gateway the limits and the image support that follow from the Agent's
-// GitHub Copilot routes as they are registered now. The grant decided them
-// before the Copilot registration of the same pass, which can add or remove
-// a route under the name of a router's model.
+// Gateway the limits, the image support and the reasoning that follow from the
+// Agent's GitHub Copilot routes as they are registered now. The grant decided
+// them before the Copilot registration of the same pass, which can add or
+// remove a route under the name of a router's model.
 func (r *AgentReconciler) currentSharedRouterStatuses(instance *api.Agent, statuses []api.AIGatewayModelRouterStatus) []api.AIGatewayModelRouterStatus {
 	if len(statuses) == 0 {
 		return statuses
 	}
 	limits, vision := r.aiGatewaySharedRouterLimits(instance), r.aiGatewaySharedRouterVision(instance)
+	reasoning := r.aiGatewaySharedRouterReasoning(instance)
 	current := slices.Clone(statuses)
 	for i := range current {
 		if current[i].Granted {
 			name := current[i].Name
 			current[i].ContextWindow, current[i].MaxTokens = limits[name][0], limits[name][1]
 			current[i].Vision = vision[name]
+			current[i].Reasoning = reasoning[name]
 		}
 	}
 	return current

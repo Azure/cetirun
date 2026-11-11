@@ -145,6 +145,19 @@ type TeamModelRouterStatus struct {
 	// model's ID: an Agent needs GitHub Copilot and that model.
 	// +optional
 	CopilotModels []string `json:"copilotModels,omitempty"`
+
+	// NonReasoningModels are the tier models, as the tiers name them, that
+	// do not reason according to the AI Gateway: a shared model whose
+	// deployments do not all report supports_reasoning, or a copilot/<ID>
+	// tier whose GitHub Copilot model does not reason or whose reasoning
+	// effort the Copilot proxy does not pass on. A copilot/<ID> tier is
+	// listed only when the Gateway's price table can tell. Agents do not
+	// offer reasoning levels for the router, and the Gateway removes
+	// reasoning settings from the requests that the router sends to a shared
+	// model that does not reason. This is a hint: the router is registered
+	// and granted as usual.
+	// +optional
+	NonReasoningModels []string `json:"nonReasoningModels,omitempty"`
 }
 
 // AIGatewayModelRouterStatus reports one smart-routing model for the Agent, a
@@ -195,4 +208,11 @@ type AIGatewayModelRouterStatus struct {
 	// models count too.
 	// +optional
 	Vision bool `json:"vision,omitempty"`
+
+	// Reasoning reports that the Agent is configured to set a reasoning
+	// effort for the router: every model that the router sends requests to
+	// answer reasons. The Agent's own GitHub Copilot routes under the names
+	// of these models count too.
+	// +optional
+	Reasoning bool `json:"reasoning,omitempty"`
 }

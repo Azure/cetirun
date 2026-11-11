@@ -801,6 +801,35 @@ class OpenClawGatewayProviderTests(unittest.TestCase):
         self.assertEqual(provider["models"][0]["api"], "openai-completions")
         self.assertEqual(provider["models"][0]["input"], ["text"])
         self.assertEqual(provider["models"][0]["cost"], {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0})
+        # Without aiGateway.reasoningModels, no model reasons.
+        self.assertIs(provider["models"][0]["reasoning"], False)
+        self.assertNotIn("compat", provider["models"][0])
+
+    def test_models_that_reason_send_their_reasoning_effort(self):
+        values = reasoning_values()
+        provider = rendered_openclaw_config(values)["models"]["providers"]["cetirun"]
+        models = {model["id"]: model for model in provider["models"]}
+        self.assertIs(models["gpt-5.4-nano"]["reasoning"], True)
+        self.assertEqual(models["gpt-5.4-nano"]["compat"], {"supportsReasoningEffort": True})
+        self.assertIs(models["gpt-4.1-mini"]["reasoning"], False)
+        self.assertNotIn("compat", models["gpt-4.1-mini"])
+
+    def test_reasoning_models_must_be_model_ids(self):
+        values = reasoning_values()
+        values["aiGateway"]["reasoningModels"] = [""]
+        render(RUNTIME_CHART, values, error="reasoningModels")
+
+
+def reasoning_values():
+    # gpt-5.4-nano reasons and gpt-4.1-mini does not, as the operator reads
+    # them from the Gateway.
+    values = native_values()
+    values["aiGateway"]["models"] = [
+        {"id": "gpt-5.4-nano", "name": "gpt-5.4-nano"}, {"id": "gpt-4.1-mini", "name": "gpt-4.1-mini"},
+    ]
+    values["aiGateway"]["reasoningModels"] = ["gpt-5.4-nano"]
+    values["secrets"]["model"] = "gpt-5.4-nano"
+    return values
 
 
 @unittest.skipUnless(shutil.which("helm") and os.environ.get("CETIRUN_OPENCLAW_BIN"),
@@ -834,6 +863,15 @@ class OpenClawDoctorKeepsGatewayModelNamesTests(unittest.TestCase):
         names = gateway_model_names(self.doctor(config), "openai")
         self.assertNotIn("openai/gpt-4.1-mini", [names["primary"], *names["allow"], *names["models"]])
         self.assertNotIn("gpt-4.1-mini", names["catalog"])
+
+    def test_doctor_keeps_what_each_model_says_about_reasoning(self):
+        # The doctor removes compat values that a provider catalog of its own
+        # also sets; it has none for the provider cetirun.
+        config = rendered_openclaw_config(reasoning_values())
+        expected = {model["id"]: (model["reasoning"], model.get("compat"))
+                    for model in config["models"]["providers"]["cetirun"]["models"]}
+        doctored = self.doctor(config)["models"]["providers"]["cetirun"]["models"]
+        self.assertEqual({model["id"]: (model["reasoning"], model.get("compat")) for model in doctored}, expected)
 
 
 if __name__ == "__main__":

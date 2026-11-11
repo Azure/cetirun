@@ -405,6 +405,16 @@ The chart does not set LiteLLM's `drop_params`. If it is set, each 400 becomes
 a request that is sent without the reasoning effort, and nothing tells the
 client.
 
+LiteLLM also reports for each deployment if its model reasons, as
+`supports_reasoning` in `/model/info`. It takes this value in the same way as
+`supports_vision` (refer to [Images](#images)). With `operatorIntegration`, the
+CetiRun operator reads this value. OpenClaw then offers reasoning levels, and
+sends a reasoning effort, only for the models that reason. Refer to
+[Serving CetiRun Agents](#serving-cetirun-agents). An `azure/` deployment under
+a name of your own needs `base_model` for this too. With only
+`supports_reasoning: true`, OpenClaw sends the effort on Chat Completions, and
+the guard removes it. The model then reasons at its default effort.
+
 ### Images
 
 LiteLLM reports for each deployment if its model accepts images, as
@@ -417,8 +427,8 @@ OpenAI-compatible endpoint.
 
 With `operatorIntegration`, the CetiRun operator reads this value. OpenClaw and
 Hermes then send images with a request to the models that accept them. For the
-other models, OpenClaw uses its own model catalog, and Hermes has a model
-describe each image first. Refer to
+other models, OpenClaw sends only text, and another model that accepts images
+describes each image. Hermes has a model describe each image first. Refer to
 [Serving CetiRun Agents](#serving-cetirun-agents).
 
 ## Budgets and unpriced models
@@ -2044,6 +2054,31 @@ images when it selects a model (LiteLLM's `modality_routing` is off). As a
 result, a request with images can go to any of these models. A model that does
 not accept images can refuse the request. Agents do not send images to a router
 whose configuration the operator cannot read completely.
+
+The operator configures OpenClaw to offer reasoning levels for a model, and to
+send a reasoning effort, by the rules for images. It reads
+`supports_reasoning` ([Reasoning models](#reasoning-models)). Every shared
+deployment of the name, and the Agent's own Copilot route under the name, must
+reason. For a router, every model of its tiers, its default model, and its
+context compaction model must reason. The operator logs the routers configured
+in the Gateway whose models only partly reason. OpenClaw offers no reasoning
+levels for a router whose configuration the operator cannot read completely.
+
+A Copilot route reasons when the price table entry that it is billed as reports
+`supports_reasoning`, and its model is a Claude or GPT model. The Agent's
+Copilot proxy uses LiteLLM's `github_copilot` provider, which takes a reasoning
+effort only for Claude and GPT models. For the other models, such as Gemini and
+Grok, it refuses the request with a 400 (`UnsupportedParamsError`), also when
+the table says that they reason. For each Team router, the Team status lists
+the tiers that do not reason (`status.modelRouters[].nonReasoningModels`).
+Hermes does not read this information. It sends its own reasoning effort to
+each model.
+
+Under one Gateway model name, deployments can differ in reasoning support. The
+guard keeps the reasoning parameters when any candidate deployment reasons.
+LiteLLM can then still answer 400 when it picks a deployment that does not
+reason. Do not put such models under one name. By the rules above, OpenClaw
+sends no reasoning settings for such a name.
 
 LiteLLM validates a key against the requested model only. A fallback that is
 configured for the Gateway in `router_settings` or in the console is selected

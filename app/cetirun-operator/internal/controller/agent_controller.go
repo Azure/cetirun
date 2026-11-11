@@ -983,6 +983,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		}
 		r.applyCopilotChartValues(helmValues, instance, prepared)
 		r.applyAIGatewayVisionModels(helmValues, instance, prepared)
+		r.applyAIGatewayReasoningModels(helmValues, instance, prepared)
 		{
 			secret := &corev1.Secret{}
 			if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: instance.Spec.GatewayTokenSecretRef}, secret); err != nil {

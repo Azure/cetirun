@@ -140,6 +140,7 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 			delete(proxy, "replicaCount")
 		}
 		delete(gateway, "visionModels")
+		delete(gateway, "reasoningModels")
 	}
 	assets := map[string]*[]byte{"values.schema.json": &chrt.Schema}
 	for _, files := range [][]*chart.File{chrt.Files, chrt.Templates} {
@@ -152,8 +153,21 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 	}
 
 	// Reverse the rename of the Gateway provider from openai to cetirun first:
-	// the reversals below start from the text before it.
+	// the reversals below start from the text before it. The models' reasoning
+	// came after the rename, so it goes first of all.
 	for _, replacement := range [][2]string{
+		{`{{- /* A model the Gateway reports as reasoning gets OpenClaw's reasoning
+   levels, and OpenClaw sends the level the owner picks as its reasoning
+   effort, which by default it does not send to an address such as the
+   Gateway's. The other models offer only the level off. */}}
+{{- if has .id (dig "reasoningModels" (list) $.Values.aiGateway) }}
+{{- $_ := set $entry "reasoning" true }}
+{{- $_ := set $entry "compat" (dict "supportsReasoningEffort" true) }}
+{{- else }}
+{{- $_ := set $entry "reasoning" false }}
+{{- end }}
+`, ""},
+		{`"input" (list "text") "reasoning" false)`, `"input" (list "text"))`},
 		{`{{- /* The Gateway is the provider cetirun, not openai: OpenClaw's doctor
    rewrites the model names of the provider openai that OpenClaw thinks are
    retired, such as gpt-4.1-mini, in the configuration and in the provider's
@@ -515,6 +529,14 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 			{`                "visionModels": {
                     "type": "array",
                     "description": "Ids of the models in models that accept images",
+                    "default": [],
+                    "maxItems": 256,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 256}
+                },
+`, ""},
+			{`                "reasoningModels": {
+                    "type": "array",
+                    "description": "Ids of the models in models that reason",
                     "default": [],
                     "maxItems": 256,
                     "items": {"type": "string", "minLength": 1, "maxLength": 256}

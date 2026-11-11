@@ -255,6 +255,7 @@ The Operator supplies this contract:
 | `aiGateway.enabled: true`, `keySecretName`, `keySecretKey` | The Agent's virtual key, passed as `OPENAI_API_KEY` through a Secret reference only in the main container |
 | `aiGateway.models`, `secrets.provider: openai`, `secrets.model`, `secrets.apiBase` | The authorized model list, default, and Gateway endpoint. If an endpoint is not set, or a default is outside that list, the render fails |
 | `aiGateway.visionModels` | The IDs of the models that accept images. OpenClaw gets `input: ["text", "image"]` and Hermes gets `supports_vision: true` for these models only |
+| `aiGateway.reasoningModels` | The IDs of the models that reason. OpenClaw gets `reasoning: true` and `compat.supportsReasoningEffort: true` for these models, and `reasoning: false` for the others. Hermes does not read this value |
 | `openclaw.config.gateway` | Controller-selected ingress/auth configuration, copied without persisted auth overrides on each native start |
 
 Protected Gateway traffic uses compiler-owned network policy. As a result,

@@ -134,6 +134,35 @@ it("removes a router", async () => {
   expect(vi.mocked(teams.updateTeam).mock.calls[0][1].modelRouters).toBeUndefined();
 });
 
+it("names the tiers that do not reason, as a hint that does not block saving", async () => {
+  vi.mocked(teams.getTeam).mockResolvedValue({ ...team,
+    modelRouters: [...team.modelRouters!, { name: "auto-thinks", classifier: "heuristic", simple: "large-model", medium: "large-model", complex: "large-model" }],
+    modelRouterStatus: [{ name: "auto", ready: true, nonReasoningModels: ["copilot/fast-model", "small-model"] }, { name: "auto-thinks", ready: true }],
+  });
+  const user = userEvent.setup(); renderEditor();
+  const router = await screen.findByRole("group", { name: "Smart-routing model 1" });
+  expect(await within(router).findByText(
+    "These models do not reason: copilot/fast-model, small-model. Agents do not offer reasoning levels for this router. " +
+    "The AI Gateway removes reasoning settings from the requests that the router sends to a shared model that does not reason.",
+  )).toBeInTheDocument();
+  expect(within(router).getByText("Registered in the AI Gateway.")).toBeInTheDocument();
+  // A router whose tiers all reason gets no hint.
+  expect(within(screen.getByRole("group", { name: "Smart-routing model 2" })).queryByText(/do not reason/)).not.toBeInTheDocument();
+  await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(teams.updateTeam).toHaveBeenCalledOnce());
+});
+
+it("shows no reasoning hint for a router that is not registered", async () => {
+  vi.mocked(teams.getTeam).mockResolvedValue({ ...team,
+    modelRouterStatus: [{ name: "auto", ready: false, message: "router auto: registration in the AI Gateway failed", nonReasoningModels: ["small-model"] }],
+  });
+  renderEditor();
+  const router = await screen.findByRole("group", { name: "Smart-routing model 1" });
+  expect(await within(router).findByText(/registration in the AI Gateway failed/)).toBeInTheDocument();
+  expect(within(router).queryByText(/do not reason/)).not.toBeInTheDocument();
+});
+
 it("checks routers the way the Team API does", () => {
   const router = { name: "auto", simple: "a", medium: "b", complex: "c" };
   expect(modelRouterProblem([router])).toBeNull();

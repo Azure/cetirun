@@ -83,8 +83,11 @@ func TestOpenClawNamesTheGatewayProviderCetirun(t *testing.T) {
 		if model["api"] != "openai-completions" || !reflect.DeepEqual(model["cost"], zero) || !reflect.DeepEqual(model["input"], wantInput[id]) {
 			t.Fatalf("model %s = %v", id, model)
 		}
-		if _, set := model["reasoning"]; set {
-			t.Fatalf("model %s states reasoning, which the chart does not know: %v", id, model)
+		if model["reasoning"] != false {
+			t.Fatalf("model %s must state that it does not reason: %v", id, model)
+		}
+		if _, set := model["compat"]; set {
+			t.Fatalf("model %s = %v", id, model)
 		}
 	}
 	defaults := openClawAgentDefaults(t, rendered)
@@ -199,6 +202,104 @@ func TestVisionModelsMustBeModelIDs(t *testing.T) {
 	} {
 		input := routerInput("openclaw")
 		input["aiGateway"].(map[string]any)["visionModels"] = value
+		if _, err := renderAIGateway(t, input); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// reasoningInput is routerInput with the router marked as reasoning, and the
+// other model not.
+func reasoningInput(agentType string, reasoning ...any) map[string]any {
+	input := routerInput(agentType)
+	// The operator sends an empty list, not null, when no model reasons.
+	input["aiGateway"].(map[string]any)["reasoningModels"] = append([]any{}, reasoning...)
+	return input
+}
+
+// A model the operator lists as reasoning gets OpenClaw's reasoning levels,
+// and OpenClaw sends the effort to the Gateway: reasoning true and
+// compat.supportsReasoningEffort true, which OpenClaw does not assume for a
+// Gateway address. The others get reasoning false, so OpenClaw offers only
+// the level off. Hermes' configuration does not change. Both renderers read
+// the same template.
+func TestOpenClawReasonsWithTheModelsThatReason(t *testing.T) {
+	for _, renderer := range []struct {
+		name   string
+		render func(*testing.T, map[string]any) (map[string]string, error)
+	}{{"standalone", renderStandalone}, {"prepared", renderAIGateway}} {
+		t.Run(renderer.name, func(t *testing.T) {
+			rendered, err := renderer.render(t, reasoningInput("openclaw", testRouterGatewayModel))
+			if err != nil {
+				t.Fatal(err)
+			}
+			models := map[string]map[string]any{}
+			for _, entry := range openClawProvider(t, rendered)["models"].([]any) {
+				model := entry.(map[string]any)
+				models[model["id"].(string)] = model
+			}
+			router, other := models[testRouterGatewayModel], models["gpt-6-sol"]
+			if router["reasoning"] != true || !reflect.DeepEqual(router["compat"], map[string]any{"supportsReasoningEffort": true}) {
+				t.Fatalf("OpenClaw router = %v", router)
+			}
+			if _, set := other["compat"]; other["reasoning"] != false || set {
+				t.Fatalf("OpenClaw model = %v", other)
+			}
+			// No model reasons: every model states it.
+			rendered, err = renderer.render(t, reasoningInput("openclaw"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range openClawProvider(t, rendered)["models"].([]any) {
+				if model := entry.(map[string]any); model["reasoning"] != false {
+					t.Fatalf("OpenClaw model = %v", model)
+				}
+			}
+			// Hermes does not read the value.
+			with, err := renderer.render(t, reasoningInput("hermes", testRouterGatewayModel))
+			if err != nil {
+				t.Fatal(err)
+			}
+			without := routerInput("hermes")
+			before, err := renderer.render(t, without)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if with["cetirun/templates/configmap.yaml"] != before["cetirun/templates/configmap.yaml"] {
+				t.Fatal("Hermes: the reasoning models changed the configuration")
+			}
+		})
+	}
+}
+
+// A default model that the Gateway does not list for the Agent, such as the
+// placeholder of an Agent without models, does not reason.
+func TestOpenClawUnlistedDefaultModelDoesNotReason(t *testing.T) {
+	input := reasoningInput("openclaw", testRouterGatewayModel)
+	input["secrets"].(map[string]any)["model"] = "no-models-available"
+	rendered, err := renderAIGateway(t, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range openClawProvider(t, rendered)["models"].([]any) {
+		if model := entry.(map[string]any); model["id"] == "no-models-available" && model["reasoning"] != false {
+			t.Fatalf("placeholder = %v", model)
+		} else if model["id"] == "no-models-available" {
+			return
+		}
+	}
+	t.Fatal("the placeholder is not listed")
+}
+
+// The chart refuses what the operator never sends.
+func TestReasoningModelsMustBeModelIDs(t *testing.T) {
+	for name, value := range map[string]any{
+		"an empty ID": []any{""},
+		"not a list":  testRouterGatewayModel,
+		"not strings": []any{7},
+	} {
+		input := routerInput("openclaw")
+		input["aiGateway"].(map[string]any)["reasoningModels"] = value
 		if _, err := renderAIGateway(t, input); err == nil {
 			t.Errorf("%s: accepted", name)
 		}

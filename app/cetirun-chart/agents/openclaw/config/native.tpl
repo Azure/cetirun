@@ -135,13 +135,23 @@ Licensed under the MIT License.
 {{- else }}
 {{- $_ := set $entry "input" (list "text") }}
 {{- end }}
+{{- /* A model the Gateway reports as reasoning gets OpenClaw's reasoning
+   levels, and OpenClaw sends the level the owner picks as its reasoning
+   effort, which by default it does not send to an address such as the
+   Gateway's. The other models offer only the level off. */}}
+{{- if has .id (dig "reasoningModels" (list) $.Values.aiGateway) }}
+{{- $_ := set $entry "reasoning" true }}
+{{- $_ := set $entry "compat" (dict "supportsReasoningEffort" true) }}
+{{- else }}
+{{- $_ := set $entry "reasoning" false }}
+{{- end }}
 {{- if eq .id $model }}
 {{- $listed = true }}
 {{- end }}
 {{- $providerModels = append $providerModels $entry }}
 {{- end }}
 {{- if not $listed }}
-{{- $providerModels = append $providerModels (dict "id" $model "name" $model "api" "openai-completions" "cost" $zeroCost "input" (list "text")) }}
+{{- $providerModels = append $providerModels (dict "id" $model "name" $model "api" "openai-completions" "cost" $zeroCost "input" (list "text") "reasoning" false) }}
 {{- end }}
 {{- $providerEntry := dict "baseUrl" .Values.secrets.apiBase "api" "openai-completions" "models" $providerModels }}
 {{- if $gatewayRouted }}

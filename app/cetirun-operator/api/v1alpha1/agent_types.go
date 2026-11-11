@@ -591,6 +591,15 @@ type AIGatewayCopilotRoute struct {
 	// accepts them.
 	// +optional
 	Vision bool `json:"vision,omitempty"`
+
+	// Reasoning reports that the Agent can set a reasoning effort for the
+	// model: the Gateway's price table says that the entry the route is
+	// billed as reasons, and the Agent's GitHub Copilot proxy passes a
+	// reasoning effort on for the model, which it does for Claude and GPT
+	// models only. The Agent is configured to set a reasoning effort for Name
+	// only when every model behind Name reasons.
+	// +optional
+	Reasoning bool `json:"reasoning,omitempty"`
 }
 
 // GitHub Copilot proxy phases.
@@ -731,6 +740,11 @@ type AIGatewayCatalogModel struct {
 	// the name has supports_vision in its model info, and for a router, every
 	// model it sends requests to answer does.
 	Vision bool `json:"vision,omitempty"`
+	// Reasoning reports that the model reasons, so that an Agent can set a
+	// reasoning effort for it: every deployment behind the name has
+	// supports_reasoning in its model info, and for a router, every model it
+	// sends requests to answer does.
+	Reasoning bool `json:"reasoning,omitempty"`
 }
 
 // SandboxStatus records the binding and revision last verified for an Agent.

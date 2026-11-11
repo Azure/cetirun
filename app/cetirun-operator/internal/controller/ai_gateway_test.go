@@ -88,8 +88,10 @@ type fakeAIGateway struct {
 	deletedModels     []string
 	shared            []aigateway.Deployment
 	priced            map[string]bool
-	// vision are the price table's names whose models accept images.
+	// vision are the price table's names whose models accept images, and
+	// reasoning those whose models reason.
 	vision    map[string]bool
+	reasoning map[string]bool
 	listCalls int
 	// listErr fails ListModels, and priceErr fails PriceTable.
 	listErr  error
@@ -278,7 +280,7 @@ func (f *fakeAIGateway) ListModels(context.Context) ([]aigateway.Deployment, err
 			FromDatabase: true, DatabaseSourceKnown: true, Priced: true,
 			Model: model.Model, BaseModel: model.BaseModel, Routing: model.Routing,
 			// LiteLLM reports the price table's value for the base model.
-			Vision: f.vision[model.BaseModel],
+			Vision: f.vision[model.BaseModel], Reasoning: f.reasoning[model.BaseModel],
 		})
 	}
 	return deployments, nil
@@ -309,7 +311,7 @@ func (f *fakeAIGateway) PriceTable(context.Context) (aigateway.PriceTable, error
 	if f.priceErr != nil {
 		return aigateway.PriceTable{}, f.priceErr
 	}
-	return aigateway.PriceTable{Priced: f.priced, Vision: f.vision}, nil
+	return aigateway.PriceTable{Priced: f.priced, Vision: f.vision, Reasoning: f.reasoning}, nil
 }
 
 func (f *fakeAIGateway) BlockUnpricedModels(context.Context) (bool, error) {

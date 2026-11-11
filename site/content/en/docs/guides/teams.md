@@ -265,6 +265,14 @@ and reports it on the Team. `status.modelRouters` lists each router as ready,
 or shows why it is not ready. The `ModelRoutersReady` condition summarizes
 them.
 
+For a ready router, `status.modelRouters[].nonReasoningModels` lists the tier
+models that do not reason. The Team page in the Portal shows them with the
+router. OpenClaw instances then offer no reasoning levels for the router. The
+Gateway removes reasoning settings from the requests that the router sends to a
+shared model that does not reason. This list is only a hint. The router is
+registered and granted as usual. Refer to
+[Reasoning](../models/#reasoning).
+
 A router is not registered while any of these conditions is true:
 
 - A tier or the classifier names a model that the Gateway does not offer as a
@@ -327,9 +335,10 @@ An instance that cannot use a router reports the reason in
 change to the tiers or the classifier of a router updates instance keys and
 registrations. It does not change the Policy's Gateway projection. Each change
 to a Team, its routers included, restarts the Team's running Sandbox Agents one
-time. The Team is an input of their Sandbox. Only the limits that the instance
-is configured with for the router follow the tiers, as described in
-[Choose a model](../models/#smart-routing-models).
+time. The Team is an input of their Sandbox. The limits that the instance is
+configured with for the router follow the tiers, as described in
+[Choose a model](../models/#smart-routing-models). Whether the instance sends
+images or a reasoning effort to the router also follows the tiers.
 
 Without a LiteLLM license, LiteLLM limits some router features to a single
 router per Gateway. These features are:

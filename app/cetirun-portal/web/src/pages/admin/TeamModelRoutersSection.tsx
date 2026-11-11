@@ -144,6 +144,15 @@ export function TeamModelRoutersSection({ routers, status, sharedModels, decisio
                   placeholder={tier.key === "simple" ? "shared model or copilot/<model>" : undefined} />
               </Field>
             ))}
+            {report?.ready && report.nonReasoningModels && report.nonReasoningModels.length > 0 && (
+              <div style={{ gridColumn: "1 / span 2" }}>
+                <MessageBar intent="info">
+                  {`These models do not reason: ${report.nonReasoningModels.join(", ")}. Agents do not offer reasoning levels ` +
+                    "for this router. The AI Gateway removes reasoning settings from the requests that the router sends to a " +
+                    "shared model that does not reason."}
+                </MessageBar>
+              </div>
+            )}
             <div style={{ gridColumn: "1 / span 2", display: "flex", alignItems: "center", gap: 12 }}>
               {report && (report.ready
                 ? <Text size={200}>Registered in the AI Gateway.</Text>
