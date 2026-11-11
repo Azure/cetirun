@@ -15,15 +15,22 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Azure/CetiRun/app/internal/agenttools"
 )
 
 func stageOAuthTransaction(t *testing.T, f *authorizationFixture, tx *connectionTransaction) string {
 	t.Helper()
 	id := "oauth-" + tx.StateHash[:40]
 	tx.Status = "pending"
-	record := &connectionRecord{Connection: Connection{ID: id, Owner: f.grant.Owner, Provider: tx.Provider, Mode: modeDelegated, Revision: 1}, Transaction: tx}
+	record := &connectionRecord{Connection: Connection{ID: id, Owner: f.grant.Owner, Provider: tx.Provider, Mode: connectionMode(Connection{Mode: tx.Mode}), Revision: 1}, Transaction: tx}
 	if err := f.server.store.putOAuthRecord(context.Background(), "authorization", record, ""); err != nil {
 		t.Fatal(err)
+	}
+	if tx.TargetConnectionID != "" {
+		if err := f.server.store.beginReconnect(context.Background(), f.grant.Owner, *tx); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return id
 }
@@ -102,6 +109,10 @@ func TestOAuthStartIsIndependentAndReconnectCancellationPreservesCredential(t *t
 		t.Fatal("reconnect did not start")
 	}
 	after, _, _ := f.server.store.getConnection(context.Background(), before.Connection.ID)
+	if after.CurrentAuthorizationID != start.AuthorizationID {
+		t.Fatal("reconnect did not register its current authorization")
+	}
+	after.CurrentAuthorizationID = ""
 	if !reflect.DeepEqual(before, after) {
 		t.Fatal("starting reconnect modified the live connection")
 	}
@@ -222,6 +233,13 @@ func TestUsageIncludesBindingsOfDeletingAndUnsupportedAgents(t *testing.T) {
 				f.agent.Spec.SandboxRef = "shared"
 			case "unsupported":
 				f.agent.Spec.Agent.Type = "custom"
+				agent := agentFromDocument(f.agent)
+				immutable := true
+				f.customReceipt = &configMapDocument{Immutable: &immutable, Data: map[string]string{"ownership": `{"agentName":"agent","agentUID":"` + agent.UID + `","namespace":"agents","namespaceUID":"namespace-agent"}`}}
+				f.customReceipt.Metadata.Name = agenttools.CustomOwnershipRecordName(agent.UID)
+				f.customReceipt.Metadata.Namespace = "cetirun-system"
+				f.customReceipt.Metadata.OwnerReferences = []ownerReference{agentRecordOwner(agent)}
+				f.store.nativeOperatorNamespace = "cetirun-system"
 			}
 			usage, err := f.store.usage(ctx, connection)
 			if err != nil || usage.CanRemove || len(usage.Agents) != 1 || usage.Agents[0].InstanceUID != namespaceAgentUID {

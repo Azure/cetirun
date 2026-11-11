@@ -10,9 +10,18 @@ import (
 )
 
 func TestHermesOwnerAuthorizedChild(t *testing.T) {
+	testOwnerAuthorizedChild(t, "hermes")
+}
+
+func TestOpenClawOwnerAuthorizedChild(t *testing.T) {
+	testOwnerAuthorizedChild(t, "openclaw")
+}
+
+func testOwnerAuthorizedChild(t *testing.T, entrypoint string) {
+	t.Helper()
 	f := newFixture(t)
 	b := nativeBinding(f)
-	b.Entrypoint, b.ParentSessionID = "hermes", "owner-parent"
+	b.Entrypoint, b.ParentSessionID = entrypoint, "owner-parent"
 	// Exercise the native wire contract so an older helper fails closed.
 	if err := json.Unmarshal([]byte(`{"ownerAuthorizedChild":true}`), &b); err != nil {
 		t.Fatal(err)
@@ -27,6 +36,7 @@ func TestHermesOwnerAuthorizedChild(t *testing.T) {
 	for _, mutate := range []func(*NativeBinding){
 		func(x *NativeBinding) { x.Entrypoint = "custom" },
 		func(x *NativeBinding) { x.ParentSessionID = "" },
+		func(x *NativeBinding) { x.ParentSessionID = x.SessionID },
 		func(x *NativeBinding) { x.Audience = "unknown" },
 		func(x *NativeBinding) { x.NoMemory = true },
 		func(x *NativeBinding) { x.Evaluation = true },

@@ -44,6 +44,19 @@ class PortalChatChartTests(unittest.TestCase):
         self.assertFalse(any("networkpolicies" in rule["resources"] for role in roles for rule in role["rules"]))
         self.assertFalse(any(value["kind"] == "Role" and value["metadata"]["name"].endswith("-chat-mtls") for value in objects))
 
+    def test_suspension_reader_is_scoped_without_chat(self):
+        objects = self.render(ROOT / "app/cetirun-portal/chart", {
+            "istio": {"host": "portal.example.com"},
+            "chat": {"sandboxStateNamespace": "operator-state"},
+        })
+        role = next(value for value in objects if value["kind"] == "Role" and value["metadata"]["name"] == "cetirun-portal-suspension-state")
+        self.assertEqual(role["metadata"]["namespace"], "operator-state")
+        self.assertEqual(role["rules"], [{"apiGroups": [""], "resources": ["configmaps"], "verbs": ["get"]}])
+        binding = next(value for value in objects if value["kind"] == "RoleBinding" and value["metadata"]["name"] == role["metadata"]["name"])
+        self.assertEqual(binding["metadata"]["namespace"], "operator-state")
+        self.assertEqual(binding["roleRef"], {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": role["metadata"]["name"]})
+        self.assertEqual(binding["subjects"], [{"kind": "ServiceAccount", "name": "cetirun-portal", "namespace": "test-platform"}])
+
     def test_enabled_portal_has_scoped_reader_and_no_retry_route(self):
         objects = self.render(ROOT / "app/cetirun-portal/chart", {"istio": {"host": "portal.example.com"}, "chat": {"enabled": True, "identityRealm": "synthetic"}})
         env = self.deployment_env(objects, "cetirun-portal")

@@ -92,6 +92,7 @@ type connectionTransaction struct {
 }
 
 type connectionRecord struct {
+	CurrentAuthorizationID string `json:"currentAuthorizationId,omitempty"`
 	// A verified installation selection is locked before claiming its account
 	// index. The connection remains unbindable until canonicalization completes.
 	PendingInstallation *agenttools.GitHubInstallation `json:"pendingInstallation,omitempty"`

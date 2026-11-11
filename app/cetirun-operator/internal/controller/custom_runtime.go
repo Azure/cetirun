@@ -299,6 +299,13 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 	if err := r.ensureCustomOwnership(ctx, instance, bindings, current); err != nil {
 		return r.customWaiting(ctx, instance, "CustomOwnershipConflict", err.Error())
 	}
+	// Ordinary Custom does not receive a Connections MCP runtime endpoint, but
+	// the Broker still owns its per-Agent binding records. Reconcile this after
+	// the immutable ownership receipt exists so the Broker can prove the
+	// namespace without changing Custom namespace garbage collection semantics.
+	if err := r.reconcileConnectionsMCPBrokerRBAC(ctx, instance, true); err != nil {
+		return r.customWaiting(ctx, instance, "BrokerStorageAccessFailed", "Broker storage access setup failed")
+	}
 	if current != nil &&
 		strings.HasPrefix(instance.Status.ObservedOperatorHash, prepared.PlanHash+":") &&
 		instance.Status.ObservedOperatorHash != prepared.CacheKey() {

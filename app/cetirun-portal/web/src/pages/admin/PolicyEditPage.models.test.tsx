@@ -8,6 +8,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PolicyEditPage } from "./PolicyEditPage";
 import * as policyAPI from "../../api/adminPolicy";
+import * as teamAPI from "../../api/adminTeam";
 import * as gatewayAPI from "../../api/aiGateway";
 
 vi.mock("../../api/adminPolicy", async (importOriginal) => ({
@@ -15,6 +16,7 @@ vi.mock("../../api/adminPolicy", async (importOriginal) => ({
   createPolicy: vi.fn(), getPolicy: vi.fn(), updatePolicy: vi.fn(),
 }));
 vi.mock("../../api/aiGateway");
+vi.mock("../../api/adminTeam");
 
 const catalog: gatewayAPI.AIGatewayCatalog = {
   known: true, githubCopilot: true, agentTypes: ["openclaw"], decisionModels: ["decision-model"],
@@ -52,6 +54,7 @@ const selected = () => within(screen.getByRole("list", { name: "Selected shared 
 
 describe("Policy model selection", () => {
   beforeEach(() => {
+    vi.mocked(teamAPI.listTeams).mockReset().mockResolvedValue([]);
     vi.mocked(gatewayAPI.getAIGatewayCatalog).mockReset().mockResolvedValue(catalog);
     vi.mocked(policyAPI.getPolicy).mockReset();
     vi.mocked(policyAPI.createPolicy).mockReset().mockResolvedValue(policy);
@@ -190,4 +193,44 @@ describe("Policy model selection", () => {
     await waitFor(() => expect(policyAPI.updatePolicy).toHaveBeenCalledOnce());
     expect(vi.mocked(policyAPI.updatePolicy).mock.calls[0][1].modelAccess?.sharedModels?.allowed).toEqual(["gpt-main", "gpt-mini"]);
   });
+  it("selects and persists only linked Team router aliases without granting their tiers", async () => {
+    const team = (name: string, agentPolicyRef: string, routerName = "team-auto", ready = true): teamAPI.TeamDTO => ({
+      name, uid: `${name}-uid`, resourceVersion: "1", generation: 1, agentPolicyRef,
+      sandboxRefs: [], defaultSandboxRef: "", modelRouters: [{ name: routerName, simple: "gpt-mini", medium: "gpt-main", complex: "gpt-main" }],
+      modelRouterStatus: [{ name: routerName, ready }],
+    });
+    vi.mocked(teamAPI.listTeams).mockResolvedValue([
+      team("linked", policy.name), team("second", policy.name), team("other", "other-policy", "foreign-auto"),
+      team("pending", policy.name, "pending-auto", false), { ...team("deleted", policy.name, "deleted-auto"), deleting: true },
+    ]);
+    const user = userEvent.setup();
+    renderEditor(policy);
+    await waitFor(() => expect(teamAPI.listTeams).toHaveBeenCalledOnce());
+    await user.click(picker());
+    expect(screen.queryByRole("menuitemcheckbox", { name: /foreign-auto|deleted-auto/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("menuitemcheckbox", { name: /team-auto/ })).toHaveLength(1);
+    expect(screen.getByText("Team linked: registered; Team second: registered")).toBeInTheDocument();
+    expect(screen.getByText("Team pending: registration pending")).toBeInTheDocument();
+    await user.click(screen.getByRole("menuitemcheckbox", { name: /team-auto/ }));
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Save", exact: true }));
+    await waitFor(() => expect(policyAPI.updatePolicy).toHaveBeenCalledOnce());
+    expect(vi.mocked(policyAPI.updatePolicy).mock.calls[0][1].modelAccess?.sharedModels?.allowed)
+      .toEqual(["gpt-main", "team-auto"]);
+  });
+
+  it("keeps a selected Team alias through discovery failure and recovers on refresh", async () => {
+    vi.mocked(teamAPI.listTeams).mockRejectedValueOnce(new Error("Unavailable"));
+    const user = userEvent.setup();
+    renderEditor({ ...policy, modelAccess: { ...policy.modelAccess, sharedModels: { allowed: ["team-auto"] } } });
+    expect(await screen.findByText(/Failed to load Team routers/)).toBeInTheDocument();
+    expect(selected().getByText("team-auto")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refresh models" }));
+    await waitFor(() => expect(screen.queryByText(/Failed to load Team routers/)).not.toBeInTheDocument());
+    expect(selected().getByText("team-auto")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save", exact: true }));
+    await waitFor(() => expect(policyAPI.updatePolicy).toHaveBeenCalledOnce());
+    expect(vi.mocked(policyAPI.updatePolicy).mock.calls[0][1].modelAccess?.sharedModels?.allowed).toEqual(["team-auto"]);
+  });
+
 });
