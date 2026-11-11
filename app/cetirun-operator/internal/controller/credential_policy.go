@@ -20,9 +20,45 @@ import (
 	"github.com/Azure/CetiRun/app/internal/agenttools"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 const credentialPolicyReady = "CredentialPolicyReady"
+
+// Keep the disabled-policy v2 representation so existing identity-free Agents
+// under Disabled policies need no revision migration.
+func inactiveCredentialPolicyRevision(policyUID types.UID, identity api.AgentPolicyAgentIdentity) (string, error) {
+	return policyHash(struct {
+		Version   string                       `json:"version"`
+		PolicyUID types.UID                    `json:"policyUID"`
+		Enabled   bool                         `json:"enabled"`
+		Identity  api.AgentPolicyAgentIdentity `json:"identity"`
+	}{"credential-policy-v2", policyUID, false, identity})
+}
+
+// Before inactive projections were normalized, Optional policies produced a
+// different v2 hash despite granting no credentials. Recognize only that exact
+// old hash for the same policy. recordPolicy persists the normalized revision;
+// the caller still verifies every other enforcement domain before continuing.
+func inactiveCredentialRevisionUpgrade(agent *api.Agent, resolution *policyResolution) bool {
+	if agentIdentityRequested(agent) || !credentialPolicyVerified(agent, "") ||
+		resolution.policy == nil || resolution.policy.UID == "" ||
+		validatePolicyIdentity(agent, resolution.policy) != nil {
+		return false
+	}
+	status := agent.Status.Policy
+	if status == nil || status.EffectivePolicyRef == nil || status.EffectivePolicyRef.UID != resolution.policy.UID {
+		return false
+	}
+	normalized, err := inactiveCredentialPolicyRevision(resolution.policy.UID, api.AgentPolicyAgentIdentity{})
+	if err != nil || resolution.credentialRevision != normalized {
+		return false
+	}
+	legacy, err := inactiveCredentialPolicyRevision(resolution.policy.UID, api.AgentPolicyAgentIdentity{
+		Allowed: true, CredentialServices: []string{"azure-resource-manager"},
+	})
+	return err == nil && status.Enforcement.Credential.DesiredRevision == legacy
+}
 
 func credentialPolicyProjection(agent *api.Agent, team *api.Team, policy *api.AgentPolicy) agenttools.CredentialPolicy {
 	projection := agenttools.CredentialPolicy{
