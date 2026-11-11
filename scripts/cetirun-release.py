@@ -102,8 +102,8 @@ def runtime_chart_lock_inputs():
 
 
 def require_license(images):
-    if any(entry["name"] == "cetirun-vscode" for entry in images) and os.environ.get("ACCEPT_VSCODE_SERVER_LICENSE_TERMS") != "true":
-        raise ValueError("Set ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true after accepting the VS Code Server license; no images were built")
+    if any(entry["name"] == "cetirun-vscode" for entry in images) and os.environ.get("ACCEPT_VSCODE_SERVER_LICENSE_TERMS", "true") != "true":
+        raise ValueError("ACCEPT_VSCODE_SERVER_LICENSE_TERMS defaults to true but was overridden with a non-true value; no images were built")
 
 
 def image_env(args, entry, push):

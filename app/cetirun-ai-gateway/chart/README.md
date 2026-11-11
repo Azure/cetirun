@@ -52,9 +52,10 @@ REGISTRY=<registry> bash scripts/ai-gateway-helm-release.sh
 
 Both scripts take `<version>` from the release version of the repository,
 unless `VERSION` is set. The chart runs the image of its own version.
-`make publish REGISTRY=<registry> ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true`
+`make publish REGISTRY=<registry>`
 publishes them together with every other CetiRun image and chart, the VS Code
-Server image included. The master key, the salt key, and the console password
+Server image included. `ACCEPT_VSCODE_SERVER_LICENSE_TERMS` defaults to `true`.
+The master key, the salt key, and the console password
 are generated. Refer to [Credentials](#credentials). To call the Gateway, refer
 to [Calling the Gateway](#calling-the-gateway).
 

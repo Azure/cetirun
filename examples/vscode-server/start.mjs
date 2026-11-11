@@ -68,7 +68,7 @@ export async function configureMemoryTools(workspace, env) {
 
 export async function main() {
   if (process.argv.includes("--help")) {
-    console.log("Start the official VS Code Web example. Requires HOME, PORT, CETIRUN_WEB_BASE_PATH and CETIRUN_WEB_INSTANCE. The image builder must accept the VS Code Server license.");
+    console.log("Start the official VS Code Web example. Requires HOME, PORT, CETIRUN_WEB_BASE_PATH and CETIRUN_WEB_INSTANCE. Image builds default ACCEPT_VSCODE_SERVER_LICENSE_TERMS to true.");
     return;
   }
   if (process.argv.length > 2) throw new Error("Unknown arguments; use --help");

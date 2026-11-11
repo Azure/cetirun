@@ -820,8 +820,9 @@ separate checks. Refer to [the example](examples/vscode-server/README.md).
 
 `make build-images` and `make publish-images` include the `cetirun-pi-agent`
 demo and VS Code Server. For usage and tests, refer to
-[the Pi README](examples/pi-agent/README.md). Before any build, the full image
-set must have an explicit `ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true`.
+[the Pi README](examples/pi-agent/README.md).
+`ACCEPT_VSCODE_SERVER_LICENSE_TERMS` defaults to `true`, so image builds do not
+require a separate license-acceptance flag or prompt.
 
 ### Unified release inventory
 
@@ -841,10 +842,13 @@ assignment on the command line takes precedence. For a local test build:
 
 ```bash
 REGISTRY=registry.example.com/team/test VERSION=0.1.1-dev.1 \
-  make build-images ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true
+  make build-images
 ```
 
-Set the license acceptance only after accepting the VS Code Server terms.
+Builds accept the [VS Code Server terms](https://code.visualstudio.com/license/server)
+by default. An explicit `ACCEPT_VSCODE_SERVER_LICENSE_TERMS=false` stops builds
+that include VS Code Server; the release CLI can exclude it with
+`--exclude-image cetirun-vscode`.
 MCR is a public pull endpoint, not a push destination. Its default is used
 for local image tags and chart packaging. Local builds can shadow official
 tags in the local Docker store; use an explicit test registry prefix to keep
@@ -899,7 +903,7 @@ After registry authentication and publication authorization:
 
 ```bash
 make publish REGISTRY=registry.example.com VERSION=0.1.1 \
-  GIT_SHA="$(git rev-parse HEAD)" ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true
+  GIT_SHA="$(git rev-parse HEAD)"
 ```
 
 `publish` examines every destination image/chart tag before a build or push.
@@ -923,7 +927,7 @@ images and charts succeed. It passes the
 `ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true` value, which is already configured in
 the pipeline, to the shared driver. As a result, a new manual approval
 parameter is not necessary for the automatic tag releases that already exist.
-Local build/publish callers still supply their own explicit acceptance. The
+Local build/publish callers use the same `true` default. The
 manual-only `forcePublish` control that already exists stays separate.
 
 Offline release/deployment regressions use synthetic APIs and local Helm:

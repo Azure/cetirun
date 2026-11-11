@@ -47,9 +47,9 @@ class VSCodeExampleTests(unittest.TestCase):
             unpack.assert_not_called()
             self.assertEqual(list(Path(directory).iterdir()), [])
 
-    def test_build_requires_license_acceptance_and_retains_nonroot_entrypoint(self):
+    def test_build_defaults_to_license_acceptance_and_retains_nonroot_entrypoint(self):
         source = (EXAMPLE / "Dockerfile").read_text()
-        self.assertIn("ARG ACCEPT_VSCODE_SERVER_LICENSE_TERMS=false", source)
+        self.assertIn("ARG ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true", source)
         self.assertIn('test "$ACCEPT_VSCODE_SERVER_LICENSE_TERMS" = true', source)
         self.assertIn("USER 1024:1024", source)
         self.assertIn("LicenseRef-Microsoft-VS-Code-Server", source)
