@@ -20,8 +20,9 @@ start for your own image. Each example has a README with its full steps.
 
 ## Requirements for Custom Agent examples
 
-- An administrator enables Custom provisioning and adds the exact image digest
-  to `customRuntime.approvedImages` of the Operator. For the image contract,
+- Custom provisioning is enabled by default. An administrator adds the exact
+  image digest to `customRuntime.approvedImages` of the Operator. For the image
+  contract,
   refer to [Custom runtime](../agent-harness/#custom-runtime).
 - The image needs a registry that the cluster can pull from. Build and publish
   the image yourself, or use a published release image that your administrator

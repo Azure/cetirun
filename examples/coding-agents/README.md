@@ -112,8 +112,8 @@ maintains.
    docker push registry.example.com/team/cetirun-claude:<tag>
    ```
 
-2. Ask an administrator to enable Custom provisioning and to approve the three
-   digests in the platform values:
+2. Custom provisioning is enabled by default. Ask an administrator to approve
+   the three digests in the platform values:
 
    ```yaml
    cetirun-operator:

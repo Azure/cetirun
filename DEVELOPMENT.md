@@ -41,7 +41,7 @@ component does and how the components work together, refer to
 | `app/cetirun-connections-mcp/` | Connections MCP |
 | `app/cetirun-memory-context/` | Memory Context helper (Go) and its native adapters |
 | `app/cetirun-ai-gateway/` | AI Gateway image and chart |
-| `app/cetirun-observability/` | Optional observability image and chart |
+| `app/cetirun-observability/` | ADX-Mon image and chart for logs, events, and metrics |
 | `app/cetirun-platform/` | Platform chart that `make deploy` installs |
 | `app/cetirun-chart/` | Runtime chart, Agent image definitions, and runtime plugins |
 | `app/internal/` | Shared Go packages |
