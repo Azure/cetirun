@@ -409,15 +409,9 @@
                 },
                 "podMonitor": {
                     "type": "object",
-                    "description": "A PodMonitor for the Gateway pods, created only when the cluster serves its API",
+                    "description": "A PodMonitor of the Prometheus Operator (monitoring.coreos.com/v1) for the Gateway pods, created only when the cluster serves its API",
                     "properties": {
                         "enabled": {"type": "boolean", "default": false},
-                        "apiVersion": {
-                            "type": "string",
-                            "description": "azmonitoring.coreos.com/v1 for Azure Monitor managed Prometheus, monitoring.coreos.com/v1 for the Prometheus Operator",
-                            "enum": ["azmonitoring.coreos.com/v1", "monitoring.coreos.com/v1"],
-                            "default": "azmonitoring.coreos.com/v1"
-                        },
                         "interval": {"type": "string", "description": "Scrape interval", "minLength": 1, "default": "30s"},
                         "labels": {"type": "object", "additionalProperties": {"type": "string"}, "default": {}}
                     }

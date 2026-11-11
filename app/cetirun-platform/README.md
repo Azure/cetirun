@@ -81,11 +81,13 @@ REGISTRY=registry.example.com/team/test VERSION=0.1.1-dev.1 \
 | `platform.values.cetirun-operator.cetiadmin` | CetiAdmin owner assignment, initial budget, exact API access, optional migration source, and runtime options |
 | `sharedSkills` | Necessary. The shared Skills storage fields that exist in the runtime chart: storage class, resource group, account, and container. The helper sets `skills.shared: true` for all Agents. It examines only that the StorageClass exists, so provision the Blob NFS account and container first. Refer to [Storage](../../site/content/en/docs/operations/storage.md#shared-skills-storage-for-make-deploy) |
 | `skillMarketplace` | Optional. The Git repository of the [Skill Marketplace](#skill-marketplace), its credentials Secret, and its Blob NFS container |
+| `observability` | The ADX-Mon collection of logs, events, and metrics: the name of this CetiRun cluster in every row, the query URI of the Kusto cluster, its logs, metrics, and Agent logs databases, and the client ID of the ingestor's managed identity. See [Observability with ADX-Mon](../../site/content/en/docs/operations/observability.md) |
 
 The managed Istio control plane, ingress workload, DNS, cloud identity
-federation/permissions, storage classes, and referenced Secrets are
-prerequisites unless the optional public DNS/TLS preparation below supplies
-the public hostname and certificate. Provision the other requirements through
+federation/permissions, storage classes, referenced Secrets, and the Azure
+Data Explorer resources of the ADX-Mon collection are prerequisites unless the
+optional public DNS/TLS preparation below supplies the public hostname and
+certificate. Provision the other requirements through
 the environment's approved workflow. Azure DNS mode uses `az` with the configured
 subscription; the helper does not get Key Vault secrets or change
 `current-context`. Every cluster operation uses `target.context`. Before a

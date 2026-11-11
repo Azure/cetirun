@@ -4,10 +4,12 @@ description: "Collect the logs, Kubernetes events and metrics of the platform an
 weight: 29
 ---
 
-The optional `cetirun-observability` chart sends the logs of the platform and
-the Agents, the Kubernetes events, and the metrics of the cluster to Azure Data
+The `cetirun-observability` chart sends the logs of the platform and the
+Agents, the Kubernetes events, and the metrics of the cluster to Azure Data
 Explorer (ADX). It runs [ADX-Mon](https://github.com/Azure/adx-mon), which
-CetiRun builds from pinned upstream source. It is off by default.
+CetiRun builds from pinned upstream source. It is CetiRun's collection of logs
+and metrics: `make deploy` installs it with the platform. In the platform
+chart, it is off by default.
 
 ADX-Mon is in active development upstream and has no stable release line.
 Treat this collection as a preview.
@@ -132,9 +134,10 @@ databases. It does not read the Agent logs database.
 
 ## Prerequisites
 
-- A Kusto cluster. The [cluster template](../infrastructure/#azure-data-explorer)
-  can create one, with the three databases, their query functions, and the
-  ingestor's managed identity.
+- A Kusto cluster. By default, the
+  [cluster template](../infrastructure/#azure-data-explorer) creates one, with
+  the three databases, their query functions, and the ingestor's managed
+  identity.
 - A user-assigned managed identity for the ingestor, with a federated
   credential for the subject
   `system:serviceaccount:<platform namespace>:cetirun-adx-mon-ingestor` and
@@ -153,9 +156,9 @@ databases. It does not read the Agent logs database.
   `ingest-` endpoint, the Azure Storage endpoints of ADX ingestion, and Entra
   ID.
 
-## Turn it on with make deploy
+## Set it up with make deploy
 
-Add the `observability` block to the environment file:
+`make deploy` requires the `observability` block of the environment file:
 
 ```yaml
 observability:
@@ -168,6 +171,9 @@ observability:
       agentLogs: CetiRunAgents
   ingestorClientId: <ingestor-client-id>
 ```
+
+The outputs `adxClusterUri` and `adxIngestorClientId` of the cluster template
+are its `adx.endpoint` and `ingestorClientId`.
 
 `clusterName` names this CetiRun cluster in every row. Several CetiRun clusters
 can share one Kusto cluster. `make deploy` does not call Azure: it does not
@@ -196,24 +202,21 @@ To use the chart without `make deploy`, set the same values under
   writes them; by default, warnings and events about CetiRun resources and
   namespaces.
 
-## Container Insights
+## Azure Monitor
 
-When the cluster template creates or uses Azure Data Explorer (`adxMode`
-`create` or `existing`), it turns Container Insights and managed Prometheus off
-by default, and creates no Log Analytics workspace or Azure Monitor workspace.
-Set `enableContainerInsights` or `enablePrometheusMetrics` to `true` to keep
-them next to ADX-Mon, for example to compare the two. Both collect the same
-container output, so each one needs its own access review. On a cluster that
-already runs them, the template turns them off at its next deployment.
+CetiRun does not use Container Insights or Azure Monitor managed Prometheus.
+The cluster template turns both off, also on a cluster that an earlier
+template created with them. [Infrastructure](../infrastructure/#identity-images-and-collection)
+lists the workspaces and data collection rules of an earlier template, which a
+deployment does not delete.
 
 On Kata node pools with the node image `AKSAzureLinux-V3katagen2-202610.30.1`
 or later, Container Insights and managed Prometheus collect nothing from those
 nodes. Their `addon-token-adapter` container needs the legacy iptables `nat`
 table, which the kernel of these images does not provide, so it restarts in a
-loop. The CetiRun platform and its Agents run on those nodes, so their logs do
-not reach Log Analytics. The ADX-Mon collector does not depend on that
-container: use ADX-Mon to collect from Kata node pools. To find the affected
-pods:
+loop. The CetiRun platform and its Agents run on those nodes. The ADX-Mon
+collector does not depend on that container. On a cluster that still runs the
+add-on, to find the affected pods:
 
 ```bash
 kubectl get pods -n kube-system -o wide | grep -E 'ama-(logs|metrics-node)-' | grep -v Running

@@ -97,9 +97,11 @@ az aks get-credentials \
   --overwrite-existing
 
 # Container Insights agent settings, in place before anything else runs on the
-# cluster: the agent stops collecting containers' environment variables, which
-# hold credentials, and joins log lines the container runtime split. Set up
-# whether or not Container Insights is on, so turning it on later is safe too.
+# cluster. The cluster template turns Container Insights off, and ADX-Mon
+# collects the logs. These settings are for a cluster where it is turned on
+# anyway, by hand or by another tool: its agent then does not collect
+# containers' environment variables, which hold credentials, and it joins log
+# lines the container runtime split.
 #
 # A cluster that already has agent settings keeps them. They are checked, not
 # replaced: replacing them would drop the cluster's own collection settings,
@@ -111,7 +113,7 @@ fi
 if [[ -z "${existing_settings}" ]]; then
   if ! kubectl create -f "${AGENT_SETTINGS_FILE}"; then
     echo "Error: could not create the Container Insights agent settings in kube-system." >&2
-    echo "Until they exist, the agent collects every container's environment, credentials included." >&2
+    echo "Until they exist, a Container Insights agent that is turned on collects every container's environment, credentials included." >&2
     echo "Create them from ${AGENT_SETTINGS_FILE} with an identity that can write to kube-system before installing CetiRun." >&2
     exit 1
   fi

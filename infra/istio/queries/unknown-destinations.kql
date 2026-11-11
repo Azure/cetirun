@@ -3,26 +3,40 @@
 
 // Identify egress traffic going through PassthroughCluster (not matched by ServiceEntry)
 // These are candidates to add to values.yaml externalServices
+//
+// Run it in the Agent logs database of the ADX-Mon collection (CetiRunAgents
+// by default). The collector writes the sidecar lines of the Agent and GitHub
+// Copilot proxy Pods to that database, and those of the platform, the AI
+// Gateway and the telemetry program to the logs database, which is named
+// below (CetiRunLogs by default). Readers need both databases. A table that
+// does not exist yet is left out, with a warning. Set window to look further
+// back.
 
-ContainerLogV2
-| where PodNamespace startswith "cetirun-"
-| where ContainerName == "istio-proxy"
-| where LogMessage startswith "{"
-| extend Log = parse_json(LogMessage)
-| where tostring(Log.upstream_cluster) has "PassthroughCluster"
+let window = 1d;
+union isfuzzy=true AgentLogs, CopilotProxy,
+    database("CetiRunLogs").Platform, database("CetiRunLogs").Gateway, database("CetiRunLogs").Telemetry
+| where Timestamp > ago(window)
+| where Namespace startswith "cetirun-"
+| where Container == "istio-proxy"
+// Access log lines; the sidecar's other lines have a message instead.
+| where isnotempty(Body['start_time'])
+// The sidecar of a Pod that the ADX-Mon collector scrapes logs each scrape: a
+// GET of /metrics on the Pod's own address. It is not egress.
+| where not(tostring(Body['path']) startswith "/metrics" and tostring(Body['authority']) == tostring(Body['upstream_host']))
+| where tostring(Body['upstream_cluster']) has "PassthroughCluster"
 | extend
-    UpstreamHost = tostring(Log.upstream_host),
-    BytesSent = toint(Log.bytes_sent),
-    BytesReceived = toint(Log.bytes_received),
-    DurationMs = toint(Log.duration_ms)
+    UpstreamHost = tostring(Body['upstream_host']),
+    BytesSent = tolong(Body['bytes_sent']),
+    BytesReceived = tolong(Body['bytes_received']),
+    DurationMs = toint(Body['duration_ms'])
 | summarize
     RequestCount = count(),
     TotalBytesSent = sum(BytesSent),
     TotalBytesReceived = sum(BytesReceived),
     AvgDurationMs = avg(DurationMs),
-    FirstSeen = min(TimeGenerated),
-    LastSeen = max(TimeGenerated)
-    by UpstreamHost
+    FirstSeen = min(Timestamp),
+    LastSeen = max(Timestamp)
+    by Cluster, UpstreamHost
 | order by RequestCount desc
 | take 50
 

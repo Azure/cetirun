@@ -2,7 +2,7 @@
 {{- if and $podMonitor.enabled (include "cetirun-ai-gateway.podMonitorAvailable" .) }}
 {{- /* Scrapes the metrics port of every Gateway pod, which a Service-based
 monitor would not: each replica serves only its own samples. */}}
-apiVersion: {{ $podMonitor.apiVersion }}
+apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:
   name: {{ include "cetirun-ai-gateway.fullname" . }}

@@ -138,19 +138,17 @@ OpenClaw. For Hermes, it follows `/home/vibe/.hermes/logs/gateway.log`. The
 content of this file depends on the installed version and configuration, and it
 is not necessarily a complete transcript.
 
-The [cluster template]({{< repo "infra/cluster/main.bicep" >}}) sets
-`enableContainerInsights` and `enablePrometheusMetrics` to `true` by default,
-and to `false` when `adxMode` selects Azure Data Explorer for the
-[ADX-Mon collection](../operations/observability/).
-With them, it enables managed Prometheus and the Container Insights monitoring add-on. The
-add-on collects container stdout and stderr. This data includes the session
-logger's output and what Agents print themselves, and both can include
-conversation text. The add-on's collection rules target the configured Azure
-Log Analytics and Azure Monitor workspaces. Actual collection depends on
-deployed collectors, permissions, and settings.
+The [cluster template]({{< repo "infra/cluster/main.bicep" >}}) turns
+Container Insights and managed Prometheus off. `make deploy` installs the
+[ADX-Mon collection](../operations/observability/), which collects the
+container stdout and stderr of the platform and the Agents into Azure Data
+Explorer. This data includes the session logger's output and what Agents print
+themselves, and both can include conversation text. The Agent output goes to a
+database of its own, `CetiRunAgents`, with readers of its own. Actual
+collection depends on deployed collectors, permissions, and settings.
 
-By default, the add-on also copies the environment variables of containers,
-and these copies include Secret values. The
+If you turn Container Insights on yourself, it also copies the environment
+variables of containers by default, and these copies include Secret values. The
 [agent settings]({{< repo "infra/cluster/container-azm-ms-agentconfig.yaml" >}})
 disable that copy. The cluster helper creates these settings, or examines them
 on a cluster that has its own. Some CetiRun containers, for example the Agent
@@ -158,10 +156,11 @@ runtime container, keep credentials in their environment and do not disable
 the copy for themselves. For the list, refer to
 [PRIVACY.md]({{< repo "PRIVACY.md" >}}).
 
-When the
-[Log Analytics template]({{< repo "infra/cluster/modules/aks-cluster.bicep" >}})
-creates a workspace, it sets 30-day retention. Workspaces that already exist,
-per-table settings, exports, and other stores can differ.
+The
+[Azure Data Explorer template]({{< repo "infra/cluster/modules/adx.bicep" >}})
+sets the retention of each database: 90 days for logs, 30 days for metrics, and
+14 days for Agent logs. Databases that already exist, exports, and other stores
+can differ.
 
 The Istio chart sets `egress.accessLog.enabled` to `true` by default.
 [Access logs]({{< repo "infra/istio/templates/egress/accesslog.yaml" >}})

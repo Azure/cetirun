@@ -691,9 +691,11 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
         self.assertEqual(len(plan["artifacts"]["charts"]), 9)
         self.assertEqual(set(plan["releases"]["istio"]["workloads"]), {"oauth2-proxy", "oauth2-proxy-sessions"})
         self.assertEqual(plan["releases"]["broker"]["namespace"], "cetirun-credentials")
+        # The ADX-Mon collection is part of every deployment.
         self.assertEqual(set(plan["releases"]["platform"]["workloads"]), {
             "cetirun-operator", "cetirun-portal", "cetirun-ai-gateway", "cetirun-ai-gateway-postgresql",
-            "cetirun-ai-gateway-valkey", "cetirun-connections-mcp", "cetirun-sandbox-admission"})
+            "cetirun-ai-gateway-valkey", "cetirun-connections-mcp", "cetirun-sandbox-admission",
+            "cetirun-adx-mon-ingestor", "cetirun-telemetry", "cetirun-kube-state-metrics"})
         platform = deployment.values["platform"]
         self.assertTrue(platform["global"]["portalChat"]["enabled"])
         self.assertTrue(platform["cetirun-operator"]["customRuntime"]["enabled"])
@@ -1597,7 +1599,7 @@ class SkillMarketplaceTests(DeploymentFixture, unittest.TestCase):
                         deployment.objects[("storageclass", "", "example-marketplace")] = removed
 
 
-# Synthetic ADX-Mon inputs; the example file only shows them commented out.
+# Synthetic ADX-Mon inputs without database names; the example file names them.
 OBSERVABILITY = {
     "clusterName": "example",
     "adx": {"endpoint": "https://example.australiaeast.kusto.windows.net"},
@@ -1616,9 +1618,21 @@ class ObservabilityTests(DeploymentFixture, unittest.TestCase):
             with self.assertRaisesRegex(ValueError, message):
                 self.configure(config)
 
-    def test_without_the_block_it_is_off(self):
+    def test_the_example_turns_it_on(self):
         _, values = self.configure(self.config)
-        self.assertIs(values["platform"]["cetirun-observability"]["enabled"], False)
+        chart = values["platform"]["cetirun-observability"]
+        self.assertIs(chart["enabled"], True)
+        self.assertEqual(chart["clusterName"], "example")
+        self.assertEqual(chart["adx"]["databases"], {"logs": "CetiRunLogs", "metrics": "CetiRunMetrics", "agentLogs": "CetiRunAgents"})
+
+    def test_without_the_block_it_is_refused(self):
+        for enabled in (None, True, False):
+            with self.subTest(enabled=enabled):
+                config = copy.deepcopy(self.config)
+                config.pop("observability")
+                if enabled is not None:
+                    DEPLOY.set_value(config["platform"]["values"], "cetirun-observability.enabled", enabled)
+                self.refused(config, "observability is required")
 
     def test_block_sets_the_chart_values_with_default_databases(self):
         _, values = self.configure(self.observability_config())
@@ -1642,6 +1656,8 @@ class ObservabilityTests(DeploymentFixture, unittest.TestCase):
             ({"observability.adx.ingestionUri": "https://ingest-example.kusto.windows.net"}, r"observability\.adx\.ingestionUri is not supported"),
             ({"platform.values.cetirun-observability.clusterName": "other"},
              r"cetirun-observability\.clusterName conflicts with the complete deployment inputs"),
+            ({"platform.values.cetirun-observability.enabled": False},
+             r"cetirun-observability\.enabled conflicts with the complete deployment inputs"),
         ]
         for changes, message in cases:
             with self.subTest(changes=list(changes), message=message):
@@ -1654,26 +1670,14 @@ class ObservabilityTests(DeploymentFixture, unittest.TestCase):
                         DEPLOY.set_value(config, path, value)
                 self.refused(config, message)
 
-    def test_platform_values_cannot_turn_it_on_without_its_block(self):
-        config = copy.deepcopy(self.config)
-        DEPLOY.set_value(config["platform"]["values"], "cetirun-observability.enabled", True)
-        self.refused(config, "needs the top-level observability block")
-
-    def test_commented_example_block_is_valid(self):
-        lines = FIXTURE.read_text().splitlines()
-        block = []
-        for line in lines[lines.index("# observability:"):]:
-            if not line.startswith("#"):
-                break
-            block.append(line[2:])
-        config = copy.deepcopy(self.config)
-        config["observability"] = yaml.safe_load("\n".join(block))["observability"]
-        _, values = self.configure(config)
-        self.assertIs(values["platform"]["cetirun-observability"]["enabled"], True)
-
     @unittest.skipUnless(shutil.which("helm"), "requires existing Helm for real local chart rendering")
-    def test_turning_it_on_later_adds_the_ingestor_secret_once(self):
-        deployment = self.deployment(name="observability-off")
+    def test_an_installation_without_it_gets_the_ingestor_secret_once(self):
+        # An installation by an earlier make deploy, which did not require the collection.
+        with patch.object(DEPLOY, "observability", return_value={"cetirun-observability.enabled": False}):
+            deployment = self.deployment(name="observability-off")
+        self.assertNotIn(("statefulset", "cetirun-system", "cetirun-adx-mon-ingestor"),
+                         {(doc["kind"].lower(), doc["metadata"].get("namespace"), doc["metadata"]["name"])
+                          for doc in deployment.documents["platform"]})
         deployment.execute()
         updated = self.deployment(self.observability_config(), "observability-on")
         for field in ("objects", "keys", "installed", "live", "mesh"):

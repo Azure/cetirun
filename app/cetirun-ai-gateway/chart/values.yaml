@@ -429,20 +429,19 @@ redis:
     key: redis-password
 
 # -- A record of every model call, as one JSON line on the Gateway's stdout,
-# for whatever collects the cluster's container logs: Container Insights into a
-# Log Analytics workspace, for example. LiteLLM writes no such record itself,
-# and its export to Azure Blob Storage needs a LiteLLM Enterprise license.
+# for whatever collects the cluster's container logs: the ADX-Mon collection of
+# the cetirun-observability chart into Azure Data Explorer, for example.
+# LiteLLM writes no such record itself, and its export to Azure Blob Storage
+# needs a LiteLLM Enterprise license.
 #
 # A line carries the call's metadata: the virtual key's alias and hash, the
 # user, the Team, and the Agent the CetiRun operator recorded on the key; the
 # model and provider; tokens, cached tokens among them; spend; duration and
 # time to first token; the client's address and user agent; and, for a failed
-# call, the error. It carries no request or response content. With Container
-# Insights:
+# call, the error. It carries no request or response content. With the ADX-Mon
+# collection, one row per line in the logs database:
 #
-#   ContainerLogV2
-#   | where ContainerName == "gateway"
-#   | where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
+#   GatewayRequests()
 #
 # The collected lines are kept where the collector puts them, apart from the
 # Gateway's database.
@@ -510,7 +509,9 @@ content:
 # reach it can read every key alias, user, Team and spend figure on it. Keep it
 # inside the cluster, and restrict it with a NetworkPolicy where other
 # workloads should not read it. CetiRun Agents reach only the Service port,
-# where LiteLLM also serves /metrics and requires a key.
+# where LiteLLM also serves /metrics and requires a key. The pods carry the
+# annotations with which the ADX-Mon collector of the cetirun-observability
+# chart scrapes that port.
 metrics:
   # -- Serve the metrics
   enabled: false
@@ -525,16 +526,12 @@ metrics:
     - client_ip
     - user_agent
     - user_email
-  # -- A PodMonitor for the Gateway pods, for a Prometheus that discovers
-  # targets that way.
+  # -- A PodMonitor of the Prometheus Operator (monitoring.coreos.com/v1) for
+  # the Gateway pods, for a Prometheus that discovers targets that way.
   podMonitor:
     # -- Create the PodMonitor when the cluster serves its API. On a cluster
-    # without it, such as one without Azure Monitor managed Prometheus, the
-    # chart creates none rather than fail to install.
+    # without it, the chart creates none rather than fail to install.
     enabled: false
-    # -- azmonitoring.coreos.com/v1 for Azure Monitor managed Prometheus, or
-    # monitoring.coreos.com/v1 for the Prometheus Operator
-    apiVersion: azmonitoring.coreos.com/v1
     # -- Scrape interval
     interval: 30s
     # -- Extra labels on the PodMonitor, for a Prometheus that selects
