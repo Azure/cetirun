@@ -3036,7 +3036,9 @@ content:
   and Team from the key's metadata, and the LiteLLM user and Team of the key.
   Content is complete, not shortened as in the spend log, except that inline
   images and files (`data:` URLs) and encrypted reasoning are replaced by notes
-  with their type and size. `GatewayContent()` joins the parts again.
+  with their type and size. `GatewayContent()` joins the parts again. Calls
+  that LiteLLM makes itself are not stored: background health check probes,
+  and an auto router's classifier calls, which repeat the routed conversation.
 - **Identity.** The Gateway Pods use a workload identity: the chart labels the
   Pods and names `clientId` on the ServiceAccount it creates. The identity
   needs a federated credential for
@@ -3048,7 +3050,9 @@ content:
   users see a call only when LiteLLM's check finds that the call's key belongs
   to them or to a Team they may view; a record without a LiteLLM user or Team,
   such as from a key with neither, is refused to them. The operator's Agent
-  keys carry the owner as LiteLLM user and `cetirun-team-<Team>` as Team.
+  keys carry the owner as LiteLLM user and `cetirun-team-<Team>` as Team. The
+  Gateway reads only the requested call's rows of this cluster, within a day of
+  the time range the console passes.
 - **Delivery.** A background thread sends records in batches with queued
   ingestion; a call never waits for it. Content usually appears within a
   minute. It is lost when ADX refuses a batch three times, and when the queue

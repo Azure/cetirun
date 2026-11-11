@@ -116,7 +116,9 @@ A `general_settings` block that is saved in the console can override it.
 With `content.enabled: true`, the Gateway writes the request and the response
 of each call to an Azure Data Explorer database instead (`CetiRunContent` when
 the cluster template creates it), and the spend log keeps no content, whatever
-`spendLogs.storePrompts` says. The content is complete, not shortened, except
+`spendLogs.storePrompts` says. Calls that LiteLLM makes itself, health check
+probes and auto router classifier calls, are not written. The content is
+complete, not shortened, except
 that inline images and files and encrypted reasoning are replaced by notes with
 their type and size. Each record names the Agent, its owner and Team, and the
 LiteLLM user and Team of the key. The Gateway writes and reads it with its own

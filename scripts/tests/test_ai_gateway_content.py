@@ -8,6 +8,7 @@ replaced by stand-ins, and the writer and reader take stand-in clients.
 """
 
 import asyncio
+import datetime
 import importlib.util
 import io
 import json
@@ -161,6 +162,23 @@ class ContentRecordTests(unittest.TestCase):
         self.assertEqual([r["kind"] for r in received[0]], ["request", "response"])
         self.assertEqual({r["cluster"] for r in received[0]}, {"example"})
 
+    def test_calls_litellm_makes_itself_are_not_stored(self):
+        received = []
+        log = CONTENT.ContentLog(received.append, log=lambda message: None)
+        messages = [{"role": "user", "content": "Hello"}]
+        probe = payload(messages)
+        probe["metadata"]["user_api_key_team_id"] = "litellm-internal-health-check"
+        asyncio.run(log.async_log_success_event({"standard_logging_object": probe}, None, None, None))
+        for name in ("metadata", "litellm_metadata"):
+            classifier = {"standard_logging_object": payload(messages),
+                          "litellm_params": {name: {"internal_call_origin": "autorouter_classifier"}}}
+            asyncio.run(log.async_log_success_event(classifier, None, None, None))
+        self.assertEqual(received, [])
+        # A client's call with LiteLLM metadata but no origin is stored.
+        asyncio.run(log.async_log_success_event({"standard_logging_object": payload(messages),
+                                                  "litellm_params": {"metadata": {"other": "x"}}}, None, None, None))
+        self.assertEqual(len(received), 1)
+
     def test_a_record_that_cannot_be_built_does_not_fail_the_call(self):
         logged = []
         log = CONTENT.ContentLog(lambda found: self.fail("nothing to write"), log=logged.append)
@@ -283,6 +301,28 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(properties.parameters, {"request_id": "chatcmpl-123", "cluster": "example"})
         self.assertNotIn("chatcmpl-123", query)
         self.assertTrue(query.startswith("declare query_parameters(request_id: string, cluster: string);"))
+        # The call's rows are filtered before their parts are joined, not after.
+        self.assertIn("let rows = Content\n    | where Cluster == cluster and "
+                      "(Body.request_id == request_id or Body.call_id == request_id);\nGatewayContentOf(rows)\n", query)
+        self.assertNotIn("GatewayContent()", query)
+        self.assertNotIn("Timestamp between", query)
+
+    def test_a_time_range_from_the_console_limits_the_rows_read(self):
+        client = Query([stored("request", "[]")])
+        reader = CONTENT.KustoReader(client, "db", "example", Properties)
+        start = datetime.datetime(2026, 11, 10, 8, 0, tzinfo=datetime.timezone.utc)
+        end = datetime.datetime(2026, 11, 10, 9, 0)  # naive: LiteLLM's are UTC
+        log = CONTENT.ContentLog(lambda found: None, reader)
+        asyncio.run(log.get_request_response_payload("chatcmpl-123", start, end))
+        _, query, properties = client.calls[0]
+        self.assertIn("from_time: datetime, to_time: datetime", query)
+        self.assertIn("let rows = Content\n    | where Timestamp between (from_time .. to_time)\n", query)
+        self.assertEqual(properties.parameters["from_time"], "2026-11-09T08:00:00+00:00")
+        self.assertEqual(properties.parameters["to_time"], "2026-11-11T09:00:00+00:00")
+        # Only one end given: a window around it.
+        reader("chatcmpl-123", None, end)
+        self.assertEqual((client.calls[1][2].parameters["from_time"], client.calls[1][2].parameters["to_time"]),
+                         ("2026-11-09T09:00:00+00:00", "2026-11-11T09:00:00+00:00"))
 
     def test_a_call_without_its_request_falls_back_to_the_spend_log(self):
         log = CONTENT.ContentLog(lambda found: None, CONTENT.KustoReader(Query([stored("response", "x")]), "db", "example", Properties))

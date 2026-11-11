@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// Table, ingestion mapping and query function of the CetiRun content
+// Table, ingestion mapping and query functions of the CetiRun content
 // database: the prompts and responses of AI Gateway calls. Its readers are a
 // separate, small group. The AI Gateway writes one row per part of a call's
 // request or response (cetirun_ai_gateway/content.py), as JSON lines with the
@@ -10,8 +10,8 @@
 
 .create-or-alter table Content ingestion json mapping "ContentMapping" '[{"column":"Timestamp","path":"$.time","datatype":"datetime"},{"column":"Cluster","path":"$.cluster","datatype":"string"},{"column":"Body","path":"$","datatype":"dynamic"}]'
 
-.create-or-alter function with (folder = "CetiRun", docstring = "AI Gateway calls with their request and response text, the parts of each joined again. Join with GatewayRequests() of the logs database on CallId.", skipvalidation = "true") GatewayContent() {
-    Content
+.create-or-alter function with (folder = "CetiRun", docstring = "The calls in rows of the Content table, with their request and response text, the parts of each joined again. Filter the rows first: the Gateway looks up one call this way.", skipvalidation = "true") GatewayContentOf(T: (Timestamp: datetime, Cluster: string, Body: dynamic)) {
+    T
     | project
         Timestamp,
         Cluster,
@@ -37,4 +37,8 @@
     )
     | extend Complete = Received == Parts
     | project-away Pieces
+}
+
+.create-or-alter function with (folder = "CetiRun", docstring = "AI Gateway calls with their request and response text, the parts of each joined again. Join with GatewayRequests() of the logs database on CallId.", skipvalidation = "true") GatewayContent() {
+    GatewayContentOf(Content)
 }

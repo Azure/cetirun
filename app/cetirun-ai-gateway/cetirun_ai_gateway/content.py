@@ -57,6 +57,12 @@ OPERATOR_KEY_METADATA = {
 }
 # The LiteLLM user and Team the console checks before it shows a record.
 LITELLM_OWNER = {"user_api_key_user_id": "litellm_user_id", "user_api_key_team_id": "litellm_team_id"}
+# Calls LiteLLM makes itself carry no content anyone sent: a background health
+# check probe (its identity as key hash, alias and Team) and an auto router's
+# classifier call (marked in the call's own metadata), which repeats the
+# conversation of the call it routes. The same marks as in request_log.py.
+HEALTH_CHECK_ACCOUNT = "litellm-internal-health-check"
+CALL_ORIGIN_KEY = "internal_call_origin"
 DATA_URL = re.compile(r"data:([\w.+-]+/[\w.+-]+)?(;[\w=.-]+)*;base64,[A-Za-z0-9+/=\s]+")
 ENCRYPTED_FIELDS = ("encrypted_content",)
 
@@ -74,6 +80,16 @@ def as_dict(value):
 
 def dump(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def made_by_litellm(kwargs, payload):
+    """Whether LiteLLM made the call itself: a health check probe or a router's classifier call."""
+    metadata = as_dict(payload.get("metadata"))
+    if HEALTH_CHECK_ACCOUNT in (metadata.get("user_api_key_hash"), metadata.get("user_api_key_alias"),
+                                metadata.get("user_api_key_team_id")):
+        return True
+    params = as_dict(kwargs.get("litellm_params"))
+    return any(as_dict(params.get(name)).get(CALL_ORIGIN_KEY) for name in ("metadata", "litellm_metadata"))
 
 
 def iso_time(value):
@@ -270,10 +286,38 @@ class KustoWriter:
                 self.send(batch)
 
 
-GATEWAY_CONTENT_QUERY = """declare query_parameters(request_id: string, cluster: string);
-GatewayContent()
-| where Cluster == cluster and (RequestId == request_id or CallId == request_id)
-| project Kind, Text, Complete, LiteLLMUserId, LiteLLMTeamId, CallId, RequestId, Model, Status, Timestamp"""
+def content_query(in_time):
+    """The query of one call's content: the Content rows of this cluster and call first, then their parts joined.
+
+    The call is filtered before GatewayContentOf() joins parts, so a lookup
+    reads only that call's rows. With in_time, it also reads only the rows in
+    [from_time, to_time], which lets Azure Data Explorer skip older data.
+    """
+    time_parameters = ", from_time: datetime, to_time: datetime" if in_time else ""
+    time_filter = "\n    | where Timestamp between (from_time .. to_time)" if in_time else ""
+    return (f"declare query_parameters(request_id: string, cluster: string{time_parameters});\n"
+            f"let rows = Content{time_filter}\n"
+            "    | where Cluster == cluster and (Body.request_id == request_id or Body.call_id == request_id);\n"
+            "GatewayContentOf(rows)\n"
+            "| project Kind, Text, Complete, LiteLLMUserId, LiteLLMTeamId, CallId, RequestId, Model, Status, Timestamp")
+
+
+# How far beyond the console's time range a call's records are looked for: a
+# record's time is the end of its call, and the range is the console's.
+TIME_MARGIN = datetime.timedelta(days=1)
+
+
+def time_window(start, end):
+    """[from, to] around the console's start and end times, or None when it gave neither."""
+    if start is None and end is None:
+        return None
+    start = start or end
+    end = end or start
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=datetime.timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=datetime.timezone.utc)
+    return start - TIME_MARGIN, end + TIME_MARGIN
 
 
 def payload_of(rows):
@@ -318,11 +362,15 @@ class KustoReader:
         self.cluster = cluster
         self.properties_factory = properties_factory
 
-    def __call__(self, request_id):
+    def __call__(self, request_id, start=None, end=None):
         properties = self.properties_factory()
         properties.set_parameter("request_id", request_id)
         properties.set_parameter("cluster", self.cluster)
-        response = self.client.execute_query(self.database, GATEWAY_CONTENT_QUERY, properties)
+        window = time_window(start, end)
+        if window is not None:
+            properties.set_parameter("from_time", window[0].isoformat())
+            properties.set_parameter("to_time", window[1].isoformat())
+        response = self.client.execute_query(self.database, content_query(window is not None), properties)
         table = response.primary_results[0]
         return payload_of([row.to_dict() for row in table])
 
@@ -349,7 +397,7 @@ class ContentLog(CustomLogger, AdditionalLoggingUtils):
 
     def write(self, kwargs):
         payload = kwargs.get("standard_logging_object")
-        if not isinstance(payload, dict):
+        if not isinstance(payload, dict) or made_by_litellm(kwargs, payload):
             return
         try:
             found = records(payload, cluster=self.cluster)
@@ -365,7 +413,7 @@ class ContentLog(CustomLogger, AdditionalLoggingUtils):
         import asyncio
 
         try:
-            return await asyncio.to_thread(self.reader, request_id)
+            return await asyncio.to_thread(self.reader, request_id, start_time_utc, end_time_utc)
         except Exception as error:  # the console falls back to the spend log
             self.log(f"CetiRun content: could not read a call's content: {type(error).__name__}: {str(error)[:300]}")
             return None
