@@ -147,8 +147,9 @@ The **Admin → Agents** pages use these admin-only endpoints. The responses use
   names each part that the Portal cannot read.
 - `PATCH /api/v1/admin/instances/{name}` changes `displayName`, `model`, and
   `agent.image`. For a Custom Agent, it also changes `agent.port` and
-  `agent.webUI`. It cannot change the owner, the credentials, or the lifecycle
-  controls.
+  `agent.webUI`, and a new image must be one of the approved digests, as for
+  [Agent creation](#agent-creation-options). It cannot change the owner, the
+  credentials, or the lifecycle controls.
 - `DELETE /api/v1/admin/instances/{name}` returns `202 Accepted`. The operator
   then removes the resources of the Agent.
 
@@ -363,6 +364,12 @@ Harness choices are the deployment settings that `harnesses.allowed` also
 contains. Shared models are the Gateway catalog entries that
 `modelAccess.sharedModels.allowed` also contains. For Copilot, both deployment
 availability and policy permission are necessary.
+
+The Gateway catalog also lists the approved Custom image digests in
+`customImages`. The list is `null` until the operator publishes its approvals.
+A new Custom Agent must use one of these images. Otherwise, creation returns
+`409` with the code `custom_image_not_approved`, or `503` with
+`custom_images_unknown` while the list is `null`.
 
 If Agent Identity is necessary, the form selects it, and the user cannot clear
 it. Agent Identity also needs the deployment feature, a confirmed owner, and a
