@@ -23,8 +23,15 @@ SCRIPT = ROOT / "scripts/terminal-docker-build.sh"
 class TerminalImageTests(unittest.TestCase):
     def run_download(self, statuses, *, valid_checksum=True):
         image = (ROOT / "app/cetirun-operator/Dockerfile.terminal").read_text()
-        command = "curl " + image.split("    curl ", 1)[1].split("\n\nFROM ", 1)[0]
-        command = command.replace("\\\n", "")
+        # Other build steps also download tools. Select only the ttyd RUN
+        # instruction, so the loopback test never executes another installer.
+        downloads = [
+            line for line in image.replace("\\\n", "").splitlines()
+            if line.startswith("RUN ")
+            and '"https://github.com/tsl0922/ttyd/releases/download/' in line
+        ]
+        self.assertEqual(len(downloads), 1, "Expected one ttyd download instruction")
+        command = "curl " + downloads[0].split("curl ", 1)[1]
         source = re.search(r'"https://[^\"]+"', command).group()
         payload = b"synthetic ttyd binary\n"
         attempts = []
