@@ -728,7 +728,12 @@ export default function ChatPage({ instance }: { instance: Instance }) {
             text,
             notSent ||
               (reason instanceof ChatError &&
-                ["agent_reported_error", "chat_busy"].includes(reason.code))
+                [
+                  "agent_reported_error",
+                  "chat_busy",
+                  "model_limits_unavailable",
+                  "context_budget_exceeded",
+                ].includes(reason.code))
               ? "failed"
               : "interrupted",
             {

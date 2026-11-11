@@ -33,6 +33,7 @@ func TestCustomWithoutNativeInputs(t *testing.T) {
 			{Name: "HOME", Value: "/home/worker"},
 			{Name: "OPENAI_BASE_URL", Value: "http://gateway.example.com/v1"},
 			{Name: "OPENAI_API_KEY", CredentialSlot: "model"},
+			{Name: GatewayModelLimitsEnvironment, Value: `{"version":1,"models":[]}`},
 		}
 		if port != nil {
 			expected = append(expected, agents.EnvironmentValue{Name: "PORT", Value: strconv.Itoa(int(*port))})
@@ -54,6 +55,47 @@ func TestCustomWithoutNativeInputs(t *testing.T) {
 			if _, err := (Harness{}).Build(agent, bad); err == nil {
 				t.Fatal("missing or unsafe binding accepted")
 			}
+		}
+	}
+}
+
+func TestGatewayLimitsAreBoundedAndConservative(t *testing.T) {
+	models := []agents.GatewayModel{
+		{ID: "z", ContextWindow: 128000, MaxTokens: 4096},
+		{ID: "a", ContextWindow: 32768, MaxTokens: 2048},
+		{ID: "a", ContextWindow: 65536, MaxTokens: 1024},
+		{ID: "incomplete-duplicate", ContextWindow: 128000, MaxTokens: 4096},
+		{ID: "incomplete-duplicate", ContextWindow: 128000},
+		{ID: "unknown-output", ContextWindow: 128000},
+		{ID: "unknown-context", MaxTokens: 4096},
+		{ID: "bad\nname", ContextWindow: 128000, MaxTokens: 4096},
+	}
+	var got gatewayModelLimits
+	if err := json.Unmarshal([]byte(GatewayModelLimits(models)), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := gatewayModelLimits{Version: 1, Models: []gatewayModelLimit{
+		{ID: "a", ContextWindow: 32768, MaxOutputTokens: 1024},
+		{ID: "z", ContextWindow: 128000, MaxOutputTokens: 4096},
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("limits = %#v, want %#v", got, want)
+	}
+	if got := GatewayModelLimits(nil); got != `{"version":1,"models":[]}` {
+		t.Fatalf("empty limits = %s", got)
+	}
+}
+
+func TestGatewayLimitsRejectIncompleteDuplicateAndUnsafeInteger(t *testing.T) {
+	for _, models := range [][]agents.GatewayModel{
+		{{ID: "same", ContextWindow: 128000, MaxTokens: 4096}, {ID: "same", ContextWindow: 0, MaxTokens: 4096}},
+		{{ID: "same", ContextWindow: 0, MaxTokens: 4096}, {ID: "same", ContextWindow: 128000, MaxTokens: 4096}},
+		{{ID: "unsafe", ContextWindow: 1 << 53, MaxTokens: 1}},
+		{{ID: " spaced ", ContextWindow: 128000, MaxTokens: 4096}},
+		{{ID: "control\u0085", ContextWindow: 128000, MaxTokens: 4096}},
+	} {
+		if got := GatewayModelLimits(models); got != `{"version":1,"models":[]}` {
+			t.Fatalf("limits = %s", got)
 		}
 	}
 }

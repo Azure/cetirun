@@ -276,6 +276,7 @@ func TestCustomImageUpgradePreservesInstanceConfiguration(t *testing.T) {
 				instance.Spec.Agent.WebUI = true
 			case "suspended":
 				instance.Spec.Suspended = true
+				instance.Spec.Helm.Version = "0.1.17"
 			}
 			want := instance.DeepCopy()
 			want.Spec.Agent.Image = ptr.To(replacementImage)
