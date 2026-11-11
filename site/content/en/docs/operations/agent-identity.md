@@ -84,6 +84,20 @@ This choice applies to a direct Helm installation. `make deploy` always enables
 Microsoft delegated access and the Operator lifecycle, as
 [What `make deploy` requires](#what-make-deploy-requires) shows.
 
+An Agent Policy controls whether its Agents can use an Agent Identity. **Disabled**
+rejects an Agent that requests one. **Optional** lets an Agent request one without
+enabling it on existing Agents. **Required** also applies to existing Agents and
+stops an Agent that does not request an identity. Complete the Agent Identity and
+Connections platform configuration before selecting Optional or Required.
+
+After an identity-only policy update is accepted, switching between Disabled and
+Optional does not restart Agents that do not request an identity. Upgrading the
+Operator also preserves those running Agents when their policy is already
+Optional. Installations with configuration coordination still reject identity
+policy edits while the policy has active execution reservations; use their normal
+stop-and-update workflow. This behavior does not change policy-update admission
+or recover Agents stopped by an earlier denial.
+
 ## 1. Prepare access and record the coordinates
 
 Use an authorized Azure CLI session and an explicit Kubernetes context. The
