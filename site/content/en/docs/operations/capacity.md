@@ -49,9 +49,11 @@ The CPU request usually limits the number of Agents on a node:
 | `agent2` | `Standard_D32s_v6`, 32 vCPUs | About 6 |
 
 With the minimum node counts, the `agent` pool holds about 45 Agents and the
-`agent2` pool about 18 Agents. The platform workloads, other than OAuth2 Proxy,
-also run on these pools. The autoscaler adds nodes up to the maximum count of
-each pool, if the vCPU quota of the region allows it.
+`agent2` pool about 18 Agents. CetiAdmin, which `make deploy` enables by
+default, uses the default requests and counts as one of these Agents. The
+platform workloads, other than OAuth2 Proxy and its session store, also run on
+these pools. The autoscaler adds nodes up to the maximum count of each pool, if
+the vCPU quota of the region allows it.
 
 A node with 4 vCPUs cannot run an Agent with the default requests. If you
 select a smaller VM size, also lower the `resources` of the Agents.
@@ -91,7 +93,7 @@ file. Refer to [Infrastructure](../infrastructure/#cluster-parameter-file).
 | Broker | 2 | 0.1 CPU, 128 MiB, with the Entra auth sidecar |
 | Connections MCP | 2 | 0.05 CPU, 64 MiB |
 | OAuth2 Proxy, on the `system` pool | 2 | 0.1 CPU, 128 MiB |
-| Session store of OAuth2 Proxy | 1 | 0.05 CPU, 64 MiB, and a 1 GiB disk |
+| Session store of OAuth2 Proxy, on the `system` pool | 1 | 0.05 CPU, 64 MiB, and a 1 GiB disk |
 
 The README of the AI Gateway chart gives measured values and a starting size.
 Refer to [Resources]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#resources).
@@ -105,7 +107,7 @@ Refer to [Resources]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#resou
 | Node OS disks | 128 GB for each node | The OS disk parameters of the cluster template |
 | HOME disks | 100 GiB for each Agent | For new OpenClaw and Hermes Agents, `persistence.size` in `platform.values.cetirun-operator.cetirun.helmValues`. For Custom Agents, `platform.values.cetirun-operator.customRuntime.storageSize` |
 | AI Gateway database | 100 GiB | `postgresql.bundled.persistence.size`. You cannot change it after the first run |
-| Log Analytics and managed Prometheus | On, with a new workspace and 30 days of retention | `enableContainerInsights`, `enablePrometheusMetrics`, and `logAnalyticsWorkspaceId` |
+| Log Analytics and managed Prometheus | On while `adxMode` has its default, `none`. A new Log Analytics workspace keeps the logs for 30 days | `enableContainerInsights`, `enablePrometheusMetrics`, and `logAnalyticsWorkspaceId` |
 | Azure Data Explorer, with `adxMode: create` | The `Dev(No SLA)_Standard_E2a_v4` SKU | The `adx` parameters. Refer to [Azure Data Explorer](../infrastructure/#azure-data-explorer) |
 | Agents of each user | 1 | `platform.values.cetirun-portal.features.maxInstancesPerUser` |
 | Monthly model budget of each new Agent key | 10000 USD | `platform.values.cetirun-operator.aiGateway.defaultBudget`. Agent Policies set their own budgets |

@@ -113,7 +113,9 @@ The Portal does not replace characters. For other users, for example
 ### Tools
 
 Run `make deploy` on a Linux or macOS workstation. The scripts use Bash and
-POSIX file locks.
+POSIX file locks. The cluster helper also needs Bash 4.4 or later, and the
+storage helper needs GNU grep as `grep`. macOS has Bash 3.2 and BSD grep by
+default.
 
 | Tool | Version | Use |
 | --- | --- | --- |
@@ -168,8 +170,8 @@ for one environment does not affect another.
 
 Keep `platform.namespace` at its default, `cetirun-system`. The Portal reads
 the Operator Deployment at the fixed name `cetirun-system/cetirun-operator`. In
-another namespace, the Portal **Upgrade** action does not work, and the Portal
-does not show the access links of Custom Agents.
+another namespace, the Portal **Upgrade to Latest** action does not work, and
+the Portal does not show the access links of Custom Agents.
 
 ## 1. Prepare the cluster
 
@@ -625,7 +627,7 @@ unless you raised `features.maxInstancesPerUser`. Refer to
 | Open the Agent UI | The UI loads |
 | Open `https://<domain>/ui/<agent>/` with the second account | `403` |
 | Write a file in HOME, then select **Restart Agent** | The file is still in HOME after the restart |
-| Select **Sign out**, and then open the Portal again | Microsoft sign-in again |
+| Select **Sign out**, and then open the Portal again | A redirect through Microsoft sign-in, then the Portal. **Sign out** ends only the Portal session, so Entra can sign the user in without a prompt |
 | Connect a provider account, if you registered a provider | The connection shows in the Portal |
 
 Examine pod sidecar injection as well as namespace labels. Review the
@@ -662,7 +664,10 @@ also give its agents its own smart-routing models. To configure them, continue w
 
 Run `make deploy` again after each change to the environment file. A run does
 not change the admission administrators, and it does not remove the Sandbox
-settings that are in effect. If the file tries to do this, the run stops.
+settings that are in effect. If the file tries to do this, the run stops. A
+run that changes the CetiAdmin configuration, for example an upgrade, needs
+the identity of an admission administrator. Refer to
+[Before you upgrade](../../operations/upgrade/#before-you-upgrade).
 Sandbox execution stays disabled until you enable it, as
 [Policy-bound Teams](../../operations/policy-teams/) shows. The
 [Skill Marketplace](../../operations/skill-marketplace/) is optional. A later
@@ -782,8 +787,8 @@ Values of the platform release, under `platform.values`:
 | `cetirun-connections-mcp.enabled`, `cetirun-connections-mcp.istio.sidecarInjection` | `true` |
 | `cetirun-connections-mcp.image.repository`, `cetirun-connections-mcp.image.tag` | `<registry>/cetirun-connections-mcp`, `release.version` |
 | `cetirun-connections-mcp.broker.baseURL`, `cetirun-connections-mcp.istio.brokerNamespace`, `cetirun-connections-mcp.istio.controlPlaneNamespace`, `cetirun-connections-mcp.istio.revision`, `cetirun-connections-mcp.portal.baseURL` | The Broker Service, `broker.namespace`, `istio.controlPlaneNamespace`, `istio.revision`, and `https://<domain>` |
-| `cetirun-operator.skillMarketplace` and `cetirun-portal.skillMarketplace` | The top-level `skillMarketplace` block. Without that block, the marketplace is off |
-| `cetirun-observability` | The top-level `observability` block. Without that block, the collection is off |
+| Under `cetirun-operator.skillMarketplace`: `enabled`, the `repository` fields `url`, `ref`, `path`, `auth`, `existingSecret`, and `syncInterval`, and the `storage` fields `resourceGroup`, `storageAccount`, `containerName`, and `storageClassName`. Under `cetirun-portal.skillMarketplace`: `enabled` and `catalogNamespace` | The top-level `skillMarketplace` block, and `platform.namespace` for the catalog. Without that block, both `enabled` values are `false` |
+| Under `cetirun-observability`: `enabled`, `clusterName`, `adx.endpoint`, `adx.databases.logs`, `adx.databases.metrics`, `adx.databases.agentLogs`, and `ingestor.clientId` | The top-level `observability` block. A database that the block does not name gets its default name. Without that block, `enabled` is `false` |
 
 `make deploy` also writes these values without a conflict check. A value that
 you set for them under `platform.values` has no effect:
@@ -799,8 +804,6 @@ you set for them under `platform.values` has no effect:
   accounts of the Portal, the Operator, and Connections MCP.
 - `cetirun-portal.admins.aliases` gets `ownerAlias` in addition to the aliases
   that you list.
-- With `publicTLS`, the Istio values `tls.enabled` and
-  `gateway.includeWildcardHost` are `false`.
 
 `make deploy` refuses these settings:
 
@@ -809,7 +812,10 @@ you set for them under `platform.values` has no effect:
   `cetirun-ai-gateway.redis.bundled.enabled`
 - A Broker without Microsoft delegated access
 - An OAuth2 Proxy mode other than `entra-id`
-- An inline `cookieSecret`, TLS certificate or key, or provider credential
+- An inline `cookieSecret`, TLS certificate or key, or provider credential. In
+  the Istio values, `tls.enabled: true` counts as an inline certificate
+- With `publicTLS`, the Istio value `gateway.includeWildcardHost: true`.
+  `make deploy` sets it to `false`
 - `image`, `hermes.image`, or `openclaw.image` in
   `cetirun-operator.cetirun.helmValues`
 - An `instances` list

@@ -22,14 +22,15 @@ users. A persistent volume or a `Retain` setting is not a backup.
 | AI Gateway Secrets that you created | `cetirun-ai-gateway-auth`, `gateway-provider-keys`, and `gateway-valkey-auth` in `cetirun-system` | A new salt key makes the models that the console added unusable |
 | Database password | `cetirun-ai-gateway-postgresql` in `cetirun-system`. The chart generates it | `make deploy` refuses to continue while the database volume exists without this Secret |
 | OAuth2 Proxy cookie key | `oauth2-proxy-credentials` in `cetirun-istio`. The chart generates it | The upgrade of the Istio release fails until you restore the Secret |
+| Password of the OAuth2 Proxy session store | `oauth2-proxy-sessions` in `cetirun-istio`. The chart generates it | `make deploy` refuses to continue while the session store or its PVC exists without this Secret |
 | Certificates, keys, and other Secrets that you supply | The Secrets that [Certificates and credentials](../certificates/) lists with the source "You" | `make deploy` stops in its checks, and the components that use them fail |
 | Key Vault key of the connection records | `identity.keyVaultKeyUrl` | The Broker cannot decrypt the connection records |
 | Shared skills and the Skill Marketplace | Their Blob NFS containers | The Agents do not get the skills. Keep the source of the material, for example the Git repository of the Skill Marketplace |
 | Environment file | Outside the repository | You must write the inputs of `make deploy` again |
 
 The Valkey of the AI Gateway keeps no data on disk, and it needs no backup. The
-session store of OAuth2 Proxy keeps only sign-in sessions. A loss makes users
-sign in again.
+session store of OAuth2 Proxy keeps only sign-in sessions on its PVC. A loss of
+these sessions makes users sign in again.
 
 Do not include the connection records of the Broker in a routine restore.
 Owners connect their accounts again after a restore. Refer to
@@ -47,12 +48,17 @@ cluster, run this command:
 kubectl get volumesnapshotclass
 ```
 
-To list the HOME PVCs of all Agents, run this command. The HOME PVCs have
-names that start with `data-`:
+To list the PVCs of all Agent namespaces, run this command:
 
 ```bash
-kubectl get pvc --all-namespaces -l app.kubernetes.io/name=cetirun
+for ns in $(kubectl get namespaces -l app.kubernetes.io/managed-by=cetirun-operator -o name | cut -d/ -f2); do
+  kubectl get pvc -n "$ns" -o name | sed "s|^|$ns/|"
+done
 ```
+
+The HOME PVC of a standard Agent has a name that starts with `data-`. The HOME
+PVC of a policy-bound Agent has no labels. Its name is `home`, the default of
+`platform.values.cetirun-operator.sandboxSources.homeClaimName`.
 
 CetiRun has no procedure to restore a snapshot into an existing Agent. A
 restore into an Agent needs a separately reviewed procedure. Before you delete
@@ -66,6 +72,7 @@ command reads the password inside the container, so the password is not on
 your command line:
 
 ```bash
+umask 077
 kubectl exec -n cetirun-system cetirun-ai-gateway-postgresql-0 -c postgresql -- \
   sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -h 127.0.0.1 -U litellm -d litellm --format=custom' \
   > /absolute/private/ai-gateway.dump
@@ -100,11 +107,16 @@ kubectl get secret cetirun-ai-gateway-postgresql -n cetirun-system -o json |
 kubectl get secret oauth2-proxy-credentials -n cetirun-istio -o json |
   jq 'del(.metadata.uid, .metadata.resourceVersion, .metadata.creationTimestamp)' \
   > /absolute/private/oauth2-proxy-credentials.json
+kubectl get secret oauth2-proxy-sessions -n cetirun-istio -o json |
+  jq 'del(.metadata.uid, .metadata.resourceVersion, .metadata.creationTimestamp)' \
+  > /absolute/private/oauth2-proxy-sessions.json
 ```
 
 These files contain Secret values. Move them to protected storage, and delete
 the local copies. To restore a Secret, run `kubectl create -f` with its file
-before you run `make deploy`.
+before you run `make deploy`. On a new cluster, `make deploy` has not created
+the namespaces yet. First create the namespace of the Secret with
+`kubectl create namespace`.
 
 ## Restore order
 

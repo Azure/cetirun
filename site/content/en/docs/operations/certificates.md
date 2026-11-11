@@ -31,7 +31,7 @@ CA must trust it before you replace a leaf certificate.
 
 `make deploy` checks the expiry of the ingress certificate. For the other
 certificates, it runs `openssl verify`, which also refuses an expired
-certificate. The error does not name the certificate. This loop reads only the
+certificate. The error does not name the certificate. This loop prints only the
 public part of each certificate. It shows the subject and the expiry, and it
 reports a certificate that expires within 30 days. Replace `<broker-namespace>`
 first:

@@ -8,7 +8,9 @@ weight: 50
 releases to the version in the environment file. It keeps the Agents, their
 HOME volumes, the AI Gateway database, and the OAuth cookie and database keys.
 Existing Agents keep the version of their agent chart until you upgrade each
-Agent.
+Agent. Each running Agent still restarts one time, because its Pod gets the
+Memory Context image of the new version. The GitHub Copilot proxy of an Agent,
+if it has one, also restarts with the new AI Gateway image.
 
 > **Warning:** A return to an earlier version does not undo every change of an
 > upgrade. Before you upgrade, read
@@ -32,9 +34,16 @@ Agent.
 5. If the installation uses raw `imagePullSecrets` overrides for Agents, remove
    them first. Refer to
    [Upgrading runtime registry configuration](../../getting-started/platform/#upgrading-runtime-registry-configuration).
-6. Plan a time for the upgrade. An upgrade replaces the Pods of the platform.
-   A change to the shared models also restarts, one time, the Agents that can
-   use those models.
+6. Run the upgrade as an admission administrator: a user in
+   `platform.values.cetirun-operator.sandboxAdmission.adminUsers`, or a member
+   of a group in `adminGroups`. To see your user name and groups, run
+   `kubectl auth whoami`. An upgrade changes the CetiAdmin configuration.
+   While the installation has CetiAdmin, only these administrators can change
+   this configuration. If another identity runs `make deploy`, for example the
+   service principal of a pipeline, the run upgrades the Istio release and the
+   Broker, then fails at the platform release.
+7. Plan a maintenance window. An upgrade replaces the Pods of the platform, and
+   it restarts each running Agent.
 
 Use the same release version for all components: the Operator, the Sandbox
 admission server, the Portal, the AI Gateway, the Broker, and Connections MCP.
@@ -49,8 +58,11 @@ admission server, the Portal, the AI Gateway, the Broker, and Connections MCP.
    `make deploy` installs the charts of the clone.
 3. In the environment file, set `release.version` and `release.gitSHA` to the
    new version and commit.
-4. Read the digests of the new Custom images, and update
-   `platform.values.cetirun-operator.customRuntime.approvedImages`.
+4. Read the digests of the new Custom images, and add them to
+   `platform.values.cetirun-operator.customRuntime.approvedImages`. Keep the
+   digests that existing Custom Agents use until each of these Agents moves to
+   a new digest. The Operator approves only an exact digest of the list, and
+   it stops updating a Custom Agent whose digest is not in the list.
    `make deploy` accepts an old digest that is still in the registry.
 5. Remove the fields that the new version does not support. For some fields,
    for example the removed `customRuntime` fields, the plan stops and names the
@@ -76,7 +88,7 @@ Refer to the
 
 An Operator upgrade does not change the agent chart version of an existing
 Agent. A new Agent gets the agent chart of the installed release. To upgrade
-an existing Agent, use the **Upgrade** action of the Portal, as
+an existing Agent, use the **Upgrade to Latest** action of the Portal, as
 [Pin and update a chart](../../guides/lifecycle/#pin-and-update-a-chart)
 shows. Upgrade each Agent after the platform upgrade.
 

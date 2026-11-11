@@ -26,6 +26,12 @@ Treat this collection as a preview.
 | AI Gateway | One JSON line for each model call, with the `log_type` `cetirun.ai_gateway.request`. The line has the model, the tokens, the spend, the timing, the Agent, the Team, and the outcome. It has no prompt or response content | The `Gateway` table of `CetiRunLogs`. `GatewayRequests()` reads it |
 | Other platform components | Logs on standard output | The `Platform` table of `CetiRunLogs` |
 
+The default `agent` and `agent2` node pools are Kata pools. With current node
+images, Container Insights and managed Prometheus collect nothing from them,
+as [Default collection on AKS](#default-collection-on-aks) describes. On a
+default installation, "Yes" in this table holds only for the Pods on the
+`system` pool.
+
 The metrics ports of the Operator, the admission server, and the AI Gateway use
 plain HTTP without authentication. Allow only your metrics scrapers to connect
 to these ports, for example with a NetworkPolicy. The
@@ -229,9 +235,17 @@ Also watch these signals of the platform:
   `.add function prom_increase admins ('aadapp=<ingestor-client-id>;<tenant-id>')`.
   Without the role, only the first CetiRun cluster's ingestor starts.
 - If you prepare the databases yourself, also run the scripts in
-  `infra/cluster/modules/adx/`. In these scripts, replace `__LOGS_DATABASE__`
-  with the name of the logs database. Also set the ingestion batching policy of
-  each database. The template sets 30 seconds.
+  `infra/cluster/modules/adx/`, each in its database:
+  - `cetirun-logs.kql` in the logs database
+  - `cetirun-metrics.kql`, `cetirun-health.kql`, and `adxmon-functions.kql` in
+    the metrics database
+  - `cetirun-agents.kql` in the Agent logs database
+  - `cetirun-content.kql` in `CetiRunContent`, if the AI Gateway keeps its
+    content in Azure Data Explorer
+
+  Before you run them, replace `__LOGS_DATABASE__` in `cetirun-health.kql`
+  and `cetirun-agents.kql` with the name of the logs database. Also set the
+  ingestion batching policy of each database. The template sets 30 seconds.
 - Outbound HTTPS from the platform namespace to the Kusto cluster, its
   `ingest-` endpoint, the Azure Storage endpoints of ADX ingestion, and Entra
   ID.

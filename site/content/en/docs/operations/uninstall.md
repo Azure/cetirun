@@ -21,8 +21,11 @@ page. The Operator must run while you delete the Agents in step 3.
 ## 2. Disable CetiAdmin
 
 Set `platform.values.cetirun-operator.cetiadmin.enabled: false` in the
-environment file, and run `make deploy`. The Operator revokes the access of
-CetiAdmin and stops its Agent. The stopped Agent and its HOME stay. Refer to
+environment file. Then run `make deploy` as an admission administrator: a user
+in `sandboxAdmission.adminUsers`, or a member of a group in `adminGroups`. Only
+these administrators can change the CetiAdmin configuration. The Operator
+revokes the access of CetiAdmin and stops its Agent. The stopped Agent and its
+HOME stay. Refer to
 [Disable CetiAdmin](../cetiadmin/#disable-cetiadmin).
 
 ## 3. Delete the Agents
@@ -103,6 +106,7 @@ These objects also stay:
 | The Secrets that you created, for example the AI Gateway, admission, MCP, and Broker Secrets | The namespaces of the installation |
 | With `publicTLS`, the ACME account Secrets and `cetirun-tls`, which cert-manager created | `aks-istio-ingress` |
 | The namespaces of the Istio release, the Broker, and the platform, which `make deploy` created outside Helm | Cluster |
+| With the ADX-Mon collection, the write-ahead log of the collector in `/var/lib/cetirun-adx-mon`. It can keep logs that were not sent yet, including Agent output | Each node that stays in the cluster |
 
 > **Warning:** The stopped CetiAdmin Agent keeps the finalizer
 > `cetirun.microsoft.com/finalizer`, and only the Operator removes it. After
@@ -130,10 +134,10 @@ sure that nothing else uses them:
   remove the encrypted records and the backups that need them.
 - The DNS records, or the DNS label of the ingress Public IP.
 - The Blob storage of shared skills and of the Skill Marketplace.
-- The Azure Data Explorer resources of the ADX-Mon collection. With
-  `adxContent`, also the database `CetiRunContent`, which keeps the prompts and
-  responses of the AI Gateway, and the managed identity
-  `<clusterName>-gateway-content`.
+- The Azure Data Explorer resources of the ADX-Mon collection, and the managed
+  identity `<clusterName>-adx-ingestor`. With `adxContent`, also the managed
+  identity `<clusterName>-gateway-content` and the database `CetiRunContent`,
+  which keeps the prompts and responses of the AI Gateway.
 - The images and charts in the registry, and the registry access of the
   cluster.
 - The AKS cluster, if you created it only for CetiRun.
