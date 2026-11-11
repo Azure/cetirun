@@ -54,9 +54,19 @@ Use Git or another tool in **Terminal**. Refer to
 
 ## How do I stop the Agent from remembering something?
 
-Send `/memory off`, or ask the Agent to forget a note. Refer to
-[Use memory](../memory/).
+Ask the Agent to forget the note. In an OpenClaw Agent, you can also send
+`/memory off` to pause memory in one conversation. This command does not work
+in a Hermes Agent. Refer to [Use memory](../memory/).
 
 ## Why can I not find Identities, Chat, or Tailscale?
 
-Your deployment does not allow them. Ask your administrator.
+Each one shows only when some conditions are true:
+
+| Item | Conditions |
+| --- | --- |
+| **Identities** | Your deployment allows connected services. Custom Agents and the Agents of a policy-bound Team have more conditions. Refer to [Agent Connections and Identity](../agent-identity/). |
+| **Chat** | The Agent is a Custom Agent with an HTTP port and without a Web UI, and your deployment allows Portal Chat. Refer to [Chat with a Custom Agent](../custom-chat/). |
+| **Tailscale** | The Agent is a Hermes or OpenClaw Agent that is not in a policy-bound Team, and your deployment allows Tailscale. Refer to [Connect Tailscale](../tailscale/#before-you-begin). |
+
+If the conditions are true and you still cannot find the item, ask your
+administrator.

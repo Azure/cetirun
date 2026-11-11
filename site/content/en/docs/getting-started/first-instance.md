@@ -58,7 +58,7 @@ To compare Hermes, OpenClaw, and Custom, refer to
 | **Use GitHub Copilot** | On, to use the models of your own GitHub Copilot subscription. You sign in to GitHub after you create the Agent. The form shows this switch only when the deployment offers GitHub Copilot. At least one model source stays on. |
 | **Default model (optional)** | **(automatic)**, or the model that new conversations start with. **(automatic)** uses the deployment default. Smart-routing models show `(smart routing)` after their names. You can select GitHub Copilot models only after you sign in. The form shows this field only when shared models or smart-routing models are available, and not for Custom Agents. |
 | **Gateway Token (optional)** | Nothing. The platform then generates the token. The OpenClaw gateway token protects the OpenClaw Control UI. It is not a model credential. Hermes uses its own key. |
-| **Tailscale Auth Key (optional)** | Nothing, unless you use Tailscale. The form shows this field only when the deployment allows Tailscale. Refer to [Connect Tailscale](../../guides/tailscale/). |
+| **Tailscale Auth Key (optional)** | Nothing, unless you use Tailscale. The form shows this field only for Hermes and OpenClaw, and only when the deployment allows Tailscale. Refer to [Connect Tailscale](../../guides/tailscale/). |
 | **Enable Microsoft Entra Agent Identity** | On, if the Agent must work with Azure resources through its own identity. The new identity has no Azure permissions until a resource owner assigns them. The form shows this switch only when the deployment and the Team allow it. Refer to [Agent Connections and Identity](../../guides/agent-identity/). |
 
 Under the fields, the form tells you about memory. When the deployment installs

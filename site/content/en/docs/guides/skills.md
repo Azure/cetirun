@@ -60,14 +60,20 @@ Agent uses the earlier versions. To get the new versions, select
 
 ## Add your own skills
 
-Put each of your skills in its own directory under `~/.agents/skills` in the
-home directory. Hermes and OpenClaw read the skills in this directory. The
-directory is in your home directory, so your skills are kept when the Agent
-restarts.
+Put each of your skills in its own directory in the skills directory of your
+agent type:
+
+| Agent type | Skills directory |
+| --- | --- |
+| Hermes | `~/.hermes/skills` |
+| OpenClaw | `~/.openclaw/skills` |
+
+The Agent always reads the skills in this directory. The directory is in your
+home directory, so your skills are kept when the Agent restarts.
 
 1. Open **Terminal**.
 2. Make a directory for the skill, for example
-   `mkdir -p ~/.agents/skills/release-notes`.
+   `mkdir -p ~/.hermes/skills/release-notes` for Hermes.
 3. In that directory, write a `SKILL.md` file. In the file, give the skill a
    name and a description, and then write the instructions.
 4. Start a new conversation with the Agent. Then describe a task that the

@@ -10,10 +10,10 @@ these actions:
 
 | Button | What it does |
 | --- | --- |
-| **Edit Agent** | Changes the display name, the image, the gateway token, or the Tailscale key. |
+| **Edit Agent** | Changes the display name, the image, the gateway token, or the Tailscale key. The Agent restarts. |
 | **Restart Agent** | Starts the Agent again. The home directory is kept. |
 | **Suspend Agent** and **Resume Agent** | Stops the Agent and keeps its home directory. Then starts it again. |
-| **Upgrade to Latest** | Moves the Agent to the agent chart version that your administrator selected. The button shows only when a newer version is available. |
+| **Upgrade to Latest** | Moves the Agent to the agent chart version that your administrator selected. The button shows only when the selected version is different from the version of the Agent. |
 | **Delete Agent** | Removes the Agent and its data. You cannot undo this action. |
 
 For the data that each action keeps or removes, refer to
@@ -33,10 +33,11 @@ For the data that each action keeps or removes, refer to
 | **Agent Image** | Enter another image. The platform must approve the image, and the image must be compatible with the Agent type. You cannot remove an image after it is set. |
 | **HTTP Port (optional)** | For a Hermes or OpenClaw Agent, keep the field empty. An empty field uses the default port of the pinned agent chart version. |
 | **Gateway Token** | Enter a new gateway token for OpenClaw. Leave the field empty to keep the current token. |
-| **Tailscale Auth Key** | Enter a new Tailscale key, or select **Disable Tailscale**. The dialog shows this field only when the deployment allows Tailscale. |
+| **Tailscale Auth Key** | Enter a new Tailscale key, or select **Disable Tailscale**. The dialog shows this field only for Hermes and OpenClaw, and only when the deployment allows Tailscale. |
 
-When you change the image, the gateway token, or the Tailscale key, the Agent
-restarts. During the restart, **Agent UI** is unavailable for a short time.
+When you save a change, the Agent restarts, also when you change only the
+display name. The restart stops the active sessions. During the restart,
+**Agent UI** is unavailable for a short time.
 
 To change the default model, use the **Models** section on the **Overview**
 tab. Refer to [Choose a model](../models/#select-and-switch-models).
@@ -96,8 +97,9 @@ for governance prerequisites before its first start.
 
 ## Upgrade your Agent
 
-The agent chart installs the Agent software. When your administrator makes a
-newer version available, **Upgrade to Latest** shows on the **Overview** tab.
+The agent chart installs the Agent software. When the version that your
+administrator selected is different from the version of your Agent,
+**Upgrade to Latest** shows on the **Overview** tab.
 
 1. Select **Upgrade to Latest**.
 2. Wait until the phase is **Ready** again.
@@ -116,9 +118,11 @@ kept. The platform updates only the configuration files that it manages.
 2. In the **Delete Agent** dialog, select **Delete**.
 
 The portal returns to **My Agents**. The Agent shows **Deleting** until the
-platform removes it. You can create a new Agent with the same name. The new
-Agent does not get the data, the memory, or the Agent Identity of the deleted
-Agent.
+platform removes it. While the Agent shows **Deleting**, its name is still in
+use, and it still counts toward your
+[limit of Agents](../troubleshooting/#default-limits). After the deletion is
+complete, you can create a new Agent with the same name. The new Agent does not
+get the data, the memory, or the Agent Identity of the deleted Agent.
 
 ## Administrator tasks
 

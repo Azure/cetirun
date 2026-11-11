@@ -24,7 +24,7 @@ see it.
 
 | Action | Home directory | Files outside home | GitHub Copilot sign-in | Agent Identity | Connected accounts |
 | --- | --- | --- | --- | --- | --- |
-| **Restart Agent**, **Upgrade to Latest**, and **Edit Agent** with a new image, gateway token, or Tailscale key | Kept | Removed | Kept | Kept | Kept |
+| **Restart Agent**, **Upgrade to Latest**, and each saved change in **Edit Agent** | Kept | Removed | Kept | Kept | Kept |
 | **Suspend Agent** and **Resume Agent** | Kept | Removed | Removed. Sign in again after you resume. | Kept | Kept |
 | **Delete Agent** | Deleted. There is no recycle bin. | Deleted | Deleted | Deleted. Refer to [What Agent Identity means for you](../agent-identity/#what-agent-identity-means-for-you). | The access of this Agent is removed. Your personal accounts stay in **Connections**. |
 

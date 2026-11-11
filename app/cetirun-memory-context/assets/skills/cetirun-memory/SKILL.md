@@ -65,7 +65,9 @@ stored, how often it loads or how often it was useful does not make it more reli
 change, check the current authorized source.
 
 The owner can type `/memory off`, `/memory no-capture` or `/memory on` to restrict or restore memory for
-the conversation, within the adapter's configured limits. `/memory on` cannot lift a startup restriction
+the conversation, within the adapter's configured limits. Hermes takes `/memory` as its own command for
+native memory write approval, so these commands never reach the Hermes adapter. Do not suggest them to a
+Hermes owner; point to `owner_access` instead. `/memory on` cannot lift a startup restriction
 or a restriction inherited by a child. On resume the adapter restores the most restrictive setting from native history until
 the owner opts back in. These controls do not delete native history. An HTTP client can send
 `X-CetiRun-Memory-Mode: off` or `no-capture` on supported endpoints.
