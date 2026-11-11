@@ -20,18 +20,18 @@ necessary for image distribution. Copilot and extensions keep their own terms.
 
 [vscode-lock.json](vscode-lock.json) pins the official CLI and web-server
 artifacts to **1.139.1**. It has SHA-256 checksums for AMD64 and ARM64. The
-build uses the CetiRun base image. An explicit license acceptance is necessary
-for the build. From the repository root:
+build uses the CetiRun base image. `ACCEPT_VSCODE_SERVER_LICENSE_TERMS` defaults
+to `true`, so no separate acceptance flag or prompt is needed. From the
+repository root:
 
 ```bash
 docker buildx build --platform linux/amd64 --load \
-  --build-arg ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true \
   -t cetirun-vscode:local examples/vscode-server
 ```
 
-The image builder makes the license acceptance decision at build time. If you
-use the approved prebuilt image, it is not necessary to pass this flag again.
-The image contains the runtime acceptance setting.
+The build accepts the VS Code Server license by default. An explicit
+`--build-arg ACCEPT_VSCODE_SERVER_LICENSE_TERMS=false` stops the build. Approved
+prebuilt images already contain the runtime acceptance setting.
 
 For a custom `BASE_IMAGE`, supply Node.js 24, Git, Python with tarfile's `data`
 extraction filter, and the CetiRun HOME initializer's tools. This example is

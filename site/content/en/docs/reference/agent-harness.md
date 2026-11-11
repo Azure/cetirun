@@ -33,7 +33,7 @@ deployment:
 spec:
   agent:
     type: custom
-    image: registry.example.com/team/agent:1.0.0
+    image: registry.example.com/team/agent@sha256:<digest>
     registrySecretRef:
       name: registry-example-agent
     username: vibe
@@ -43,7 +43,7 @@ spec:
 | Field | Contract |
 | --- | --- |
 | `type` | `hermes` (default), `openclaw` or `custom`. It is immutable after creation. |
-| `image` | Necessary for Custom. Built-ins use a pinned platform default or a qualified override. After the value is set, it cannot be cleared. We recommend that you use digests in production. |
+| `image` | Necessary for Custom. Use the exact `<repository>@sha256:<digest>` reference that an administrator lists in the Operator's `customRuntime.approvedImages`. The Operator compares the two strings exactly, so it never approves a tag reference. Built-ins use a pinned platform default or a qualified override. After the value is set, it cannot be cleared. |
 | `registrySecretRef` | An optional reference to a Portal-managed source Secret. The reference contains only `name`. |
 | `username` | A non-root user that exists in the image. The default is `vibe`, and HOME is at `/home/<username>`. It is immutable. |
 | `port` | HTTP port, 1–65535. When `webUI` is true, Custom serves its Web UI on this port. Otherwise, Custom serves the Chat API. If the port is omitted, the Agent is headless. Built-ins keep qualified native defaults. Platform desktop and terminal access are independent of this field. |
@@ -87,7 +87,11 @@ and resource names keep the same roles.
 The Portal and Operator charts enable Custom support by default. The Operator's
 `customRuntime.approvedImages` list starts empty: the provider can start, but it
 rejects every image until an administrator approves its immutable digest and
-configures its numeric UID/GID. No image is approved by default.
+configures its numeric UID/GID. No image is approved by default. The list holds
+at most 64 entries, and each entry must have the form
+`<repository>@sha256:<64 hex digits>`. An Agent whose `spec.agent.image` is not
+exactly equal to an entry does not start, and it reports
+`Custom image is not approved`.
 
 Custom uses its own Go adapter and chart branch. For Custom, a built-in profile,
 native provider, configuration template or preferred model name is not
@@ -409,10 +413,12 @@ helpers stay available.
 
 ## Private Memory Context
 
-Memory Context is enabled by default for OpenClaw, Hermes and Custom Agents on
-the ordinary deployment path. Sandbox-bound workloads keep their upstream
-contract without Memory asset injection. Memory Context uses a separate image,
-not a separate Helm release or service.
+Memory Context is enabled by default for OpenClaw, Hermes and Custom Agents.
+This includes the Sandbox Agents that the common executor runs. The only
+workloads without Memory assets are Sandbox workloads that the common executor
+does not reconcile, for example a retained version-1 native single-start
+lifetime. Memory
+Context uses a separate image, not a separate Helm release or service.
 
 Operator's `memoryContext.image` is an optional full image reference. When it
 is empty, Operator selects `cetirun-memory-context:<appVersion>` from each
@@ -425,9 +431,10 @@ platform chart. You can set the more specific
 `cetirun-operator.memoryContext.image` instead.
 
 The standalone runtime chart uses `memoryContext.image` with the same release
-defaults. Release tags and explicit SHA-256 digests are accepted, but `latest`
-is not. A release tag selects a version, not immutable bytes. If you must pin
-the exact image, supply a digest. The Memory image that matches the release
+defaults. Semantic-version tags (`X.Y.Z`, with an optional suffix such as
+`-rc.1`) and explicit SHA-256 digests are accepted. Other tags, for example
+`latest`, are not. A release tag selects a version, not immutable bytes. If you
+must pin the exact image, supply a digest. The Memory image that matches the release
 must be published with the release before you deploy it.
 
 To omit Memory delivery, set `memoryContext.enabled: false` on the Operator or
@@ -798,7 +805,7 @@ endpoint must work without a model call or a user's service login.
 spec:
   agent:
     type: custom
-    image: registry.example.com/team/editor:1.0.0
+    image: registry.example.com/team/editor@sha256:<digest>
     port: 8080
     webUI: true
 ```

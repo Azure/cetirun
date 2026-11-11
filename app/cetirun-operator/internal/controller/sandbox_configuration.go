@@ -76,6 +76,12 @@ type TeamReconciler struct {
 	MaxSnapshotAge  time.Duration
 }
 
+const (
+	teamCompatibilityValidity    = 30 * time.Second
+	teamCompatibilityRenewalLead = 5 * time.Second
+	teamCompatibilityInterval    = 15 * time.Second
+)
+
 func (r *SandboxReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Client == nil {
 		r.Client = mgr.GetClient()
@@ -196,25 +202,79 @@ func (r *TeamReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 		team.Status.Compatibility = nil
 	} else {
 		compatibility, compatibilityErr := r.assessCompatibility(ctx, team, now)
+		now = configurationNow(r.Now)
 		if compatibilityErr != nil {
-			team.Status.Compatibility = r.unknownCompatibility(team, now, compatibilityErr)
+			compatibility = r.unknownCompatibility(team, now, compatibilityErr)
 			observeErr = errors.Join(observeErr, compatibilityErr)
-		} else {
-			team.Status.Compatibility = compatibility
 		}
+		team.Status.Compatibility = retainTeamCompatibility(before.Status.Compatibility, compatibility, now)
 	}
 	if !reflect.DeepEqual(before.Status, team.Status) {
 		if err := r.Status().Patch(ctx, team, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 			return ctrl.Result{}, errors.Join(observeErr, err)
 		}
 	}
+	// A status write can itself take long enough to cross the renewal boundary.
+	// Queue from a fresh clock read so the next assessment cannot run after an
+	// otherwise-current report has expired.
+	now = configurationNow(r.Now)
 	if observeErr != nil {
 		return ctrl.Result{}, observeErr
 	}
 	if team.Spec.PolicyConfigured() && team.DeletionTimestamp == nil {
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: teamCompatibilityRequeueAfter(team.Status.Compatibility, now)}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+// retainTeamCompatibility keeps a current observation when a repeat assessment
+// has the same result. Status subresource writes also change resourceVersion,
+// so refreshing timestamps on every 15-second check would make an unchanged
+// Team configuration appear concurrently edited to Portal clients.
+func retainTeamCompatibility(existing, assessed *api.TeamCompatibilityStatus, now time.Time) *api.TeamCompatibilityStatus {
+	if existing != nil && assessed != nil && teamCompatibilityCurrent(existing, now) &&
+		teamCompatibilityEqual(existing, assessed) {
+		return existing.DeepCopy()
+	}
+	if assessed == nil {
+		return nil
+	}
+	// An assessment may take longer than the previous report's remaining lease.
+	// Start every newly published report after all source and input verification
+	// completes, so its 30-second validity period describes the published result.
+	assessed = assessed.DeepCopy()
+	assessed.CheckedAt = metav1.NewTime(now)
+	assessed.ValidUntil = metav1.NewTime(now.Add(teamCompatibilityValidity))
+	return assessed
+}
+
+func teamCompatibilityEqual(left, right *api.TeamCompatibilityStatus) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	left, right = left.DeepCopy(), right.DeepCopy()
+	left.CheckedAt, left.ValidUntil = metav1.Time{}, metav1.Time{}
+	right.CheckedAt, right.ValidUntil = metav1.Time{}, metav1.Time{}
+	return reflect.DeepEqual(left, right)
+}
+
+func teamCompatibilityCurrent(report *api.TeamCompatibilityStatus, now time.Time) bool {
+	if report == nil || report.CheckedAt.IsZero() || report.ValidUntil.IsZero() || report.CheckedAt.After(now) ||
+		!report.ValidUntil.After(report.CheckedAt.Time) || report.ValidUntil.Sub(report.CheckedAt.Time) > teamCompatibilityValidity {
+		return false
+	}
+	return report.ValidUntil.Sub(now) > teamCompatibilityRenewalLead
+}
+
+func teamCompatibilityRequeueAfter(report *api.TeamCompatibilityStatus, now time.Time) time.Duration {
+	if report == nil || report.ValidUntil.IsZero() {
+		return teamCompatibilityInterval
+	}
+	untilRenewal := report.ValidUntil.Sub(now) - teamCompatibilityRenewalLead
+	if untilRenewal <= 0 {
+		return time.Nanosecond
+	}
+	return min(teamCompatibilityInterval, untilRenewal)
 }
 
 // assessCompatibility reports the saved Team configuration only. It never
@@ -266,7 +326,7 @@ func (r *TeamReconciler) assessCompatibility(ctx context.Context, team *api.Team
 		}
 		return nil, err
 	}
-	report.CheckedAt, report.ValidUntil = metav1.NewTime(now), metav1.NewTime(now.Add(30*time.Second))
+	report.CheckedAt, report.ValidUntil = metav1.NewTime(now), metav1.NewTime(now.Add(teamCompatibilityValidity))
 	if err := r.verifyCompatibilityInputs(ctx, team, resources, snapshot, report); err != nil {
 		return r.unknownCompatibility(team, now, err), nil
 	}
@@ -414,7 +474,7 @@ func (r *TeamReconciler) unknownCompatibility(team *api.Team, now time.Time, cau
 		Message:   configurationErrorMessage("Current platform compatibility cannot be verified", cause, nil),
 		Team:      api.CompatibilityReference{Name: team.Name, UID: string(team.UID), Generation: team.Generation},
 		Policy:    api.CompatibilityReference{Name: team.Spec.AgentPolicyRef},
-		CheckedAt: metav1.NewTime(now), ValidUntil: metav1.NewTime(now.Add(30 * time.Second)),
+		CheckedAt: metav1.NewTime(now), ValidUntil: metav1.NewTime(now.Add(teamCompatibilityValidity)),
 	}
 	for _, name := range team.Spec.SandboxRefs {
 		report.Sandboxes = append(report.Sandboxes, api.SandboxCompatibilityStatus{

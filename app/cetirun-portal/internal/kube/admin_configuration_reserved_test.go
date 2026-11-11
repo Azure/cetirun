@@ -102,7 +102,7 @@ func TestConfigurationReservedUpdateResumesExactRetryAfterRestart(t *testing.T) 
 				case *api.Sandbox:
 					return portal.UpdateSandboxSpec(ctx, object.Name, object.Spec, reviewed)
 				case *api.AgentPolicy:
-					return portal.UpdateAgentPolicySpec(ctx, object.Name, object.Spec, AgentPolicyVersion(reviewed))
+					return portal.UpdateAgentPolicySpec(ctx, object.Name, object.Spec, AgentPolicyVersion{UID: reviewed.UID, ResourceVersion: reviewed.ResourceVersion})
 				default:
 					panic("unknown fixture kind")
 				}

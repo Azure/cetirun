@@ -72,6 +72,15 @@ describe("PolicyEditPage", () => {
     });
   });
 
+  it("explains how Agent Identity policy modes affect existing Agents", async () => {
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(cachedPolicy);
+    renderCachedPolicy();
+    const identity = await screen.findByRole("combobox", { name: "Agent Identity", exact: true });
+    expect(identity).toHaveAccessibleDescription(/Optional lets users choose without enabling it on existing Agents/);
+    expect(identity).toHaveAccessibleDescription(/Required also applies to existing Agents and stops any without it/);
+    expect(identity).toHaveAccessibleDescription(/Disabled denies Agents that request it/);
+  });
+
   it("adds and removes one catalog skill in the allowed skills text without touching other entries", () => {
     expect(toggleAllowedSkill("", "pdf-tools", true)).toBe("pdf-tools");
     expect(toggleAllowedSkill("npm:@scope/tool\n\n", "pdf-tools", true)).toBe("npm:@scope/tool\npdf-tools");

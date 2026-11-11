@@ -9,15 +9,20 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
+	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -172,6 +177,69 @@ func (r *AgentReconciler) stopCustomWorkload(ctx context.Context, instance *api.
 	zero := int32(0)
 	current.Spec.Replicas = &zero
 	return r.Patch(ctx, current, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+}
+
+// observeCustomSuspension confirms ordinary controller shutdown after the stop
+// requests. It does not establish physical fencing or volume detachment.
+func (r *AgentReconciler) observeCustomSuspension(ctx context.Context, instance *api.Agent) (bool, error) {
+	reader := r.customReader()
+	namespace := instanceNamespace(instance.Name)
+	main := &appsv1.StatefulSet{}
+	err := reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: instanceServiceName(instance.Name)}, main)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return false, err
+	}
+	if err == nil {
+		if !hasCustomWorkloadOwner(main, instance) || main.Annotations[customAgentUID] != string(instance.UID) {
+			return false, fmt.Errorf("Custom workload owner is not confirmed")
+		}
+		if ptr.Deref(main.Spec.Replicas, 1) != 0 || main.Status.ObservedGeneration < main.Generation ||
+			main.Status.Replicas != 0 || main.Status.ReadyReplicas != 0 {
+			return false, nil
+		}
+	}
+	for _, name := range []string{terminalpolicy.WorkloadName(instanceServiceName(instance.Name)), copilotProxyServiceName(instance)} {
+		deployment := &appsv1.Deployment{}
+		err := reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, deployment)
+		if apierrors.IsNotFound(err) {
+			// A deleted Deployment can still have a ReplicaSet creating Pods.
+			var replicas appsv1.ReplicaSetList
+			if err := reader.List(ctx, &replicas, client.InNamespace(namespace)); err != nil {
+				return false, err
+			}
+			for _, replica := range replicas.Items {
+				for _, owner := range replica.OwnerReferences {
+					if owner.Kind == "Deployment" && owner.Name == name {
+						return false, nil
+					}
+				}
+			}
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if !hasCustomWorkloadOwner(deployment, instance) || deployment.Annotations[customAgentUID] != string(instance.UID) {
+			return false, fmt.Errorf("Custom auxiliary workload owner is not confirmed")
+		}
+		if ptr.Deref(deployment.Spec.Replicas, 1) != 0 || deployment.Status.ObservedGeneration < deployment.Generation ||
+			deployment.Status.Replicas != 0 || deployment.Status.ReadyReplicas != 0 {
+			return false, nil
+		}
+	}
+	var pods corev1.PodList
+	if err := reader.List(ctx, &pods, client.InNamespace(namespace)); err != nil {
+		return false, err
+	}
+	if len(pods.Items) != 0 {
+		return false, nil
+	}
+	// A successful DELETE can leave the route terminating behind a finalizer.
+	err = reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: virtualServiceName(instance.Name)}, &istiov1beta1.VirtualService{})
+	if apierrors.IsNotFound(err) || apimeta.IsNoMatchError(err) {
+		return true, nil
+	}
+	return false, err
 }
 
 func (r *AgentReconciler) customEvent(instance *api.Agent, eventType, reason, message string) {

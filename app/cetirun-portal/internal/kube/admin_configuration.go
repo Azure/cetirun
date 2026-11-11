@@ -15,16 +15,30 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// ConfigurationVersion identifies the exact Team or Sandbox an administrator read.
+// ConfigurationVersion identifies the configuration an administrator read.
+// Teams may supply Generation to tolerate status-only resource-version changes.
+// Other resources continue to require the exact ResourceVersion.
 type ConfigurationVersion struct {
 	UID             types.UID
 	ResourceVersion string
+	Generation      int64
 }
 
 var ErrConfigurationChanged = errors.New("Configuration changed; reload it before saving or deleting")
 
 func checkConfigurationVersion(object client.Object, version ConfigurationVersion) error {
 	if version.UID == "" || version.ResourceVersion == "" || object.GetUID() != version.UID || object.GetResourceVersion() != version.ResourceVersion {
+		return ErrConfigurationChanged
+	}
+	return nil
+}
+
+func checkTeamConfigurationVersion(team *api.Team, version ConfigurationVersion) error {
+	if version.Generation == 0 {
+		return checkConfigurationVersion(team, version)
+	}
+	if version.Generation < 0 || version.UID == "" || version.ResourceVersion == "" ||
+		team.UID != version.UID || team.Generation != version.Generation || !team.DeletionTimestamp.IsZero() {
 		return ErrConfigurationChanged
 	}
 	return nil
@@ -69,7 +83,7 @@ func (c *Client) UpdateTeamSpec(ctx context.Context, name string, spec api.TeamS
 	if err := c.recoverConfigurationUpdate(ctx, before, team); err != nil {
 		return nil, err
 	}
-	if err := checkConfigurationVersion(team, version); err != nil {
+	if err := checkTeamConfigurationVersion(team, version); err != nil {
 		return nil, err
 	}
 	if equality.Semantic.DeepEqual(before.Spec, team.Spec) {
@@ -86,7 +100,7 @@ func (c *Client) DeleteTeam(ctx context.Context, name string, version Configurat
 	if err != nil {
 		return err
 	}
-	if err := checkConfigurationVersion(team, version); err != nil {
+	if err := checkTeamConfigurationVersion(team, version); err != nil {
 		return err
 	}
 	return c.deleteConfiguration(ctx, team)

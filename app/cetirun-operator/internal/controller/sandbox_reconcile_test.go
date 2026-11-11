@@ -273,8 +273,8 @@ func TestReconciledSandboxSuspendsAfterPreBootstrapSkillsFailure(t *testing.T) {
 			r.SandboxPreparation.Prerequisites.(*KubernetesSandboxPrerequisites).SkillsCatalogConfigMapName = catalog.Name
 		},
 	)
-	if _, err := f.reconcile(); err == nil {
-		t.Fatal("missing Team skills publication did not fail before bootstrap")
+	if result, err := f.reconcile(); err != nil || result.RequeueAfter == 0 {
+		t.Fatalf("missing Team skills publication did not wait before bootstrap: result=%+v err=%v", result, err)
 	}
 	failed := f.current(t)
 	if !controllerutil.ContainsFinalizer(failed, sandbox.HoldFinalizer) {
@@ -329,8 +329,8 @@ func TestReconciledSandboxSuspendsAfterPreBootstrapSkillsFailure(t *testing.T) {
 			return c.SubResource(subresource).Patch(ctx, object, patch, options...)
 		},
 	})
-	if _, err := f.reconcile(); err == nil {
-		t.Fatal("unchanged missing Team skills publication unexpectedly succeeded")
+	if result, err := f.reconcile(); err != nil || result.RequeueAfter == 0 {
+		t.Fatalf("unchanged missing Team skills publication did not keep waiting: result=%+v err=%v", result, err)
 	}
 	held := f.current(t)
 	if held.UID != before.UID || held.Generation != before.Generation || !reflect.DeepEqual(held.Spec, before.Spec) ||
@@ -848,6 +848,9 @@ func testReconciledSandboxSuspensionForHarnesses(t *testing.T, harnesses []strin
 						expected := reconciledExpectationForTest(t, f)
 						if expected.Home != initial.Home || current.Status.AIGateway.KeyID != keyID || len(f.gateway.generated) != 1 {
 							t.Fatal("suspension/reconciliation replaced HOME or reset the Gateway key")
+						}
+						if current.Status.ObservedGeneration != current.Generation {
+							t.Fatalf("suspended=%t: observed generation %d, want %d", suspended, current.Status.ObservedGeneration, current.Generation)
 						}
 						want := int32(1)
 						if suspended {

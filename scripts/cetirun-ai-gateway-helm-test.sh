@@ -1008,6 +1008,36 @@ assert_contains '^      store_prompts_in_spend_logs: true$' "content storage doe
 prompt_no_retention="$(render --set spendLogs.storePrompts=true --set-string spendLogs.retention=)"
 assert_contains '^      store_prompts_in_spend_logs: true$' "empty retention keeps stored content indefinitely" \
   "${prompt_no_retention}"
+
+echo "==> content: prompts and responses to Azure Data Explorer"
+content_args=(
+  --set content.enabled=true
+  --set-string content.clusterName=example
+  --set-string content.clientId=55555555-5555-5555-5555-555555555555
+  --set-string content.adx.endpoint=https://example.australiaeast.kusto.windows.net
+)
+assert_absent "CETIRUN_CONTENT_" "content is off by default" "${output}"
+assert_absent "azure.workload.identity" "no workload identity without content" "${output}"
+content_on="$(render "${content_args[@]}")"
+assert_contains 'name: CETIRUN_CONTENT_ENDPOINT' "content names the Kusto cluster" "${content_on}"
+assert_contains 'value: "https://example.australiaeast.kusto.windows.net"' "the endpoint reaches the Gateway" "${content_on}"
+assert_contains 'value: "CetiRunContent"' "the default content database" "${content_on}"
+assert_contains 'name: CETIRUN_CONTENT_CLUSTER' "content names this cluster" "${content_on}"
+assert_contains 'azure.workload.identity/use: "true"' "the Gateway Pod uses workload identity" "${content_on}"
+assert_contains 'azure.workload.identity/client-id: 55555555-5555-5555-5555-555555555555' \
+  "the ServiceAccount names the content identity" "${content_on}"
+assert_contains '^      store_prompts_in_spend_logs: false$' \
+  "with content in ADX, the spend log keeps no copy of prompts" "${content_on}"
+assert_contains '^      store_prompts_in_spend_logs: false$' "content wins over an explicit storePrompts" \
+  "$(render "${content_args[@]}" --set spendLogs.storePrompts=true)"
+assert_rejected "content without a Kusto query URI" "${content_args[@]}" --set-string content.adx.endpoint=example.kusto.windows.net
+assert_rejected "content with a path in the endpoint" "${content_args[@]}" --set-string content.adx.endpoint=https://example.kusto.windows.net/CetiRunContent
+assert_rejected "content without a cluster name" "${content_args[@]}" --set-string content.clusterName=
+assert_rejected "content with a cluster name that is not a DNS label" "${content_args[@]}" --set-string content.clusterName=Example_Cluster
+assert_rejected "content without the identity's client ID" "${content_args[@]}" --set-string content.clientId=example
+assert_rejected "content with a database name ADX refuses" "${content_args[@]}" --set-string content.adx.database=cetirun-content
+assert_rejected "content without a chart-made ServiceAccount" "${content_args[@]}" --set serviceAccount.create=false
+assert_rejected "an unknown content value" "${content_args[@]}" --set-string content.adx.ingestionUri=https://example
 assert_absent 'retention_period' "prompt storage does not force a retention period" "${prompt_no_retention}"
 assert_rejected "prompt storage while the spend log is disabled" \
   --set spendLogs.enabled=false --set spendLogs.storePrompts=true
@@ -1111,8 +1141,8 @@ assert_rejected "the metrics port on the Service port" --set metrics.enabled=tru
 # leaves it.
 echo "==> a release from before these settings upgrades with --reuse-values"
 reuse_args=(--set metrics=null --set requestLog=null --set spendLogs=null --set router=null
-  --set budgetExceededStatusCode=null --set podDisruptionBudget=null --set priceTable=null)
-for template in deployment.yaml configmap.yaml poddisruptionbudget.yaml; do
+  --set budgetExceededStatusCode=null --set podDisruptionBudget=null --set priceTable=null --set content=null)
+for template in deployment.yaml configmap.yaml poddisruptionbudget.yaml serviceaccount.yaml; do
   [ "$(render "${reuse_args[@]}" -s "templates/${template}")" = "$(render -s "templates/${template}")" ] || {
     echo "FAIL: without the request log, metrics, router, budget status, disruption budget and price table settings, ${template} differs from its default render" >&2
     exit 1

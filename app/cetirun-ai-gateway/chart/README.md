@@ -52,9 +52,10 @@ REGISTRY=<registry> bash scripts/ai-gateway-helm-release.sh
 
 Both scripts take `<version>` from the release version of the repository,
 unless `VERSION` is set. The chart runs the image of its own version.
-`make publish REGISTRY=<registry> ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true`
+`make publish REGISTRY=<registry>`
 publishes them together with every other CetiRun image and chart, the VS Code
-Server image included. The master key, the salt key, and the console password
+Server image included. `ACCEPT_VSCODE_SERVER_LICENSE_TERMS` defaults to `true`.
+The master key, the salt key, and the console password
 are generated. Refer to [Credentials](#credentials). To call the Gateway, refer
 to [Calling the Gateway](#calling-the-gateway).
 
@@ -126,9 +127,14 @@ meets these conditions:
 
 A console deployment under the same name is not automatically trusted or
 granted. If a console deployment copies the group, the Operator distrusts it.
-Agents then lose that model until the copy is removed. Two identical entries
-render the same deployment ID. If the Gateway lists this ID twice, the Operator
-does not trust the group.
+Agents without a policy then lose that model until the copy is removed. A
+policy-bound Agent whose AgentPolicy allows the model stops: the Operator blocks
+its key until the Gateway offers the model again. The same occurs when a policy
+allows a model that is removed from `models`. See
+[Choose a model](../../../site/content/en/docs/guides/models.md#runtime-configuration).
+
+Two identical entries render the same deployment ID. If the Gateway lists this
+ID twice, the Operator does not trust the group.
 
 Earlier versions of this chart derived the group from the complete model
 configuration. As a result, a change to a model changed its group. The model
@@ -3011,6 +3017,54 @@ calls. Budgets continued to work, and the daily totals counted all 16 calls.
 The console's usage pages read those totals and continue to work. Its request
 log pages, which read `LiteLLM_SpendLogs`, stay empty. LiteLLM reads the
 setting when the proxy starts.
+
+### Content in Azure Data Explorer
+
+With `content.enabled`, the Gateway writes the request and the response of each
+call to an Azure Data Explorer database of its own, and the spend log keeps
+none: the chart renders `store_prompts_in_spend_logs: false` whatever
+`spendLogs.storePrompts` says. The console's request page still shows a call's
+content: LiteLLM asks the Gateway's content callback before it reads the
+spend log, and the callback reads the call from Azure Data Explorer.
+
+```yaml
+content:
+  enabled: true
+  clusterName: example          # names this CetiRun cluster in every record
+  clientId: <identity-client-id>
+  adx:
+    endpoint: https://<kusto-cluster>.<region>.kusto.windows.net
+    database: CetiRunContent
+```
+
+- **Records.** One row per part of a call's request or response, at most
+  256 KiB each, with the call and request IDs, model, status, the Agent, owner
+  and Team from the key's metadata, and the LiteLLM user and Team of the key.
+  Content is complete, not shortened as in the spend log, except that inline
+  images and files (`data:` URLs) and encrypted reasoning are replaced by notes
+  with their type and size. `GatewayContent()` joins the parts again. Calls
+  that LiteLLM makes itself are not stored: background health check probes,
+  and an auto router's classifier calls, which repeat the routed conversation.
+- **Identity.** The Gateway Pods use a workload identity: the chart labels the
+  Pods and names `clientId` on the ServiceAccount it creates. The identity
+  needs a federated credential for
+  `system:serviceaccount:<namespace>:<release ServiceAccount>`, and the roles
+  `Ingestor` and `Viewer` on the content database only. The cluster template's
+  ADX module creates the database, its table, ingestion mapping and function,
+  and grants these roles to `contentWriterClientId`.
+- **Console access.** Administrators see every call's content. Other console
+  users see a call only when LiteLLM's check finds that the call's key belongs
+  to them or to a Team they may view; a record without a LiteLLM user or Team,
+  such as from a key with neither, is refused to them. The operator's Agent
+  keys carry the owner as LiteLLM user and `cetirun-team-<Team>` as Team. The
+  Gateway reads only the requested call's rows of this cluster, within a day of
+  the time range the console passes.
+- **Delivery.** A background thread sends records in batches with queued
+  ingestion; a call never waits for it. Content usually appears within a
+  minute. It is lost when ADX refuses a batch three times, and when the queue
+  of 2,000 records is full. The Gateway's log says how many records it
+  dropped. Until a call's content has arrived, its console page shows the
+  spend log's empty content.
 
 ### Credentials and Container Insights
 

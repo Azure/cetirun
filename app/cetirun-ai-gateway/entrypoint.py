@@ -280,6 +280,16 @@ def gateway(args, environ=None):
         print(f"{SPEND_LOGS_ENV}=false is ignored without {REQUEST_LOG_ENV}=true: "
               "LiteLLM keeps its spend log while nothing replaces it", flush=True)
 
+    # Prompts and responses to Azure Data Explorer, when the chart names a
+    # content database. LiteLLM's console reads them back through this callback.
+    from cetirun_ai_gateway.content import from_environment
+
+    content = from_environment(environ, log=lambda message: print(message, flush=True))
+    if content is not None:
+        litellm.logging_callback_manager.add_litellm_callback(content)
+        print(f"content callback registered: {environ['CETIRUN_CONTENT_DATABASE']} as cluster "
+              f"{environ['CETIRUN_CONTENT_CLUSTER']}", flush=True)
+
     from litellm.proxy.proxy_cli import run_server
 
     run_server.main(args=list(args), prog_name="litellm")

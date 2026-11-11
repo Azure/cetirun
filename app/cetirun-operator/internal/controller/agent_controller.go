@@ -374,6 +374,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		// stop compute until fresh authorization evidence is available.
 		bootstrapErr := r.bootstrapPendingIngressMTLS(ctx, instance, policy.ingressMTLSPending)
 		bootstrapErr = stderrors.Join(bootstrapErr, r.bootstrapPendingIdentity(ctx, instance, policy.identityPending))
+		if err == nil && bootstrapErr != nil {
+			// The policy status is recorded; a bootstrap wait retries periodically.
+			return r.holdReconciledBootstrap(ctx, instance, bootstrapErr)
+		}
 		result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
 		return result, stderrors.Join(err, bootstrapErr, holdErr)
 	} else if err != nil {
@@ -522,8 +526,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		// must not create a namespace that protected bootstrap cannot adopt.
 		if reconciledSandbox {
 			if err := r.bootstrapReconciledSandbox(ctx, instance); err != nil {
-				result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
-				return result, stderrors.Join(err, holdErr)
+				return r.holdReconciledBootstrap(ctx, instance, err)
 			}
 		}
 		// An unmatched Registry operation must not prevent repair of its exec gate.
@@ -787,8 +790,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 	if namespaceErr != nil {
 		if reconciledSandbox {
-			result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
-			return result, stderrors.Join(namespaceErr, holdErr)
+			return r.holdReconciledBootstrap(ctx, instance, namespaceErr)
 		}
 		return r.failWith(ctx, instance, "ProvisioningFailed", fmt.Sprintf("ensure namespace: %v", namespaceErr))
 	}

@@ -188,6 +188,25 @@ the command with `GOPROXY=off GOTOOLCHAIN=local GOFLAGS=-mod=readonly`. If a
 toolchain or dependency is not available, make sure that the check fails and
 does not start an implicit download.
 
+### CetiAdmin binding cleanup
+
+Focused offline checks for deleting an Agent with an existing exec-admin binding:
+
+```bash
+go -C app/cetirun-operator test ./internal/admission ./internal/controller -run '^TestCetiAdmin' -count=1
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestCetiAdminBoundAgentDeletionAPIServer$' -count=1
+```
+
+The API-server regression uses the rendered control-plane admission contract
+and real RBAC to delete suspended Custom, OpenClaw, and Hermes Agents with
+retained old image and Chart pins and a previous native-auth rotation marker.
+It checks binding withdrawal while the Agent is still deleting, rejects
+binding edits by an ordinary Portal identity, and runs normal Operator
+finalizer cleanup. It simulates the Kubernetes
+namespace/PVC controllers that envtest does not run; it does not qualify
+physical storage reclamation, runtime images, or live cluster behavior.
+
 ### Custom terminal
 
 The Custom terminal uses its own image and
@@ -316,20 +335,22 @@ Report that narrower scope. This check does not validate the frontend or the
 complete portal binary. Do not use a placeholder embed directory as a frontend
 build.
 
-The retained lifecycle APIs also have an isolated API-server test. If you
+The retained lifecycle and configuration APIs also have isolated API-server tests. If you
 already installed the pinned Kubernetes 1.37 binaries that are described
 below, run:
 
 ```bash
 KUBEBUILDER_ASSETS=/path/to/local/envtest \
-  go -C app/cetirun-portal test -tags=envtest ./internal/kube ./internal/handler -run '^Test(RetainedRestartThroughServedAPI|SandboxDefaultsThroughPortalAndServedAPI)$' -count=1
+  go -C app/cetirun-portal test -tags=envtest ./internal/kube ./internal/handler -run '^Test(RetainedRestartThroughServedAPI|SandboxDefaultsThroughPortalAndServedAPI|TeamGenerationThroughPortalAndServedAPI)$' -count=1
 ```
 
 It tests the persisted restart identity, the conditional suspend/resume intent,
 duplicate requests, the rejection of a stale UID/version, and CRD validation.
 The Sandbox case compares omitted/null runtime defaults and full
 resource/storage fields through the Portal and the served Kubernetes API. This
-comparison also includes conditional updates. It starts its own API server and
+comparison also includes conditional updates. The Team case checks status-only
+resource-version changes, configuration generations, replacement UIDs, no-op
+saves, and deletion through both direct and coordinated writes. Each test starts its own API server and
 etcd and never uses a cluster that already exists. It does not run Pods,
 connect to a model provider, or qualify storage/failure recovery. Operator CI
 also runs these tests with its pinned admission-test tools.
@@ -820,8 +841,9 @@ separate checks. Refer to [the example](examples/vscode-server/README.md).
 
 `make build-images` and `make publish-images` include the `cetirun-pi-agent`
 demo and VS Code Server. For usage and tests, refer to
-[the Pi README](examples/pi-agent/README.md). Before any build, the full image
-set must have an explicit `ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true`.
+[the Pi README](examples/pi-agent/README.md).
+`ACCEPT_VSCODE_SERVER_LICENSE_TERMS` defaults to `true`, so image builds do not
+require a separate license-acceptance flag or prompt.
 
 ### Unified release inventory
 
@@ -841,10 +863,13 @@ assignment on the command line takes precedence. For a local test build:
 
 ```bash
 REGISTRY=registry.example.com/team/test VERSION=0.1.1-dev.1 \
-  make build-images ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true
+  make build-images
 ```
 
-Set the license acceptance only after accepting the VS Code Server terms.
+Builds accept the [VS Code Server terms](https://code.visualstudio.com/license/server)
+by default. An explicit `ACCEPT_VSCODE_SERVER_LICENSE_TERMS=false` stops builds
+that include VS Code Server; the release CLI can exclude it with
+`--exclude-image cetirun-vscode`.
 MCR is a public pull endpoint, not a push destination. Its default is used
 for local image tags and chart packaging. Local builds can shadow official
 tags in the local Docker store; use an explicit test registry prefix to keep
@@ -899,7 +924,7 @@ After registry authentication and publication authorization:
 
 ```bash
 make publish REGISTRY=registry.example.com VERSION=0.1.1 \
-  GIT_SHA="$(git rev-parse HEAD)" ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true
+  GIT_SHA="$(git rev-parse HEAD)"
 ```
 
 `publish` examines every destination image/chart tag before a build or push.
@@ -923,7 +948,7 @@ images and charts succeed. It passes the
 `ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true` value, which is already configured in
 the pipeline, to the shared driver. As a result, a new manual approval
 parameter is not necessary for the automatic tag releases that already exist.
-Local build/publish callers still supply their own explicit acceptance. The
+Local build/publish callers use the same `true` default. The
 manual-only `forcePublish` control that already exists stays separate.
 
 Offline release/deployment regressions use synthetic APIs and local Helm:
