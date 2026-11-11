@@ -89,7 +89,7 @@ func TestCreationExamplesDefaultToHermes(t *testing.T) {
 		"../../test/config/sample-alice.yaml",
 		"../../test/config/sample-bob.yaml",
 		"../../test/config/sample-team.yaml",
-		"../../../../site/content/en/docs/getting-started/first-instance.md",
+		"../../../../site/content/en/docs/operations/agent-lifecycle.md",
 	} {
 		t.Run(path, func(t *testing.T) {
 			raw, err := os.ReadFile(path)
