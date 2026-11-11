@@ -39,6 +39,10 @@ RUN UNAME_M=$(uname -m) && \
 FROM ${GO_BUILD_IMAGE} AS tailscale-build
 ARG TAILSCALE_VERSION=1.104.1
 ARG TAILSCALE_SRC_SHA256=bf868b2b1a46b9485d55bcda12c2d7573279ce4474bc6d607f42f1495db36ed8
+# The control handshake derives its keys with HKDF over BLAKE2s, which the
+# OpenSSL backend of Microsoft Go rejects with "unsupported hash function".
+# Since Go 1.27 that backend is also used without cgo, so opt out here.
+ENV MS_GO_NOSYSTEMCRYPTO=1
 RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/tailscale/tailscale/archive/v${TAILSCALE_VERSION}.tar.gz" -o /tmp/tailscale.tar.gz && \
     echo "${TAILSCALE_SRC_SHA256}  /tmp/tailscale.tar.gz" | sha256sum --check && \
     tar xzf /tmp/tailscale.tar.gz -C /tmp && \
@@ -47,9 +51,11 @@ RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/
 WORKDIR /src
 # Download the modules before building, so that a failed download is retried.
 RUN for attempt in 1 2 3 4 5; do \
-      CGO_ENABLED=0 go list -deps ./cmd/tailscale ./cmd/tailscaled > /dev/null && break; \
+      CGO_ENABLED=0 go list -deps -test ./cmd/tailscale ./cmd/tailscaled ./control/controlbase > /dev/null && break; \
       [ "$attempt" -lt 5 ] || exit 1; sleep $((attempt * 15)); \
     done
+# A compile or `tailscale version` does not reach the handshake; these tests do.
+RUN CGO_ENABLED=0 go test -count=1 ./control/controlbase
 # Archive builds have no Git metadata; use the upstream distribution stamps.
 RUN GOFLAGS="-trimpath" CGO_ENABLED=0 \
     go build -ldflags "-X tailscale.com/version.longStamp=${TAILSCALE_VERSION} -X tailscale.com/version.shortStamp=${TAILSCALE_VERSION}" \
