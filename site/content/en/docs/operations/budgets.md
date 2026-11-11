@@ -115,21 +115,27 @@ A per-model limit applies to the model name that the AI Gateway counts:
 
 The Portal does not show spend or remaining budgets. The AI Gateway console
 shows the spend and the budget of each key, user, and team. Refer to
-[Open the console](../ai-gateway/#open-the-console). The request log and the
-metrics of the AI Gateway also record the spend. Refer to
+[Open the console](../ai-gateway/#open-the-console). The key alias of an Agent
+is `cetirun-<agent>-<agent UID>`. The request log and the metrics of the
+AI Gateway also record the spend. Refer to
 [Logs and metrics](../ai-gateway/#logs-and-metrics).
 
-The key alias of an Agent is `cetirun-<agent>-<agent UID>`. For example, this
-PromQL query shows the spend of each key, Team, user, and model:
+With the [ADX-Mon collection](../observability/), the function
+`GatewayRequests()` of the logs database gives one row for each call. For
+example, this query shows the calls and the spend of each Agent, owner, Team,
+and model since midnight UTC:
 
-```promql
-sum by (api_key_alias, team_alias, user, requested_model) (litellm_spend_metric_total)
+```kusto
+GatewayRequests()
+| where Timestamp > startofday(now()) and CallOrigin != "health_check"
+| summarize Calls = count(), Spend = sum(Spend) by Agent, Owner, Team, Model
 ```
 
 The metric `litellm_remaining_api_key_budget_metric` shows the remaining budget
-of each key. Counters restart from zero when an AI Gateway Pod restarts. Use the
-metrics for trends and alerts. For exact spend, use the request log or the
-daily totals of the AI Gateway. Refer to the chart README's
+of each key. Counters such as `litellm_spend_metric_total` restart from zero
+when an AI Gateway Pod restarts. Use the metrics for trends and alerts. For
+exact spend, use the request log or the daily totals of the AI Gateway. Refer
+to the chart README's
 [Request log and metrics]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#request-log-and-metrics).
 
 The budget totals of the keys do not depend on the retention of the spend log.
@@ -137,4 +143,5 @@ The budget totals of the keys do not depend on the retention of the spend log.
 Sources: [key budgets and teams]({{< repo "app/cetirun-operator/internal/controller/ai_gateway.go" >}}),
 [AI Gateway client]({{< repo "app/cetirun-operator/internal/aigateway/client.go" >}}),
 [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}}),
-and [AI Gateway values]({{< repo "app/cetirun-ai-gateway/chart/values.yaml" >}}).
+[AI Gateway values]({{< repo "app/cetirun-ai-gateway/chart/values.yaml" >}}),
+and [log query functions]({{< repo "infra/cluster/modules/adx/cetirun-logs.kql" >}}).

@@ -394,9 +394,9 @@ The AI Gateway keeps these records of model calls:
 | Content records | An Azure Data Explorer database, only with `content.enabled`. The console reads the content of a call from there | The prompt and the response of each call. Notes replace inline images and files, and encrypted reasoning |
 | Metrics | LiteLLM's Prometheus metrics on a port of each AI Gateway Pod | Spend, requests, tokens, and the remaining budget of each key |
 
-The cluster log collection keeps the request log outside the AI Gateway, for
-example Container Insights or the [ADX-Mon collection](../observability/). The
-spend log keeps each row for seven days by default (`spendLogs.retention`).
+`make deploy` installs the [ADX-Mon collection](../observability/), which keeps
+the request log outside the AI Gateway, in Azure Data Explorer. The spend log
+keeps each row for seven days by default (`spendLogs.retention`).
 
 > **Warning:** By default, the spend log stores the prompt and the response of
 > each call. They can contain sensitive data. To keep only the metadata, set
@@ -407,15 +407,14 @@ content database keeps them instead. Give access to it only to the users who
 must read them. Refer to the chart README's
 [Content in Azure Data Explorer]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#content-in-azure-data-explorer).
 
-The platform chart enables the metrics. It also creates a PodMonitor for Azure
-Monitor managed Prometheus when the cluster serves the PodMonitor API. The
-metrics port has no authentication. Each workload that can reach an AI Gateway
-Pod can read the key aliases, users, Teams, and spend of the metrics. If other
-workloads must not read them, restrict the port with a NetworkPolicy. The
-egress of an Agent reaches only the Service port of the AI Gateway.
+The platform chart enables the metrics, and the ADX-Mon collection scrapes them
+from each AI Gateway Pod. The metrics port has no authentication. Each workload
+that can reach an AI Gateway Pod can read the key aliases, users, Teams, and
+spend of the metrics. If other workloads must not read them, restrict the port
+with a NetworkPolicy. The egress of an Agent reaches only the Service port of
+the AI Gateway.
 
-For log queries, the metric names, and PromQL examples, refer to the chart
-README's
+For the metric names and query examples, refer to the chart README's
 [Request log and metrics]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#request-log-and-metrics).
 For the spend of each Agent, refer to [Budgets and spend](../budgets/#read-the-spend).
 
@@ -454,7 +453,8 @@ kubectl get agent <agent> -o jsonpath='{.status.aiGateway}{"\n"}{range .status.c
 
 To find a recent failed call in the request log, search the AI Gateway log for
 the key alias of the Agent, `cetirun-<agent>-<agent UID>`. For older calls,
-use the `ContainerLogV2` query in the chart README's
+filter `GatewayRequests()` with `Agent == "<agent>"` and `Status == "failure"`.
+Refer to the chart README's
 [Request log and metrics]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#request-log-and-metrics).
 
 ```bash
