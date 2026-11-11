@@ -1,11 +1,11 @@
 ---
 title: "Custom resources"
-description: "This page describes the Agent, Team, Sandbox, and AgentPolicy resources in cetirun.microsoft.com/v1alpha1."
+description: "Fields, defaults, validation rules, and status of the Agent, Team, Sandbox, and AgentPolicy resources in cetirun.microsoft.com/v1alpha1."
 weight: 10
 ---
 
-All four resources are **cluster-scoped**. Their API group is
-`cetirun.microsoft.com/v1alpha1`. Do not add `metadata.namespace`.
+CetiRun adds four cluster-scoped resources to the Kubernetes API group
+`cetirun.microsoft.com/v1alpha1`. Do not add `metadata.namespace` to them.
 
 | Kind | Resource | CRD name | Short name |
 | --- | --- | --- | --- |
@@ -14,87 +14,152 @@ All four resources are **cluster-scoped**. Their API group is
 | `Sandbox` | `sandboxes` | `sandboxes.cetirun.microsoft.com` | `crs` |
 | `AgentPolicy` | `agentpolicies` | `agentpolicies.cetirun.microsoft.com` | `crp` |
 
-An Agent is a long-lived environment that a user owns. It is not an execution
-or a template. A Team supplies shared configuration and skills. It does not
-supply shared access to private data. Pod replacement does not create a new
-Agent.
+An Agent is a long-lived environment that one user owns. A replacement of its
+Pod keeps the same Agent. A Team supplies shared configuration and skills to
+its Agents. The private data of each Agent stays private. A Sandbox selects the
+runtime, the resources, and the storage of the Agents that use it. An
+AgentPolicy sets the controls of the Agents of a Team.
+
+The field tables in this page come from the CRD schemas. The **Type**,
+**Default**, and **Validation** columns show what the Kubernetes API server
+checks when you write a resource. Each section also lists the checks that the
+operator and the admission webhook do after the schema check.
+
+This page uses these terms:
+
+- A *Sandbox Agent* selects a policy-bound Team or a Sandbox. A *standard
+  Agent* does not, and no AgentPolicy applies to it.
+- The *common executor* is the operator flow that runs Sandbox Agents, Custom
+  Agents in a Sandbox included, when Sandbox execution is enabled.
+- A *held* Sandbox Agent is an Agent that the operator does not run. The
+  operator keeps its StatefulSet at zero replicas and removes its route.
+- A *single-start lifetime* is the lifetime that the operator recorded for a
+  Sandbox Agent that started under the earlier version-1 native execution
+  profile. Such an Agent keeps that profile and its limits. In scripts, use
+the full resource names, for example `agents.cetirun.microsoft.com`, so that
+resources of other API groups do not match.
 
 ## Existing installations
 
 Older installations can contain `OpenClawInstance` and `OpenClawTeam` objects
-in the same API group and version. The operator and portal no longer register
-those legacy kinds. The installation of these CRDs
+in the same API group and version. The operator and the Portal do not register
+these legacy kinds. The installation of the current CRDs
 does not convert, adopt, or delete legacy objects. The policy-bound API is a
 replacement contract. It is not a data migration.
 
 Do not delete legacy CRs or CRDs as an upgrade shortcut. Old finalizers can
 uninstall workloads and delete namespaces. If you delete a CRD, the deletion
-removes its stored objects. Before you transfer an installation that already
-exists to the new API, examine data retention and resource ownership.
+removes its stored objects. Before you move an installation to the current API,
+examine data retention and resource ownership.
 
 The cluster scope, finalizer, namespace and release names, and PVC behavior
-do not change. Harness configuration uses `spec.agent`, which is a necessary
-field. The old `spec.agentType` field is not supported. There is no automatic
+are the same as before. Harness configuration uses `spec.agent`, which is
+necessary. The API has no `spec.agentType` field, and there is no automatic
 resource conversion or field migration.
 
-Helm manages the current CRDs as templates and upgrades their schemas with the
-release. Their retention annotation prevents their deletion during an
-uninstall. For earlier unmanaged CRDs, a separately reviewed ownership handover
-is necessary. The chart does not force adoption, and it does not do a schema or
-data migration. Retention does not protect against a schema downgrade.
+The operator chart manages the current CRDs as templates, and Helm upgrades
+their schemas with the release. Their retention annotation prevents their
+deletion during an uninstall. For earlier unmanaged CRDs, a separately reviewed
+ownership handover is necessary. The chart does not force adoption, and it does
+not do a schema or data migration. Retention does not protect against a schema
+downgrade.
 
 ## Agent
 
-| Field under `spec` | Contract |
-| --- | --- |
-| `user.alias` | Necessary owner alias that matches `^[a-z][a-z0-9-]{0,62}$` |
-| `user.displayName` | Necessary display name |
-| `user.email` | Optional email |
-| `user.team` | Deprecated. Only for legacy display context. It is not a Team or policy assignment |
-| `gatewayTokenSecretRef` | Necessary native Secret name for Hermes and OpenClaw. Not allowed for Custom |
-| `agent` | Necessary Harness configuration object |
-| `agent.type` | `hermes` (default), `openclaw`, or `custom`. It cannot be changed |
-| `agent.image` | Necessary for Custom. Use the exact `<repository>@sha256:<digest>` reference from the Operator's `customRuntime.approvedImages`; a tag reference is never approved. After it is set, it cannot be cleared. Built-in defaults are pinned from the selected chart |
-| `agent.registrySecretRef.name` | Optional reference to a Portal-managed source Secret. The reference has no namespace, key, or inline credentials |
-| `agent.username` | The default is `vibe`. Non-root image username that cannot be changed |
-| `agent.port` | HTTP port, 1–65535. Necessary for a Custom Web UI, and optional in other cases. For Custom, an omitted port means that the Agent is headless |
-| `agent.webUI` | Boolean, default false. For Custom only. When true, `agent.port` serves a Web UI instead of the Chat API. See [Agent Harness](../agent-harness/#custom-web-ui) |
-| `team` | Optional for legacy Agents. Necessary for policy binding. The Portal also creates Agents without a Team |
-| `sandboxRef` | Opts in to a Sandbox that the Team allows. Omitted for legacy execution |
-| `model` | Optional model name, at most 256 characters. A policy-bound Agent must select a shared model that the policy allows, or a Copilot model if the policy allows Copilot. A Copilot model is selected by its Gateway name or as `copilot/<model ID>` |
-| `modelAccess.sharedModels` | Explicit request for policy-bound Agents. On by default for legacy Agents |
-| `modelAccess.githubCopilot` | Explicit request for policy-bound Agents. On by default for legacy Agents when the deployment offers Copilot |
-| `modelAccess.monthlyBudgetUSD` | Optional override of the monthly LiteLLM budget in USD, up to the policy maximum |
-| `skillOverrides.add` / `remove` | Set-like skill lists, at most 20 for each list. The effective IDs are `(team ∪ add) − remove`. With the Skill Marketplace, the operator refuses an entry without the `npm:` prefix with `AgentConfigInvalid` |
-| `helm.version` | Agent chart pin. It is backfilled from the operator default on the first reconciliation |
-| `helm.values` | Map-shaped top-level entries. See the admission notes below |
-| `suspended` | Requests zero replicas and the removal of the instance VirtualService. If omitted, the value is false |
-| `restartRequestID` | Optional retained-restart ID: 16-128 letters, digits, `_` or `-`. A change to the ID requests a new Pod through normal reconciliation. A reused ID does not request a new Pod. After it is set, it cannot be removed. It cannot be changed while the Agent is suspended |
-| `plannedMigration` | Opt-in administrator request with `requestID` and the destination `target.name`/`target.uid`. Only for common-executor OpenClaw or Hermes with one CSI/RWOP HOME. An accepted request cannot be changed until it is completed. A request with the same ID cannot change its destination |
-| `tailscale.authKeySecretRef` | Necessary non-empty Secret name when `tailscale` is present. The Secret in the instance namespace must contain a non-empty `TAILSCALE_AUTH_KEY` |
+This example is a Hermes Agent without a Team. The operator sets the image, the
+port, and the chart version of the Agent when it first reconciles it:
 
-The namespace and the release get their names from `metadata.name`. For
-example, `alice` uses `cetirun-alice` and `openclaw-alice`. An owner can have an
-instance with a different name. Use the reported status instead of names that
-you derive from the alias.
+```yaml
+apiVersion: cetirun.microsoft.com/v1alpha1
+kind: Agent
+metadata:
+  name: alice
+spec:
+  user:
+    alias: alice
+    displayName: Alice Example
+  agent:
+    type: hermes
+  gatewayTokenSecretRef: gateway-token
+```
 
-Use short DNS-label instance names. Portal creation reserves `oauth2`, `api`,
+For a policy-bound Agent with a Team and a Sandbox, see
+[Create your first Agent](../../getting-started/first-instance/). For the
+`spec.agent` fields and the Custom image contract, see
+[Agent Harness](../agent-harness/).
+
+### Agent spec
+
+<!-- generated: agent-spec -->
+
+| Field | Type | Default | Validation | Description |
+| --- | --- | --- | --- | --- |
+| `spec` | object |  | Rule: gatewayTokenSecretRef is required for built-in agents and forbidden for custom agents. Rule: restartRequestID cannot be removed once set. Rule: a suspended Agent cannot request a new restart. Rule: a migration request ID cannot select a different destination. Rule: a Helm maintenance request requires suspension. Rule: clearing Helm maintenance must retain suspension; resume is a separate update. | Rules that apply to the whole spec. The API server checks them on each create and update. |
+| `agent` | object |  | Required. Rule: custom agents require image. Rule: agent type is immutable. Rule: agent username is immutable. Rule: a pinned image cannot be removed. Rule: webUI is supported only for custom agents. Rule: webUI requires port. | Necessary Harness configuration. See [Agent Harness](../agent-harness/#configuration). |
+| `agent.image` | string |  | 1 to 2048 characters. | Necessary for Custom. Use the exact `<repository>@sha256:<digest>` reference from the Operator's `customRuntime.approvedImages`; a tag reference is never approved. After it is set, it cannot be cleared. Built-in defaults are pinned from the selected chart |
+| `agent.port` | integer |  | Range 1 to 65535. | HTTP port. Necessary for a Custom Web UI, and optional in other cases. For Custom, an omitted port means that the Agent is headless. |
+| `agent.registrySecretRef` | reference (name) |  | `name`: Required. Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`. 1 to 253 characters. | Optional reference to a Portal-managed source Secret. The reference has no namespace, key, or inline credentials. |
+| `agent.type` | string | `"hermes"` | One of `openclaw`, `hermes`, `custom`. | The Harness type. It cannot be changed. |
+| `agent.username` | string | `"vibe"` | Pattern `^[a-z_][a-z0-9_-]{0,31}$`. 1 to 32 characters. Rule: agent username must not be root. | Non-root image username, with HOME at `/home/<username>`. It cannot be changed. Hermes and OpenClaw need `vibe`. |
+| `agent.webUI` | boolean | `false` |  | For Custom only. When `true`, `agent.port` serves a Web UI instead of the Chat API. See [Custom Web UI](../agent-harness/#custom-web-ui). |
+| `agentIdentity` | object |  |  | Entra Agent Identity request of the Agent. |
+| `agentIdentity.enabled` | boolean |  |  | Requests a dedicated Microsoft Entra Agent Identity for the Agent. The Portal sets it. See [Entra Agent Identity](../../operations/entra-agent-identity/). |
+| `gatewayTokenSecretRef` | string |  | 1 to 253 characters. | Necessary for Hermes and OpenClaw, and not allowed for Custom. The name of the native authentication Secret in the Agent namespace `cetirun-<name>`. If the Secret does not exist, the operator creates it. If it exists, the operator adds the keys that are missing. It is not a model or registry credential. |
+| `helm` | object |  |  | Helm settings of the Agent. |
+| `helm.maintenance` | object |  | Rule: a Helm maintenance request ID cannot change its expected revision. | Administrator request for a Helm handoff of a suspended Agent. The controller and admission verify the handoff before a native Helm write. |
+| `helm.maintenance.expectedRevision` | integer |  | Required. Minimum 1. | The Helm revision that the requester observed before the request. |
+| `helm.maintenance.requestID` | string |  | Required. Pattern `^[A-Za-z0-9_-]+$`. 16 to 128 characters. | The ID that connects the request with `status.helmMaintenance`. |
+| `helm.values` | map[string]object |  | Any fields. Each value: Any fields. | Map-shaped top-level Helm values. See [Helm-value admission](#helm-value-admission). |
+| `helm.version` | string |  |  | Agent chart pin. The operator sets it from its default on the first reconciliation. A later change of the operator default does not change it. |
+| `model` | string |  | At most 256 characters. | Optional model name. A policy-bound Agent must select a shared model that the policy allows, or a Copilot model if the policy allows Copilot. A Copilot model is selected by its Gateway name or as `copilot/<model ID>`. |
+| `modelAccess` | object |  |  | The model sources that the Agent requests. |
+| `modelAccess.githubCopilot` | boolean |  |  | Requests the GitHub Copilot models of the owner. A Sandbox Agent must set it explicitly. A standard Agent gets it by default when the deployment offers Copilot. |
+| `modelAccess.monthlyBudgetUSD` | string |  | Pattern `^(0\|[1-9][0-9]*)(\.[0-9]{1,6})?$`. | Optional monthly budget of the Gateway key of the Agent in US dollars, as a decimal string. It cannot be more than the maximum of the policy. An administrator sets it on a suspended Agent. |
+| `modelAccess.sharedModels` | boolean |  |  | Requests the shared models of the AI Gateway. A Sandbox Agent must set it explicitly. A standard Agent gets them by default. |
+| `plannedMigration` | object |  |  | Optional administrator request with `requestID` and the destination `target.name` and `target.uid`. Only for common-executor OpenClaw or Hermes with one CSI/RWOP HOME. An accepted request cannot change until it completes. A request with the same ID cannot change its destination. |
+| `plannedMigration.requestID` | string |  | Required. Pattern `^[A-Za-z0-9_-]+$`. 16 to 128 characters. | The ID of the request. If you use the current ID again, the operator only observes that request. |
+| `plannedMigration.target` | reference (name, uid) |  | Required. `name`: Required. Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`. 1 to 253 characters. `uid`: Required. 1 to 128 characters. | The destination of the move. |
+| `restartRequestID` | string |  | Pattern `^[A-Za-z0-9_-]+$`. 16 to 128 characters. | Optional retained-restart ID. A change of the ID requests a new Pod through normal reconciliation. The same ID does not request another Pod. After it is set, it cannot be removed. It cannot change while the Agent is suspended. |
+| `sandboxRef` | string |  | Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`. 1 to 253 characters. | Opts in to a Sandbox that the Team allows. Omitted for legacy execution. |
+| `skillOverrides` | object |  |  | Per-Agent changes to the skills of the Team. The effective IDs are `(team ∪ add) − remove`. |
+| `skillOverrides.add` | []string |  | At most 20 items. Unique items. Each item: Pattern `^(npm:)?(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(@[\w.+-]+)?$`. | Skills to add to the skills of the Team. With the Skill Marketplace, the operator refuses an entry without the `npm:` prefix with `AgentConfigInvalid`. |
+| `skillOverrides.remove` | []string |  | At most 20 items. Unique items. Each item: Pattern `^(npm:)?(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(@[\w.+-]+)?$`. | Skills of the Team that this Agent does not use. With the Skill Marketplace, the operator refuses an entry without the `npm:` prefix with `AgentConfigInvalid`. |
+| `suspended` | boolean |  |  | When `true`, requests zero replicas and the removal of the routes of the Agent. The data of the Agent stays. If omitted, the value is `false`. |
+| `tailscale` | object |  |  | Tailscale configuration of the Agent. |
+| `tailscale.authKeySecretRef` | string |  | Required. Pattern `^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`. At least 1 character. | The name of a Secret in the Agent namespace. The Secret must contain a non-empty `TAILSCALE_AUTH_KEY`. |
+| `team` | string |  |  | Optional for legacy Agents. Necessary for policy binding. The Portal also creates Agents without a Team |
+| `user` | object |  | Required. | The owner of the Agent. |
+| `user.alias` | string |  | Required. Pattern `^[a-z][a-z0-9-]{0,62}$`. | Owner alias. |
+| `user.displayName` | string |  | Required. | Display name of the owner. |
+| `user.email` | string |  |  | Optional email address. It is not a verified owner identity. |
+| `user.team` | string |  |  | Deprecated. Only for legacy display context. It is not a Team or policy assignment. |
+
+<!-- /generated: agent-spec -->
+
+The namespace and the Helm release get their names from `metadata.name`. For
+example, the Agent `alice` uses the namespace `cetirun-alice` and the release
+`openclaw-alice`. An owner can have an Agent with a different name. Use the
+names in the status, not names that you derive from the alias.
+
+Use short DNS-label Agent names. Portal creation reserves `oauth2`, `api`,
 `internal`, `healthz`, `readyz`, `assets`, `portal`, `instances`, `admin`,
-`connections`, and `ui`. Direct CRD admission does not enforce that same list.
-The controller explicitly rejects `ui`. Avoid all reserved names. Do not rely
-on schema acceptance to make routing safe.
+`connections`, and `ui`. Direct CRD admission does not enforce that list. The
+controller rejects `ui`. Do not use the reserved names, and do not rely on
+schema acceptance to make routing safe.
 
-For minimal YAML, see [first instance](../../getting-started/first-instance/).
-
-The operator resolves Hermes and OpenClaw images and ports through the Harness
-interface. The `vibe` username is necessary for their profiles. Custom uses a
+The operator resolves the Hermes and OpenClaw images and ports through the
+Harness interface. Their profiles need the `vibe` username. Custom uses a
 separate runtime path that supports non-default usernames. Without a binding
-provider, a non-Sandbox Custom Agent reports `CustomRuntimeDisabled`. The Operator
-chart enables the `customRuntime` Kubernetes provider by default, but
-administrators must still approve image digests. Numeric `imageUsers` entries are required for FQDN
-capture, not every Custom Agent. Its empty default approval
-list authorizes no images. Portal Custom self-service is enabled by default
-and can be restricted through `features.allowedAgentTypes`.
+provider, a non-Sandbox Custom Agent reports `CustomRuntimeDisabled`.
+
+The Operator chart enables the `customRuntime` Kubernetes provider by default.
+Its approval list is empty by default, so it runs no Custom image until an
+administrator approves the image digest in `customRuntime.approvedImages`.
+Numeric `customRuntime.imageUsers` entries are necessary only for FQDN capture,
+for example for an AgentPolicy with `blockedFQDNs`, not for every Custom Agent.
+Portal Custom self-service is enabled by default. To restrict it, change
+`features.allowedAgentTypes`.
+
 The Portal requires a published image approval before creation or an image
 change, including administrator updates. For non-Sandbox Custom Agents, the
 Operator reports `CustomImageNotApproved` if a directly submitted Agent is not
@@ -105,18 +170,19 @@ image instead reports `PolicyResolved=False` with reason `PolicyDenied`.
 
 Private images use `agent.registrySecretRef.name` to refer to a Portal-managed
 source Secret. Before the operator copies the Secret to the runtime namespace
-for image pulls, it validates the Secret's Agent UID ownership, registry host,
-and workload permissions. Credentials are never stored in the Agent spec. See
-the [Agent Harness contract](../agent-harness/) for the runtime rules and the
-[private registry workflow](../agent-harness/#private-registries).
+for image pulls, it validates the Agent UID ownership, the registry host, and
+the workload permissions of the Secret. The Agent spec never stores
+credentials. See [Private registries](../agent-harness/#private-registries).
 
 ### Helm-value admission
 
-The controller deep-merges maps and replaces arrays or scalar values. But the
-CRD sets `helm.values.additionalProperties.type: object`. As a result, each
-top-level entry must be map-shaped. An arbitrary standalone Helm values file is
-not a valid `spec.helm.values` object. For example, this is
-a valid **spec fragment**:
+The controller deep-merges maps and replaces arrays or scalar values. The CRD
+sets `helm.values.additionalProperties.type: object`, so each top-level entry
+must be a map. For example, top-level `replicaCount: 1` or `extraEnv: [...]`
+under `helm.values` does not match this schema. A standalone Helm values file
+is not a valid `spec.helm.values` object.
+
+This fragment changes the HOME storage of a built-in Agent without a Sandbox:
 
 ```yaml
 helm:
@@ -128,137 +194,252 @@ helm:
 ```
 
 The StorageClass is a deployment prerequisite. This fragment does not create
-it. Select a Gateway model with `spec.model`. Provider overrides are rejected.
-In contrast, top-level `replicaCount: 1` or `extraEnv: [...]` under
-`helm.values` do not match this schema. Deployment-wide `cetirun.helmValues`
-and direct Helm input are separate configuration surfaces.
+it. To select a Gateway model, use `spec.model`.
 
-Even accepted values can break what the controller expects. Do not use Helm
-overrides to change resource names, the agent type, route ports, or the managed
-Secret reference. Use the applicable CRD fields where they exist. A schema
-check does not prove that an override will reconcile successfully.
+The operator accepts different keys on each execution path. It rejects a key
+before it changes the workload. The result depends on the Agent:
 
-### Observed state
+- A built-in Agent, or a Custom Agent that was never applied, goes to `Failed`.
+  `AgentConfigReady` is `False` with reason `AgentConfigInvalid` and the
+  rejection message.
+- A Custom Agent that was already applied keeps its workload. It reports
+  `AgentConfigInvalid` while it waits for a valid configuration.
+- A Custom Sandbox Agent reports `PolicyResolved=False` with reason
+  `PolicyDenied`, and the operator holds it.
+- If the Agent uses `agent.registrySecretRef`, `RegistryCredentialsReady` can
+  also be `False` with reason `RegistryRuntimeConfigRejected`.
 
-| Status field | Meaning |
+| Execution path | Rejected keys in `spec.helm.values` |
 | --- | --- |
-| `phase` | `Pending`, `Provisioning`, `Ready`, `Failed`, `Deleting`, or `Suspended` |
-| `conditions` | Individual readiness observations with reasons and messages |
-| `accessUrl` | Configured native UI URL, `https://<domain>/ui/<instance>/`. It is not a live reachability test |
-| `namespace`, `helmReleaseName` | Actual locations of the managed resources |
-| `observedGeneration` | Generation recorded after Helm succeeds, before the pod and ingress are ready |
-| `observedRestartRequestID` | Restart request observed on the current ready Pod. An accepted request alone or an applied template alone does not set it |
-| `plannedMigration` | Controller-owned source and storage identity and acknowledgment checkpoint. The phases are `Protecting`, `Stopping`, `SourceTerminated`, `Detached`, `Starting`, and `Completed`. It is not a physical-fencing receipt, and it does not give permission to edit status |
-| `observedOperatorHash` | Fingerprint of the applied configuration, for use by the reconciliation cache. It includes the content hash of the gateway Secret and the resource version of the referenced team |
-| `lastReconcileTime` | Timestamp that a full Ready or suspension pass writes. It can also be written when the ingress removal for a suspension fails |
-| `aiGateway` | AI Gateway state. It shows the phase and reason, the key alias and ID (never the key), access groups, and models. It also shows native USD budget, spend, and reset observations, the block state, and the applied policy and pricing revisions. For GitHub Copilot, it shows the Gateway name of each registered model (`copilot.routes`), `vision` when the model accepts images, and `reasoning` when the instance can set a reasoning effort for the model. It also shows the models that are excluded because they have no price (`copilot.unpriced`) or because a shared model has their name (`copilot.skipped`). With an Agent Policy, it also shows the models that are the same models as shared models that the Policy does not allow (`copilot.notAllowed`). `modelRouters` lists the smart-routing models of the Team. For an instance with an Agent Policy, it also lists the routers that are configured in the Gateway and that the Policy lists. Each entry has `granted`. If the router is granted, the entry has its `model` name in the Gateway. For a Team router, this is its internal name. For a Gateway router, this is its own name. The entry of a granted Team router also has `alias`, the router's name, when the key reaches the router under that name. A Hermes instance sends that name. Other instances send the internal name. Each granted entry also has its configured limits, `vision` when the instance sends images to the router, and `reasoning` when the instance can set a reasoning effort for the router. If the router is not granted, the `reason` tells why |
-| `registryCredentials` | Receipt that identifies the UID and resourceVersion of the synchronized source Secret and the UID of the local pull Secret. It is not credential data or proof of a successful image pull |
-| `sandbox` | Last binding that was found correct: `teamUID`, `sandboxUID`, `agentPolicyUID`, and `appliedRevision`. Omitted before enforcement succeeds |
-| `policy` | Resolved effective policy, and the desired Sandbox, Gateway, and credential revisions |
+| Built-in Agent without a Sandbox | Top-level `runtime`, `agentRequest`, `imagePullSecrets`, `customBindings`, `memoryContext`, `cetiadmin`, `aiGateway`, `connectionsMCP`, and `image`. Also `secrets.provider`, `secrets.authMode`, `secrets.apiBase`, `secrets.apiKey`, `secrets.model`, `service.port`, `service.targetPort`, `<type>.image`, `<type>.env.API_SERVER_PORT`, `<type>.config.model`, and `<type>.config.gateway.port`, where `<type>` is `openclaw` or `hermes`. Platform Pod annotations, platform-reserved `extraEnv` names, and, for Hermes, `extraEnvFrom` and the Hermes listener, authentication, and runtime settings. |
+| Custom Agent without a Sandbox | Every key except `resources`, `ttyd.enabled`, `desktop.enabled`, `desktop.logging`, `desktop.resources`, and `desktop.screenResolution`. |
+| Sandbox Agent of the common executor | The keys of the built-in or Custom row above, and also `runtime`, `sandboxWorkload`, `runtimeClassName`, `replicaCount`, `serviceAccount`, `azureWorkloadIdentity`, `agentIdentity`, `connectionsMCP`, `persistence`, `resources`, `securityContext`, `podSecurityContext`, `networkPolicy`, `sidecarScope`, `autoscaling`, `ingress`, and `execRestriction`, because the Sandbox or the AgentPolicy controls them. For a built-in Agent, `secrets` accepts only an authorized `existingSecret`, and `extraEnv` cannot use a protected name or a source that is not authorized. A Custom Agent cannot set `desktop.enabled: true`. |
 
-`AgentConfigReady=False` with reason `AgentRuntimeNotImplemented` reports a
-setting that cannot be provisioned, such as a non-default built-in username.
-`AgentConfigInvalid` reports rejected profile, image, or port settings. It also
-reports a failed download of a built-in Agent chart from the registry, for a
-new Agent or after a spec change. For a failed download, the operator log
-records the error from the registry.
+The operator applies the rules of built-in Agents also to the deployment-wide
+`cetirun.helmValues` of the Operator chart. Accepted values can still break
+what the controller expects. Do not use Helm overrides to change resource
+names, the Agent type, route ports, or the managed Secret reference. Use the
+CRD fields for these settings. A schema check does not prove that an override
+reconciles successfully.
 
-Every full reconcile downloads the chart again. This includes the periodic
-passes of a running Agent. If the chart of an Agent that is already installed
-for its current generation cannot be downloaded, reason `AgentChartUnavailable`
-reports the temporary failure. The deployed release stays unchanged, and the
-operator retries every 30 seconds.
+### Agent status
 
-Workload health is still observed. If ready replicas are lost or the
-StatefulSet cannot be read, a running Agent changes to `Provisioning` with
-`PodReady=False` and `Ready=False`. If `BuiltInPrerequisitesReady=True` records
-a completed prerequisite pass, readiness recovers when the workload recovers,
-even if the registry is still unavailable. A later prerequisite failure clears
-that condition independently of `PodReady`. A healthy Pod alone cannot clear
-that failure. If an older status does not have this condition, a successful
-full reconcile is necessary before readiness can recover.
+<!-- generated: agent-status -->
 
-Suspension, and failures or waits for other prerequisites, are kept. The
-deployed access URL is kept until the related route is reconciled.
-`AgentConfigResolved` reports a prepared built-in configuration, not runtime
-readiness. The API does not expose a separate `status.agent` structure.
+| Field | Type | Default | Validation | Description |
+| --- | --- | --- | --- | --- |
+| `accessUrl` | string |  |  | Configured native UI URL, `https://<domain>/ui/<instance>/`. It is not a live reachability test. |
+| `agentIdentity` | object |  |  | Lifecycle of the Entra Agent Identity of the Agent. It never contains user tokens, authorization caches, or credentials. |
+| `agentIdentity.clientId` | string |  |  | Public application ID of the Agent Identity. |
+| `agentIdentity.creationAttempted` | boolean |  |  | Create checkpoint. It prevents a second identity when the outcome of a create request is unknown. |
+| `agentIdentity.credentialPolicyRevision` | string |  |  | Revision of the Broker enforcement record that the operator read back for the Agent. |
+| `agentIdentity.displayName` | string |  |  | Directory display name of the Agent Identity. It does not change when the name prefix of the deployment changes. |
+| `agentIdentity.lastVerifiedTime` | timestamp |  |  | Time of the last directory verification. |
+| `agentIdentity.objectId` | string |  |  | Directory object ID, for cleanup. It is not a credential. |
+| `agentIdentity.observedGeneration` | integer |  |  | Agent generation of this status. |
+| `agentIdentity.phase` | string |  | One of `Disabled`, `Provisioning`, `Ready`, `Degraded`, `Failed`, `Deleting`. | Lifecycle phase of the Agent Identity. |
+| `agentIdentity.reason` | string |  |  | Machine-readable reason of the phase. It contains no sensitive data. |
+| `aiGateway` | object |  |  | State of the AI Gateway key of the Agent. It never contains the key. |
+| `aiGateway.accessGroups` | []string |  | Unique items. | Gateway model access groups of the key. |
+| `aiGateway.blocked` | boolean |  |  | `true` when the Gateway rejects the key. A blocked key continues to report spend and reset times. |
+| `aiGateway.budgetDuration` | string |  |  | Reset period of the budget, for example `1mo`. |
+| `aiGateway.budgetResetAt` | timestamp |  |  | Next budget reset that the operator observed. |
+| `aiGateway.budgetUSD` | string |  |  | Native Gateway budget of the key in US dollars, as the operator read it back. It is not a provider invoice. |
+| `aiGateway.copilot` | object |  |  | GitHub Copilot proxy of the Agent and its Copilot models in the Gateway. |
+| `aiGateway.copilot.accessGroup` | string |  |  | Gateway access group of the Copilot models of the Agent. Only the key of this Agent has it. |
+| `aiGateway.copilot.models` | []string |  |  | Registered Copilot models, by the names that the Agent uses: the name of the shared model that is the same model, or the Copilot model ID. |
+| `aiGateway.copilot.notAllowed` | []string |  |  | Copilot models that the AgentPolicy does not allow, because each is the same model as a shared model that the policy does not list. |
+| `aiGateway.copilot.phase` | string |  | One of `SignInRequired`, `Starting`, `Ready`, `Degraded`. | `SignInRequired` until the owner signs in to GitHub Copilot through the Portal, `Starting` while the proxy reads the sign-in, `Ready` when the models of the account are registered, and `Degraded` when the registration fails. |
+| `aiGateway.copilot.proxyKeyId` | string |  |  | ID of the master key of the proxy: the first characters of its SHA-256 hash. It does not show the key. |
+| `aiGateway.copilot.reason` | string |  |  | Machine-readable reason of the phase. |
+| `aiGateway.copilot.registered` | []string |  |  | Gateway model IDs that the operator registered for the proxy of the Agent. |
+| `aiGateway.copilot.routes` | []object |  |  | Each registered Copilot model and its name in the Gateway. |
+| `aiGateway.copilot.routes[].model` | string |  | Required. | Copilot model ID. |
+| `aiGateway.copilot.routes[].name` | string |  | Required. | Name of the model in the Gateway. The Agent uses this name. |
+| `aiGateway.copilot.routes[].reasoning` | boolean |  |  | `true` when the Agent can set a reasoning effort for the model. This requires that the price table of the Gateway says that the model reasons, and that the model is a Claude or GPT model. The Copilot proxy of the Agent passes a reasoning effort on only for these models. The Agent is configured to set a reasoning effort for `name` only when every model behind `name` reasons. |
+| `aiGateway.copilot.routes[].shared` | boolean |  |  | `true` when `name` is the name of a shared model. The Gateway then serves the requests of the Agent from the shared deployments and from this Copilot model. |
+| `aiGateway.copilot.routes[].vision` | boolean |  |  | `true` when the model accepts images, as the price table of the Gateway shows. |
+| `aiGateway.copilot.skipped` | []string |  |  | Copilot models that the operator did not register, because a different model of the Gateway has the same name. |
+| `aiGateway.copilot.unpriced` | []string |  |  | Copilot models that the operator did not register, because the Gateway has no price for them. |
+| `aiGateway.defaultModel` | string |  |  | Default model of the Agent. |
+| `aiGateway.keyAlias` | string |  |  | Gateway alias of the key. It comes from the Agent UID and does not change. |
+| `aiGateway.keyId` | string |  |  | ID of the key: the first characters of its SHA-256 hash. It does not show the key. |
+| `aiGateway.keySecretName` | string |  |  | Secret in the Agent namespace that holds the key. |
+| `aiGateway.lastVerifiedTime` | timestamp |  |  | Time of the last successful check of the key in the Gateway. |
+| `aiGateway.modelRouters` | []object |  | Unique by `name`. | Smart-routing models of the Agent: the routers of its Team and, with an AgentPolicy, the Gateway routers that the policy lists. |
+| `aiGateway.modelRouters[].alias` | string |  |  | Name of a granted Team router when the key also reaches the router under that name. A Hermes Agent sends this name. Other Agents send the internal name. |
+| `aiGateway.modelRouters[].contextWindow` | integer |  |  | Context window that the Agent uses for the router: the smallest known value of the models of the router. |
+| `aiGateway.modelRouters[].granted` | boolean |  | Required. | `true` when the key of the Agent can use the router. |
+| `aiGateway.modelRouters[].maxTokens` | integer |  |  | Maximum output tokens that the Agent uses for the router: the smallest known value of the models of the router. |
+| `aiGateway.modelRouters[].model` | string |  |  | Gateway model name of a granted router: the internal name of a Team router, or the name of a Gateway router. |
+| `aiGateway.modelRouters[].name` | string |  | Required. | Name of the router that the owner selects. |
+| `aiGateway.modelRouters[].reason` | string |  |  | Why the router is not granted. |
+| `aiGateway.modelRouters[].reasoning` | boolean |  |  | `true` when the Agent is configured to set a reasoning effort for the router, because every model that answers the requests of the router reasons. The Copilot routes of the Agent under the names of these models must also reason. |
+| `aiGateway.modelRouters[].vision` | boolean |  |  | `true` when the Agent sends images to the router, because every model of the router accepts them. |
+| `aiGateway.models` | []string |  |  | Model names that the Agent is configured with, as the Agent sees them in the Gateway. |
+| `aiGateway.observedGeneration` | integer |  |  | Agent generation of this status. |
+| `aiGateway.phase` | string |  | One of `Provisioning`, `Ready`, `Degraded`, `Deleting`. | Lifecycle phase of the key. |
+| `aiGateway.policyRevision` | string |  |  | Revision of the Gateway policy projection that the operator read back. |
+| `aiGateway.pricingRevision` | string |  |  | Revision of the catalog and pricing input of the Gateway read-back. It is not a price quote. |
+| `aiGateway.reason` | string |  |  | Machine-readable reason of the phase. |
+| `aiGateway.routed` | boolean |  |  | `true` when the model traffic of the Agent goes through the Gateway. |
+| `aiGateway.spendUSD` | string |  |  | Spend that the Gateway observed in the current period. It is not the exact billing of the provider. |
+| `aiGateway.team` | string |  |  | Gateway team of the key, from `spec.team`. |
+| `conditions` | []Condition |  | Unique by `type`. | Individual readiness observations with reasons and messages. See [Agent conditions](#agent-conditions). |
+| `helmMaintenance` | object |  |  | Controller observation of a Helm handoff. A stored phase alone does not give permission to write or resume. |
+| `helmMaintenance.message` | string |  | At most 32768 characters. | Explanation of the observation. |
+| `helmMaintenance.observedGeneration` | integer |  | Required. Minimum 0. | Agent generation of the handoff. `0` means that no generation is observed. |
+| `helmMaintenance.phase` | string |  | Required. One of `Requested`, `Held`, `Reapplying`, `Released`, `Blocked`. | State of the handoff. |
+| `helmMaintenance.reason` | string |  | At most 1024 characters. | Short machine-readable reason of the phase. |
+| `helmMaintenance.requestID` | string |  | Required. Pattern `^[A-Za-z0-9_-]+$`. 16 to 128 characters. | ID of the request of this observation. |
+| `helmMaintenance.revision` | integer |  | Required. Minimum 0. | Last observed Helm revision. `0` means that no revision is observed. |
+| `helmReleaseName` | string |  |  | Helm release of the Agent. |
+| `lastReconcileTime` | timestamp |  |  | Time that a full ready pass or suspension pass writes. The operator can also write it when the route removal of a suspension fails. |
+| `namespace` | string |  |  | Namespace of the managed resources of the Agent. |
+| `observedGeneration` | integer |  |  | Generation that the operator records after Helm succeeds, before the Pod and the routes are ready. |
+| `observedOperatorHash` | string |  |  | Fingerprint of the applied configuration, for the reconciliation cache. It includes the content hash of the gateway Secret and the resource version of the Team. |
+| `observedRestartRequestID` | string |  | Pattern `^[A-Za-z0-9_-]+$`. 16 to 128 characters. | Restart request that the current ready Pod has. An accepted request or an applied template alone does not set it. |
+| `phase` | string |  | One of `Pending`, `Provisioning`, `Ready`, `Failed`, `Deleting`, `Suspended`. | Lifecycle phase. |
+| `plannedMigration` | object |  |  | Controller-owned source and storage identity and acknowledgment checkpoint of a planned migration. The phases are `Protecting`, `Stopping`, `SourceTerminated`, `Detached`, `Starting`, and `Completed`. It is not a physical-fencing receipt, and it does not give permission to edit status. |
+| `policy` | object |  |  | Resolved effective policy, and the revisions that each enforcement component must apply. |
+| `policy.effectivePolicyRef` | reference (generation, name, uid) |  | `generation`: Required. `name`: Required. `uid`: Required. | The AgentPolicy that applies, by name, UID, and generation. |
+| `policy.enforcement` | object |  |  | Desired revisions of the enforcement components. |
+| `policy.enforcement.credential` | object |  |  | Credential enforcement. |
+| `policy.enforcement.credential.desiredRevision` | string |  |  | Revision that the credential service must apply. |
+| `policy.enforcement.gateway` | object |  |  | Gateway enforcement. |
+| `policy.enforcement.gateway.desiredRevision` | string |  |  | Revision that the AI Gateway must apply. |
+| `policy.enforcement.sandbox` | object |  |  | Sandbox enforcement. |
+| `policy.enforcement.sandbox.desiredRevision` | string |  |  | Revision that the Sandbox workload must apply. |
+| `policy.observedGeneration` | integer |  |  | Agent generation of the resolution. |
+| `policy.phase` | string |  | One of `Pending`, `Applied`, `Denied`, `Unknown`. | Result of the policy resolution. |
+| `registryCredentials` | object |  |  | Receipt of the last credential synchronization. It is not credential data or proof that a node can pull the image. |
+| `registryCredentials.pullSecretUID` | string |  | Required. | UID of the local pull Secret. |
+| `registryCredentials.sourceResourceVersion` | string |  | Required. | Resource version of the synchronized source Secret. |
+| `registryCredentials.sourceUID` | string |  | Required. | UID of the synchronized source Secret. |
+| `sandbox` | object |  |  | Last binding that the controller found correct. Omitted before enforcement succeeds. |
+| `sandbox.agentPolicyUID` | string |  | Required. At least 1 character. | UID of the AgentPolicy of the binding. |
+| `sandbox.appliedRevision` | string |  | Required. At least 1 character. | Applied revision of the binding. |
+| `sandbox.sandboxUID` | string |  | Required. At least 1 character. | UID of the Sandbox of the binding. |
+| `sandbox.teamUID` | string |  | Required. At least 1 character. | UID of the Team of the binding. |
 
-`RegistryCredentialsReady` reports credential synchronization. A true condition
-does not prove that the registry accepted the credentials or that the image was
-pulled. Examine Pod readiness and pull events separately. Custom readiness also
-depends on its validated platform bindings, not only on schema acceptance.
+<!-- /generated: agent-status -->
 
-Other condition types include `PolicyResolved`, `PolicyApplied`, `Ready`,
-`HelmDeployed`, `IngressReady`, `PodReady`, and `TailscaleReady`. Examine them
-independently. Overall readiness can be true even if ingress creation failed.
-`TailscaleReady` reports that the key was copied. It does not report that a
-node joined the tailnet.
+### Agent conditions
 
-`Suspended` skips pod-readiness checks. Examine the actual replicas and pod
-termination. The chart allows zero or one replica and limits any enabled HPA to
+Examine each condition independently. A condition for a feature that the Agent
+does not use can be absent or `False`.
+
+| Condition | Meaning |
+| --- | --- |
+| `Ready` | The Agent is ready for use. `Ready` can be `True` while `IngressReady` is `False`. `Suspended` skips the Pod readiness checks, so examine the replicas and the Pod termination separately. |
+| `AgentConfigReady` | The operator resolved the Agent configuration. Reason `AgentConfigResolved` means that the built-in configuration is prepared, not that the runtime is ready. `False` with `AgentConfigInvalid` reports a rejected profile, image, port, or Helm value, or a failed chart download for a new Agent or a spec change. For a failed download, the operator log records the error of the registry. `AgentRuntimeNotImplemented` reports a setting that cannot be provisioned, for example a non-default built-in username. `AgentChartUnavailable` reports a temporary chart download failure of an installed Agent. |
+| `BuiltInPrerequisitesReady` | The last full reconciliation of a built-in Agent completed its prerequisites. Only a later successful reconciliation clears a failure. |
+| `RegistryCredentialsReady` | The operator copied the registry credentials of `agent.registrySecretRef`. It does not prove that the registry accepted them or that the image was pulled. |
+| `PolicyResolved` | The Team, the requests of the Agent, the Sandbox, and the effective AgentPolicy are resolved. `False` with `PolicyDenied` means that the policy does not allow a request, for example a skill. `DependencyUnavailable` means that a dependency cannot be read. |
+| `PolicyApplied` | Every enforcement revision that the policy needs matches the evidence of its component. `EnforcementPending` means that the Sandbox, Gateway, or credential enforcement is not complete. |
+| `SandboxReady` | The Sandbox workload of a policy-bound Agent is ready, and its Kubernetes configuration matches. It does not supply physical failover fencing. |
+| `AIGatewayReady` | The AI Gateway virtual key of the Agent is ready. `NoModelEntitlement` means that the effective policy grants no model source. |
+| `AgentIdentityReady` | The Entra Agent Identity of the Agent is ready. |
+| `HelmDeployed` | The Helm release of the Agent is applied. |
+| `IngressReady` | The routes of the Agent are configured. `IngressDisabled` means that the Agent has no route. A suspension removes the routes. |
+| `PodReady` | The workload of the Agent has a ready replica. If ready replicas are lost or the StatefulSet cannot be read, a running Agent changes to `Provisioning` with `PodReady` and `Ready` set to `False`. |
+| `TailscaleReady` | The operator copied the Tailscale key. It does not report that a node joined the tailnet. |
+| `DesktopConfigured` | The desktop access of the Agent is configured. |
+| `TerminalConfigured` | The terminal access of the Agent is configured. |
+| `HelmMaintenanceReady` | Present only while `spec.helm.maintenance` is set. `True` when the controller holds the release for the requested revision. |
+| `PlannedMigrationReady` | The state of the planned migration that `spec.plannedMigration` requests. |
+
+While a built-in Agent runs, the operator continues to observe its StatefulSet.
+Each full reconciliation downloads the chart again. If the chart of an
+installed Agent cannot be downloaded, the deployed release stays as it is, and
+the operator tries again every 30 seconds.
+
+When the Pod recovers, the Agent returns to `Ready`, also while the chart registry is unavailable, if
+`BuiltInPrerequisitesReady` is `True`. The operator does not override a
+suspension, or a failure or a wait for another prerequisite. If an older status
+does not have this condition, a successful full reconciliation is necessary
+before readiness can recover. The access URL stays until the operator
+reconciles the related route.
+
+The chart allows zero or one replica, and it limits an enabled HPA to
 `minReplicas=maxReplicas=1`.
 
 ## Team
 
-| Field under `spec` | Contract |
-| --- | --- |
-| `agentPolicyRef` | The Team's single policy. Necessary when this Team opts in to policy |
-| `sandboxRefs` | Nonempty set of allowed Sandboxes. Necessary for a policy-enabled Team |
-| `defaultSandboxRef` | Listed creation default. Necessary for a policy-enabled Team. It is not a later implicit reselection |
-| `memberContext.role` | Role rendered into runtime-specific team context |
-| `memberContext.description` | Context lines, at most 20 |
-| `skills` | Default identifiers, at most 100. With the Skill Marketplace, each entry without the `npm:` prefix is the name of a marketplace skill. See [Skill Marketplace](../../operations/skill-marketplace/) |
-| `skillStorage.resourceGroup` | Necessary when `skillStorage` is present. A storage resource group that exists |
-| `skillStorage.storageAccount` | Necessary when `skillStorage` is present. A Blob account that exists |
-| `skillStorage.containerName` | Necessary when `skillStorage` is present. A skills container that exists |
-| `skillStorage.storageClassName` | Optional override. The chart default is `azureblob-nfs-premium` |
-| `skillStorage.storageSize` | Optional shared PVC request. The chart default is `100Gi` |
-| `skillStorage.mountPath` | Optional read-only alias for native Agents. The common view is at `$HOME/.agents/skills` |
-| `modelRouters` | Smart-routing models, at most 10, keyed by `name`. See [smart routing](../../guides/teams/#smart-routing) |
-| `modelRouters[].name` | Model name that instances request: 1 to 64 characters without whitespace or `/`. It cannot start with `cetirun-` in any letter case |
-| `modelRouters[].classifier.type` | `heuristic` (default), `llm`, or `jev`. LiteLLM's license-limited classifier types are not accepted |
-| `modelRouters[].classifier.model` | Shared model that classifies requests. It is not a router of the Gateway. It is a chat model for `llm`, and a decision model (`model_info.mode: evaluation`) for `jev`. Necessary for `llm` and `jev`, and not allowed for `heuristic` |
-| `modelRouters[].tiers.simple`, `.medium`, `.complex` | Necessary model of each tier. The value is the name of a shared model that answers conversations and is not a router of the Gateway. For a GitHub Copilot model, the value is `copilot/<model>`. `medium` also takes requests that cannot be classified |
-| `modelRouters[].tiers.reasoning` | Optional. If it is empty, the tier uses the `complex` model |
+This example is a policy-bound Team. A Team without `agentPolicyRef`,
+`sandboxRefs`, and `defaultSandboxRef` has no AgentPolicy, and its Agents are
+standard Agents:
 
-| Field under `status` | Contract |
-| --- | --- |
-| `modelRouters[].name` | Router name from `spec.modelRouters` |
-| `modelRouters[].gatewayModel` | Internal Gateway model name that instances send requests to. It stays the same when the configuration of the router changes |
-| `modelRouters[].ready` / `message` | Shows if the router is registered with its current configuration. If it is not, it shows why |
-| `modelRouters[].sharedModels` | The shared models that the router's tiers send requests to, as registered. A GitHub Copilot tier that joins a shared model is included, and the classifier is not. An Agent with an AgentPolicy gets the router only when the policy allows each of these models |
-| `modelRouters[].copilotModels` | The `copilot/<model>` tiers that are registered under the ID of the Copilot model. An Agent must have GitHub Copilot and that model |
-| `modelRouters[].nonReasoningModels` | For a ready router, the tier models, as the tiers name them, that do not reason. A shared model is listed when not every deployment of its name reports `supports_reasoning`. A `copilot/<model>` tier is listed when the Gateway's price table has an entry for its model, and the entry does not report `supports_reasoning` or the model is not a Claude or GPT model. A tier that joins a shared model is also listed when that shared model does not reason. OpenClaw instances offer no reasoning levels for the router. This is a hint only: the router is registered and granted as usual |
-| `conditions[type=ModelRoutersReady]` | `True` when every router is registered. `False` names each router that is not registered. `Unknown` when the Gateway cannot be reached |
+```yaml
+apiVersion: cetirun.microsoft.com/v1alpha1
+kind: Team
+metadata:
+  name: research
+spec:
+  agentPolicyRef: research
+  sandboxRefs: [research]
+  defaultSandboxRef: research
+  memberContext:
+    role: Research assistant
+  skills: []
+```
 
-Each Team has a single `agentPolicyRef`. Agents do not select a policy class.
-The pre-release `normalAgentPolicyRef`, `adminAgentPolicyRef`, and Agent
-`policyClass` fields are removed from the API and its CRD schemas. This is a new
-system contract. It is not a backward-compatible upgrade of the dual-policy
-design. There are no compatibility fields or migration path for that design.
+### Team spec
 
-Instances select this object through `spec.team`. The selection applies the
-Team's runtime defaults and, when configured, its single policy. It does not
-grant access to the data or runtime of another Agent. There is no separate Team
-membership or authorization record. Model and credential entitlements come from
-that policy and are requested for each Agent.
+<!-- generated: team-spec -->
 
-A Team that is used for administrative work is an independent Team with its own
-context and skills. It does not select a more privileged policy for another
-Team. Permission to manage Teams or AgentPolicies is a human control-plane
-permission. It is enforced separately from workload authorization. Workload
-authorization comes from the selected Team, its `agentPolicyRef`, and the
-Agent's explicit requests.
+| Field | Type | Default | Validation | Description |
+| --- | --- | --- | --- | --- |
+| `agentPolicyRef` | string |  | Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`. 1 to 253 characters. | The single policy of the Team. Necessary when the Team opts in to policy. |
+| `defaultSandboxRef` | string |  | Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`. 1 to 253 characters. | Sandbox that new Agents get when they do not select one. It must be in `sandboxRefs`. Necessary for a policy-bound Team. It does not select a Sandbox again later. |
+| `memberContext` | object |  |  | Team context that the runtime puts into the instructions of each Agent. |
+| `memberContext.description` | []string |  | At most 20 items. | Context lines. |
+| `memberContext.role` | string |  |  | Role of the Team members, for example `Engineer`. |
+| `modelRouters` | []object |  | At most 10 items. Unique by `name`. | Smart-routing models of the Team, by `name`. See [Smart routing](../../guides/teams/#smart-routing). |
+| `modelRouters[].classifier` | object | `{"type": "heuristic"}` | Rule: classifier.model is required for the llm and jev classifiers and not allowed for the heuristic classifier. | How the router selects the complexity tier of each request. |
+| `modelRouters[].classifier.model` | string |  | Pattern `^[^\s]+$`. 1 to 256 characters. | Shared model that classifies requests. It is not a router of the Gateway. It is a chat model for `llm`, and a decision model (`model_info.mode: evaluation`) for `jev`. Necessary for `llm` and `jev`, and not allowed for `heuristic`. |
+| `modelRouters[].classifier.type` | string | `"heuristic"` | One of `heuristic`, `llm`, `jev`. | `heuristic` scores each request without a model call. `llm` and `jev` ask a shared model. The license-limited classifier types of LiteLLM are not accepted. |
+| `modelRouters[].name` | string |  | Required. Pattern `^[^\s/]+$`. 1 to 64 characters. Rule: a model router name must not start with the reserved prefix cetirun-. | Model name that Agents request. It cannot start with `cetirun-` in any letter case. |
+| `modelRouters[].tiers` | object |  | Required. | The model of each complexity tier. |
+| `modelRouters[].tiers.complex` | string |  | Required. Pattern `^[^\s]+$`. 1 to 256 characters. | Model for complex requests: a shared model that answers conversations and is not a router of the Gateway, or `copilot/<model>`. |
+| `modelRouters[].tiers.medium` | string |  | Required. Pattern `^[^\s]+$`. 1 to 256 characters. | Model for ordinary requests, and for requests that the router cannot classify. |
+| `modelRouters[].tiers.reasoning` | string |  | Pattern `^[^\s]+$`. At most 256 characters. | Optional model for requests that ask for step-by-step reasoning. If it is empty, the tier uses the `complex` model. |
+| `modelRouters[].tiers.simple` | string |  | Required. Pattern `^[^\s]+$`. 1 to 256 characters. | Model for the simplest requests. |
+| `sandboxRefs` | []string |  | At least 1 item. Unique items. Each item: Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`. 1 to 253 characters. | Set of allowed Sandboxes. Necessary for a policy-bound Team. |
+| `skillStorage` | object |  |  | Shared Azure Blob NFS container of the Team skills. The operator mounts it read-only into each Agent. |
+| `skillStorage.containerName` | string |  | Required. | A skills container that exists. |
+| `skillStorage.mountPath` | string |  |  | Optional. For OpenClaw and Hermes, the path where the shared skills volume is mounted read-only. The chart default is `/home/vibe/.aks/skills`. Custom Agents read shared skills in `$HOME/.agents/skills`. A different path adds a read-only alias of that view. Sandbox Agents do not mount the container that `skillStorage` names. Their Team skills come from the Skill Marketplace or a published skills catalog. |
+| `skillStorage.resourceGroup` | string |  | Required. | A storage resource group that exists. |
+| `skillStorage.storageAccount` | string |  | Required. | A Blob account that exists. |
+| `skillStorage.storageClassName` | string |  |  | Optional override. The chart default is `azureblob-nfs-premium`. |
+| `skillStorage.storageSize` | string |  |  | Optional shared PVC request. The chart default is `100Gi`. |
+| `skills` | []string |  | At most 100 items. Unique items. Each item: Pattern `^(npm:)?(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(@[\w.+-]+)?$`. | Default skills of the Team. With the Skill Marketplace, each entry without the `npm:` prefix is the name of a marketplace skill. See [Skill Marketplace](../../operations/skill-marketplace/). |
 
-Teams with no policy or Sandbox fields keep the legacy behavior. If you set any
-one of those fields, the Team opts in to the full policy binding contract.
-Partial bindings cannot fall back to legacy. The Team controller accepts a
-legacy Team without those references. It also accepts a policy-enabled Team
-after its policy and Sandbox references form a valid current configuration.
+<!-- /generated: team-spec -->
 
-Runtime context persistence is also different. Hermes refreshes `TEAM.md` on
-initialization, but OpenClaw keeps the `USER.md` of an initialized workspace.
-See [configure a team](../../guides/teams/).
+Each Team has one `agentPolicyRef`. An Agent does not select a policy class:
+the API has no `normalAgentPolicyRef`, `adminAgentPolicyRef`, or Agent
+`policyClass` field.
+
+An Agent selects its Team with `spec.team`. The selection applies the runtime
+defaults of the Team and, when configured, its policy. It does not grant access
+to the data or the runtime of another Agent. There is no separate Team
+membership record. Model and credential entitlements come from the policy, and
+each Agent requests them.
+
+A Team for administrative work is an independent Team with its own context and
+skills. It does not select a more privileged policy for another Team.
+Permission to manage Teams or AgentPolicies is a control-plane permission of
+people. The platform enforces it separately from workload authorization.
+
+If you set one of the policy or Sandbox fields, the Team opts in to the full
+policy binding. A partial binding cannot fall back to legacy behavior. The Team
+controller accepts a legacy Team without these references. It accepts a
+policy-bound Team when its policy and Sandbox references form a valid
+configuration.
+
+Hermes refreshes `TEAM.md` at each initialization. OpenClaw keeps the `USER.md`
+of an initialized workspace. See [Configure a Team](../../guides/teams/).
 
 Skill entries in `skills` and `skillOverrides` follow this schema pattern:
 
@@ -267,276 +448,388 @@ Skill entries in `skills` and `skillOverrides` follow this schema pattern:
 ```
 
 The `npm:` prefix selects the npm installer. Without the Skill Marketplace,
-other accepted identifiers are only passed to the reserved `skills.clawHub`
-list. They are not installed. Shared storage uses chart-level protocol and
-mount options. Those options are not fields on `skillStorage`. See
-[configuration and skills](../../concepts/configuration/).
+the operator passes the other identifiers only to the reserved `skills.clawHub`
+list, and it does not install them. Shared storage uses chart-level protocol
+and mount options. These options are not fields of `skillStorage`. See
+[Configuration and skills](../../concepts/configuration/).
 
 When the operator's `skillMarketplace.enabled` is on, every entry without the
 `npm:` prefix is the name of a Skill Marketplace skill. Such a name has
-lowercase letters and digits in words that single hyphens join, and at most
-64 characters. These rules apply:
+lowercase letters and digits in words that single hyphens join, and at most 64
+characters. These rules apply:
 
 - The operator does not pass the name to `skills.clawHub`.
-- For a Team with an Agent Policy, the Skill Marketplace publishes the
-  selected skills. Its common-executor Sandbox Agents copy them when they
-  start. OpenClaw and Hermes read them in `$HOME/.aks/skills`, and Custom in
-  `$HOME/.agents/skills`.
+- For a Team with an AgentPolicy, the Skill Marketplace publishes the selected
+  skills. Its common-executor Sandbox Agents copy them when they start.
+  OpenClaw and Hermes read them in `$HOME/.aks/skills`, and Custom reads them
+  in `$HOME/.agents/skills`.
 - An Agent cannot add or remove such a name in `skillOverrides`. The operator
   sets the Agent to `Failed`, with `AgentConfigInvalid` and this message:
   `skillOverrides cannot add or remove Skill Marketplace skills; select them on the Team`.
-  This also applies to Agents without a policy.
-- A change of the Team's selection restarts the Team's running Sandbox Agents
-  one time, as each Team change does.
+  This rule also applies to Agents without a policy.
+- A change of the selection of the Team restarts the running Sandbox Agents of
+  the Team one time, as each Team change does.
 
 See [Skill Marketplace](../../operations/skill-marketplace/).
 
-### Team and Sandbox administration
+### Team status
 
-Portal administrators can create and edit Teams with `agentPolicyRef`,
-`sandboxRefs`, and `defaultSandboxRef`. The Portal accepts only complete
-bindings and validates the referenced resources. It also makes sure that the
-default is in the allowed Sandbox set and that the Policy allows the Team
-Skills. The Team DTO returns these fields together with `uid`, `resourceVersion`,
-and `generation`. Updates and deletes must send `uid` and `resourceVersion` and
-should also send the reviewed generation in the `X-CetiRun-Team-Generation`
-header. The API also accepts a JSON `generation` field; if both are supplied,
-they must match. With a generation, status-only
-updates do not invalidate the request; a changed configuration or replacement
-Team returns `409 Conflict`. Without a generation, the exact resource version
-is still required for older clients. Missing required version fields return
-`428 Precondition Required`; an explicitly supplied generation must be a positive
-integer, or the request returns `400 Bad Request`.
+<!-- generated: team-status -->
 
-The Portal browser uses the header and keeps the existing JSON body shape.
-Older Portal replicas ignore this header and apply the exact resource-version
-check during a rolling upgrade. JSON generation fields require an updated
-backend because older replicas reject unknown body fields.
+| Field | Type | Default | Validation | Description |
+| --- | --- | --- | --- | --- |
+| `compatibility` | object |  |  | Latest configuration-only assessment of the policy and the Sandboxes of the Team. See [Team compatibility](#team-compatibility). |
+| `compatibility.checkedAt` | timestamp |  | Required. | Time of the assessment. |
+| `compatibility.issues` | []object |  |  | Issues of the Team and its policy. |
+| `compatibility.issues[].code` | string |  | Required. | Fixed issue code. See [Team compatibility](#team-compatibility). |
+| `compatibility.issues[].field` | string |  |  | Path of the field that has the issue. |
+| `compatibility.issues[].message` | string |  | Required. | Fixed message of the code. |
+| `compatibility.issues[].policy` | reference (generation, name, uid) |  | `name`: Required. | The AgentPolicy of the issue. |
+| `compatibility.issues[].sandbox` | reference (generation, name, uid) |  | `name`: Required. | The Sandbox of the issue. |
+| `compatibility.issues[].team` | reference (generation, name, uid) |  | `name`: Required. | The Team of the issue. |
+| `compatibility.message` | string |  |  | Explanation of the result. |
+| `compatibility.policy` | reference (generation, name, uid) |  | Required. `name`: Required. | The AgentPolicy that the assessment read. |
+| `compatibility.reason` | string |  |  | Machine-readable reason of the result. |
+| `compatibility.sandboxes` | []object |  |  | Result for each selected Sandbox. |
+| `compatibility.sandboxes[].issues` | []object |  |  | Issues of this Sandbox, with the fields of `compatibility.issues[]`. |
+| `compatibility.sandboxes[].reason` | string |  |  | Machine-readable reason of the result. |
+| `compatibility.sandboxes[].sandbox` | reference (generation, name, uid) |  | Required. `name`: Required. | The Sandbox that the assessment read. |
+| `compatibility.sandboxes[].state` | string |  | Required. One of `Compatible`, `Incompatible`, `Unknown`. | Compatibility of the policy and this Sandbox. |
+| `compatibility.state` | string |  | Required. One of `Compatible`, `Incompatible`, `Unknown`. | Overall compatibility of the Team. |
+| `compatibility.team` | reference (generation, name, uid) |  | Required. `name`: Required. | The Team generation that the assessment read. |
+| `compatibility.validUntil` | timestamp |  | Required. | Time after which the report is not current. |
+| `conditions` | []Condition |  | Unique by `type`. | Condition `Accepted` and condition `ModelRoutersReady`. |
+| `modelRouters` | []object |  | Unique by `name`. | Registration of each router of `spec.modelRouters`. |
+| `modelRouters[].copilotModels` | []string |  |  | The `copilot/<model>` tiers, registered under the ID of the Copilot model. An Agent must have GitHub Copilot and that model. |
+| `modelRouters[].gatewayModel` | string |  |  | Internal Gateway model name of the router. Granted Agents send their requests to it. It stays the same when the router configuration changes. |
+| `modelRouters[].message` | string |  |  | Why the router is not ready. |
+| `modelRouters[].name` | string |  | Required. | Router name from `spec.modelRouters`. |
+| `modelRouters[].nonReasoningModels` | []string |  |  | For a ready router, the tier models, as the tiers name them, that do not reason. A shared model is listed when not every deployment of its name reports `supports_reasoning`. A `copilot/<model>` tier is listed when the price table of the Gateway has an entry for its model, and the entry does not report `supports_reasoning` or the model is not a Claude or GPT model. A tier that joins a shared model is also listed when that shared model does not reason. OpenClaw Agents offer no reasoning levels for the router. This is a hint only: the router is registered and granted as usual. |
+| `modelRouters[].ready` | boolean |  | Required. | `true` when the router is registered in the Gateway with its current configuration. |
+| `modelRouters[].sharedModels` | []string |  |  | Shared models that the tiers of the router send requests to, as registered. A GitHub Copilot tier that joins a shared model is included, and the classifier is not. An Agent with an AgentPolicy gets the router only when the policy allows each of these models. |
+| `observedGeneration` | integer |  |  | Last generation that the operator fully reconciled. |
 
-The Portal uses the latest resource version for a conditional write after it
-checks the reviewed configuration. A race during submission can still conflict;
-uncertain coordinated writes retain their existing recovery requirements.
+<!-- /generated: team-status -->
 
-The Teams list shows compatibility for the saved Policy and all selected
-Sandboxes. Expand a Team to see its overall compatibility, labeled Policy and
-Sandbox references, reasons, and check time. Multiple Sandboxes appear in a
-table with a separate compatibility result for each Policy and Sandbox
-combination.
+The Team controller sets the condition `Accepted`. Its reason is `Valid` for a
+valid binding and `InvalidConfiguration` for an invalid binding. The reason is
+`DependenciesUnavailable` when the controller cannot read the policy or a
+Sandbox, and `Terminating` during deletion. The condition `ModelRoutersReady`
+is `True` when every router of the Team is registered. `False` names each
+router that is not registered, and `Unknown` means that the Gateway cannot be
+reached.
 
-The Policy and Sandbox lists also show the Teams that refer to them. The Sandbox
-view shows the overall Team result separately from the result of that Sandbox. A
-Policy's configuration acceptance and a Sandbox's prerequisites are separate
-from Team compatibility. None of these observations proves that an Agent applied
-its Policy or is ready to run.
+### Team compatibility
 
-The Operator records this report in the optional `Team.status.compatibility`
-field. It examines saved configurations at most 15 seconds apart and after Policy
-or Sandbox changes. An unchanged report keeps its timestamps until five seconds
-before expiry, when it is renewed. Changed results are published immediately.
-The report identifies the Team, Policy, and each Sandbox by
-name, UID, and generation, with `checkedAt` and `validUntil` timestamps. The
-report expires after 30 seconds. The Portal shows `Pending` when no report
-exists and `Unknown` when an observation expires or a referenced version
-changes. Teams without Policy configuration show `Not configured`.
+The operator records a compatibility report for each policy-bound Team in
+`status.compatibility`. It examines the saved configuration at most 15 seconds
+apart, and after each Policy or Sandbox change. An unchanged report keeps its
+timestamps until five seconds before it expires, when the operator renews it.
+A changed result is published immediately. The report expires 30 seconds after
+`checkedAt`, at `validUntil`. The report is for display. It does not change the
+`Accepted` condition, and it does not authorize Agent execution.
 
-The report is for display. It does not change the Team `Accepted` condition or
-authorize Agent execution. The admin Team API includes the report, the Team
-generation, and deletion state. The Sandbox API also returns generation,
-observed generation, and conditions.
+`compatibility.state` and `compatibility.sandboxes[].state` are `Compatible`,
+`Incompatible`, or `Unknown`. The Portal also shows `Pending` when no report
+exists, and `Not configured` for a Team without a policy. These two values are
+Portal labels, not values of the field. The Portal also shows `Unknown` when a
+report expires or when a referenced generation changes.
 
-The Team editor preserves unsaved input across background refreshes. If the
-saved configuration changes, it keeps the draft and asks you to discard it and
-reload before saving. Status-only refreshes do not replace the draft. The Team
-deletion dialog shows errors inside the dialog; after a configuration conflict,
-reload and review the current Team before confirming deletion again.
+Each entry of `compatibility.issues[]` and
+`compatibility.sandboxes[].issues[]` has one of these codes and its fixed
+message:
 
-Edit pages show field validation and errors from the current save. They do not
-examine unsaved drafts or show saved status as a draft result. Kubernetes
-admission examines the submitted configuration before it is stored.
-
-For a known compatibility rejection, the Portal returns
-`422 configuration_incompatible` with an optional `error.details` list of field
-and combination diagnostics. The editor keeps the unsaved input. Version,
-permission, and coordination errors stay separate. A successful save does not
-mean that the Operator already examined the new version.
+| Code | Message |
+| --- | --- |
+| `policy_missing` | Choose an Agent Policy. |
+| `sandbox_missing` | Choose at least one Sandbox. |
+| `default_sandbox_invalid` | Choose a default Sandbox from the selected Sandboxes. |
+| `policy_not_found` | The selected Agent Policy was not found. |
+| `policy_invalid` | The selected Agent Policy is invalid. |
+| `multiple_sandboxes_not_allowed` | The selected Agent Policy allows one Sandbox per Team. |
+| `sandbox_not_found` | The selected Sandbox was not found. |
+| `sandbox_invalid` | The selected Sandbox is invalid. |
+| `runtime_not_registered` | The Sandbox runtime is not registered by the platform. |
+| `execution_profile_unsupported` | The Sandbox execution profile is not enabled by this platform. |
+| `home_access_mode_unsupported` | The Sandbox HOME access mode is not supported by this platform. |
+| `network_address_family_unsupported` | The Policy requests a network address family that the Sandbox does not support. |
+| `network_protocol_unsupported` | The Policy requests a network protocol that the Sandbox does not support. |
+| `read_only_root_filesystem_unsupported` | The Sandbox does not support the Policy read-only root filesystem requirement. |
+| `ingress_unsupported` | The Sandbox does not support the Policy ingress configuration. |
+| `network_control_unsupported` | The Sandbox does not support one or more requested Policy network controls. |
+| `kubernetes_access_unsupported` | The Sandbox does not support the Policy Kubernetes access requirement. |
+| `entra_id_unsupported` | The Sandbox does not support the Policy Entra ID requirement. |
+| `sandbox_incompatible` | The selected Sandbox does not support one or more requested Policy controls. |
 
 For an upgrade, update the CRD schema, admission, and all other strict Team
-readers. Then run the Operator that writes compatibility status. A migration of
-the Teams that already exist is not necessary. They get a report when the
-Operator reconciles them. Older objects without the optional field stay
-readable. Do not downgrade a strict reader until it can tolerate the new status
-field.
+readers. Then run the operator that writes the compatibility status. The Teams
+that exist get a report when the operator reconciles them. Older objects
+without this optional field stay readable. Do not downgrade a strict reader
+until it can read the status field.
 
-The **Admin → Sandboxes** pages manage the complete Sandbox configuration:
-runtime type, Agent and helper resource requests and limits, HOME storage, and
-scratch size. They use these admin-only endpoints:
+## Sandbox
 
-- `GET` and `POST /api/v1/admin/sandboxes`
-- `GET`, `PUT`, and `DELETE /api/v1/admin/sandboxes/{name}`
+A Sandbox selects a prepared runtime: `kata`, `gvisor`, or `container`. It
+also sets the resource budgets of the Agent and its helper containers, the
+private HOME storage, and the scratch space. This example uses Kata:
 
-The Sandbox request contains `name`, optional `type`, `resources`, and
-`storage`, with the same structure as the CRD spec. If `type` is omitted or set
-to `null`, the value is `kata` on both create and full-spec update. This agrees
-with how Kubernetes applies defaults. An explicit invalid value, for example an
-empty string, is rejected. It is not replaced by the default. Resource and
-storage fields are still necessary.
+```yaml
+apiVersion: cetirun.microsoft.com/v1alpha1
+kind: Sandbox
+metadata:
+  name: research
+spec:
+  type: kata
+  resources:
+    agent:
+      requests: {cpu: "1", memory: 1Gi, ephemeral-storage: 1Gi}
+      limits: {cpu: "2", memory: 2Gi, ephemeral-storage: 2Gi}
+    helpers:
+      requests: {cpu: 100m, memory: 128Mi, ephemeral-storage: 128Mi}
+      limits: {cpu: 500m, memory: 2Gi, ephemeral-storage: 512Mi}
+  storage:
+    home:
+      storageClassName: native-home
+      size: 10Gi
+      accessMode: ReadWriteOncePod
+    scratch:
+      sizeLimit: 1Gi
+```
 
-For updates and deletes, the `uid` and `resourceVersion` that a read returns are
-also necessary. The response reports `ready` only from a condition for the
-current generation. If you save a Sandbox, the save does not install a runtime
-or establish runtime readiness.
+### Sandbox spec
 
-When it is configured, Team and Sandbox changes use the configuration
-coordination client. This includes conditional writes, uncertain outcomes that
-are kept, and background deletion. Admission is still responsible for platform
-compatibility and current consumer checks. The editor shows Kubernetes
-validation and admission rejections, but transport failures stay in logs.
+<!-- generated: sandbox-spec -->
 
-### Skill Marketplace administration
+| Field | Type | Default | Validation | Description |
+| --- | --- | --- | --- | --- |
+| `resources` | object |  | Required. | Resource budgets of the Agent and its helper containers. |
+| `resources.agent` | object |  | Required. Rule: resource requests must not exceed their limits. | Requests and limits of the main Agent container. |
+| `resources.agent.limits` | map[string]quantity |  | Required. Exactly 3 keys. Rule: exactly cpu, memory and ephemeral-storage are required. Rule: resource quantities must be positive. | Limits of `cpu`, `memory`, and `ephemeral-storage`. |
+| `resources.agent.requests` | map[string]quantity |  | Required. Exactly 3 keys. Rule: exactly cpu, memory and ephemeral-storage are required. Rule: resource quantities must be positive. | Requests of `cpu`, `memory`, and `ephemeral-storage`. |
+| `resources.helpers` | object |  | Required. Rule: resource requests must not exceed their limits. | Requests and limits of each init container and Agent sidecar, for example doctor and the credential retirement steps. |
+| `resources.helpers.limits` | map[string]quantity |  | Required. Exactly 3 keys. Rule: exactly cpu, memory and ephemeral-storage are required. Rule: resource quantities must be positive. | Limits of `cpu`, `memory`, and `ephemeral-storage`. The Portal recommends a `2Gi` memory limit. A `512Mi` limit can cause an OOMKill of the OpenClaw initialization. |
+| `resources.helpers.requests` | map[string]quantity |  | Required. Exactly 3 keys. Rule: exactly cpu, memory and ephemeral-storage are required. Rule: resource quantities must be positive. | Requests of `cpu`, `memory`, and `ephemeral-storage`. |
+| `storage` | object |  | Required. | Private storage of the Agent. |
+| `storage.home` | object |  | Required. | The private HOME volume of each Agent. |
+| `storage.home.accessMode` | string |  | Required. One of `ReadWriteOncePod`, `ReadWriteOnce`. | Access mode of the HOME volume. The access mode alone does not make the volume private or exclude other writers. |
+| `storage.home.size` | quantity |  | Required. Rule: home size must be positive. | Size of the HOME volume. |
+| `storage.home.storageClassName` | string |  | Required. Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`. 1 to 253 characters. | StorageClass of the HOME volume. The platform must approve it. |
+| `storage.scratch` | object |  | Required. | Writable scratch space of the Agent. |
+| `storage.scratch.sizeLimit` | quantity |  | Required. Rule: scratch size must be positive. | Size limit of the scratch volume. It controls accounting and eviction. It is not a hard disk quota. |
+| `type` | string | `"kata"` | One of `kata`, `gvisor`, `container`. | Prepared runtime: `kata` (VM isolation), `gvisor`, or `container` (ordinary containers without VM isolation). Sandbox execution does not support `gvisor`. |
 
-The Portal chart's `skillMarketplace.enabled` turns on these Portal API
-behaviors. Keep it equal to the operator's `skillMarketplace.enabled`.
+<!-- /generated: sandbox-spec -->
 
-- `GET /api/features` returns `skillMarketplaceEnabled`.
-- `GET /api/v1/admin/skill-marketplace` is for administrators only. It returns
-  `enabled`, `known`, and `catalog`, with `Cache-Control: no-store`. `enabled`
-  is `false` when the Portal setting is off. `known` is `false` until the
-  Skill Marketplace writes its catalog, and `catalog` is then `null`.
-- The catalog is the `catalog.json` document of the ConfigMap
-  `cetirun-skill-marketplace` in the operator namespace. The Portal accepts
-  only the document version `v1`, without duplicate fields, and at most 1 MiB.
-  If it cannot read or decode the document, the response is
-  `503 Service Unavailable` with the code `skill_marketplace_unavailable`.
-- Team creation and update examine `skills`. Each entry without the `npm:`
-  prefix must be a valid marketplace skill name. Otherwise, the response is
-  `422` with the code `invalid_team`. Each entry must be in the Policy's
-  `skills.allowed` (`400`, `invalid_team_binding`).
-- Each marketplace skill that the stored Team does not select yet must be in
-  the catalog (`422`, `invalid_team`). When the Skill Marketplace rejected the
-  repository's copy, the message gives the reason. Before the catalog exists,
-  the response is `422` with `invalid_team`. If the Portal cannot read the
-  catalog, the response is `503` with `skill_marketplace_unavailable`. A skill
-  that the Team already selects can stay after it leaves the repository.
-- A Policy update cannot remove a marketplace skill from `skills.allowed`
-  while a Team of the Policy selects it. The response is `422` with the code
-  `invalid_policy`, and the message names the Team.
-- `GET /api/v1/instances/{name}` returns `teamSkills` for an Agent whose Team
-  has an Agent Policy and selects marketplace skills. Each entry has `name`,
-  `description`, `version`, and `state`. The version is the one in the release
-  of the Team. The state is `published`, `updating`, `pending`, `retained`, or
-  `missing`. `updating` means that the repository has another version, which
-  the entry gives as `repositoryVersion`. Without a catalog, each skill is
-  `pending`. The field is absent when the Portal cannot read the Team or the
-  catalog.
-- The same response has `teamSkillsPublicationFailed: true` when the catalog
-  has a publication error for the Team. The response does not include the
-  error; administrators see it on **Admin → Skills**.
-- The same response has `teamSkillsRestartNeeded: true` when the newest Pod
-  of the Agent copied an earlier Team release. Both releases are of the current
-  Team selection. The Portal reads the copied release ID from the termination
-  message of the `init-home-data` container. Without that ID, the field is
-  absent.
+`container` is ordinary container execution, for example runc, without VM
+isolation. The Agent shares the kernel of the node. It needs a trusted
+registration with an explicitly pinned RuntimeClass UID and handler, and the
+enabled common executor. When `type` is omitted or null, the value is `kata`.
 
-See [Skill Marketplace](../../operations/skill-marketplace/) for the catalog
-fields and the states.
+You can save a `gvisor` Sandbox, but Sandbox execution does not support it.
+Such a Sandbox does not become ready, and its `Ready` condition reports
+`UnsupportedControl`.
 
-## Sandbox and AgentPolicy
-
-`Sandbox` describes the prepared `kata`, `gvisor`, or `container` runtime, Agent
-and helper resource budgets, private home storage, and scratch. `AgentPolicy`
-describes selection constraints, read-only root filesystem, network and ingress
-controls, and optional Kubernetes or Entra identity intent. Configuration
-references and schema acceptance do not grant access or prove enforcement.
-
-`container` is explicit ordinary-container execution (for example, runc), not
-VM isolation. The Agent shares the node kernel. A trusted registration with an
-explicitly pinned RuntimeClass UID/handler and the enabled common executor are
-necessary for it. Kata is still the default when the value is omitted or null.
-gVisor's execution scope does not change.
-
-Container uses the same AgentPolicy, Gateway, Cilium, and retained HOME
-lifecycle, with per-container resource limits and no implicit VM overhead. If
-you save a configuration, the save does not discover or install a handler.
-Container supports the same separately approved
+A `container` Sandbox uses the same AgentPolicy, Gateway, Cilium, and retained
+HOME lifecycle as Kata, with per-container resource limits and no implicit VM
+overhead. It supports the same separately approved
 [managed ingress mTLS](../../guides/agent-ingress-mtls/) as Kata. A capability
 flag alone does not authorize the endpoint.
 
-Observed-SNI blocking and Kubernetes grants must have the same explicit
-common-adapter registrations and source approvals as Kata. The container
-RuntimeClass alone does not enable either of them. Select a new Sandbox or
-Agent instead of an online runtime conversion.
+Observed-SNI blocking and Kubernetes grants need the same explicit common-adapter
+registrations and source approvals as Kata. The RuntimeClass alone does not
+enable them. A save of a configuration does not discover or install a handler.
+To change the runtime of an Agent, select a new Sandbox or create a new Agent.
+The platform does not convert a running Agent.
 
-Policy assignment is opt-in. It is not a prerequisite for legacy deployment. An
-Agent with no Sandbox selection or recorded governed lifetime can use no Team,
-or a Team without policy settings. Such Agents keep the runtime flow that exists
-and do not claim policy enforcement. For opted-in Agents, the controller
-resolves owner and Team authorization, the effective AgentPolicy, and the
-selected Sandbox before a workload can run. Invalid or unavailable
-authorization is fail-closed.
+### Sandbox status
 
-The native Sandbox path compiles and stages protected resources at zero
-replicas. Execution stays held unless the separately configured, default-off
-native execution profile is enabled and its supported prerequisites pass.
-Approved Gateway-backed Custom images use this same common executor. The
-[Custom image and interface contract](../agent-harness/#policy-governed-custom-execution)
-also applies to them. If an approval is absent or a combination is not
-supported, the Agent stays held. Ungoverned Custom Agents keep their runtime
-provider path.
+<!-- generated: sandbox-status -->
 
-The controller records a hold finalizer before it changes workloads. As a
-result, a failed status update cannot release the recorded hold. Explicit
-suspension stays `Suspended` unless shutdown fails. Built-in resources without
-verifiable Agent-UID ownership are left untouched, and recovery is necessary
-for them. A match of resource names alone is not sufficient.
+| Field | Type | Default | Validation | Description |
+| --- | --- | --- | --- | --- |
+| `conditions` | []Condition |  | Unique by `type`. | Condition `Ready` for the platform prerequisites of the Sandbox. |
+| `observedGeneration` | integer |  | Minimum 0. | Last generation that the controller assessed. |
 
-When a held built-in Agent is deleted, only the namespace that is confirmed as
-its own is removed, without Helm uninstall hooks. Finalizers are kept until
-cleanup completes. Home storage is kept during a hold, but not after an
-explicit namespace deletion. Agent Identity authorization and directory cleanup
-is still a step that blocks the deletion of held built-in Agents. This is also
-true when the runtime namespace is absent.
+<!-- /generated: sandbox-status -->
 
-Compatibility does not automatically release an old Agent that was already held
-by a mandatory-policy version. Before recovery, examine its ownership and the
-data that is kept. The removal of spec fields is not permission to clear its
-recorded policy lifetime.
+The Sandbox controller sets the condition `Ready` for the platform
+prerequisites of the Sandbox, not for an Agent. Its reason is
+`PrerequisitesReady` when the registered runtime and storage match. Other
+reasons are `InvalidConfiguration`, `UnsupportedControl`, `RuntimeUnavailable`,
+`UnapprovedStorage`, `ReferenceMissing`, `ReferenceChanged`, `UnapprovedGrant`,
+`PolicyConflict`, `PrerequisitesUnavailable`, and `Terminating`.
 
-The Agent creator selects a Team directly. Admission applies the Team's default
-Sandbox. Then it persists UID-bound references, so that a replacement resource
-with the same name cannot be adopted implicitly. An administrator and a
-suspended Agent are necessary for later Team, Sandbox, policy, or budget
-changes.
+## AgentPolicy
 
-Policy-enabled resources that exist enter a controlled hold for cleanup. If
-references are changed or cleared, this does not return them to legacy
-execution. Explicit reauthorization and an ordered stop-and-cleanup sequence are
-necessary for changes. A lossless rolling migration between policies is not
-supported. Operator status reports desired per-domain revisions. It marks Policy
-Applied only after enforcement evidence that matches is current.
+An AgentPolicy limits the Harnesses, skills, models, network access, and
+identities of the Agents of a Team. This example allows OpenClaw and one shared
+model:
 
-AgentPolicy also allowlists Harnesses, skills, exact Gateway model names,
-Copilot, and Agent Identity. A native LiteLLM default and maximum monthly USD
-budget are necessary for a model entitlement. The allowed Harnesses are
-OpenClaw, Hermes, and Custom. For Custom, the common executor and an approved
-Gateway-qualified image are also necessary. Policy permission alone does not
-qualify an image or backend. Agent Identity cannot complete aggregate
-`PolicyApplied` until a typed credential-service executor supplies read-back
-evidence that matches.
+```yaml
+apiVersion: cetirun.microsoft.com/v1alpha1
+kind: AgentPolicy
+metadata:
+  name: research
+spec:
+  harnesses:
+    allowed: [openclaw]
+  skills:
+    allowed: []
+  modelAccess:
+    sharedModels:
+      allowed: [example-model]
+    gatewayBudget:
+      defaultMonthlyUSD: "10"
+      maxMonthlyUSD: "10"
+  security:
+    readOnlyRootFilesystem: true
+  network:
+    ingress:
+      mode: authenticated
+```
 
-`skills.allowed` lists the exact entries that the Team's `skills` and an
-Agent's `skillOverrides.add` can contain, `npm:` packages included. If a Team
-or an Agent requests a skill that the list does not contain, the operator
-denies the Agent. Its `PolicyResolved` condition is `False`, with reason
-`PolicyDenied` and the message `skill "<name>" is not allowed by policy`. The
-operator then revokes the Agent's Gateway key and stops the Agent.
+### AgentPolicy spec
 
-The skill allowlist is not an execution input of Sandbox Agents. A change
-that only adds or removes allowed skills does not restart running native
-Agents. A Policy with an empty or absent allowlist keeps the execution digest
-that earlier operators recorded. For a Policy that allows skills, the digest
-that earlier operators recorded includes the allowlist. After the operator
-upgrade, the first reconciliation sees that Policy as changed, as after an edit
-of its execution settings.
+<!-- generated: agentpolicy-spec -->
+
+| Field | Type | Default | Validation | Description |
+| --- | --- | --- | --- | --- |
+| `agentIdentity` | object |  |  | Entitlement to the Entra Agent Identity that the Broker and Connections use. |
+| `agentIdentity.allowed` | boolean |  |  | Allows Agent Identity for the Agents of the policy. |
+| `agentIdentity.credentialServices` | []string |  | Unique items. Each item: One of `azure-resource-manager`. | Credential services of the identity. An allowed identity needs `azure-resource-manager`. |
+| `agentIdentity.required` | boolean |  |  | Selects Agent Identity for each new Agent, and the owner cannot clear it. Needs `allowed: true`. |
+| `entraID` | object | `{}` |  | Approved Entra workload identity in the main container. It is independent of `agentIdentity`. |
+| `entraID.enabled` | boolean | `false` |  | Projects an exchange token and the Azure SDK environment into the main container. It needs platform registration, a pinned ServiceAccount, federation, and resource permissions. |
+| `harnesses` | object |  | Required. | Harness limits of the policy. |
+| `harnesses.allowed` | []string |  | Required. At least 1 item. Unique items. Each item: One of `openclaw`, `hermes`, `custom`. | Harness types that the Agents of the policy can use. Custom also needs the common executor and an approved Gateway-qualified image. |
+| `kubernetesAccess` | object |  | Rule: at least one explicit RBAC grant is required. | Kubernetes API access of the Agents. Its presence grants nothing: separately approved platform grants are necessary. Platform administrators manage it outside the Portal. |
+| `kubernetesAccess.clusterRoleBindings` | []object |  |  | ClusterRoles that the operator binds cluster-wide to the ServiceAccount of each Agent. |
+| `kubernetesAccess.clusterRoleBindings[].clusterRoleName` | string |  | Required. Pattern `^[^/%]+$`. At least 1 character. Rule: a ClusterRole name cannot be '.' or '..'. | Name of a ClusterRole that exists. |
+| `kubernetesAccess.roleBindings` | []object |  |  | ClusterRoles that the operator binds in one namespace to the ServiceAccount of each Agent. |
+| `kubernetesAccess.roleBindings[].clusterRoleName` | string |  | Required. Pattern `^[^/%]+$`. At least 1 character. Rule: a ClusterRole name cannot be '.' or '..'. | Name of a ClusterRole that exists. |
+| `kubernetesAccess.roleBindings[].namespace` | string |  | Required. Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`. 1 to 63 characters. | Namespace of the binding. |
+| `kubernetesAccess.serviceAccountName` | string |  | Required. Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`. 1 to 253 characters. | ServiceAccount of each Agent. |
+| `modelAccess` | object |  |  | Gateway entitlements and the budget of the key of each Agent. See [AgentPolicy model access](#agentpolicy-model-access). |
+| `modelAccess.copilot` | object |  |  | GitHub Copilot entitlement. |
+| `modelAccess.copilot.allowed` | boolean |  |  | Lets the Agents use the GitHub Copilot of their owners. The Portal shows it as **Allow GitHub Copilot**. |
+| `modelAccess.gatewayBudget` | object |  |  | Monthly budget of the key of each Agent. Necessary when the policy allows a shared model or Copilot, and not allowed otherwise. |
+| `modelAccess.gatewayBudget.defaultMonthlyUSD` | string |  | Required. Pattern `^(0\|[1-9][0-9]*)(\.[0-9]{1,6})?$`. | Budget of a new key, in US dollars. It must be above zero and not more than `maxMonthlyUSD`. |
+| `modelAccess.gatewayBudget.maxMonthlyUSD` | string |  | Required. Pattern `^(0\|[1-9][0-9]*)(\.[0-9]{1,6})?$`. | Maximum budget that an administrator can set on an Agent, in US dollars. It must be above zero. |
+| `modelAccess.rateLimits` | object |  |  | Request limits on the key of each Agent. An omitted field is unlimited. See [AgentPolicy rate limits](#agentpolicy-rate-limits). |
+| `modelAccess.rateLimits.maxParallelRequests` | integer |  | Range 1 to 2147483647. | Requests of the key in flight at the same time. |
+| `modelAccess.rateLimits.perModel` | map[string]object |  | At most 64 keys. Rule: perModel keys must be Gateway model names of 1 to 256 characters without whitespace. Each value: Rule: a per-model limit must set rpm, tpm, or both. | Limits for individual models, by exact Gateway model name. For a router of the Team, the router name is also accepted. |
+| `modelAccess.rateLimits.perModel.<name>.rpm` | integer |  | Minimum 1. | Requests per minute of the key for this model. |
+| `modelAccess.rateLimits.perModel.<name>.tpm` | integer |  | Minimum 4096. | Tokens per minute of the key for this model. |
+| `modelAccess.rateLimits.rpm` | integer |  | Minimum 1. | Requests per minute of the key across all models. |
+| `modelAccess.rateLimits.tpm` | integer |  | Minimum 4096. | Tokens per minute of the key across all models, from the tokens of finished requests. |
+| `modelAccess.sharedModels` | object |  |  | Shared model entitlement. |
+| `modelAccess.sharedModels.allowed` | []string |  | Unique items. Each item: Pattern `^[^\t\r\n ]+$`. 1 to 256 characters. | Exact Gateway model names that the Agents can use, routers included. For a router, also list the models of its tiers, its default model, and its context compaction model, if it has one. |
+| `network` | object | `{}` |  | Network controls of the Agents. |
+| `network.allowedInternalCIDRs` | []object | `[]` |  | Internal destinations that the Agents can reach, each with its ports. It needs explicit platform registration and approvals. SCTP grants are limited to direct endpoints. |
+| `network.allowedInternalCIDRs[].cidr` | string |  | Required. At least 1 character. | IPv4 or IPv6 destination CIDR. |
+| `network.allowedInternalCIDRs[].ports` | []object |  | Required. At least 1 item. | Allowed ports of the destination. |
+| `network.allowedInternalCIDRs[].ports[].port` | integer |  | Required. Range 1 to 65535. | Port number. |
+| `network.allowedInternalCIDRs[].ports[].protocol` | string | `"TCP"` | One of `TCP`, `UDP`, `SCTP`. | Protocol of the port. |
+| `network.blockedCIDRs` | []string | `[]` |  | Destination CIDRs that the Agents cannot reach. |
+| `network.blockedFQDNs` | []string | `[]` | Each item: Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`. 1 to 253 characters. | Exact lowercase hostnames that the Agents cannot reach. The platform checks the visible SNI. It needs registered capture images, and for Custom also `customRuntime.imageUsers`. It is not full hostname enforcement. |
+| `network.blockedPorts` | []object | `[]` |  | Destination ports that the Agents cannot reach. |
+| `network.blockedPorts[].port` | integer |  | Required. Range 1 to 65535. | Port number. |
+| `network.blockedPorts[].protocol` | string | `"TCP"` | One of `TCP`, `UDP`, `SCTP`. | Protocol of the port. |
+| `network.ingress` | object | `{}` | Rule: disabled ingress cannot require mTLS. | Ingress controls of the Agents. |
+| `network.ingress.mode` | string | `"authenticated"` | One of `authenticated`, `disabled`. | `authenticated` publishes the routes of the Agent through platform authentication. `disabled` allows no ingress to the Agent. |
+| `network.ingress.requireMTLS` | boolean | `false` |  | Requires managed ingress mTLS. It needs an [administrator-registered managed endpoint](../../guides/agent-ingress-mtls/). |
+| `sandboxSelection` | object | `{}` |  | Sandbox selection rules of the Teams of the policy. |
+| `sandboxSelection.allowMultiple` | boolean | `false` |  | Lets a Team of the policy allow more than one Sandbox. |
+| `security` | object | `{}` |  | Security controls of the Agent containers. |
+| `security.readOnlyRootFilesystem` | boolean | `true` |  | Makes the root filesystem of the Agent containers read-only. |
+| `skills` | object |  |  | Skill allowlist. |
+| `skills.allowed` | []string |  | Unique items. | Exact entries that the `skills` of the Team and the `skillOverrides.add` of an Agent can contain, `npm:` packages included. |
+
+<!-- /generated: agentpolicy-spec -->
+
+The schema checks the shape of each field. The Sandbox admission webhook
+checks these rules when `sandboxAdmission.enforce` is `true`, and the
+AgentPolicy controller checks them for each saved policy. If a saved policy
+breaks a rule, the controller sets `Accepted` to `False` with reason
+`InvalidConfiguration`.
+
+- `harnesses.allowed` contains at least one of `openclaw`, `hermes`, and
+  `custom`.
+- `modelAccess.gatewayBudget` is necessary when the policy allows a shared
+  model or Copilot. It is not allowed otherwise.
+- `defaultMonthlyUSD` and `maxMonthlyUSD` are above zero, and the default is not
+  more than the maximum. The schema pattern also accepts `"0"`.
+- Entries of `skills.allowed` and `modelAccess.sharedModels.allowed` are not
+  blank.
+- Each CIDR is an IPv4 or IPv6 CIDR. IPv4-mapped IPv6 addresses are not
+  accepted.
+- Each entry of `blockedFQDNs` is an exact lowercase hostname without a
+  trailing dot, a wildcard, or a URL. IP addresses are not hostnames.
+- Each entry of `allowedInternalCIDRs` has at least one port.
+- `agentIdentity.required` needs `allowed: true`. An allowed identity needs
+  `azure-resource-manager` in `credentialServices`. A disallowed identity has
+  no credential services.
+
+### AgentPolicy status
+
+<!-- generated: agentpolicy-status -->
+
+| Field | Type | Default | Validation | Description |
+| --- | --- | --- | --- | --- |
+| `conditions` | []Condition |  | Unique by `type`. | Condition `Accepted` for the configuration of the policy. |
+| `observedGeneration` | integer |  | Minimum 0. | Last generation that the controller assessed. |
+
+<!-- /generated: agentpolicy-status -->
+
+The AgentPolicy controller sets the condition `Accepted` for the configuration
+of the policy. Reason `PolicyAccepted` means that the platform supports the
+controls of the policy and its requested role approvals. It does not assess
+Sandbox compatibility, HOME access, or per-Agent enforcement. Other reasons are
+`InvalidConfiguration`, `UnsupportedControl`, `UnapprovedGrant`,
+`PolicyConflict`, `PrerequisitesUnavailable`, and `Terminating`.
+
+### Identity and network controls
+
+`agentIdentity` and `entraID` are independent. `agentIdentity` permits the
+Microsoft Entra directory identity that the Broker and Connections use.
+`entraID.enabled` projects an exchange token and the Azure SDK environment into
+the main application container with an explicitly approved identity. It needs
+platform registration, a pinned ServiceAccount, federation, and resource
+permissions outside the cluster. It does not create the directory identity or
+grant Kubernetes access. Common-executor Entra projection needs explicit
+platform approval and a pinned ServiceAccount that bootstrap owns.
+
+New common-executor Kata OpenClaw and Hermes Agents can use explicitly
+registered Kubernetes access with exact policy-role and per-Agent
+ServiceAccount approvals. The operator projects a bounded, audience-specific
+token only into the main container. It pins the UID, the version, and the rules
+of each role, and it records the UIDs of the bindings that it owns.
+
+Suspension, grant removal, and deletion revoke these bindings. The operator does not adopt
+or delete shared ClusterRoles. Without `kubernetesAccess`, an Agent gets no
+Kubernetes API token or permissions. Kubernetes access does not enable Entra ID,
+the Broker, or Connections. See the
+[administrator setup]({{< repo "examples/native-sandbox/README.md" >}}#kubernetes-api-access).
+
+With the explicit platform registration and approvals, new common-executor Kata
+lifetimes support internal CIDR grants, approved Kubernetes access, and SCTP
+port rules. SCTP internal grants are limited to direct endpoints. Registered
+Service and Kubernetes API destinations are excluded. Retained version-1 native
+single-start lifetimes reject internal grants, Kubernetes access, Entra
+projection, and SCTP requests. See the
+[native SCTP boundary]({{< repo "examples/native-sandbox/README.md" >}}#governed-sctp-egress).
+An accepted API value does not qualify the actual network path.
+
+Observed-SNI filtering with `blockedFQDNs` needs separately registered,
+controlled Envoy and trusted capture-init images. It is not full hostname
+enforcement: after the explicit inspection window of one second, the connection
+continues without inspection. Ingress mTLS needs the separate
+[administrator-registered managed endpoint](../../guides/agent-ingress-mtls/).
+
+For the aggregate `PolicyApplied`, Broker-backed Agent Identity needs current
+credential-policy readback, and common-executor workloads also need the
+registered native Connections integration. Other controls depend on the
+selected execution profile and the platform capabilities.
 
 ### AgentPolicy model access
 
@@ -587,7 +880,7 @@ the router stays. It applies to another model that keeps the name, for example
 a GitHub Copilot model of the Agent. If the policy sets a limit for both names,
 the internal name gets the smaller value.
 
-The operator sets the limits when it creates a key. On every reconcile, it
+The operator sets the limits when it creates a key. On every reconciliation, it
 compares the stored limits of the key with the policy. When they are different,
 it updates the same key in place. A removed field is cleared on the key. Other
 key settings and metadata are kept.
@@ -597,37 +890,37 @@ them does not start the reprojection fence that a model or budget change starts.
 For the same reason, the operator keeps the key of each Agent.
 
 Sandbox execution also excludes `modelAccess.rateLimits` from its execution
-inputs. This also applies to coordinated configuration reservations. A change
-that only adds, edits, or removes these limits does not stop or restart running
-native Agents. This is also true for `perModel`. For common-executor Sandboxes,
-this also applies to workloads during initialization or during the completion
-of a retained restart. A limits-only update does not reapply the workload,
-temporarily block its key, or release its unchanged native reservation.
+inputs and from coordinated configuration reservations. A change that only
+adds, edits, or removes these limits, `perModel` included, does not stop or
+restart running native Agents. For common-executor Sandboxes, this also applies
+to workloads during initialization or during the completion of a retained
+restart. A limits-only update does not apply the workload again, block its key
+for a short time, or release its unchanged native reservation.
 
-During bootstrap, a policy status update is compared with the captured
-execution inputs and the immutable UID, not only with its resource version.
-Until policy status reaches the new generation, the operator assesses the
-current policy again. It uses the same trusted platform inventory and grants as
-the policy controller. It does not stop an Agent only because of that
-observation delay. Unavailable or invalid policy evidence still holds execution.
+During bootstrap, the operator compares a policy status update with the
+captured execution inputs and the immutable UID, not only with its resource
+version. Until the policy status reaches the new generation, the operator
+assesses the current policy again. It uses the same trusted platform inventory
+and grants as the policy controller. It does not stop an Agent only because of
+that delay. Policy evidence that is unavailable or not valid holds execution.
 
 Budgets, model authorization, and other execution controls keep their normal
 fencing and coordination checks. The exact coordinated write still includes the
-limits. Keys of legacy Agents without a policy are not changed. Gateway
+limits. The keys of standard Agents do not change. Gateway
 administrators manage their limits.
 
-This change does not rewrite persisted execution evidence. The saved policy
+The operator does not rewrite persisted execution evidence. The saved policy
 digest of an older single-start lifetime or coordination reservation can include
-`modelAccess.rateLimits`, even as an empty object. In that case, the lifetime or
-reservation stays fail-closed on an input mismatch, and the stop/recreate
-procedure that exists is necessary. Before you edit limits, upgrade the operator
-and admission readers. Do not manually change their saved digests.
+`modelAccess.rateLimits`, also as an empty object. In that case, the lifetime or
+reservation stays fail-closed on an input mismatch, and the stop and recreate
+procedure is necessary. Before you edit limits, upgrade the operator and the
+admission readers. Do not manually change their saved digests.
 
-The total limits count every request on the key. This includes the Agent's
-GitHub Copilot models. A per-model limit applies to the model name that a
-request uses after model aliases. For an `auto` router, that is the name of the
-router, not the model that it routes to. For a router of a Team, that is the
-internal name of the router, also when the Agent sends the router's name.
+The total limits count every request on the key, the Agent's GitHub Copilot
+models included. A per-model limit applies to the model name that a request
+uses after model aliases. For an `auto` router, that is the name of the router,
+not the model that it routes to. For a router of a Team, that is the internal
+name of the router, also when the Agent sends the router's name.
 
 A request over a limit gets HTTP 429 with a `retry-after` header. Gateway
 replicas share the counters through Redis.
@@ -638,247 +931,110 @@ Gateway refuses the requests of the key until the next minute. A single request
 can take the count past the limit. That is the Gateway chart's default,
 `tpmReservation: false`.
 
-With `tpmReservation: true`, LiteLLM instead reserves the input of a request and
-its maximum output tokens before it calls the model. If they do not fit, LiteLLM
-refuses the request. With every request, OpenClaw asks for the maximum output of
-the model, 128,000 tokens for current GPT models. As a result, in that mode a
-`tpm` of 200,000 refused every request of an OpenClaw conversation past about
-55,000 input tokens. The reservation alone was larger than the limit.
-OpenClaw stopped after nine one-minute retries (measured on a test cluster).
+With `tpmReservation: true`, LiteLLM reserves the input of a request and its
+maximum output tokens before it calls the model. If they do not fit, LiteLLM
+refuses the request. With every request, OpenClaw asks for the maximum output
+of the model, 128,000 tokens for current GPT models. As a result, in that mode,
+a `tpm` of 200,000 refuses every request of an OpenClaw conversation after
+about 55,000 input tokens. The reservation alone is larger than the limit.
+OpenClaw then stops after nine retries of one minute each.
 
 The minimum of 4,096 tokens per minute makes sure that a limit does not refuse
 all requests except the smallest.
 
-### AgentPolicy administration
+### Policy binding and execution
 
-The admin Portal shows the complete cluster-scoped `AgentPolicy` configuration.
-Administrators can edit allowed Harnesses and skills, Copilot and shared model
-access, monthly USD budgets, and per-Agent rate limits. They can also edit
-multiple-Sandbox selection, read-only root filesystem, network CIDR and port
-rules, ingress mode, Agent Identity, and Entra workload identity. With the Skill
-Marketplace, the editor also lists the skills of its catalog, so that
-administrators can select the allowed skills.
+Policy assignment is optional for an Agent without a Sandbox selection or a
+recorded governed lifetime. Such a standard Agent can use no Team, or a Team
+without policy settings. It keeps the standard runtime flow and does not claim
+policy enforcement. For a policy-bound Agent, the controller resolves the owner and
+Team authorization, the effective AgentPolicy, and the selected Sandbox before
+a workload can run. If the authorization is not valid or not available, the
+controller holds the Agent.
 
-The **Identity** section has two independent controls. **Agent Identity**
-selects `Disabled`, `Optional`, or `Required` for an independent Microsoft Entra
-directory identity used through Broker/Connections. Optional lets the user
-choose during Agent creation; Required selects it automatically. Both enabled
-modes set the current credential-service entitlement, `azure-resource-manager`.
-Disabled clears that entitlement. The platform must have the
-[Agent Identity setup](../../operations/agent-identity/) in place.
+The native Sandbox path compiles and stages protected resources at zero
+replicas. Execution stays held until the Operator's
+`sandboxSources.nativeExecution` is enabled and its prerequisites pass. This
+setting is off by default. Approved Gateway-backed Custom images use the same
+common executor, and the
+[Custom image and interface contract](../agent-harness/#policy-governed-custom-execution)
+applies to them. If an approval is absent or a combination is not supported,
+the Agent stays held. Custom Agents without a Sandbox keep their runtime
+provider path.
 
-**Entra workload identity** controls `entraID.enabled`. It projects an exchange
-token and Azure SDK environment into the main application container using an
-explicitly approved identity. It requires platform registration, a pinned
-ServiceAccount, federation, and external resource permissions. It does not
-create the Broker-backed directory identity or grant Kubernetes access. Neither
-control automatically enables the other. New policies default both to disabled.
+Before the controller changes a workload, it records a hold finalizer, so a
+failed status update cannot release the recorded hold. A suspended Agent stays
+`Suspended` unless the shutdown fails. The controller does not change built-in
+resources whose Agent-UID ownership it cannot verify, and recovery is necessary
+for them. Equal resource names are not sufficient as proof of ownership.
 
-The Portal shows Kubernetes API access under Read-only policy capabilities. The
-summary shows any requested ServiceAccount and namespace or cluster-wide
-permissions that are already recorded in the Policy. Platform administrators
-manage this configuration outside the Portal. For authorization, separately
-approved platform grants are necessary. If you save other Policy fields, the
-save keeps the Kubernetes access configuration that exists.
+When a held built-in Agent is deleted, the controller removes only the
+namespace that it confirms as its own, without Helm uninstall hooks. It keeps
+the finalizers until the cleanup completes. A hold keeps the HOME storage, but
+an explicit deletion of the namespace removes it. The Agent Identity
+authorization and directory cleanup must complete before a held built-in Agent
+is deleted, also when the runtime namespace is absent.
 
-New common-executor Kata OpenClaw/Hermes Agents can use explicitly registered
-Kubernetes access with exact policy-role and per-Agent ServiceAccount approvals.
-The operator projects a bounded, audience-specific token only into the main
-container. It pins role UID/version/rules and journals the owned binding UIDs.
-Suspension, grant removal, and deletion revoke those bindings. Shared
-ClusterRoles are not adopted or deleted. Nil access grants no Kubernetes API
-token or permissions.
+Compatibility does not automatically release an old Agent that a mandatory
+policy version holds. Before recovery, examine its ownership and the data that
+it keeps. If you remove spec fields, this does not clear its recorded policy
+lifetime.
 
-Kubernetes access does not enable Entra ID or Broker/Connections. See the
-[administrator setup and validation boundaries](https://github.com/Azure/cetirun/tree/main/examples/native-sandbox#kubernetes-api-access).
+The creator of an Agent selects a Team directly. Admission applies the default
+Sandbox of the Team. Then it stores references that include the UIDs, so that a
+replacement resource with the same name is not adopted.
 
-The Internal network access editor puts each destination CIDR and its complete
-port list into one rule card. Each card matches one `allowedInternalCIDRs`
-entry. Edit rule opens the entire rule. Update rule replaces its destination
-and ports together. Cancel discards the draft. Delete rule removes the entire
-entry.
+Only an admission administrator can move a Sandbox Agent to another Team or
+Sandbox. In the same update as the new `spec.team` and `spec.sandboxRef`, the
+administrator writes the annotation `cetirun.microsoft.com/sandbox-reauthorize`.
+Its value names a new request ID and the current UIDs of the binding:
 
-In the editor, ports are comma-separated, for example `443, 5432, 53/UDP`. A
-port uses TCP unless it has `/UDP` or `/SCTP`. Rule changes are submitted when
-the Policy is saved.
+```json
+{"requestID": "<new ID>", "binding": {"agentUID": "<UID>", "teamUID": "<UID>", "sandboxUID": "<UID>", "agentPolicyUID": "<UID>"}}
+```
 
-Blocked FQDNs and ingress mTLS are read-only in this editor. Values that exist
-stay visible, and they are kept when other fields are
-saved. For observed-SNI FQDN filtering, separately registered controlled Envoy
-and trusted capture-init images are necessary. This feature is not full
-hostname enforcement. After the explicit one-second inspection window, it
-continues uninspected.
+Admission rejects the request if a UID does not match, or if the request ID is
+the same as before. After the reauthorization, the Agent stays held. Admission
+requires a suspended Agent only for a change of `modelAccess.monthlyBudgetUSD`.
+Before a move, suspend the Agent, so that its workload stops in a controlled
+way. See the
+[reauthorization protocol]({{< repo "app/cetirun-operator/README.md" >}}#direct-kubernetes-writer-assignments-and-explicit-reauthorization).
 
-For ingress mTLS, the separate
-[administrator-registered managed endpoint](../../guides/agent-ingress-mtls/)
-is necessary, not a Portal toggle. For aggregate `PolicyApplied`, Broker-backed
-Agent Identity must have current credential-policy readback. Common-executor
-workloads must also have the registered native Connections integration. Other
-controls depend on the selected execution profile and platform capabilities.
+A policy-bound resource that exists enters a controlled hold for cleanup. A
+change or removal of its references does not return it to legacy execution. A
+change needs an explicit reauthorization and an ordered stop and cleanup. There
+is no lossless rolling migration between policies. The operator status reports
+the desired revision of each domain. The operator sets `PolicyApplied` only
+when the matching enforcement evidence is current.
 
-With the applicable explicit platform registration and approvals, new
-common-executor Kata lifetimes support internal CIDR grants, approved
-Kubernetes access, and SCTP port rules. SCTP internal grants are limited to
-direct endpoints. Registered Service and Kubernetes API destinations are
-excluded. Version-1 native single-start lifetimes that are kept still reject
-internal grants, Kubernetes access, Entra projection, and SCTP requests.
+AgentPolicy also allowlists Harnesses, skills, exact Gateway model names,
+Copilot, and Agent Identity. A native LiteLLM default and maximum monthly USD
+budget are necessary for a model entitlement. For Custom, the common executor
+and an approved Gateway-qualified image are also necessary. A policy permission
+alone does not qualify an image or a backend. Agent Identity cannot complete
+the aggregate `PolicyApplied` until a typed credential-service executor
+supplies matching read-back evidence.
 
-Common-executor Entra projection must have explicit platform approval and a
-pinned bootstrap-owned ServiceAccount. It does not grant Kubernetes access. See
-the
-[native SCTP usage and qualification boundary]({{< repo "examples/native-sandbox/README.md" >}}#governed-sctp-egress).
-An accepted API value does not qualify the actual network path.
+`skills.allowed` lists the exact entries that the Team's `skills` and an
+Agent's `skillOverrides.add` can contain, `npm:` packages included. If a Team
+or an Agent requests a skill that the list does not contain, the operator
+denies the Agent. Its `PolicyResolved` condition is `False`, with reason
+`PolicyDenied` and the message `skill "<name>" is not allowed by policy`. The
+operator then revokes the Agent's Gateway key and stops the Agent.
 
-The Operator keeps the Policy's `Accepted` condition for controller decisions
-and diagnostics. The Portal list shows the condition for the current generation,
-and the editor shows only field validation and save errors. `Accepted=True`
-describes only configuration acceptance. Sandbox compatibility, Agent
-authorization, and runtime enforcement must still succeed. If you save a Policy,
-the save does not prove that its consumers applied it. If you edit a Policy that
-is already bound, the edit can affect those consumers.
+The skill allowlist is not an execution input of Sandbox Agents. A change that
+only adds or removes allowed skills does not restart running native Agents. A
+policy with an empty or absent allowlist keeps the execution digest that
+earlier operators recorded. For a policy that allows skills, the digest that
+earlier operators recorded includes the allowlist. After the operator upgrade,
+the first reconciliation sees that policy as changed, as after an edit of its
+execution settings.
 
-#### HTTP API
+## Portal administration
 
-These admin-only endpoints manage `AgentPolicy` resources:
-
-- `GET` and `POST /api/v1/admin/policies`
-- `GET`, `PUT`, and `DELETE /api/v1/admin/policies/{name}`
-
-Update and delete requests include the UID and resource version that a
-previous read returned. Stale requests fail with `409 Conflict`. Responses
-include all Policy configuration groups, `generation`, `observedGeneration`,
-`conditions`, and `deleting`. These status fields are read-only.
-
-Each create or update replaces `agentIdentity` and `entraID` as complete
-objects. Omitting a group or sending `null` disables that group; an empty
-object also uses disabled defaults. The Portal always sends both groups.
-`agentIdentity.required` requires `allowed: true`. Allowed identities must
-include `azure-resource-manager` in `credentialServices`; disabled identities
-must have no credential services. Unknown and duplicate services are rejected.
-There is no dependency between `agentIdentity` and `entraID.enabled`.
-
-For Sandbox selection, root filesystem security, and editable network fields,
-omission keeps the stored value. Explicit empty arrays clear editable lists.
-Kubernetes access, blocked FQDNs, and mTLS cannot be changed through this API.
-
-A request that tries to change or clear Kubernetes access is rejected. If a
-request omits it, the configuration that exists is kept. Updates keep metadata,
-status, and the coordinated
-mutation and optimistic concurrency protections that exist.
-
-When strict Sandbox admission uses a UID-pinned configuration authority, set
-the Portal chart's `configurationCoordination.namespace`, `name`, and `uid`.
-Set them to the same authority that the Operator uses. The platform chart
-rejects mismatched values.
-
-The Portal then reserves the exact whole-resource mutation. It records
-`Changing` before it submits one conditional Update or background Delete, and
-then it observes the result. It releases only an operation whose outcome is
-confirmed. Its namespaced Role allows access only to the named authority
-ConfigMap. UID/resource-version checks are still request concurrency
-protection. They do not replace this admission contract.
-
-A reservation conflict returns `409 Conflict`. An unavailable authority or an
-uncertain API write returns `503 Service Unavailable`. In that case, the
-reservation is kept deliberately. Do not blindly repeat the mutation. Recover
-the recorded operation with the Operator's configuration-change procedure.
-
-Update reservations record the complete writable-content digests before and
-after the change. Before a save, the Portal looks for a recorded update, also
-after a restart. A read of the same live UID at a different resourceVersion
-allows recovery when the content matches the proposed configuration (applied).
-It also allows recovery when the content matches the original configuration
-(superseded). A status-only refresh can cause a superseded result, and then the
-requested edit is not applied.
-
-Other configuration changes or an unknown outcome keep the reservation. Recovery
-never submits the old update again, and it never relaxes the version checks of
-the caller. A stale edit must still get a new read before a save.
-
-CLI update recovery uses the exact original `--before` and `--after` files.
-`--action observe` is read-only. It reports
-`update-superseded-reservation-retained` when a newer version still has only the
-original writable content. Explicit `--action update` then releases the old
-reservation and reports `update-superseded`. It does not write the
-configuration.
-
-New deletion reservations durably record the content digest that is necessary
-for recovery. An administrator can use the operation ID from the pinned
-authority journal with `--action observe-delete --operation-id ID`. This is
-possible even after the policy and the Portal request are gone. Observation
-keeps the reservation. Explicit `--action delete --operation-id ID` releases it
-only after it makes sure that the original UID is absent or in termination. It
-does not submit a Delete again.
-
-For older deletion reservations, the original `--before` input is still
-necessary. Before you issue reservations with the new recovery metadata,
-upgrade all coordination readers. Creation is not covered because configuration
-coordination protects updates and deletions, not new resources.
-
-The API validates model access and budgets as one unit. For Copilot or shared
-model access, a positive default and maximum monthly USD budget are necessary.
-The default cannot be more than the maximum. The API applies the schema's
-rate-limit minimums before it writes.
-
-`modelAccess.rateLimits` in an update replaces the stored limits. An update
-without it removes them. As a result, a client saves the limits that it read.
-The Portal editor treats an empty input as no limit and never sends zero.
-
-#### Agent creation options
-
-The creation form selects a Team before it offers Harness and model choices.
-For `GET /api/v1/instance/create-options?team=<name>`, a signed-in user is
-necessary. This endpoint returns the selected Team, the Policy name when bound,
-allowed Agent types, and the effective Gateway catalog. It also shows if Agent
-Identity is available and if it is necessary. It also returns the Policy's
-per-Agent rate limits and any configuration blocker. Responses use
-`Cache-Control: no-store`.
-
-This endpoint does not expose other administrative Policy fields or grant
-runtime authorization. The form and the Agent details page show the rate
-limits read-only. The details page reads them from the Agent's Team Policy.
-
-Harness choices intersect deployment settings with `harnesses.allowed`. Shared
-models intersect the Gateway catalog with `modelAccess.sharedModels.allowed`.
-For Copilot, both deployment availability and Policy permission are necessary.
-If Agent Identity is necessary, it is selected automatically, and it cannot be
-turned off. Agent Identity must also have the deployment feature, a confirmed
-owner and a Policy credential-service entitlement. The separate
-`entraID.enabled` workload projection is not required for Agent Identity.
-Prerequisites that are not met block creation.
-
-Both Agent creation endpoints re-read the same constraints before they write an
-Agent or credentials. This also applies to a private-registry creation retry.
-Explicitly forbidden choices are rejected. Omitted model-source switches use
-the sources that are available now, and they are persisted as explicit
-booleans. The default model must belong to an enabled, authorized source.
-
-Team default Skills must satisfy the Policy. The runtime continues to apply its
-default Gateway budget. No Skills or budget editor is added to the Agent form.
-
-Incomplete Team bindings cannot fall back to unrestricted creation. The same is
-true for Policies that are absent or in deletion, and for unreadable
-dependencies. It is also true when no Harness/model source is available. A Team
-without Policy/Sandbox settings keeps optional policy assignment.
-
-Policy-controlled native Agents must have the AI Gateway. Configuration
-admission and runtime enforcement are still responsible for final
-authorization and execution. Available form choices do not establish Sandbox
-readiness.
-
-#### Activation boundary
-
-The Team editor manages `agentPolicyRef`, `sandboxRefs`, and
-`defaultSandboxRef`. For multiple allowed Sandboxes, the selected Policy's
-`sandboxSelection.allowMultiple` is necessary. When you switch to a restrictive
-Policy, the selections that exist stay visible. You must correct them before
-you save. The Portal does not silently remove bindings. Backend validation
-re-reads the Policy before it accepts the Team request, and admission stays
-authoritative.
-
-Available configuration controls do not establish runtime readiness. See the
-[operator foundation notes]({{< repo "app/cetirun-operator/README.md" >}})
-for the execution-hold, authority, and validation boundaries.
+The Portal writes Teams, Sandboxes, AgentPolicies, and Agents through these
+same resources. For its administration pages and HTTP endpoints, see
+[Portal API](../portal-api/).
 
 ## Schema and implementation
 
@@ -892,6 +1048,3 @@ API validation uses these schemas:
 - [Reconciler and status writes]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}})
 - [Helm value and route builder]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}})
 - [Portal name validation]({{< repo "app/cetirun-portal/internal/handler/instance.go" >}})
-
-Use `agents.cetirun.microsoft.com` and `teams.cetirun.microsoft.com` in scripts
-to avoid ambiguity with resources from other API groups.
