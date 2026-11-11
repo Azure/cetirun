@@ -1,8 +1,11 @@
 # CetiRun scripts
 
-The [script reference](../site/content/en/docs/reference/scripts.md) covers
-local checks, container builds, cloud deployment, and publication tools. These
-include the platform umbrella and the independent Istio helpers.
+The [script reference](../site/content/en/docs/reference/scripts.md) describes
+the validation, container build, and deployment helpers. These include the
+platform umbrella and the independent Istio helpers. For the commands that
+install and publish CetiRun, refer to
+[Install CetiRun](../site/content/en/docs/getting-started/platform.md) and
+[Publish images and charts](../site/content/en/docs/operations/artifacts.md).
 
 To validate the charts locally, run these commands from the repository root:
 
