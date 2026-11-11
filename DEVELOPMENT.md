@@ -335,20 +335,22 @@ Report that narrower scope. This check does not validate the frontend or the
 complete portal binary. Do not use a placeholder embed directory as a frontend
 build.
 
-The retained lifecycle APIs also have an isolated API-server test. If you
+The retained lifecycle and configuration APIs also have isolated API-server tests. If you
 already installed the pinned Kubernetes 1.37 binaries that are described
 below, run:
 
 ```bash
 KUBEBUILDER_ASSETS=/path/to/local/envtest \
-  go -C app/cetirun-portal test -tags=envtest ./internal/kube ./internal/handler -run '^Test(RetainedRestartThroughServedAPI|SandboxDefaultsThroughPortalAndServedAPI)$' -count=1
+  go -C app/cetirun-portal test -tags=envtest ./internal/kube ./internal/handler -run '^Test(RetainedRestartThroughServedAPI|SandboxDefaultsThroughPortalAndServedAPI|TeamGenerationThroughPortalAndServedAPI)$' -count=1
 ```
 
 It tests the persisted restart identity, the conditional suspend/resume intent,
 duplicate requests, the rejection of a stale UID/version, and CRD validation.
 The Sandbox case compares omitted/null runtime defaults and full
 resource/storage fields through the Portal and the served Kubernetes API. This
-comparison also includes conditional updates. It starts its own API server and
+comparison also includes conditional updates. The Team case checks status-only
+resource-version changes, configuration generations, replacement UIDs, no-op
+saves, and deletion through both direct and coordinated writes. Each test starts its own API server and
 etcd and never uses a cluster that already exists. It does not run Pods,
 connect to a model provider, or qualify storage/failure recovery. Operator CI
 also runs these tests with its pinned admission-test tools.

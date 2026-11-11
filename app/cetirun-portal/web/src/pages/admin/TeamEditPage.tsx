@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -39,10 +39,12 @@ import { useSkillMarketplace } from "../../hooks/useSkillMarketplace";
 import { modelRouterProblem, TeamModelRoutersSection, toModelRouterRequests } from "./TeamModelRoutersSection";
 import { mergeSkillSelection, npmSkillsProblem, splitTeamSkills, TeamSkillsSection } from "./TeamSkillsSection";
 import { AdminConfigurationErrorMessage } from "../../components/AdminConfigurationErrorMessage";
+import { AdminConfigurationError } from "../../api/adminError";
 
 interface FormState {
   uid: string;
   resourceVersion: string;
+  generation: number;
   agentPolicyRef: string;
   sandboxRefs: string[];
   defaultSandboxRef: string;
@@ -70,7 +72,7 @@ function fromDTO(t: TeamDTO): FormState {
   const { marketplace, npm } = splitTeamSkills(t.skills);
   return {
     name: t.name,
-    uid: t.uid, resourceVersion: t.resourceVersion,
+    uid: t.uid, resourceVersion: t.resourceVersion, generation: t.generation,
     agentPolicyRef: t.agentPolicyRef, sandboxRefs: t.sandboxRefs, defaultSandboxRef: t.defaultSandboxRef,
     role: t.role || "",
     description: (t.description || []).join("\n"),
@@ -94,7 +96,7 @@ function splitLines(text: string): string[] {
 function toRequest(s: FormState, marketplace: boolean): TeamUpsertRequest {
   const req: TeamUpsertRequest = {
     name: s.name.trim(),
-    uid: s.uid || undefined, resourceVersion: s.resourceVersion || undefined,
+    uid: s.uid || undefined, resourceVersion: s.resourceVersion || undefined, generation: s.generation || undefined,
     agentPolicyRef: s.agentPolicyRef, sandboxRefs: s.sandboxRefs, defaultSandboxRef: s.defaultSandboxRef,
     role: s.role.trim() || undefined,
     description: splitLines(s.description),
@@ -124,7 +126,7 @@ export function TeamEditPage() {
 
   const [form, setForm] = useState<FormState>({
     name: "",
-    uid: "", resourceVersion: "", agentPolicyRef: "", sandboxRefs: [], defaultSandboxRef: "",
+    uid: "", resourceVersion: "", generation: 0, agentPolicyRef: "", sandboxRefs: [], defaultSandboxRef: "",
     role: "",
     description: "",
     skills: "",
@@ -135,16 +137,65 @@ export function TeamEditPage() {
     modelRouters: [],
   });
   const [submitError, setSubmitError] = useState<Error | null>(null);
+  const baseline = useRef<FormState | null>(null);
+  const activeTeamName = useRef(name);
+  const [conflict, setConflict] = useState(false);
+  const [reloading, setReloading] = useState(false);
 
-  const { data: existing, isLoading, error } = useQuery<TeamDTO, Error>({
+  const { data: existing, isLoading, error, refetch } = useQuery<TeamDTO, Error>({
     queryKey: ["admin", "team", name],
     queryFn: () => getTeam(name!),
     enabled: !isCreate,
+    refetchInterval: 15_000,
+    refetchOnMount: "always",
   });
 
-  useEffect(() => {
-    if (existing) setForm(fromDTO(existing));
-  }, [existing]);
+  useLayoutEffect(() => {
+    activeTeamName.current = name;
+    baseline.current = null;
+    setForm({ name: "", uid: "", resourceVersion: "", generation: 0, agentPolicyRef: "", sandboxRefs: [], defaultSandboxRef: "", role: "", description: "", skills: "", marketplaceSkills: [], npmSkills: "", storage: { ...emptyStorage }, storageEnabled: false, modelRouters: [] });
+    setSubmitError(null);
+    setConflict(false);
+    setReloading(false);
+  }, [name]);
+  useLayoutEffect(() => {
+    if (!existing || existing.name !== name) return;
+    const previous = baseline.current;
+    const pristine = !previous || JSON.stringify(form) === JSON.stringify(previous);
+    if (pristine && (!previous || previous.uid !== existing.uid || previous.generation !== existing.generation || previous.resourceVersion !== existing.resourceVersion)) {
+      const next = fromDTO(existing);
+      baseline.current = next;
+      setForm(next);
+      setConflict(false);
+      setSubmitError(null);
+      return;
+    }
+    if (previous && (previous.uid !== existing.uid || previous.generation !== existing.generation || existing.deleting)) {
+      setConflict(true);
+    }
+  }, [existing, name, form]);
+  useLayoutEffect(() => {
+    if (error instanceof AdminConfigurationError && error.code === "team_not_found") setConflict(true);
+  }, [error]);
+  const missing = error instanceof AdminConfigurationError && error.code === "team_not_found";
+  const needsReload = !isCreate && (conflict || missing || !!(existing && baseline.current && (
+    existing.uid !== baseline.current.uid || existing.generation !== baseline.current.generation || existing.deleting
+  )));
+  const reload = async () => {
+    setReloading(true);
+    const result = await refetch();
+    if (activeTeamName.current !== name) return;
+    setReloading(false);
+    if (result.isSuccess && result.data) {
+      const next = fromDTO(result.data);
+      baseline.current = next;
+      setForm(next);
+      setConflict(false);
+      setSubmitError(null);
+    } else {
+      setSubmitError(new Error(`Failed to reload Team: ${result.error?.message || "Try again."}`));
+    }
+  };
 
   const policiesQuery = useQuery({ queryKey: ["admin", "policies"], queryFn: listPolicies, retry: false });
   const sandboxesQuery = useQuery({ queryKey: ["admin", "sandboxes"], queryFn: listSandboxes, retry: false });
@@ -191,12 +242,15 @@ export function TeamEditPage() {
   const updateMut = useMutation({
     mutationFn: (req: TeamUpsertRequest) => updateTeam(name!, req),
     onSuccess,
-    onError: (e: Error) => setSubmitError(e),
+    onError: (e: Error) => {
+      setSubmitError(e);
+      if (e instanceof AdminConfigurationError && (e.code === "configuration_changed" || e.code === "configuration_not_found")) setConflict(true);
+    },
   });
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (createMut.isPending || updateMut.isPending) return;
+    if (createMut.isPending || updateMut.isPending || needsReload || reloading) return;
     setSubmitError(null);
     if (loadingConfiguration || configurationError || !validBindings) {
       setSubmitError(new Error(hasTooManySandboxes
@@ -229,7 +283,8 @@ export function TeamEditPage() {
   };
 
   if (!isCreate && isLoading) return <Spinner label="Loading team..." />;
-  if (!isCreate && error) {
+  if (reloading) return <Spinner label="Reloading Team..." />;
+  if (!isCreate && error && !existing) {
     return <MessageBar intent="error">Failed to load: {error.message}</MessageBar>;
   }
 
@@ -436,7 +491,11 @@ export function TeamEditPage() {
       <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
         {submitError && <AdminConfigurationErrorMessage error={submitError} />}
         <div style={{ display: "flex", gap: 8 }}>
-          <Button appearance="primary" type="submit" disabled={pending || loadingConfiguration || !!configurationError || !validBindings}>
+          {needsReload && <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <MessageBar intent="warning">{missing ? "This Team no longer exists. Your unsaved edits have been kept." : "This Team configuration changed since you opened it. Your unsaved edits have been kept."} Reloading will discard them and load the latest Team.</MessageBar>
+            <Button type="button" style={{ alignSelf: "flex-start" }} disabled={pending} onClick={reload}>Discard edits and reload</Button>
+          </div>}
+          <Button appearance="primary" type="submit" disabled={pending || reloading || needsReload || loadingConfiguration || !!configurationError || !validBindings}>
             {pending ? "Saving..." : isCreate ? "Create" : "Save"}
           </Button>
           <Button

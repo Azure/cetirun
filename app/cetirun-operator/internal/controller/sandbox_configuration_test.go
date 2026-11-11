@@ -6,6 +6,7 @@ package controller_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -391,7 +392,8 @@ func TestTeamDependencyReadFailureIsUnknownAndRetryable(t *testing.T) {
 		WithObjects(policy, box, team).Build()
 	failure := errors.New("synthetic Team dependency timeout")
 	reader := &teamDependencyReader{Reader: base, failure: failure}
-	r := &controller.TeamReconciler{Client: base, APIReader: reader}
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	r := &controller.TeamReconciler{Client: base, APIReader: reader, Now: func() time.Time { return now }}
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(team)}
 	if _, err := r.Reconcile(context.Background(), request); !errors.Is(err, failure) {
 		t.Fatalf("dependency timeout must be returned for controller retry: %v", err)
@@ -404,6 +406,17 @@ func TestTeamDependencyReadFailureIsUnknownAndRetryable(t *testing.T) {
 	if condition == nil || condition.Status != metav1.ConditionUnknown || condition.Reason != "DependenciesUnavailable" ||
 		condition.ObservedGeneration != team.Generation || current.Status.ObservedGeneration != team.Generation {
 		t.Fatalf("transient dependency failure became a definitive denial: %+v", current.Status)
+	}
+	unknownVersion, unknownReport := current.ResourceVersion, current.Status.Compatibility.DeepCopy()
+	now = now.Add(15 * time.Second)
+	if _, err := r.Reconcile(context.Background(), request); !errors.Is(err, failure) {
+		t.Fatalf("repeated dependency timeout must be returned for controller retry: %v", err)
+	}
+	if err := base.Get(context.Background(), request.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	if current.ResourceVersion != unknownVersion || !reflect.DeepEqual(current.Status.Compatibility, unknownReport) {
+		t.Fatalf("repeated dependency timeout rewrote unchanged Unknown compatibility: %+v", current.Status.Compatibility)
 	}
 
 	reader.failure = nil
@@ -430,7 +443,8 @@ func TestTeamCompatibilityStatusPinsSavedInputsAndBecomesUnknownWhenPlatformIsUn
 	base := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(team).
 		WithObjects(append(prerequisites, box, policy, team)...).Build()
 	source := controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) { return snapshot, nil })
-	r := &controller.TeamReconciler{Client: base, APIReader: base, Source: source, Now: func() time.Time { return snapshot.ObservedAt }}
+	now := snapshot.ObservedAt
+	r := &controller.TeamReconciler{Client: base, APIReader: base, Source: source, Now: func() time.Time { return now }}
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(team)}
 	if result, err := r.Reconcile(context.Background(), request); err != nil || result.RequeueAfter != 15*time.Second {
 		t.Fatalf("compatibility reconcile = %+v, %v", result, err)
@@ -457,9 +471,242 @@ func TestTeamCompatibilityStatusPinsSavedInputsAndBecomesUnknownWhenPlatformIsUn
 	if report = current.Status.Compatibility; report == nil || report.State != api.CompatibilityUnknown || !report.ValidUntil.Time.After(report.CheckedAt.Time) {
 		t.Fatalf("unavailable compatibility report = %+v", report)
 	}
+	unknownVersion := current.ResourceVersion
+	now = now.Add(15 * time.Second)
+	if result, err := r.Reconcile(context.Background(), request); err != nil || result.RequeueAfter != 10*time.Second {
+		t.Fatalf("unchanged unavailable compatibility reconcile = %+v, %v", result, err)
+	}
+	if err := base.Get(context.Background(), request.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	if current.ResourceVersion != unknownVersion || !reflect.DeepEqual(current.Status.Compatibility, report) {
+		t.Fatalf("unchanged unavailable compatibility rewrote status: %+v", current.Status.Compatibility)
+	}
 	condition := apimeta.FindStatusCondition(current.Status.Conditions, api.ConditionTeamAccepted)
 	if condition == nil || condition.Status != metav1.ConditionTrue {
 		t.Fatalf("compatibility observation changed Team acceptance: %+v", current.Status)
+	}
+}
+
+func TestTeamCompatibilityRetainsCurrentReportUntilRenewalOrChange(t *testing.T) {
+	box, snapshot, prerequisites := sandboxConfigurationFixture()
+	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "normal-uid", Generation: 4}, Spec: api.AgentPolicySpec{
+		Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeOpenClaw}},
+	}}
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid", Generation: 6}, Spec: api.TeamSpec{
+		AgentPolicyRef: policy.Name, SandboxRefs: []string{box.Name}, DefaultSandboxRef: box.Name,
+	}}
+	base := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(team).
+		WithObjects(append(prerequisites, box, policy, team)...).Build()
+	now := snapshot.ObservedAt
+	r := &controller.TeamReconciler{
+		Client: base, APIReader: base, Now: func() time.Time { return now },
+		Source: controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) {
+			return snapshot, nil
+		}),
+	}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(team)}
+	if result, err := r.Reconcile(context.Background(), request); err != nil || result.RequeueAfter != 15*time.Second {
+		t.Fatalf("initial compatibility reconcile = %+v, %v", result, err)
+	}
+	current := &api.Team{}
+	if err := base.Get(context.Background(), request.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	initialVersion, initialReport := current.ResourceVersion, current.Status.Compatibility.DeepCopy()
+
+	now = now.Add(15 * time.Second)
+	if result, err := r.Reconcile(context.Background(), request); err != nil || result.RequeueAfter != 10*time.Second {
+		t.Fatalf("unchanged compatibility reconcile = %+v, %v", result, err)
+	}
+	if err := base.Get(context.Background(), request.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	if current.ResourceVersion != initialVersion || !reflect.DeepEqual(current.Status.Compatibility, initialReport) {
+		t.Fatalf("unchanged compatibility rewrote status: version=%s report=%+v", current.ResourceVersion, current.Status.Compatibility)
+	}
+
+	now = now.Add(10 * time.Second)
+	if result, err := r.Reconcile(context.Background(), request); err != nil || result.RequeueAfter != 15*time.Second {
+		t.Fatalf("compatibility renewal reconcile = %+v, %v", result, err)
+	}
+	if err := base.Get(context.Background(), request.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	if current.ResourceVersion == initialVersion || !current.Status.Compatibility.CheckedAt.Time.Equal(now) ||
+		!current.Status.Compatibility.ValidUntil.Time.Equal(now.Add(30*time.Second)) {
+		t.Fatalf("compatibility report was not renewed near expiry: %+v", current)
+	}
+	for name, corrupt := range map[string]func(*api.TeamCompatibilityStatus){
+		"too-long": func(report *api.TeamCompatibilityStatus) {
+			report.ValidUntil = metav1.NewTime(now.Add(31 * time.Second))
+		},
+		"expired": func(report *api.TeamCompatibilityStatus) { report.ValidUntil = metav1.NewTime(now) },
+		"future": func(report *api.TeamCompatibilityStatus) {
+			report.CheckedAt, report.ValidUntil = metav1.NewTime(now.Add(time.Second)), metav1.NewTime(now.Add(2*time.Second))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			corrupt(current.Status.Compatibility)
+			if err := base.Status().Update(context.Background(), current); err != nil {
+				t.Fatal(err)
+			}
+			malformedVersion := current.ResourceVersion
+			if result, err := r.Reconcile(context.Background(), request); err != nil || result.RequeueAfter != 15*time.Second {
+				t.Fatalf("malformed compatibility reconcile = %+v, %v", result, err)
+			}
+			if err := base.Get(context.Background(), request.NamespacedName, current); err != nil {
+				t.Fatal(err)
+			}
+			if current.ResourceVersion == malformedVersion || !current.Status.Compatibility.ValidUntil.Time.Equal(now.Add(30*time.Second)) {
+				t.Fatalf("malformed compatibility report was retained: %+v", current.Status.Compatibility)
+			}
+		})
+	}
+	renewalVersion := current.ResourceVersion
+
+	if err := base.Delete(context.Background(), policy); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := r.Reconcile(context.Background(), request); err != nil || result.RequeueAfter != 15*time.Second {
+		t.Fatalf("changed compatibility reconcile = %+v, %v", result, err)
+	}
+	if err := base.Get(context.Background(), request.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	if current.ResourceVersion == renewalVersion || current.Status.Compatibility.State != api.CompatibilityIncompatible {
+		t.Fatalf("changed Policy did not publish an updated compatibility result: %+v", current.Status.Compatibility)
+	}
+}
+
+func TestTeamCompatibilityRefreshesWhenAssessmentCrossesRenewalBoundary(t *testing.T) {
+	box, snapshot, prerequisites := sandboxConfigurationFixture()
+	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "normal-uid", Generation: 4}, Spec: api.AgentPolicySpec{
+		Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeOpenClaw}},
+	}}
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid", Generation: 6}, Spec: api.TeamSpec{
+		AgentPolicyRef: policy.Name, SandboxRefs: []string{box.Name}, DefaultSandboxRef: box.Name,
+	}}
+	base := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(team).
+		WithObjects(append(prerequisites, box, policy, team)...).Build()
+	now, slow := snapshot.ObservedAt, false
+	r := &controller.TeamReconciler{
+		Client: base, APIReader: base, Now: func() time.Time { return now },
+		Source: controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) {
+			if slow {
+				now = snapshot.ObservedAt.Add(26 * time.Second)
+			}
+			return snapshot, nil
+		}),
+	}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(team)}
+	if _, err := r.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	current := &api.Team{}
+	if err := base.Get(context.Background(), request.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	initialVersion := current.ResourceVersion
+	now = snapshot.ObservedAt.Add(15 * time.Second)
+	slow = true
+	if result, err := r.Reconcile(context.Background(), request); err != nil || result.RequeueAfter != 15*time.Second {
+		t.Fatalf("slow compatibility assessment reconcile = %+v, %v", result, err)
+	}
+	if err := base.Get(context.Background(), request.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	if current.ResourceVersion == initialVersion || !current.Status.Compatibility.CheckedAt.Time.Equal(now) {
+		t.Fatalf("assessment crossing renewal boundary retained an expiring report: %+v", current.Status.Compatibility)
+	}
+}
+
+func TestTeamCompatibilityStartsUnknownLeaseAfterSlowSourceFailure(t *testing.T) {
+	box, snapshot, prerequisites := sandboxConfigurationFixture()
+	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "normal-uid", Generation: 4}, Spec: api.AgentPolicySpec{
+		Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeOpenClaw}},
+	}}
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid", Generation: 6}, Spec: api.TeamSpec{
+		AgentPolicyRef: policy.Name, SandboxRefs: []string{box.Name}, DefaultSandboxRef: box.Name,
+	}}
+	base := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(team).
+		WithObjects(append(prerequisites, box, policy, team)...).Build()
+	now := snapshot.ObservedAt
+	r := &controller.TeamReconciler{
+		Client: base, APIReader: base, Now: func() time.Time { return now },
+		Source: controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) {
+			return snapshot, nil
+		}),
+	}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(team)}
+	if _, err := r.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	now = snapshot.ObservedAt.Add(15 * time.Second)
+	r.Source = controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) {
+		now = snapshot.ObservedAt.Add(24 * time.Second)
+		return controller.SandboxConfigurationSnapshot{}, errors.New("synthetic slow inventory failure")
+	})
+	if result, err := r.Reconcile(context.Background(), request); err != nil || result.RequeueAfter != 15*time.Second {
+		t.Fatalf("slow unavailable compatibility reconcile = %+v, %v", result, err)
+	}
+	current := &api.Team{}
+	if err := base.Get(context.Background(), request.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	if report := current.Status.Compatibility; report == nil || report.State != api.CompatibilityUnknown ||
+		!report.CheckedAt.Time.Equal(now) || !report.ValidUntil.Time.Equal(now.Add(30*time.Second)) {
+		t.Fatalf("slow unavailable compatibility did not receive a full lease: %+v", report)
+	}
+}
+
+func TestTeamCompatibilityStartsLeaseAfterSlowVerification(t *testing.T) {
+	box, snapshot, prerequisites := sandboxConfigurationFixture()
+	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "normal-uid", Generation: 4}, Spec: api.AgentPolicySpec{
+		Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeOpenClaw}},
+	}}
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid", Generation: 6}, Spec: api.TeamSpec{
+		AgentPolicyRef: policy.Name, SandboxRefs: []string{box.Name}, DefaultSandboxRef: box.Name,
+	}}
+	base := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(team).
+		WithObjects(append(prerequisites, box, policy, team)...).Build()
+	now := snapshot.ObservedAt
+	r := &controller.TeamReconciler{
+		Client: base, APIReader: base, Now: func() time.Time { return now },
+		Source: controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) {
+			return snapshot, nil
+		}),
+	}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(team)}
+	if _, err := r.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	now = snapshot.ObservedAt.Add(15 * time.Second)
+	calls := 0
+	changedSnapshot := snapshot
+	changedSnapshot.Registrations = make(map[api.SandboxType]sandbox.Registration, len(snapshot.Registrations))
+	for kind, registration := range snapshot.Registrations {
+		changedSnapshot.Registrations[kind] = registration
+	}
+	delete(changedSnapshot.Registrations, api.SandboxKata)
+	r.Source = controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) {
+		calls++
+		if calls == 2 {
+			now = snapshot.ObservedAt.Add(24 * time.Second)
+			return changedSnapshot, nil
+		}
+		return snapshot, nil
+	})
+	if result, err := r.Reconcile(context.Background(), request); err != nil || result.RequeueAfter != 15*time.Second {
+		t.Fatalf("slow compatibility verification reconcile = %+v, %v", result, err)
+	}
+	current := &api.Team{}
+	if err := base.Get(context.Background(), request.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || current.Status.Compatibility.State != api.CompatibilityUnknown || !current.Status.Compatibility.CheckedAt.Time.Equal(now) ||
+		!current.Status.Compatibility.ValidUntil.Time.Equal(now.Add(30*time.Second)) {
+		t.Fatalf("slow compatibility verification did not receive a full lease: calls=%d report=%+v", calls, current.Status.Compatibility)
 	}
 }
 

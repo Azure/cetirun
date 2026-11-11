@@ -4,11 +4,13 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -123,6 +125,7 @@ type TeamDTO struct {
 type TeamUpsertRequest struct {
 	UID               string               `json:"uid,omitempty"`
 	ResourceVersion   string               `json:"resourceVersion,omitempty"`
+	Generation        teamGeneration       `json:"generation,omitempty"`
 	AgentPolicyRef    string               `json:"agentPolicyRef"`
 	SandboxRefs       []string             `json:"sandboxRefs"`
 	DefaultSandboxRef string               `json:"defaultSandboxRef"`
@@ -132,6 +135,44 @@ type TeamUpsertRequest struct {
 	Skills            []string             `json:"skills,omitempty"`
 	SkillStorage      *TeamSkillStorageDTO `json:"skillStorage,omitempty"`
 	ModelRouters      []TeamModelRouterDTO `json:"modelRouters,omitempty"`
+}
+
+// An omitted generation selects the legacy resource-version precondition.
+// Explicit null, zero, negative and non-integer values must not silently select it.
+type teamGeneration int64
+
+func (g *teamGeneration) UnmarshalJSON(data []byte) error {
+	var value int64
+	if err := json.Unmarshal(data, &value); err != nil || value <= 0 {
+		return errors.New("generation must be a positive integer when provided")
+	}
+	*g = teamGeneration(value)
+	return nil
+}
+
+const teamGenerationHeader = "X-CetiRun-Team-Generation"
+
+// The header lets new browsers talk to old Portal replicas during a rolling
+// update: old replicas ignore it and still enforce the exact resource version.
+func readTeamGeneration(w http.ResponseWriter, r *http.Request, body teamGeneration) (int64, bool) {
+	values := r.Header.Values(teamGenerationHeader)
+	if len(values) == 0 {
+		return int64(body), true
+	}
+	if len(values) != 1 {
+		writeError(w, http.StatusBadRequest, "invalid_generation", "Team generation header must contain one positive integer")
+		return 0, false
+	}
+	generation, err := strconv.ParseInt(values[0], 10, 64)
+	if err != nil || generation < 1 {
+		writeError(w, http.StatusBadRequest, "invalid_generation", "Team generation header must be a positive integer")
+		return 0, false
+	}
+	if body != 0 && int64(body) != generation {
+		writeError(w, http.StatusBadRequest, "invalid_generation", "Team generation header and body must match")
+		return 0, false
+	}
+	return generation, true
 }
 
 func toTeamDTO(t *cetirunv1alpha1.Team) TeamDTO {
@@ -296,6 +337,9 @@ func (h *AdminTeamHandler) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusPreconditionRequired, "version_required", "uid and resourceVersion from the current Team are required")
 		return
 	}
+	if version.Generation, valid = readTeamGeneration(w, r, req.Generation); !valid {
+		return
+	}
 	var previous []string
 	if h.Config.SkillMarketplaceEnabled && len(cetirunv1alpha1.SkillMarketplaceSelection(req.Skills)) > 0 {
 		// Only marketplace skills the Team does not select yet must be in
@@ -326,8 +370,9 @@ func (h *AdminTeamHandler) DeleteTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		UID             string `json:"uid"`
-		ResourceVersion string `json:"resourceVersion"`
+		UID             string         `json:"uid"`
+		ResourceVersion string         `json:"resourceVersion"`
+		Generation      teamGeneration `json:"generation,omitempty"`
 	}
 	if !decodeConfigurationRequest(w, r, &req) {
 		return
@@ -335,6 +380,9 @@ func (h *AdminTeamHandler) DeleteTeam(w http.ResponseWriter, r *http.Request) {
 	version, valid := configurationVersion(req.UID, req.ResourceVersion)
 	if !valid {
 		writeError(w, http.StatusPreconditionRequired, "version_required", "uid and resourceVersion from the current Team are required")
+		return
+	}
+	if version.Generation, valid = readTeamGeneration(w, r, req.Generation); !valid {
 		return
 	}
 	if err := h.Kube.DeleteTeam(r.Context(), name, version); err != nil {
