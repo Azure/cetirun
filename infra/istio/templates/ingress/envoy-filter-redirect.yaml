@@ -30,6 +30,10 @@ spec:
               function envoy_on_request(handle)
                 local host = handle:headers():get(":authority")
                 local path = handle:headers():get(":path") or "/"
+                local path_only = path:match("^([^?]*)")
+                if path_only == "/oauth2" or path_only:match("^/oauth2/") then
+                  path = "/"
+                end
                 if host ~= nil then
                   handle:headers():remove("X-Auth-Request-Redirect")
                   handle:headers():replace("X-Auth-Request-Redirect", "https://" .. host .. path)

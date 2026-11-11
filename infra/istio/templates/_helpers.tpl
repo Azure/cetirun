@@ -112,3 +112,21 @@ Lua-safe domain pattern (dots escaped as %.).
 {{- end -}}
 {{- toJson (dict "type" $type "bundled" $useBundled "connectionURL" $url "secretName" $secret "passwordKey" $key) -}}
 {{- end }}
+
+{{/* Resolve once so new credentials and both Pod checksums agree on first install. */}}
+{{- define "cetirun-istio.sessionSecretData" -}}
+{{- if not (hasKey . "cetirunSessionSecretData") -}}
+{{- $session := include "cetirun-istio.sessionSettings" . | fromJson -}}
+{{- $secret := lookup "v1" "Secret" .Release.Namespace $session.secretName -}}
+{{- $data := default dict $secret.data -}}
+{{- if and $session.bundled (not .Values.oauth2Proxy.sessionStore.redis.existingSecret) -}}
+{{- if $secret -}}
+{{- $_ := required "existing OAuth session Secret is missing its password; restore it before upgrading" (get $data $session.passwordKey) -}}
+{{- else -}}
+{{- $_ := set $data $session.passwordKey (randAlphaNum 32 | b64enc) -}}
+{{- end -}}
+{{- end -}}
+{{- $_ := set . "cetirunSessionSecretData" $data -}}
+{{- end -}}
+{{- toJson .cetirunSessionSecretData -}}
+{{- end }}

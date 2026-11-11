@@ -5,6 +5,7 @@
 
 import base64
 from contextlib import contextmanager
+from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -16,6 +17,8 @@ import threading
 import unittest
 
 import yaml
+
+from scripts.tests import test_istio_gateway_isolation as gateway
 
 
 CHART = Path(__file__).resolve().parents[2] / "infra/istio"
@@ -44,7 +47,7 @@ def lookup_api(secrets, session_secrets=None):
     }
     groups = {}
     for version, kinds in {
-        "v1": {"secrets": "Secret", "services": "Service", "serviceaccounts": "ServiceAccount", "persistentvolumeclaims": "PersistentVolumeClaim"},
+        "v1": {"secrets": "Secret", "configmaps": "ConfigMap", "services": "Service", "serviceaccounts": "ServiceAccount", "persistentvolumeclaims": "PersistentVolumeClaim"},
         "apps/v1": {"deployments": "Deployment"},
         "networking.k8s.io/v1": {"networkpolicies": "NetworkPolicy"},
         "networking.istio.io/v1alpha3": {"envoyfilters": "EnvoyFilter"},
@@ -170,6 +173,85 @@ class IstioChartConfigTests(unittest.TestCase):
                 self.assertCountEqual(filters, [
                     "cetirun-ownership-check", "cetirun-redirect-header", "cetirun-security-headers",
                 ])
+
+    @unittest.skipUnless(gateway.LUA_LIBRARY, "requires liblua5.4")
+    def test_login_return_header_never_replays_oauth_endpoints(self):
+        objects = self.render()
+        script = objects[("EnvoyFilter", "cetirun-redirect-header")]["spec"]["configPatches"][0]["patch"]["value"]["typed_config"]["inline_code"]
+        script += '''
+function redirect_fixture(path)
+  local values = {[":authority"] = "example.com", [":path"] = path,
+    ["X-Auth-Request-Redirect"] = "https://outside.example.com/"}
+  local headers = {}
+  function headers:get(name) return values[name] end
+  function headers:remove(name) values[name] = nil end
+  function headers:replace(name, value) values[name] = value end
+  local handle = {}
+  function handle:headers() return headers end
+  envoy_on_request(handle)
+  return values["X-Auth-Request-Redirect"]
+end
+'''
+        for path, target in {
+            "/oauth2/callback?code=synthetic&state=synthetic": "/",
+            "/oauth2/sign_in?rd=%2F": "/",
+            "/oauth2/start": "/",
+            "/oauth2": "/",
+            "/oauth2?rd=%2F": "/",
+            "/oauth2-other/": "/oauth2-other/",
+            "/ui/agent/desktop/?view=files": "/ui/agent/desktop/?view=files",
+            "/instances?status=ready": "/instances?status=ready",
+            "/": "/",
+        }.items():
+            with self.subTest(path=path):
+                result = gateway.IstioGatewayIsolationTests._call_rendered_lua(script, "redirect_fixture", path)
+                self.assertEqual(result, "https://example.com" + target)
+
+    @unittest.skipUnless(shutil.which("go"), "requires Go for html/template rendering")
+    def test_error_page_starts_fresh_sign_in_instead_of_replaying_callback(self):
+        objects = self.render()
+        pod = objects[("Deployment", "oauth2-proxy")]["spec"]["template"]["spec"]
+        container = pod["containers"][0]
+        directory = next(arg.split("=", 1)[1] for arg in container["args"] if arg.startswith("--custom-templates-dir="))
+        mount = next(mount for mount in container["volumeMounts"] if mount["mountPath"] == directory)
+        self.assertTrue(mount["readOnly"])
+        volume = next(volume for volume in pod["volumes"] if volume["name"] == mount["name"])
+        template = objects[("ConfigMap", volume["configMap"]["name"])]["data"]["error.html"]
+
+        class Links(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.targets = []
+
+            def handle_starttag(self, tag, attrs):
+                if tag == "a":
+                    self.targets.append(dict(attrs).get("href"))
+
+        with tempfile.TemporaryDirectory(prefix="cetirun-oauth-error-") as temporary:
+            source = Path(temporary) / "render.go"
+            source.write_text('''package main
+import ("html/template"; "os")
+func main() {
+  t := template.Must(template.ParseFiles(os.Args[1]))
+  for _, status := range []int{403, 500} {
+    data := struct { StatusCode int; Title, ProxyPrefix, Redirect, RequestID string }{
+      status, "Authentication error", "/oauth2",
+      "https://example.com/oauth2/callback?code=stale-code&state=stale-state", "synthetic-request"}
+    if err := t.ExecuteTemplate(os.Stdout, "error.html", data); err != nil { panic(err) }
+  }
+}
+''', encoding="utf-8")
+            template_path = Path(temporary) / "error.html"
+            template_path.write_text(template, encoding="utf-8")
+            result = subprocess.run(["go", "run", str(source), str(template_path)],
+                                    capture_output=True, text=True, timeout=90, check=False,
+                                    env={**OFFLINE, "GOPROXY": "off", "GOTOOLCHAIN": "local", "GOWORK": "off"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        links = Links()
+        links.feed(result.stdout)
+        self.assertEqual(links.targets, ["/oauth2/start?rd=%2F", "/"] * 2)
+        self.assertNotIn("stale-code", result.stdout)
+        self.assertNotIn("stale-state", result.stdout)
 
     def test_wildcard_host_is_optional_without_changing_auth_rules(self):
         default = self.render()
