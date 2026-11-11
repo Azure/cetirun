@@ -181,7 +181,8 @@ func TestNativeUpgradePreparesExistingAgentWithPinnedPreProxyChart(t *testing.T)
 	if !expected.ExecutionHeld || expected.SinglePod || f.installer.stages != 1 {
 		t.Fatal("old pinned chart did not complete guarded held preparation")
 	}
-	f.assertGatewayProjection(t, expected)
+	// The pinned chart predates the Gateway provider cetirun.
+	f.assertGatewayProjection(t, expected, "openai")
 	f.ready(t)
 	if f.installer.stages != 1 {
 		t.Fatal("completed pinned preparation was not reusable")
