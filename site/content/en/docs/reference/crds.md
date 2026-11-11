@@ -211,16 +211,20 @@ before it changes the workload. The result depends on the Agent:
 
 | Execution path | Rejected keys in `spec.helm.values` |
 | --- | --- |
-| Built-in Agent without a Sandbox | Top-level `runtime`, `agentRequest`, `imagePullSecrets`, `customBindings`, `memoryContext`, `cetiadmin`, `aiGateway`, `connectionsMCP`, and `image`. Also `secrets.provider`, `secrets.authMode`, `secrets.apiBase`, `secrets.apiKey`, `secrets.model`, `service.port`, `service.targetPort`, `<type>.image`, `<type>.env.API_SERVER_PORT`, `<type>.config.model`, and `<type>.config.gateway.port`, where `<type>` is `openclaw` or `hermes`. Platform Pod annotations, platform-reserved `extraEnv` names, and, for Hermes, `extraEnvFrom` and the Hermes listener, authentication, and runtime settings. |
+| Built-in Agent without a Sandbox | Top-level `runtime`, `agentRequest`, `imagePullSecrets`, `customBindings`, `memoryContext`, `cetiadmin`, `aiGateway`, `connectionsMCP`, and `image`. Also `secrets.provider`, `secrets.authMode`, `secrets.apiBase`, `secrets.apiKey`, `secrets.model`, `service.port`, `service.targetPort`, `<type>.image`, `<type>.env.API_SERVER_PORT`, `<type>.config.model`, and `<type>.config.gateway.port`, where `<type>` is `openclaw` or `hermes`. Platform Pod annotations and, for Hermes, the Hermes listener, authentication, and runtime settings. |
 | Custom Agent without a Sandbox | Every key except `resources`, `ttyd.enabled`, `desktop.enabled`, `desktop.logging`, `desktop.resources`, and `desktop.screenResolution`. |
-| Sandbox Agent of the common executor | The keys of the built-in or Custom row above, and also `runtime`, `sandboxWorkload`, `runtimeClassName`, `replicaCount`, `serviceAccount`, `azureWorkloadIdentity`, `agentIdentity`, `connectionsMCP`, `persistence`, `resources`, `securityContext`, `podSecurityContext`, `networkPolicy`, `sidecarScope`, `autoscaling`, `ingress`, and `execRestriction`, because the Sandbox or the AgentPolicy controls them. For a built-in Agent, `secrets` accepts only an authorized `existingSecret`, and `extraEnv` cannot use a protected name or a source that is not authorized. A Custom Agent cannot set `desktop.enabled: true`. |
+| Sandbox Agent of the common executor | The keys of the built-in or Custom row above, and also `runtime`, `sandboxWorkload`, `runtimeClassName`, `replicaCount`, `serviceAccount`, `azureWorkloadIdentity`, `agentIdentity`, `connectionsMCP`, `persistence`, `resources`, `securityContext`, `podSecurityContext`, `networkPolicy`, `sidecarScope`, `autoscaling`, `ingress`, and `execRestriction`, because the Sandbox or the AgentPolicy controls them. For a built-in Agent, `secrets` accepts only an authorized `existingSecret`. A Custom Agent cannot set `desktop.enabled: true`. |
 
 The operator applies the rules of built-in Agents also to the deployment-wide
-`cetirun.helmValues` of the Operator chart. Accepted values can still break
-what the controller expects. Do not use Helm overrides to change resource
-names, the Agent type, route ports, or the managed Secret reference. Use the
-CRD fields for these settings. A schema check does not prove that an override
-reconciles successfully.
+`cetirun.helmValues` of the Operator chart. In these values, `extraEnv` must
+use names that the platform does not reserve, and for Hermes, `extraEnvFrom`
+must be empty. Only `cetirun.helmValues` can contain these lists, because each
+top-level entry of `spec.helm.values` must be a map.
+
+Accepted values can still break what the controller expects. Do not use Helm
+overrides to change resource names, the Agent type, route ports, or the
+managed Secret reference. Use the CRD fields for these settings. A schema check
+does not prove that an override reconciles successfully.
 
 ### Agent status
 
@@ -987,17 +991,20 @@ replacement resource with the same name is not adopted.
 Only an admission administrator can move a Sandbox Agent to another Team or
 Sandbox. In the same update as the new `spec.team` and `spec.sandboxRef`, the
 administrator writes the annotation `cetirun.microsoft.com/sandbox-reauthorize`.
-Its value names a new request ID and the current UIDs of the binding:
+Its value names a new request ID and the UIDs of the target binding. These are
+the UIDs of the Agent, the Team in the new `spec.team`, the Sandbox in the new
+`spec.sandboxRef`, and the AgentPolicy of that Team:
 
 ```json
 {"requestID": "<new ID>", "binding": {"agentUID": "<UID>", "teamUID": "<UID>", "sandboxUID": "<UID>", "agentPolicyUID": "<UID>"}}
 ```
 
-Admission rejects the request if a UID does not match, or if the request ID is
-the same as before. After the reauthorization, the Agent stays held. Admission
-requires a suspended Agent only for a change of `modelAccess.monthlyBudgetUSD`.
-Before a move, suspend the Agent, so that its workload stops in a controlled
-way. See the
+Admission rejects the request if a UID is not the UID of the target binding,
+for example the UID of the Team before the move. It also rejects a request ID
+that is the same as before. After the reauthorization, the Agent stays held.
+Admission requires a suspended Agent only for a change of
+`modelAccess.monthlyBudgetUSD`. Before a move, suspend the Agent, so that its
+workload stops in a controlled way. See the
 [reauthorization protocol]({{< repo "app/cetirun-operator/README.md" >}}#direct-kubernetes-writer-assignments-and-explicit-reauthorization).
 
 A policy-bound resource that exists enters a controlled hold for cleanup. A

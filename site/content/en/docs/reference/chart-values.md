@@ -30,10 +30,10 @@ Source: [app/cetirun-chart/values.yaml]({{< repo "app/cetirun-chart/values.yaml"
 | `global` |  | Shared release coordinates. Parent charts can set these once and Helm propagates them to subcharts through the global values namespace. |
 | `global.registry` | `""` | Optional registry hostname override for all CetiRun images. Empty preserves the component repository defaults below. |
 | `global.version` | `""` | Optional shared image and component version override. Empty preserves component tags and Chart.appVersion defaults. |
-| `agentType` | `"hermes"` | Agent framework to run in this instance: openclaw or hermes |
+| `agentType` | `"hermes"` | Agent framework of the instance: `openclaw`, `hermes`, or `custom`. The operator sets it from the Agent type. |
 | `replicaCount` | `1` | Number of replicas for the agent gateway Note: Typically should be 1 as agent runtimes maintain state |
 | `runtimeClassName` | `"kata-vm-isolation"` | Kubernetes RuntimeClass for pod sandboxing (e.g. kata-vm-isolation for AKS Pod Sandboxing) |
-| `sandboxWorkload` | `null` | Internal, resolver/compiler-owned protected render contract. Never a user override. A populated contract only renders held workloads; it cannot enable execution. Legacy runtimes leave this null. |
+| `sandboxWorkload` | `null` | Internal render contract that the operator writes for Sandbox Agents. It is never a user override. Without `reconciled: true`, it renders only a held workload with zero replicas. The common executor sets `reconciled: true` and renders at most one replica. Agents without a Sandbox leave it `null`. |
 | `cetiadmin` |  | Operator-prepared CetiAdmin binding; never a tenant override or RBAC grant. The Operator supplies the remaining projection fields after verifying ownership. |
 | `cetiadmin.enabled` | `false` |  |
 | `image` |  | Deprecated OpenClaw image alias. Prefer openclaw.image. |
@@ -227,12 +227,12 @@ Source: [app/cetirun-chart/values.yaml]({{< repo "app/cetirun-chart/values.yaml"
 | `ttyd.port` | `7681` | ttyd listening port |
 | `ttyd.shell` | `"/bin/zsh"` | Shell to launch (zsh matches the container's default shell) |
 | `ttyd.basePath` | `"/term"` | Base path prefix for ttyd web UI (passed as --base-path flag). Required so ttyd generates correct WebSocket URLs when served behind a path prefix. |
-| `ttyd.image` |  | Custom Agents use an isolated terminal workload and this dedicated image. |
+| `ttyd.image` |  | Image of the isolated Custom terminal and of the static probe helper. Custom Agents in a Sandbox need it in the Operator's `cetirun.helmValues`, with an immutable digest. See [Custom terminal image](../helm/#custom-terminal-image). |
 | `ttyd.image.repository` | `"mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-terminal"` |  |
 | `ttyd.image.tag` | `""` |  |
 | `ttyd.image.digest` | `""` |  |
 | `ttyd.image.pullPolicy` | `"IfNotPresent"` |  |
-| `ttyd.sessionSeconds` | `1800` | Maximum lifetime before a browser terminal must authenticate again. |
+| `ttyd.sessionSeconds` | `1800` | Longest time before the Custom terminal must authenticate again. The ttyd of OpenClaw and Hermes does not use it. |
 | `ttyd.gatewayServiceAccount` | `"aks-istio-ingressgateway-external"` | Ingress gateway identity allowed to reach the Custom terminal. |
 | `ttyd.resources.requests.cpu` | `"50m"` |  |
 | `ttyd.resources.requests.memory` | `"64Mi"` |  |
@@ -401,7 +401,7 @@ Source: [app/cetirun-operator/chart/values.yaml]({{< repo "app/cetirun-operator/
 | `istioGateway` | `"aks-istio-ingress/cetirun-gateway"` | Namespace/name of the Istio Gateway used by instance VirtualServices. |
 | `domainSuffix` | `""` | Base domain suffix for instance access URLs (e.g. alias.example.com). |
 | `cetirun` |  | CetiRun Helm chart configuration. |
-| `cetirun.defaultModel` | `"gpt-6-astra"` | Default GitHub Copilot model for instances that do not specify spec.model. Override this only with a model authorized for the deployment's Copilot users. |
+| `cetirun.defaultModel` | `"gpt-6-astra"` | The operator writes it to `secrets.model`, but the AI Gateway projection replaces that value. To select the default model of Agents, use `aiGateway.defaultModel`. |
 | `cetirun.chart.repoURL` | `"oci://mcr.microsoft.com/aks/ai-runtime/cetirun/helm/cetirun"` | OCI registry URL. |
 | `cetirun.chart.version` | `"0.1.1"` | Chart version to deploy. |
 | `cetirun.helmValues` | `{}` | Operator-level Helm value overrides applied to every CetiRun instance. Merged on top of the operator's hardcoded defaults but beneath per-instance spec.helm.values, so instances can still override them. |
@@ -455,7 +455,7 @@ Source: [app/cetirun-operator/chart/values.yaml]({{< repo "app/cetirun-operator/
 | `sandboxAdmission.validationMode` | `"compatible"` | CR object decoding: compatible tolerates fields from a newer schema; strict rejects them. Authorization, Pod checks and server config stay strict. |
 | `sandboxAdmission.enabled` | `false` | Deploy the independent, read-only admission server first. Requires Kubernetes >= 1.37, the validated admission minimum. The server uses native lifecycle sleep for an image-independent shutdown delay. |
 | `sandboxAdmission.enforce` | `false` | Install fail-closed webhooks only after the server and TLS are ready. Requires Kubernetes >= 1.37, including native admission matchConditions. |
-| `sandboxAdmission.podsEnabled` | `false` | Serve final-Pod checks; matching is installed only with enforce=true. Also denies exec/attach/portforward in controller-marked namespaces. Requires immutable namespace protection and a qualified lifecycle producer of controller-owned expectations. No execution-ready producer is installed; protected writes fail closed and execution stays held. Other Pod mutators must exclude these namespaces; arbitrary injected metadata is not accepted. |
+| `sandboxAdmission.podsEnabled` | `false` | Serves the final-Pod checks. The Pod webhook is installed only with `enforce: true`. It also denies exec, attach, and port-forward in the namespaces that the controller marks. It needs `sandboxAdmission.enabled: true`, and `sandboxSources.enabled` needs it. To run Sandbox Agents, also set `sandboxSources.nativeExecution` and `sandboxSources.bootstrapOwnedPrerequisites`. Other Pod mutators must exclude these namespaces, because the checks refuse metadata that they inject. |
 | `sandboxAdmission.placementConfigMapName` | `""` | Optional operator-namespace placement.json ConfigMap. Requires Pod admission. When enforced, placement checks cover every namespace's Pod writes and bindings; an unavailable registry/server fails those requests. This does not supply a fencing receipt or authorize Agent execution. |
 | `sandboxAdmission.coordinationConfigMapName` | `""` | Optional UID-pinned coordination authority for Team/Sandbox/AgentPolicy updates and deletions. Requires strict, enforced configuration and Pod admission. Both fields are required. No state is created and no execution is enabled. Native execution uses this same authority for selected-source reservations; there is no separate sandboxSources coordination setting. Keep it configured until existing native executions have stopped and released their reservations. |
 | `sandboxAdmission.coordinationConfigMapUID` | `""` |  |
@@ -626,7 +626,7 @@ Source: [app/cetirun-portal/chart/values.yaml]({{< repo "app/cetirun-portal/char
 | `features.allowedAgentTypes` | `["hermes", "openclaw", "custom"]` | Agent types users can create. Remove custom to disable Custom self-service. |
 | `features.agentIdentityEnabled` | `false` | Enable the Microsoft Entra Agent Identity lifecycle for new Agents. |
 | `features.agentToolsEnabled` | `false` | Enable owner-scoped account connections and Agent tool grants. |
-| `features.aiGatewayEnabled` | `true` | Expose the platform AI Gateway: model sources for new OpenClaw and Hermes Agents, the GitHub Copilot sign-in and each Agent's model list. Every new Agent then needs a Team. Keep it in step with the operator's aiGateway.enabled; the platform chart requires both. |
+| `features.aiGatewayEnabled` | `true` | Expose the platform AI Gateway: model sources for new OpenClaw and Hermes Agents, the GitHub Copilot sign-in and each Agent's model list. Keep it in step with the operator's aiGateway.enabled; the platform chart requires both. |
 | `sandboxRuntimeDefaultsFromController` | `false` | Allow missing Sandbox runtime profiles when the Operator's common executor is enabled with sandboxSources.nativeExecution. Keep false when native execution is disabled. The platform chart rejects this opt-in without the matching Operator settings. |
 | `sandboxRuntimeProfiles` | `{}` | Approved built-in runtime pins for Sandbox creation. Required unless sandboxRuntimeDefaultsFromController explicitly delegates missing profiles to the common controller, which pins inputs from its selected trusted chart. Each configured entry still needs chartVersion, a digest-pinned image and the matching port (OpenClaw 18789 or Hermes 8642); invalid entries reject creation before any Kubernetes write. Explicit requests remain unchanged. |
 | `sandboxStorage` |  | Read-only source of the approved Sandbox HOME StorageClasses. The Portal offers only the verified classes that this platform ConfigMap pins. Configure `platformNamespace` and `platformConfigMapName` together. Leave both empty for a standalone Portal without this configuration. `defaultStorageClassName` is only a UI preference and does not approve a StorageClass. |

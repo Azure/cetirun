@@ -1,6 +1,6 @@
 ---
 title: "Portal API"
-description: "The administration pages and HTTP endpoints of the Portal for Teams, Sandboxes, AgentPolicies, the Skill Marketplace, and Agent creation."
+description: "The administration pages and HTTP endpoints of the Portal for Teams, Sandboxes, Agents, AgentPolicies, the Skill Marketplace, and Agent creation."
 weight: 30
 ---
 
@@ -24,6 +24,7 @@ these:
 | Request | Response |
 | --- | --- |
 | Without the version fields | `428 Precondition Required` with the code `version_required` |
+| A Team or Sandbox request without a body, for example a `DELETE` | `400 Bad Request` with the code `invalid_body`. With a body of `{}`, the response is `428`. An AgentPolicy `DELETE` without a body gets `428` |
 | With a stale version | `409 Conflict` |
 | Rejected because of a known compatibility problem | `422 configuration_incompatible`, with an optional `error.details` list of field and combination diagnostics |
 
@@ -37,8 +38,11 @@ apply:
   `409 Conflict`.
 - Without a generation, the exact resource version is necessary, as for older
   clients.
-- A generation that is not one positive integer returns `400 Bad Request` with
-  the code `invalid_generation`.
+- A header that is not one positive integer, or a header that is different
+  from the JSON `generation`, returns `400 Bad Request` with the code
+  `invalid_generation`.
+- A JSON `generation` that is not a positive integer returns `400 Bad Request`
+  with the code `invalid_body`.
 
 The Portal web application sends the header and keeps the JSON body shape.
 During a rolling upgrade, older Portal replicas ignore the header and apply the
@@ -59,7 +63,11 @@ Portal administrators can create and edit Teams with `agentPolicyRef`,
 bindings and validates the referenced resources. It also makes sure that the
 default is in the allowed Sandbox set and that the policy allows the Team
 skills. The Team DTO returns these fields together with `uid`,
-`resourceVersion`, and `generation`.
+`resourceVersion`, and `generation`. The Teams pages use these admin-only
+endpoints:
+
+- `GET` and `POST /api/v1/admin/teams`
+- `GET`, `PUT`, and `DELETE /api/v1/admin/teams/{name}`
 
 The Teams list shows the compatibility of the saved policy and of each
 selected Sandbox. Expand a Team to see its overall compatibility, the labeled
@@ -98,6 +106,15 @@ endpoints:
 
 - `GET` and `POST /api/v1/admin/sandboxes`
 - `GET`, `PUT`, and `DELETE /api/v1/admin/sandboxes/{name}`
+- `GET /api/v1/admin/sandbox-storage-options`
+
+The storage options are the choices of the Sandbox form. The response lists
+the approved StorageClasses with `name`, `provisioner`, and
+`allowVolumeExpansion`. It also gives the HOME access modes of each Sandbox
+type and `defaultStorageClassName`, with `Cache-Control: no-store`. If
+`sandboxStorage.platformNamespace` or `sandboxStorage.platformConfigMapName` of
+the Portal chart is empty, the response is `503` with the code
+`sandbox_storage_not_configured`. These options do not qualify CSI support.
 
 The Sandbox request contains `name`, an optional `type`, `resources`, and
 `storage`, with the same structure as the CRD spec. If `type` is omitted or
@@ -115,6 +132,30 @@ the coordination client. This includes conditional writes, uncertain outcomes
 that the Portal keeps, and background deletion. Admission continues to check
 platform compatibility and the current consumers. The editor shows Kubernetes
 validation and admission rejections. Transport failures stay in the logs.
+
+## Agent administration
+
+The **Admin → Agents** pages use these admin-only endpoints. The responses use
+`Cache-Control: no-store`.
+
+- `GET /api/v1/admin/instances` lists all Agents with the owner, the Team, the
+  Agent type, the phase, and the readiness.
+- `GET /api/v1/admin/instances/{name}` returns one Agent with its resource
+  version, its generations, its Sandbox reference, and its conditions.
+- `GET /api/v1/admin/instances/{name}/status` returns the conditions, the
+  events of the Agent and of its namespace, and the Pods. An `errors` list
+  names each part that the Portal cannot read.
+- `PATCH /api/v1/admin/instances/{name}` changes `displayName`, `model`, and
+  `agent.image`. For a Custom Agent, it also changes `agent.port` and
+  `agent.webUI`. It cannot change the owner, the credentials, or the lifecycle
+  controls.
+- `DELETE /api/v1/admin/instances/{name}` returns `202 Accepted`. The operator
+  then removes the resources of the Agent.
+
+`PATCH` and `DELETE` need the `uid` and the `resourceVersion` that a previous
+read returned. Without them, the response is `428`. A stale version gets
+`409`. The Portal logs the administrator, the action, the names of the changed
+fields, and the response status of each request. It does not log the values.
 
 ## Skill Marketplace administration
 

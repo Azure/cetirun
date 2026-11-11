@@ -49,7 +49,7 @@ class GeneratedTablesTests(unittest.TestCase):
                             )
                         )[:40]
                     )
-                    self.fail(f"run {tables.COMMAND}\n{diff}")
+                    self.fail(f"{tables.stale_message(path.relative_to(REPO).as_posix())}\n{diff}")
 
     def test_page_descriptions_are_kept(self):
         page = (

@@ -42,6 +42,10 @@ CONTENT = SITE / "content/en/docs"
 COMMAND = "python3 site/scripts/reference_tables.py --write"
 
 
+def stale_message(page: str) -> str:
+    return f"{page}: the generated tables are out of date. Run {COMMAND} and commit the result."
+
+
 # --------------------------------------------------------------------------
 # YAML subset loader
 # --------------------------------------------------------------------------
@@ -1018,7 +1022,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             stale.append(path.relative_to(REPO).as_posix())
     for name in stale:
-        print(f"{name}: generated tables are out of date; run {COMMAND}", file=sys.stderr)
+        print(stale_message(name), file=sys.stderr)
     helm = (CONTENT / HELM_PAGE).read_text(encoding="utf-8")
     unknown = unknown_values(helm, HELM_SECTIONS)
     for problem in unknown:

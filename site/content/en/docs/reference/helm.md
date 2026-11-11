@@ -146,8 +146,8 @@ notes do not print port-forward commands for that runtime class.
 | `ingress.hosts`, `ingress.annotations` | An example host and WebSocket timeout annotations. Set them for your ingress controller. |
 | `ttyd.enabled`, `ttyd.port` | `true`, `7681` |
 | `ttyd.shell`, `ttyd.basePath` | `/bin/zsh`, `/term` |
-| `ttyd.sessionSeconds` | `1800`. The longest time, in seconds, before a browser terminal must authenticate again. The schema accepts 60 to 3600. |
-| `ttyd.image.repository`, `ttyd.image.tag`, `ttyd.image.digest` | The `cetirun-terminal` image of the Custom terminal and of the static probe helper. For Custom HTTP or observed-SNI probes, set an immutable `sha256:` digest in the Operator's `cetirun.helmValues.ttyd.image.digest`. |
+| `ttyd.sessionSeconds` | `1800`. The longest time, in seconds, before the Custom terminal must authenticate again. The ttyd of OpenClaw and Hermes does not use it. The schema accepts 60 to 3600. |
+| `ttyd.image.repository`, `ttyd.image.tag`, `ttyd.image.digest` | The `cetirun-terminal` image of the Custom terminal and of the static probe helper. Custom Agents in a Sandbox need this image in the Operator's `cetirun.helmValues`, with an immutable digest. `make deploy` does not set it. See [Custom terminal image](#custom-terminal-image). |
 | `desktop.enabled` | `true`. The Chrome debug port is `18800`, and the noVNC port is `6080`. |
 | `desktop.screenResolution` | `1920x1080x24` |
 | `desktop.logging` | `false` |
@@ -189,6 +189,23 @@ browser with an explicit `attachOnly=true`. To disable browser use, set
 `openclaw.config.browser.enabled=false`. For browser automation without the
 desktop, the Agent image must contain a compatible Chrome or Chromium
 executable. If you disable the desktop, this does not install one.
+
+### Custom terminal image
+
+A Custom Agent in a Sandbox takes the terminal image only from the Operator's
+`cetirun.helmValues`. The image needs an immutable `sha256:` digest in
+`ttyd.image.digest`, and a repository in `ttyd.image.repository` or
+`global.registry`. The terminal is on by default, so each Custom Agent in a
+Sandbox needs the image, also a headless Agent. Without the image, the Agent
+reports `PolicyResolved=False` with the reason `PolicyDenied`, and the
+operator holds it.
+
+`make deploy` does not set these values. Set them under
+`platform.values.cetirun-operator.cetirun.helmValues.ttyd.image` in the
+environment file. To run without the terminal, set `ttyd.enabled: false` in
+the Operator's `cetirun.helmValues` or in the `spec.helm.values` of the Agent.
+Without the terminal, the probe helper still needs the image for HTTP Chat, a
+Web UI, or an AgentPolicy with `blockedFQDNs`.
 
 ### Resources and availability
 
@@ -512,7 +529,7 @@ For all values and their defaults, see
 | `istioGateway` | `aks-istio-ingress/cetirun-gateway`. Agent VirtualServices use it. |
 | `cetirun.chart.repoURL`, `cetirun.chart.version` | The OCI repository of the agent chart and its default version for new Agents. The defaults point to the release registry. |
 | `cetirun.defaultModel` | `gpt-6-astra`. The operator writes it to `secrets.model`, but the AI Gateway projection replaces that value. To select the default model of Agents, use `aiGateway.defaultModel`. |
-| `cetirun.helmValues` | Deployment-wide agent values |
+| `cetirun.helmValues` | Deployment-wide agent values. Custom Agents in a Sandbox take the terminal image only from these values. See [Custom terminal image](#custom-terminal-image). |
 | `aiGateway.defaultBudget` | `10000`. The monthly budget in USD that the operator writes when it creates the Gateway key of a standard Agent. Later changes in the Gateway are kept. Policy-bound Agents use the budget of their Agent Policy, and CetiAdmin uses `cetiadmin.model.initialMonthlyBudgetUSD`. |
 | `acrDockerSecret` | The registry Secret in the operator namespace, for the Helm client of the operator |
 | `image` | The operator image pin. The pull policy is `IfNotPresent`. An empty tag uses `appVersion`. |

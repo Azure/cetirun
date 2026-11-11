@@ -34,7 +34,7 @@ releases, and deployments. Run `make help` for the short list.
 | `GIT_SHA` | The current commit. The release builds record it |
 | `FORCE_PUBLISH` | `false`. `true` allows a publication to replace version tags that exist |
 | `VERIFY_PULL` | `true`. The release targets refuse another value |
-| `ACCEPT_VSCODE_SERVER_LICENSE_TERMS` | `true`. An explicit `false` stops the image builds that include VS Code |
+| `ACCEPT_VSCODE_SERVER_LICENSE_TERMS` | `true`. With another value, `make build-images`, `make publish-images`, and `make publish` stop before they build an image. To build the other images without VS Code, run the [release CLI](#release-cli) with `--exclude-image cetirun-vscode` |
 | `DEPLOY_CONFIG` | The environment file of the deployment targets. Necessary for them |
 
 For the deployment targets, `VERSION` and `REGISTRY` on the `make` command line
@@ -273,7 +273,11 @@ upgrade or an uninstall of the CetiRun Istio release. It needs
 `--kubeconfig`, `--context`, `--cluster-uid`, `--release`,
 `--release-namespace`, and `--legacy-namespace`. It is read-only by default.
 `--apply` deletes only the object with the reviewed `--expected-uid` and
-`--expected-resource-version`. See [Istio operations](../../operations/istio/).
+`--expected-resource-version`.
+
+Without `--after-uninstall`, the helper needs exactly one deployed release.
+After an uninstall, add `--after-uninstall`. The helper then makes sure that
+the release does not exist. See [Istio operations](../../operations/istio/).
 
 For the development helper `scripts/cetirun-dev-deploy.sh`, an explicit
 `REGISTRY` and alias argument are necessary. It does not insert a default user

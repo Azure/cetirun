@@ -162,10 +162,16 @@ cannot override those controls.
 Headless Agents have a portless governing Service and no application HTTP
 probes. HTTP Chat and Web UI keep their explicit port and `/healthz` contract.
 The platform's static loopback probe works without curl, Node or Python in the
-main image. For HTTP or observed-SNI probes, configure an immutable
-`ttyd.image` digest in the Operator's `cetirun` runtime values, even if
-`ttyd.enabled` is false. This helper is packaged with `cetirun-terminal`, and
-the image must be available to the target nodes.
+main image. This helper is packaged with `cetirun-terminal`, and the image must
+be available to the target nodes.
+
+The terminal and the probe helper take the `cetirun-terminal` image only from
+the Operator's `cetirun.helmValues`, with an immutable digest. The terminal is
+on by default, so each Custom Agent in a Sandbox needs this image, also a
+headless Agent. Without it, the Agent reports `PolicyResolved=False` with the
+reason `PolicyDenied`. With `ttyd.enabled: false`, only HTTP probes and
+observed-SNI capture need the image. `make deploy` does not set it. See
+[Custom terminal image](../helm/#custom-terminal-image).
 
 The optional terminal uses the same pinned image and the registered
 `topology.kubernetesAPI` destinations. Its separate Cilium selector excludes it
@@ -584,10 +590,15 @@ attest an owner preference. Messaging tools still require confirmation before
 sending recalled material outside the session.
 
 CetiRun has no central Memory policy. Each Agent keeps its own store on its
-HOME volume, and the platform enforces its user access rules. On supported
-native entrypoints, owners control Memory for each conversation with
-`/memory off`, `/memory no-capture`, and `/memory on`. These commands do not
-delete notes or disable the history of the Harness.
+HOME volume, and the platform enforces its user access rules. In OpenClaw,
+owners control Memory for each conversation with `/memory off`,
+`/memory no-capture`, and `/memory on`. These commands do not delete notes or
+disable the history of the Harness.
+
+The commands work only in OpenClaw. Hermes has its own `/memory` command, which
+approves or rejects changes to its native memory files. In Hermes, these
+commands do not reach CetiRun Memory, and Memory stays on. In Hermes, use
+`owner_access` instead.
 
 To limit the channels and senders that can use Memory, configure
 `owner_access`. The helper does not bind
