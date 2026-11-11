@@ -595,10 +595,12 @@ owners control Memory for each conversation with `/memory off`,
 `/memory no-capture`, and `/memory on`. These commands do not delete notes or
 disable the history of the Harness.
 
-The commands work only in OpenClaw. Hermes has its own `/memory` command, which
-approves or rejects changes to its native memory files. In Hermes, these
-commands do not reach CetiRun Memory, and Memory stays on. In Hermes, use
-`owner_access` instead.
+The commands do not work in Hermes. Hermes has its own `/memory` command, which
+approves or rejects changes to its native memory files. As a result, these
+commands do not reach the Memory adapter in Hermes, and Memory stays on. In
+Hermes, use `owner_access` instead. The Custom image of the
+[Pi example]({{< repo "examples/pi-agent/README.md" >}}) also handles these
+commands, through the shared Memory bridge.
 
 To limit the channels and senders that can use Memory, configure
 `owner_access`. The helper does not bind
