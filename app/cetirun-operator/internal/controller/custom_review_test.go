@@ -256,8 +256,8 @@ func TestCustomForeignRouteIsNotAdoptedOrDeleted(t *testing.T) {
 	if err := s.client.Get(context.Background(), key, route); err != nil || route.ResourceVersion != version {
 		t.Fatal("foreign route was deleted or changed on suspension")
 	}
-	if s.current().Status.Phase != api.PhaseSuspended || *s.workload().Spec.Replicas != 0 {
-		t.Fatal("route conflict hid the completed suspension")
+	if s.current().Status.Phase != api.PhasePending || *s.workload().Spec.Replicas != 0 {
+		t.Fatal("route conflict must keep suspension pending without preventing workload shutdown")
 	}
 }
 

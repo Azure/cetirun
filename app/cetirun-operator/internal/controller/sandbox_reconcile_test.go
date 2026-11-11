@@ -849,6 +849,9 @@ func testReconciledSandboxSuspensionForHarnesses(t *testing.T, harnesses []strin
 						if expected.Home != initial.Home || current.Status.AIGateway.KeyID != keyID || len(f.gateway.generated) != 1 {
 							t.Fatal("suspension/reconciliation replaced HOME or reset the Gateway key")
 						}
+						if current.Status.ObservedGeneration != current.Generation {
+							t.Fatalf("suspended=%t: observed generation %d, want %d", suspended, current.Status.ObservedGeneration, current.Generation)
+						}
 						want := int32(1)
 						if suspended {
 							want = 0
