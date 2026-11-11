@@ -7,7 +7,7 @@ weight: 29
 The CetiRun components write their logs to standard output, and the Operator,
 the Sandbox admission server, and the AI Gateway serve Prometheus metrics. The
 `cetirun-observability` chart sends these logs and metrics to Azure Data
-Explorer (ADX), together with the output of the Agents, the Kubernetes events,
+Explorer (ADX). It also sends the output of the Agents, the Kubernetes events,
 and the metrics of the cluster. It runs [ADX-Mon](https://github.com/Azure/adx-mon),
 which CetiRun builds from pinned upstream source. It is CetiRun's collection of
 logs and metrics: `make deploy` installs it with the platform. In the platform
@@ -25,12 +25,6 @@ Treat this collection as a preview.
 | AI Gateway | LiteLLM metrics on the port named `metrics` | `CetiRunMetrics` |
 | AI Gateway | One JSON line for each model call, with the `log_type` `cetirun.ai_gateway.request`. The line has the model, the tokens, the spend, the timing, the Agent, the Team, and the outcome. It has no prompt or response content | The `Gateway` table of `CetiRunLogs`. `GatewayRequests()` reads it |
 | Other platform components | Logs on standard output | The `Platform` table of `CetiRunLogs` |
-
-The default `agent` and `agent2` node pools are Kata pools. With current node
-images, Container Insights and managed Prometheus collect nothing from them,
-as [Default collection on AKS](#default-collection-on-aks) describes. On a
-default installation, "Yes" in this table holds only for the Pods on the
-`system` pool.
 
 The metrics ports of the Operator, the admission server, and the AI Gateway use
 plain HTTP without authentication. Allow only your metrics scrapers to connect
@@ -110,7 +104,8 @@ when it starts and every hour.
 `AgentLogsWithOwner()` in `CetiRunAgents` gives each line of Agent output the
 Agent, owner and Team that had its namespace when the line was written. A
 deleted Agent's lines keep their owner when a later Agent of the same name
-gets the namespace. Its readers also need the `Viewer` role on `CetiRunLogs`.
+gets the namespace. Readers of `AgentLogsWithOwner()` also need the `Viewer`
+role on `CetiRunLogs`.
 
 `AgentInventory()` lists the current Agents: those in the latest complete
 snapshot of each cluster, and those created or changed after that snapshot
@@ -197,8 +192,8 @@ databases. It does not read the Agent logs database.
 CetiRun installs no alert rules. The directory
 [`app/cetirun-operator/observability`]({{< repo "app/cetirun-operator/observability/README.md" >}})
 has example Prometheus rules for the Sandbox status metrics of the Operator,
-with `promtool` tests. Load them into a Prometheus of your own that scrapes the
-Operator, after you adapt them as their README shows. The rules alert when a
+with `promtool` tests. Adapt the rules as their README shows, then load them
+into your own Prometheus that scrapes the Operator. The rules alert when a
 scrape target is missing or down, when the collection of the metrics fails, and
 when an Agent reports `EnforcementLost`.
 

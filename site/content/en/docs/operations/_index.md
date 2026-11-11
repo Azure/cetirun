@@ -34,7 +34,7 @@ and side effects.
 - [Configure a team](../guides/teams/) — team context, provider defaults, and skills
 - [Smart routing](smart-routing/) — routers, classifiers, and where requests went
 - [Skill Marketplace](skill-marketplace/) — approved skills from one Git repository for the Agents of policy-bound Teams
-- [Observability with ADX-Mon](observability/) — logs, Kubernetes events and metrics in Azure Data Explorer
+- [Monitoring and logs](observability/) — metrics, logs, and alerts, and their collection into Azure Data Explorer with ADX-Mon
 - [Storage](storage/)
 - [Istio authentication and egress](istio/)
 - [Entra Agent Identity setup](entra-agent-identity/) — Blueprint, federation and Azure/Microsoft authorization

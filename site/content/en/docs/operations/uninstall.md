@@ -102,11 +102,11 @@ These objects also stay:
 | Object | Location |
 | --- | --- |
 | The stopped CetiAdmin Agent, its namespace `cetirun-<instanceName>`, and its HOME. CetiAdmin keeps them for recovery | Cluster |
-| The database PVC `data-cetirun-ai-gateway-postgresql-0` and, with the ADX-Mon collection, the PVC of the ingestor. Their StatefulSets created them | `cetirun-system` |
+| The database PVC `data-cetirun-ai-gateway-postgresql-0` and the PVC of the ADX-Mon ingestor. Their StatefulSets created them | `cetirun-system` |
 | The Secrets that you created, for example the AI Gateway, admission, MCP, and Broker Secrets | The namespaces of the installation |
 | With `publicTLS`, the ACME account Secrets and `cetirun-tls`, which cert-manager created | `aks-istio-ingress` |
 | The namespaces of the Istio release, the Broker, and the platform, which `make deploy` created outside Helm | Cluster |
-| With the ADX-Mon collection, the write-ahead log of the collector in `/var/lib/cetirun-adx-mon`. It can keep logs that were not sent yet, including Agent output | Each node that stays in the cluster |
+| The write-ahead log of the ADX-Mon collector in `/var/lib/cetirun-adx-mon`. It can keep unsent logs, including Agent output | Each node that stays in the cluster |
 
 > **Warning:** The stopped CetiAdmin Agent keeps the finalizer
 > `cetirun.microsoft.com/finalizer`, and only the Operator removes it. After

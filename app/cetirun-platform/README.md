@@ -68,7 +68,7 @@ The file contains these inputs:
 | `platform.values.cetirun-operator.cetiadmin` | CetiAdmin owner assignment, initial budget, exact API access, optional migration source, and runtime options |
 | `sharedSkills` | Necessary. The shared Skills storage fields that exist in the runtime chart: storage class, resource group, account, and container. The helper sets `skills.shared: true` for all Agents. It examines only that the StorageClass exists, so provision the Blob NFS account and container first. Refer to [Storage](../../site/content/en/docs/operations/storage.md#shared-skills-storage-for-make-deploy) |
 | `skillMarketplace` | Optional. The Git repository of the [Skill Marketplace](#skill-marketplace), its credentials Secret, and its Blob NFS container |
-| `observability` | The ADX-Mon collection of logs, events, and metrics: the name of this CetiRun cluster in every row, the query URI of the Kusto cluster, its logs, metrics, and Agent logs databases, and the client ID of the ingestor's managed identity. See [Observability with ADX-Mon](../../site/content/en/docs/operations/observability.md) |
+| `observability` | The ADX-Mon collection of logs, events, and metrics: the name of this CetiRun cluster in every row, the query URI of the Kusto cluster, its logs, metrics, and Agent logs databases, and the client ID of the ingestor's managed identity. See [Monitoring and logs](../../site/content/en/docs/operations/observability.md) |
 
 [Values that make deploy sets](../../site/content/en/docs/getting-started/platform.md#values-that-make-deploy-sets)
 lists the Helm values that `make deploy` sets itself.

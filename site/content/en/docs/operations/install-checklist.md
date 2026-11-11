@@ -25,7 +25,7 @@ Replace the example names with the names of your environment.
 
 | Step | Do this | Page | Result | Check |
 | --- | --- | --- | --- | --- |
-| 1 | Provision AKS and connect to it | [Infrastructure](../infrastructure/) | The cluster, a kubeconfig context, and the `target` values | `kubectl auth whoami` and `kubectl get runtimeclass kata-vm-isolation` |
+| 1 | Provision AKS and connect to it. By default, the cluster template also creates the Azure Data Explorer resources of the ADX-Mon collection | [Infrastructure](../infrastructure/) and [Azure Data Explorer](../infrastructure/#azure-data-explorer) | The cluster, a kubeconfig context, and the `target` values. The outputs `adxClusterUri` and `adxIngestorClientId` give `observability.adx.endpoint` and `observability.ingestorClientId` | `kubectl auth whoami` and `kubectl get runtimeclass kata-vm-isolation` |
 | 2 | Provision the Blob NFS storage of shared skills, and make sure that the StorageClasses exist | [Shared skills storage for `make deploy`](../storage/#shared-skills-storage-for-make-deploy) | The `sharedSkills` values and the StorageClass names | `kubectl get storageclass` |
 | 3 | Examine the Kata node pools, and create the Sandbox HOME StorageClass | [Policy-bound Teams](../policy-teams/#the-cluster), steps 1 and 2 | The HOME StorageClass for Sandboxes | `kubectl get nodes -L agentpool` and `kubectl get storageclass` |
 | 4 | Register the Portal sign-in application, assign the allowed groups, and add the federated credential. The user names in the allowed groups must give valid aliases | [Istio authentication](../istio/#prepare-identity-dns-and-tls) and [User names](../../getting-started/platform/#user-names) | `identity.tenantId`, `identity.portalClientId`, and `istio.values.allowedGroups` | `az ad app federated-credential list --id <portal-client-id>` |
@@ -55,9 +55,9 @@ These steps are optional. Do them in this order:
 | Register the platform, label the peers, and enable Sandbox execution for policy-bound Teams | [Policy-bound Teams](../policy-teams/#the-platform-registration), steps 4 to 7 |
 | Configure Team routers | [Smart routing](../smart-routing/) |
 | Give the Agents of policy-bound Teams approved skills | [Skill Marketplace](../skill-marketplace/) |
-| Collect logs and metrics into Azure Data Explorer | [Monitoring and logs](../observability/) |
 
 Before you serve users, also plan the operations after the installation:
+[Monitoring and logs](../observability/),
 [Make and restore backups](../backup-restore/),
 [Certificates and credentials](../certificates/), and
 [Upgrade CetiRun](../upgrade/).

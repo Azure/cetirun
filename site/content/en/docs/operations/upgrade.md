@@ -64,9 +64,12 @@ admission server, the Portal, the AI Gateway, the Broker, and Connections MCP.
    a new digest. The Operator approves only an exact digest of the list, and
    it stops updating a Custom Agent whose digest is not in the list.
    `make deploy` accepts an old digest that is still in the registry.
-5. Remove the fields that the new version does not support. For some fields,
-   for example the removed `customRuntime` fields, the plan stops and names the
-   field.
+5. Remove the fields that the new version does not support, and add the
+   inputs that it requires. For some fields, the plan stops and names the
+   field. Examples are the removed `customRuntime` fields and the
+   `observability` block of the
+   [ADX-Mon collection](../observability/#set-it-up-with-make-deploy), which
+   `make deploy` requires.
 6. Run the plan, then the deployment:
 
    ```bash

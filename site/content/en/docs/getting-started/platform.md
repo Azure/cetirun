@@ -11,8 +11,8 @@ three Helm releases:
   and ownership filters
 - The Agent Broker, in its own credential namespace
 - The platform release, in `cetirun-system` by default: the Operator, the
-  Sandbox admission server, the Portal, the AI Gateway with PostgreSQL and
-  Valkey, Connections MCP, and the ADX-Mon collection of logs and metrics. By
+  Sandbox admission server, the Portal, the AI Gateway, Connections MCP, and
+  the ADX-Mon collection. The AI Gateway includes PostgreSQL and Valkey. By
   default, the Operator also deploys CetiAdmin, the Hermes administration
   Agent.
 
@@ -145,8 +145,8 @@ different permissions.
 
 | Step | Permission | Scope |
 | --- | --- | --- |
-| Cluster helper | Register the `ManagedGatewayAPIPreview` feature and the `Microsoft.ContainerService` resource provider. Create resource groups | Subscription |
-| Cluster helper | Deploy AKS and its monitoring resources, for example as Contributor | Cluster resource group. With `adxMode`, also the Kusto resource group |
+| Cluster helper | Register the `ManagedGatewayAPIPreview` feature and the `Microsoft.ContainerService` and `Microsoft.Kusto` resource providers. Create resource groups | Subscription |
+| Cluster helper | Deploy AKS and the Azure Data Explorer resources of the ADX-Mon collection, for example as Contributor | Cluster resource group, and `adxResourceGroupName` if it names another resource group |
 | Cluster helper | Write to `kube-system`, for example with **Azure Kubernetes Service RBAC Cluster Admin**. Assign this role before the helper runs | Cluster resource group, because the cluster does not exist yet. Refer to [Helper side effects](../../operations/infrastructure/#helper-side-effects) |
 | Storage helper | Update the service endpoints of the node subnet. Deploy the storage account | The node subnet, and the storage resource group |
 | kubectl, Helm, and `make deploy` | Create cluster-scoped objects, namespaces, and Secrets, for example with **Azure Kubernetes Service RBAC Cluster Admin** | Cluster |
@@ -185,11 +185,13 @@ preview feature, provisions infrastructure, enables Gateway API, and overwrites
 the selected kubeconfig entry. Node-pool defaults are not sized for a small
 demonstration environment.
 
-`make deploy` needs the Azure Data Explorer resources of the ADX-Mon
-collection: a Kusto cluster with the logs, metrics, and Agent logs databases,
-and the managed identity of the ingestor with its roles and federated
-credential. By default, the cluster template creates them. Refer to the
-[prerequisites of the collection](../../operations/observability/#prerequisites).
+`make deploy` needs a Kusto cluster with the logs, metrics, and Agent logs
+databases of the ADX-Mon collection. It also needs the ingestor's managed
+identity, with its roles and federated credential. By default, the cluster
+template creates them. Its outputs `adxClusterUri` and `adxIngestorClientId`
+give `observability.adx.endpoint` and `observability.ingestorClientId` of the
+environment file. Refer to the prerequisites in
+[Monitoring and logs](../../operations/observability/#prerequisites).
 
 ## 2. Configure authentication and storage
 
@@ -534,8 +536,8 @@ send a request to a model.
 
 `make deploy` does not call Microsoft Graph, and it calls Azure only for the
 Azure DNS mode of `publicTLS`. As a result, it does not find a wrong Entra ID, a
-missing Key Vault key or Kusto database, or a Decision-1 deployment that does
-not work. These problems occur only when a component uses the resource.
+missing Key Vault key or Kusto database, or an unusable Decision-1 deployment.
+These problems occur only when a component uses the resource.
 
 If a step fails, `make deploy` stops. The message names the command of that
 step, but it does not show the output of the tool, because that output can
@@ -788,7 +790,7 @@ Values of the platform release, under `platform.values`:
 | `cetirun-connections-mcp.image.repository`, `cetirun-connections-mcp.image.tag` | `<registry>/cetirun-connections-mcp`, `release.version` |
 | `cetirun-connections-mcp.broker.baseURL`, `cetirun-connections-mcp.istio.brokerNamespace`, `cetirun-connections-mcp.istio.controlPlaneNamespace`, `cetirun-connections-mcp.istio.revision`, `cetirun-connections-mcp.portal.baseURL` | The Broker Service, `broker.namespace`, `istio.controlPlaneNamespace`, `istio.revision`, and `https://<domain>` |
 | Under `cetirun-operator.skillMarketplace`: `enabled`, the `repository` fields `url`, `ref`, `path`, `auth`, `existingSecret`, and `syncInterval`, and the `storage` fields `resourceGroup`, `storageAccount`, `containerName`, and `storageClassName`. Under `cetirun-portal.skillMarketplace`: `enabled` and `catalogNamespace` | The top-level `skillMarketplace` block, and `platform.namespace` for the catalog. Without that block, both `enabled` values are `false` |
-| Under `cetirun-observability`: `enabled`, `clusterName`, `adx.endpoint`, `adx.databases.logs`, `adx.databases.metrics`, `adx.databases.agentLogs`, and `ingestor.clientId` | The top-level `observability` block. A database that the block does not name gets its default name. Without that block, `enabled` is `false` |
+| Under `cetirun-observability`: `enabled`, `clusterName`, `adx.endpoint`, `adx.databases.logs`, `adx.databases.metrics`, `adx.databases.agentLogs`, and `ingestor.clientId` | The top-level `observability` block, which `make deploy` requires. `enabled` is always `true`. A database that the block does not name gets its default name |
 
 `make deploy` also writes these values without a conflict check. A value that
 you set for them under `platform.values` has no effect:

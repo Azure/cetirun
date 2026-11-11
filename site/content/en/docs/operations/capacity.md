@@ -94,6 +94,9 @@ file. Refer to [Infrastructure](../infrastructure/#cluster-parameter-file).
 | Connections MCP | 2 | 0.05 CPU, 64 MiB |
 | OAuth2 Proxy, on the `system` pool | 2 | 0.1 CPU, 128 MiB |
 | Session store of OAuth2 Proxy, on the `system` pool | 1 | 0.05 CPU, 64 MiB, and a 1 GiB disk |
+| ADX-Mon collector | 1 on each node | 0.05 CPU, 128 MiB. It keeps up to 2 GiB of unsent data on the disk of the node |
+| ADX-Mon ingestor | 1 | 0.1 CPU, 256 MiB, and a 16 GiB disk |
+| Telemetry program and kube-state-metrics of the ADX-Mon collection | 1 each | 0.01 CPU, 64 MiB |
 
 The README of the AI Gateway chart gives measured values and a starting size.
 Refer to [Resources]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#resources).
@@ -107,8 +110,7 @@ Refer to [Resources]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#resou
 | Node OS disks | 128 GB for each node | The OS disk parameters of the cluster template |
 | HOME disks | 100 GiB for each Agent | For new OpenClaw and Hermes Agents, `persistence.size` in `platform.values.cetirun-operator.cetirun.helmValues`. For Custom Agents, `platform.values.cetirun-operator.customRuntime.storageSize` |
 | AI Gateway database | 100 GiB | `postgresql.bundled.persistence.size`. You cannot change it after the first run |
-| Log Analytics and managed Prometheus | On while `adxMode` has its default, `none`. A new Log Analytics workspace keeps the logs for 30 days | `enableContainerInsights`, `enablePrometheusMetrics`, and `logAnalyticsWorkspaceId` |
-| Azure Data Explorer, with `adxMode: create` | The `Dev(No SLA)_Standard_E2a_v4` SKU | The `adx` parameters. Refer to [Azure Data Explorer](../infrastructure/#azure-data-explorer) |
+| Azure Data Explorer | A new Kusto cluster of the `Dev(No SLA)_Standard_E2a_v4` SKU (`adxMode: create`). It keeps the logs for 90 days, the metrics for 30 days, and the Agent logs for 14 days | The `adx` parameters. Refer to [Azure Data Explorer](../infrastructure/#azure-data-explorer) |
 | Agents of each user | 1 | `platform.values.cetirun-portal.features.maxInstancesPerUser` |
 | Monthly model budget of each new Agent key | 10000 USD | `platform.values.cetirun-operator.aiGateway.defaultBudget`. Agent Policies set their own budgets |
 

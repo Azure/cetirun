@@ -270,7 +270,7 @@ kube-state-metrics value requires a digest.
 | Entra auth sidecar of the Broker | `mcr.microsoft.com/entra-sdk/auth-sidecar` | `broker.values.authSDK` |
 | AI Gateway PostgreSQL | `mcr.microsoft.com/azurelinux/base/postgres` | `platform.values.cetirun-ai-gateway.postgresql.bundled.image` |
 | AI Gateway Valkey | `mcr.microsoft.com/azurelinux/base/valkey` | `platform.values.cetirun-ai-gateway.redis.bundled.image` |
-| kube-state-metrics, with the [ADX-Mon collection](../observability/) | `mcr.microsoft.com/oss/kubernetes/kube-state-metrics` | `platform.values.cetirun-observability.kubeStateMetrics.image` |
+| kube-state-metrics of the [ADX-Mon collection](../observability/) | `mcr.microsoft.com/oss/kubernetes/kube-state-metrics` | `platform.values.cetirun-observability.kubeStateMetrics.image` |
 | cert-manager, with `publicTLS` install mode | `quay.io/jetstack/cert-manager-*` | None |
 
 `global.registry` does not change these images. The cert-manager images always

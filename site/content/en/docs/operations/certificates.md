@@ -23,7 +23,7 @@ The names on this page are the default names of an installation with
 | `connections-mcp-tls` and `connections-mcp-ca` in `cetirun-system` | You | [Rotation, shutdown and recovery](../agent-identity/#rotation-shutdown-and-recovery) | The chain against the MCP CA, and the host name of the MCP Service |
 | `broker-tls` in the Broker namespace | You | Same | The chain, and the host name of the Broker Service |
 | `broker-client-tls` in `cetirun-system` | You | Same | The chain, the client purpose, and the URI of the Connections MCP service account |
-| `cetirun-adx-mon-ingestor-tls` in `cetirun-system`, with the ADX-Mon collection | The observability chart. Valid for 3650 days | No action | The Secret must stay |
+| `cetirun-adx-mon-ingestor-tls` in `cetirun-system`, the certificate of the ADX-Mon ingestor | The observability chart. Valid for 3650 days | No action | The Secret must stay |
 
 The admission server, the Broker, and Connections MCP read a replaced
 certificate from their mounted Secret without a restart. The clients of a new
