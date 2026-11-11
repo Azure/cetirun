@@ -411,7 +411,9 @@ collects and where the data goes, read [PRIVACY.md]({{< repo "PRIVACY.md" >}}).
 Extension surfaces include `extraEnv`, `extraEnvFrom`, `extraVolumeMounts`,
 `extraVolumes`, `initContainers`, `sidecars`, `podAnnotations`, and security
 contexts. Changes can expand privileges and data access. Before you use them,
-see [security](../../security/). In particular, the main container of a built-in Agent defaults to
+see [security](../../security/).
+
+The main container of a built-in Agent defaults to
 `readOnlyRootFilesystem: false` and `allowPrivilegeEscalation: true`. Do not
 describe all containers as read-only or privilege-escalation-disabled. Custom
 Agents use other security settings. See the
@@ -894,7 +896,9 @@ For all values and their defaults, see
 The backend enforces `features.allowedAgentTypes`, the Tailscale feature flag,
 and the per-user instance limit. Custom uses the current Portal login and
 instance-ownership checks. A separate admission grant is not necessary for
-Custom. AgentPolicy limits the Harness types of a Team with
+Custom.
+
+AgentPolicy limits the Harness types of a Team with
 `harnesses.allowed`. Image approval is deployment-wide: a built-in image
 override must match its runtime profile, and a Custom image must be in the
 Operator's `customRuntime.approvedImages`. There is no per-user or per-Team

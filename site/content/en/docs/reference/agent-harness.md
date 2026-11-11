@@ -95,7 +95,9 @@ The Portal and Operator charts enable Custom support by default. The Operator's
 rejects every image until an administrator approves its immutable digest. No
 image is approved by default. The list holds at most 64 entries, and each entry
 must have the form `<repository>@sha256:<64 hex digits>`. An Agent's
-`spec.agent.image` must exactly match an entry. Numeric `imageUsers` entries are
+`spec.agent.image` must exactly match an entry.
+
+Numeric `imageUsers` entries are
 required when the selected policy enables FQDN capture; other images keep their
 image-owned identity and must be qualified for the configured HOME storage. See
 [Governed observed-SNI capture](#governed-observed-sni-capture).
@@ -1036,6 +1038,7 @@ Set `customRuntime.enabled: false` in the Operator chart to disable its Custom
 provider separately. Update the Operator image and the chart together. An
 Operator image that is older than the chart can reject an enabled provider with
 an empty approval list.
+
 These opt-outs apply to direct Helm chart installations. The `make deploy`
 entry point requires the complete platform configuration, including enabled
 Custom support and a nonempty approval list. An empty `allowedAgentTypes: []`

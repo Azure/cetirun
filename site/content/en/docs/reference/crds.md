@@ -169,8 +169,8 @@ For policy-governed Sandbox Custom Agents, a disabled provider or unapproved
 image instead reports `PolicyResolved=False` with reason `PolicyDenied`.
 
 Private images use `agent.registrySecretRef.name` to refer to a Portal-managed
-source Secret. Before the operator copies the Secret to the runtime namespace
-for image pulls, it validates the Agent UID ownership, the registry host, and
+source Secret. For image pulls, the operator copies the Secret to the runtime
+namespace. It first validates the Agent UID ownership, the registry host, and
 the workload permissions of the Secret. The Agent spec never stores
 credentials. See [Private registries](../agent-harness/#private-registries).
 
