@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -1646,6 +1647,13 @@ func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) str
 				parts = append(parts, "gateway-router-vision", strings.Join(slices.Sorted(maps.Keys(visionFolds)), ","))
 			}
 		}
+	}
+	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
+		// A previously unknown deployment can acquire limits without changing
+		// native display minima or grants. Refresh the Custom environment too.
+		raw, _ := json.Marshal(r.aiGatewayCustomModels(instance))
+		sum := sha256.Sum256(raw)
+		parts = append(parts, "custom-model-limits", hex.EncodeToString(sum[:]))
 	}
 	return strings.Join(parts, "|")
 }

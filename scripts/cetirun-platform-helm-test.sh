@@ -95,7 +95,7 @@ grep -A1 'name: AI_GATEWAY_COPILOT_HEALTH_CHECKS$' <<< "${output}" | grep -q 'va
 }
 # The platform writes the Gateway's request log and keeps LiteLLM's spend log
 # for seven days, so the console's request log pages work, and serves the
-# Gateway's metrics for managed Prometheus.
+# Gateway's metrics for the ADX-Mon collection.
 grep -A1 'name: CETIRUN_REQUEST_LOG$' <<< "${output}" | grep -q 'value: "true"' || {
   echo "FAIL: the bundled AI Gateway does not write its request log" >&2
   exit 1
@@ -112,15 +112,19 @@ grep -q -- '- --prometheus_metrics_port$' <<< "${output}" || {
   echo "FAIL: the bundled AI Gateway does not serve its metrics" >&2
   exit 1
 }
-if grep -q 'kind: PodMonitor' <<< "${output}"; then
-  echo "FAIL: the platform rendered a PodMonitor for a cluster without its API" >&2
-  exit 1
-fi
-monitored=$(helm template platform "${chart_dir}" "${base_args[@]}" --api-versions azmonitoring.coreos.com/v1/PodMonitor)
-grep -q 'kind: PodMonitor' <<< "${monitored}" || {
-  echo "FAIL: the platform rendered no PodMonitor on a cluster with managed Prometheus" >&2
+grep -q 'adx-mon/scrape: "true"' <<< "$(helm template platform "${chart_dir}" "${base_args[@]}" \
+  -s charts/cetirun-ai-gateway/templates/deployment.yaml)" || {
+  echo "FAIL: the bundled AI Gateway's pods do not ask the ADX-Mon collector to scrape their metrics" >&2
   exit 1
 }
+# CetiRun collects metrics with ADX-Mon only: no PodMonitor, also where Azure
+# Monitor managed Prometheus or the Prometheus Operator serves the API.
+monitored=$(helm template platform "${chart_dir}" "${base_args[@]}" \
+  --api-versions azmonitoring.coreos.com/v1/PodMonitor --api-versions monitoring.coreos.com/v1/PodMonitor)
+if grep -q 'kind: PodMonitor' <<< "${monitored}"; then
+  echo "FAIL: the platform rendered a PodMonitor" >&2
+  exit 1
+fi
 for crd_name in agents.cetirun.microsoft.com teams.cetirun.microsoft.com \
   sandboxes.cetirun.microsoft.com agentpolicies.cetirun.microsoft.com; do
   grep -q "name: ${crd_name}" <<< "${output}" || {

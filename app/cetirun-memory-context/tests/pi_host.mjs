@@ -21,6 +21,7 @@ const server = createServer(async (request, response) => {
   const body = JSON.parse(raw);
   nativeRequests.push(body);
   const evaluation = body.messages.some(message => typeof message.content === "string" && message.content.startsWith("Transform only the supplied synthetic fixture."));
+  if (!evaluation) assert.equal(body.max_completion_tokens, 2048, "native task must retain its full output budget");
   let delta, reason;
   if (evaluation) {
     extra++;
@@ -39,7 +40,8 @@ const server = createServer(async (request, response) => {
   response.end(`data: ${JSON.stringify({ id: "fixture", model: "fixture", choices: [{ index: 0, delta, finish_reason: reason }] })}\n\ndata: [DONE]\n\n`);
 });
 await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-const env = { ...process.env, OPENAI_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`, OPENAI_API_KEY: "sk-dummy" };
+const env = { ...process.env, OPENAI_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`, OPENAI_API_KEY: "sk-dummy",
+  CETIRUN_GATEWAY_MODEL_LIMITS: JSON.stringify({ version: 1, models: [{ id: "fixture", contextWindow: 131072, maxOutputTokens: 4096 }] }) };
 let session;
 try {
   const services = await createPiServices(home, cwd, { ...env, CETIRUN_MEMORY_ASSETS: undefined }, "pi-tui");

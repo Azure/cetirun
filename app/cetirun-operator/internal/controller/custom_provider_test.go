@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"slices"
 	"strings"
@@ -558,6 +559,137 @@ func TestCustomRuntimeDefaultsRequireImageApproval(t *testing.T) {
 	p = NewKubernetesCustomBindings(p.reconciler, cfg)
 	if err := p.authorize(instance); err == nil || p.UsesAIGateway(instance) {
 		t.Fatal("explicitly disabled provider authorized an approved image")
+	}
+	// Startup leaves the provider nil when Custom is disabled.
+	r := p.reconciler
+	r.CustomBindings = nil
+	if _, err := r.reconcileCustom(context.Background(), instance, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(instance.Status.Conditions) != 2 {
+		t.Fatalf("disabled runtime did not report readiness: %+v", instance.Status.Conditions)
+	}
+	for _, condition := range instance.Status.Conditions {
+		if condition.Reason != "CustomRuntimeDisabled" {
+			t.Fatalf("disabled runtime reason was lost: %+v", condition)
+		}
+	}
+}
+
+func TestCustomUnapprovedImageReportsReasonAndRecovers(t *testing.T) {
+	p, instance := providerFixture(t)
+	p.config.ApprovedImages = nil
+	r := p.reconciler
+	r.CustomBindings = p
+	ctx := context.Background()
+	result, err := r.reconcileCustom(ctx, instance, nil)
+	if err != nil || result.RequeueAfter == 0 {
+		t.Fatalf("approval wait: %v, %v", result, err)
+	}
+	if instance.Status.Phase != api.PhasePending {
+		t.Fatalf("phase = %s", instance.Status.Phase)
+	}
+	conditions := 0
+	for _, condition := range instance.Status.Conditions {
+		if condition.Type == api.ConditionReady || condition.Type == api.ConditionAgentConfigReady {
+			conditions++
+			if condition.Reason != "CustomImageNotApproved" || !strings.Contains(condition.Message, "administrator") {
+				t.Fatalf("approval reason was lost: %+v", condition)
+			}
+		}
+	}
+	if conditions != 2 {
+		t.Fatalf("missing readiness conditions: %+v", instance.Status.Conditions)
+	}
+	p.config.ApprovedImages = []string{*instance.Spec.Agent.Image}
+	for range 2 {
+		if err := r.Get(ctx, client.ObjectKeyFromObject(instance), instance); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.reconcileCustom(ctx, instance, nil); err != nil && !apierrors.IsConflict(err) {
+			t.Fatal(err)
+		}
+	}
+	namespaces := &corev1.NamespaceList{}
+	if err := r.List(ctx, namespaces); err != nil || len(namespaces.Items) != 1 {
+		t.Fatalf("approved pending Agent did not resume provisioning: %v", err)
+	}
+	for _, condition := range instance.Status.Conditions {
+		if condition.Reason == "CustomImageNotApproved" {
+			t.Fatal("approval condition was not cleared")
+		}
+	}
+}
+
+func TestCustomCatalogPublishesCurrentImageApprovals(t *testing.T) {
+	p, instance := providerFixture(t)
+	r := p.reconciler
+	for _, enabled := range []bool{true, false} {
+		p.config.Enabled = enabled
+		r.CustomBindings = p
+		if err := r.writeAIGatewayCatalog(context.Background(), nil, true); err != nil {
+			t.Fatal(err)
+		}
+		cm := &corev1.ConfigMap{}
+		if err := r.Get(context.Background(), client.ObjectKey{Namespace: r.OperatorNamespace, Name: api.AIGatewayCatalogConfigMap}, cm); err != nil {
+			t.Fatal(err)
+		}
+		var catalog api.AIGatewayCatalog
+		if err := json.Unmarshal([]byte(cm.Data[api.AIGatewayCatalogKey]), &catalog); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{}
+		if enabled {
+			want = []string{*instance.Spec.Agent.Image}
+		}
+		if catalog.CustomImages == nil || !slices.Equal(catalog.CustomImages, want) {
+			t.Fatalf("enabled=%v published approvals=%v", enabled, catalog.CustomImages)
+		}
+	}
+}
+
+func TestCustomCatalogRefreshesApprovalsDuringGatewayOutage(t *testing.T) {
+	for _, failure := range []string{"client unavailable", "model listing unavailable"} {
+		t.Run(failure, func(t *testing.T) {
+			r, kube, gateway := aiGatewayTestReconciler(t)
+			provider, _ := providerFixture(t)
+			r.CustomBindings = provider
+			ctx := context.Background()
+			r.publishAIGatewayCatalog(ctx, 0)
+			cm := &corev1.ConfigMap{}
+			key := client.ObjectKey{Namespace: r.catalogNamespace(), Name: api.AIGatewayCatalogConfigMap}
+			if err := kube.Get(ctx, key, cm); err != nil {
+				t.Fatal(err)
+			}
+			var before api.AIGatewayCatalog
+			if err := json.Unmarshal([]byte(cm.Data[api.AIGatewayCatalogKey]), &before); err != nil {
+				t.Fatal(err)
+			}
+			// A new leader has no in-memory catalog or old approval configuration.
+			r.aiGatewayCatalog = aiGatewayCatalog{}
+			if failure == "client unavailable" {
+				r.aiGatewayClientFactory = func(context.Context) (aiGatewayKeyClient, error) {
+					return nil, errors.New("synthetic client failure")
+				}
+			} else {
+				gateway.listErr = errors.New("synthetic listing failure")
+			}
+			for _, approvals := range [][]string{{"registry.example.com/new@sha256:" + strings.Repeat("b", 64)}, {}} {
+				provider.config.ApprovedImages = approvals
+				r.publishAIGatewayCatalog(ctx, 0)
+				if err := kube.Get(ctx, key, cm); err != nil {
+					t.Fatal(err)
+				}
+				var after api.AIGatewayCatalog
+				if err := json.Unmarshal([]byte(cm.Data[api.AIGatewayCatalogKey]), &after); err != nil {
+					t.Fatal(err)
+				}
+				before.CustomImages = approvals
+				if !reflect.DeepEqual(before, after) {
+					t.Fatalf("catalog changed beyond current approvals: before=%+v after=%+v", before, after)
+				}
+			}
+		})
 	}
 }
 

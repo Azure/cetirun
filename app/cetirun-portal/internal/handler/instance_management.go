@@ -187,9 +187,11 @@ func (h *InstanceHandler) updateInstance(w http.ResponseWriter, r *http.Request,
 			if opts.Agent != nil {
 				agent = *opts.Agent
 			}
-			return h.validateAgentType(agent.Type)
+			if err := h.validateAgentType(agent.Type); err != nil {
+				return err
+			}
 		}
-		return nil
+		return h.validateCustomImageUpdate(r.Context(), current.Spec.Agent, opts.Agent)
 	}
 	updated, err := h.Kube.UpdateInstanceByName(r.Context(), name, opts)
 	if err != nil {

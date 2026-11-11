@@ -120,7 +120,6 @@
 {{- $redisConnectionURL := $session.connectionURL -}}
 {{- $redisExistingSecret := $session.secretName -}}
 {{- $redisPasswordKey := $session.passwordKey -}}
-{{- $redisSecretData := dict -}}
 {{- $cookieExpire := default "45m" (get $cookieSettings "expire") -}}
 {{- $csrfPerRequestLimit := 20 -}}
 {{- if hasKey $cookieSettings "csrfPerRequestLimit" -}}
@@ -133,12 +132,6 @@
 {{- end -}}
 {{- if not (has $oidcEmailClaim (list "preferred_username" "email")) -}}
 {{- fail "oauth2Proxy.emailClaim must be preferred_username or email" -}}
-{{- end -}}
-{{- if eq $sessionStoreType "redis" -}}
-{{- $redisSecret := lookup "v1" "Secret" .Release.Namespace $redisExistingSecret -}}
-{{- if and $redisSecret $redisSecret.data -}}
-{{- $redisSecretData = $redisSecret.data -}}
-{{- end -}}
 {{- end -}}
 apiVersion: apps/v1
 kind: Deployment
@@ -155,10 +148,11 @@ spec:
       app: oauth2-proxy
   template:
     metadata:
-      {{- if eq $sessionStoreType "redis" }}
       annotations:
-        checksum/redis-session-credentials: {{ toJson $redisSecretData | sha256sum | quote }}
-      {{- end }}
+        checksum/error-template: {{ .Files.Get "files/oauth2-error.html" | sha256sum | quote }}
+        {{- if eq $sessionStoreType "redis" }}
+        checksum/redis-session-credentials: {{ include "cetirun-istio.sessionSecretData" . | sha256sum | quote }}
+        {{- end }}
       labels:
         app: oauth2-proxy
         {{- if not $isOIDC }}
@@ -267,6 +261,11 @@ spec:
             - --skip-jwt-bearer-tokens={{ $ingressSettings.skipJwtBearerTokens }}
             - --silence-ping-logging=true
             - --footer=-
+            - --custom-templates-dir=/etc/oauth2-proxy/templates
+          volumeMounts:
+            - name: error-template
+              mountPath: /etc/oauth2-proxy/templates
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /ping
@@ -279,6 +278,10 @@ spec:
             periodSeconds: 30
           resources:
             {{- toYaml .Values.oauth2Proxy.resources | nindent 12 }}
+      volumes:
+        - name: error-template
+          configMap:
+            name: oauth2-proxy-templates
       {{- with .Values.oauth2Proxy.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

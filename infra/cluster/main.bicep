@@ -107,22 +107,13 @@ param istioIngressGatewayType string = 'External'
 @description('Optional managed Istio revision. Leave empty to let AKS select its default revision.')
 param istioRevision string = ''
 
-// --- Monitoring parameters ---
-
-// --- Azure Data Explorer for ADX-Mon (cetirun-observability chart) ---
+// --- Monitoring: ADX-Mon into Azure Data Explorer (cetirun-observability chart) ---
+// The cluster runs neither Container Insights nor managed Prometheus: the AKS
+// module turns both off.
 
 @allowed(['none', 'create', 'existing'])
-@description('none: no ADX resources. create: a new Kusto cluster in adxResourceGroupName. existing: the databases and roles in the existing cluster adxClusterName.')
-param adxMode string = 'none'
-
-@description('Container Insights to Log Analytics. Off by default when ADX-Mon collects into Azure Data Explorer (adxMode create or existing). On Kata node pools with recent node images, it collects nothing from those nodes.')
-param enableContainerInsights bool = adxMode == 'none'
-
-@description('Managed Prometheus to an Azure Monitor workspace. Off by default when ADX-Mon collects the metrics.')
-param enablePrometheusMetrics bool = adxMode == 'none'
-
-@description('Existing Log Analytics workspace for Container Insights. Empty creates one when Container Insights is on.')
-param logAnalyticsWorkspaceId string = ''
+@description('create, the default: a new Kusto cluster in adxResourceGroupName. existing: the databases and roles in the existing cluster adxClusterName. none: no ADX resources; make deploy then needs a Kusto cluster, its databases and an ingestor identity that exist.')
+param adxMode string = 'create'
 
 @description('Kusto cluster name: 4 to 22 lowercase letters and digits, starting with a letter. Kusto cluster names are unique in Azure.')
 param adxClusterName string = 'adx${uniqueString(subscription().subscriptionId, resourceGroupName, clusterName)}'
@@ -199,9 +190,6 @@ module cluster 'modules/aks-cluster.bicep' = {
     istioIngressGatewayEnabled: istioIngressGatewayEnabled
     istioIngressGatewayType: istioIngressGatewayType
     istioRevision: istioRevision
-    enableContainerInsights: enableContainerInsights
-    enablePrometheusMetrics: enablePrometheusMetrics
-    logAnalyticsWorkspaceId: logAnalyticsWorkspaceId
   }
 }
 

@@ -5,8 +5,9 @@
 LiteLLM writes no per-request record to its own log, and of its export
 callbacks the Azure Blob Storage one needs a LiteLLM Enterprise license while
 the others need a third-party service. A line on stdout reaches whatever
-collects the cluster's container logs, such as Container Insights into a Log
-Analytics workspace, with nothing more to deploy or authorize.
+collects the cluster's container logs, such as the ADX-Mon collection of the
+cetirun-observability chart into Azure Data Explorer, with nothing more to
+deploy or authorize.
 
 The record is metadata only: the caller (virtual key, user, Team, and the Agent
 the CetiRun operator recorded on the key), the model, tokens, spend, timing and
@@ -48,7 +49,7 @@ SCHEMA_VERSION = 1
 
 # The container runtime splits a line longer than 16 KiB, and a collector that
 # does not join the pieces again stores each as its own line, none of them
-# valid JSON. Container Insights does that unless multiline logging is on.
+# valid JSON.
 MAX_LINE_BYTES = 15 * 1024
 # Every string in a record is cut to FREE_TEXT_MAX_CHARS characters, apart from
 # the request ID and the error text, which have limits of their own. Clients

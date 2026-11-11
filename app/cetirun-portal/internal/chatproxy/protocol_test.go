@@ -131,6 +131,57 @@ func TestClientDistinguishesReportedFailureFromStreamLoss(t *testing.T) {
 	}
 }
 
+func TestClientForwardsOnlyAllowlistedBudgetFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name, upstream, wantCode, wantMessage string
+	}{
+		{"model limits SSE", `{"error":{"code":"model_limits_unavailable","message":"secret-sentinel"}}`, "model_limits_unavailable", "cannot verify the selected model's limits"},
+		{"context budget SSE", `{"error":{"code":"context_budget_exceeded","message":"secret-sentinel"}}`, "context_budget_exceeded", "Earlier tool actions may have completed"},
+		{"unknown SSE", `{"error":{"code":"provider_detail","message":"secret-sentinel"}}`, "agent_reported_error", "The Agent reported a failed response"},
+		{"legacy string SSE", `{"error":"secret-sentinel"}`, "agent_reported_error", "The Agent reported a failed response"},
+		{"numeric code SSE", `{"error":{"code":7,"message":"secret-sentinel"}}`, "agent_reported_error", "The Agent reported a failed response"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: "+tc.upstream+"\n\n")
+			}))
+			defer upstream.Close()
+			w := httptest.NewRecorder()
+			NewClient().Complete(context.Background(), w, Target{BaseURL: upstream.URL}, Request{Model: "agent", Stream: true}, "test")
+			body := w.Body.String()
+			if !strings.Contains(body, `"code":"`+tc.wantCode+`"`) || !strings.Contains(body, tc.wantMessage) || strings.Contains(body, "secret-sentinel") {
+				t.Fatalf("unsafe or wrong failure response: %s", body)
+			}
+		})
+	}
+}
+
+func TestClientForwardsOnlyAllowlistedBudgetHTTPFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name, upstream, wantCode, wantMessage string
+	}{
+		{"model limits", `{"error":{"code":"model_limits_unavailable","message":"secret-sentinel"}}`, "model_limits_unavailable", "cannot verify the selected model's limits"},
+		{"context budget", `{"error":{"code":"context_budget_exceeded","message":"secret-sentinel"}}`, "context_budget_exceeded", "Earlier tool actions may have completed"},
+		{"unknown", `{"error":{"code":"provider_detail","message":"secret-sentinel"}}`, "agent_reported_error", "The Agent did not complete"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = io.WriteString(w, tc.upstream)
+			}))
+			defer upstream.Close()
+			w := httptest.NewRecorder()
+			NewClient().Complete(context.Background(), w, Target{BaseURL: upstream.URL}, Request{Model: "agent"}, "test")
+			body := w.Body.String()
+			if w.Code != http.StatusBadGateway || !strings.Contains(body, `"code":"`+tc.wantCode+`"`) || !strings.Contains(body, tc.wantMessage) || strings.Contains(body, "secret-sentinel") {
+				t.Fatalf("unsafe or wrong failure response: status=%d body=%s", w.Code, body)
+			}
+		})
+	}
+}
+
 func TestClientModelsAndCancellation(t *testing.T) {
 	started := make(chan struct{})
 	cancelled := make(chan struct{})

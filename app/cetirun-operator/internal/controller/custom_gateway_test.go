@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -93,7 +94,7 @@ func TestCustomGatewayKeyBindingAndCopilot(t *testing.T) {
 	if err := p.reconciler.bindCustomGateway(ctx, instance, &b); err != nil {
 		t.Fatal(err)
 	}
-	if first != b.Model || len(gateway.generated) != 1 {
+	if !reflect.DeepEqual(first, b.Model) || len(gateway.generated) != 1 {
 		t.Fatal("steady reconciliation changed the key binding")
 	}
 	if err := p.reconciler.deleteAIGatewayKey(ctx, instance); err != nil {

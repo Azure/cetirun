@@ -1,0 +1,39 @@
+<!--
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT License.
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.StatusCode}} {{.Title}} — CetiRun</title>
+  <style>
+    body { margin: 0; padding: 2rem 1rem; background: #f5f6f8; color: #24292f; font: 1rem/1.6 system-ui, sans-serif; }
+    main { max-width: 34rem; margin: 8vh auto; padding: 2rem; background: white; border: 1px solid #d0d7de; border-radius: .75rem; }
+    h1 { font-size: 1.5rem; line-height: 1.3; }
+    .status { color: #57606a; }
+    a { color: #0969da; }
+    .signin { display: inline-block; margin: .5rem 1rem .5rem 0; padding: .6rem 1rem; background: #0969da; color: white; border-radius: .4rem; text-decoration: none; }
+    a:focus-visible { outline: 3px solid #24292f; outline-offset: 3px; }
+    small { display: block; margin-top: 1.5rem; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="status">CetiRun · {{.StatusCode}}</div>
+    <h1>{{.Title}}</h1>
+    {{if ge .StatusCode 500}}
+    <p>Sign-in is temporarily unavailable. The authentication service could not complete your request.</p>
+    <p>Wait a moment, then start a new sign-in. If the problem continues, contact your administrator.</p>
+    {{else}}
+    <p>This sign-in attempt could not be completed. Start a new sign-in. If access is still denied, contact your administrator.</p>
+    {{end}}
+    <p>Refreshing this page may repeat a failed callback. Use Sign in to start again and return to the Portal.</p>
+    <a class="signin" href="{{.ProxyPrefix}}/start?rd=%2F">Sign in</a>
+    <a href="/">Portal home</a>
+    {{if .RequestID}}<small>Request ID: {{.RequestID}}</small>{{end}}
+  </main>
+</body>
+</html>

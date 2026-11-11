@@ -416,6 +416,11 @@ templates. Helm reconciliation restarts OAuth2 Proxy and the bundled Valkey
 with the new password. Plan for sign-in interruption during this rotation.
 A Secret update alone does not restart existing Pods.
 
+The initial Secret and both Pod templates use the same credentials when the
+chart creates the session store. An upgrade with unchanged credentials and
+settings does not restart the store. Applying this fix to a release created by
+an older chart can cause a one-time rollout if its saved checksum is stale.
+
 When upgrading a cookie-mode installation, explicitly set
 `oauth2Proxy.sessionStore.type: redis`. An existing values file can retain
 `type: cookie` despite the new default. Keep the existing cookie Secret and
@@ -445,6 +450,17 @@ answer `401` instead of a redirect to Entra. This is because a browser cannot
 follow that redirect from a script. Also, an Agent UI can request dozens of
 assets at one time. Otherwise, each of these asset requests starts a sign-in.
 The Portal then asks the user to refresh the page.
+
+On an OAuth2 Proxy error page, **Sign in** starts a new authentication attempt
+and returns to the Portal home page. It does not revisit the failed callback
+URL. If sign-in is temporarily unavailable, wait for the authentication service
+and its session store to recover before trying again. Access remains denied
+while the session cannot be verified; CSRF, nonce, and PKCE checks still apply.
+
+OAuth2 Proxy also checks Redis during startup. The pinned version exits if
+that check fails, and Kubernetes retries it. The error page and safe return
+URL do not remove this startup dependency or make the single-replica store
+highly available.
 
 ## Authentication and ownership
 

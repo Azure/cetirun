@@ -459,7 +459,6 @@ defaults.
 {{- $_ := set $settings "requestLog" (dict "enabled" (dig "enabled" true $requestLog)) -}}
 {{- $_ = set $settings "spendLogs" (dict "enabled" (dig "enabled" true $spendLogs) "storePrompts" (dig "storePrompts" true $spendLogs) "retention" (dig "retention" "7d" $spendLogs)) -}}
 {{- $monitor := dict "enabled" (dig "enabled" false $podMonitor) -}}
-{{- $_ = set $monitor "apiVersion" (dig "apiVersion" "azmonitoring.coreos.com/v1" $podMonitor) -}}
 {{- $_ = set $monitor "interval" (dig "interval" "30s" $podMonitor) -}}
 {{- $_ = set $monitor "labels" (dig "labels" dict $podMonitor) -}}
 {{- $metricsSettings := dict "enabled" (dig "enabled" false $metrics) "port" (dig "port" nil $metrics) -}}
@@ -609,13 +608,13 @@ has one.
 {{- end }}
 
 {{/*
-Whether the cluster serves the PodMonitor API the chart is configured for.
-Azure Monitor managed Prometheus installs azmonitoring.coreos.com; a cluster
-without it has no such API, and installing a PodMonitor there would fail.
+Whether the cluster serves the Prometheus Operator's PodMonitor API. A cluster
+without it has no such API, and installing a PodMonitor there would fail. The
+chart ignores metrics.podMonitor.apiVersion, which a release installed with an
+earlier chart version can still hold.
 */}}
 {{- define "cetirun-ai-gateway.podMonitorAvailable" -}}
-{{- $podMonitor := (include "cetirun-ai-gateway.logsAndMetrics" . | fromJson).metrics.podMonitor -}}
-{{- if .Capabilities.APIVersions.Has (printf "%s/PodMonitor" $podMonitor.apiVersion) }}true{{ end }}
+{{- if .Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PodMonitor" }}true{{ end }}
 {{- end }}
 
 {{/*

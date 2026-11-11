@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oauth2-proxy-templates
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cetirun-istio.labels" . | nindent 4 }}
+data:
+  error.html: |
+    {{- .Files.Get "files/oauth2-error.html" | nindent 4 }}

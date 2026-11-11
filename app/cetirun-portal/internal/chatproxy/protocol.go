@@ -23,6 +23,54 @@ const (
 var ErrProtocol = errors.New("Agent returned an unsupported chat response")
 var ErrAgent = errors.New("Agent reported an unsuccessful response")
 
+const (
+	agentErrorModelLimitsUnavailable = "model_limits_unavailable"
+	agentErrorContextBudgetExceeded  = "context_budget_exceeded"
+)
+
+// agentErrorCode is deliberately a closed set. Agent error text is never
+// trusted by the Portal: it can contain prompt content, tool arguments, or
+// provider details.
+type agentErrorCode string
+
+func (e agentErrorCode) Error() string { return string(e) }
+func (e agentErrorCode) Unwrap() error { return ErrAgent }
+
+func safeAgentErrorCode(value string) error {
+	if isSafeAgentErrorCode(value) {
+		return agentErrorCode(value)
+	}
+	return ErrAgent
+}
+
+func isSafeAgentErrorCode(value string) bool {
+	switch value {
+	case agentErrorModelLimitsUnavailable, agentErrorContextBudgetExceeded:
+		return true
+	default:
+		return false
+	}
+}
+
+func reportedAgentErrorCode(err error) string {
+	var code agentErrorCode
+	if errors.As(err, &code) {
+		return string(code)
+	}
+	return "agent_reported_error"
+}
+
+func reportedAgentErrorMessage(code string) string {
+	switch code {
+	case agentErrorModelLimitsUnavailable:
+		return "The Agent cannot verify the selected model's limits. The request will not be retried."
+	case agentErrorContextBudgetExceeded:
+		return "The conversation exceeds the selected model's context budget. Earlier tool actions may have completed; the request will not be retried."
+	default:
+		return "The Agent reported a failed response. Earlier tool actions may have completed; the request will not be retried."
+	}
+}
+
 type Limits struct {
 	RequestBytes          int `json:"requestBytes"`
 	MessageCount          int `json:"messageCount"`
@@ -157,7 +205,16 @@ func normalize(raw []byte, id, model string, stream bool) (Completion, bool, err
 		return result, false, ErrProtocol
 	}
 	if len(body.Error) != 0 && string(body.Error) != "null" {
-		return result, false, ErrAgent
+		var reported struct {
+			Code string `json:"code"`
+		}
+		// Existing runtimes can return a string or a differently shaped error.
+		// It remains a reported failure, but only a recognized string code gets
+		// a more specific Portal response.
+		if json.Unmarshal(body.Error, &reported) != nil {
+			return result, false, ErrAgent
+		}
+		return result, false, safeAgentErrorCode(reported.Code)
 	}
 	if stream && body.Choices != nil && len(body.Choices) == 0 && len(body.Usage) > 0 {
 		return result, true, nil
