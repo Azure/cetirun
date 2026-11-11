@@ -1496,7 +1496,9 @@ class Deployment:
         namespace, name = metadata.get("namespace", self.config["istio"]["namespace"]), metadata["name"]
 
         def read(field):
-            return self.kubectl("get", kind, name, "--namespace", namespace, "-o", "jsonpath={" + field + "}")
+            # A bare Gateway resolves to the Gateway API when its CRDs are installed.
+            qualified = "gateways.networking.istio.io" if kind == "Gateway" else kind
+            return self.kubectl("get", qualified, name, "--namespace", namespace, "-o", "jsonpath={" + field + "}")
 
         def match(field, actual, expected):
             if actual != expected:
