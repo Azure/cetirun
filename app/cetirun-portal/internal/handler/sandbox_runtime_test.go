@@ -42,7 +42,7 @@ func TestSandboxCreatePreservesCustomContracts(t *testing.T) {
 		h.Config.SandboxControllerDefaults = true
 		w := httptest.NewRecorder()
 		h.CreateInstance(w, managementRequest(http.MethodPost,
-			`{"agent":{"type":"custom","image":"registry.example.com/custom@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`+
+			`{"agent":{"type":"custom","image":"`+managementImage+`"`+
 				endpoint+`},"team":"policy-team","modelAccess":{"sharedModels":true,"githubCopilot":false}}`))
 		if w.Code != http.StatusCreated {
 			t.Fatalf("Custom create: %d %s", w.Code, w.Body.String())

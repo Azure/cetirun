@@ -8,6 +8,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CreateForm } from "../CreateForm";
 import type { CreateOptions } from "../../hooks/useCreateOptions";
 
+const approvedImage = "registry.example.com/assistant@sha256:" + "a".repeat(64);
+
 const mutation = vi.hoisted(() => ({ mutate: vi.fn(), isPending: false, error: null as Error | null }));
 vi.mock("../../hooks/useInstance", () => ({ useCreateInstance: () => mutation }));
 vi.mock("../../hooks/useFeatures", () => ({
@@ -150,12 +152,12 @@ describe("Policy-controlled Agent creation", () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(respond(options("restricted", {
       policyName: undefined,
       allowedAgentTypes: ["custom"],
-      gateway: { known: true, agentTypes: ["custom"], sharedModels: [{ name: "allowed-model" }], githubCopilot: false },
+      gateway: { known: true, agentTypes: ["custom"], sharedModels: [{ name: "allowed-model" }], githubCopilot: false, customImages: [approvedImage] },
       agentIdentity: { allowed: true, required: false },
     }))));
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup(); renderForm(); await selectTeam(user);
-    await user.type(screen.getByLabelText(/Agent Image/), "registry.example.com/assistant:1");
+    await user.type(screen.getByLabelText(/Agent Image/), approvedImage);
     expect(screen.queryByRole("switch", { name: /Entra Agent Identity/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Create Agent" }));
     expect(mutation.mutate).toHaveBeenCalledWith(expect.objectContaining({ agentIdentityEnabled: undefined, agent: expect.objectContaining({ type: "custom" }) }));
@@ -164,12 +166,12 @@ describe("Policy-controlled Agent creation", () => {
   it("offers required Identity to explicitly qualified governed Custom", async () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(respond(options("restricted", {
       allowedAgentTypes: ["custom"],
-      gateway: { known: true, agentTypes: ["custom"], sharedModels: [{ name: "allowed-model" }], githubCopilot: false },
+      gateway: { known: true, agentTypes: ["custom"], sharedModels: [{ name: "allowed-model" }], githubCopilot: false, customImages: [approvedImage] },
       agentIdentity: { allowed: true, required: true, customAllowed: true },
     })))));
     const user = userEvent.setup(); renderForm(); await selectTeam(user);
     expect(screen.getByRole("combobox", { name: "Agent Type" })).toHaveValue("custom");
-    await user.type(screen.getByLabelText(/Agent Image/), "registry.example.com/assistant:1");
+    await user.type(screen.getByLabelText(/Agent Image/), approvedImage);
     const identity = screen.getByRole("switch", { name: /Entra Agent Identity/ });
     expect(identity).toBeChecked();
     expect(identity).toBeDisabled();

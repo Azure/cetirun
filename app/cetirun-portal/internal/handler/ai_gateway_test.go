@@ -48,7 +48,8 @@ const testAgentChart = "oci://registry.example.com/helm/cetirun:1.0.0"
 // earlier operator's catalog, which has none; null agent types are a chart
 // the operator has not read yet.
 func routingCatalog(routing *cetirunv1alpha1.AIGatewayRouting, copilot bool, models ...string) *corev1.ConfigMap {
-	catalog := cetirunv1alpha1.AIGatewayCatalog{SharedModels: []cetirunv1alpha1.AIGatewayCatalogModel{}, GitHubCopilot: copilot, Routing: routing}
+	catalog := cetirunv1alpha1.AIGatewayCatalog{SharedModels: []cetirunv1alpha1.AIGatewayCatalogModel{}, GitHubCopilot: copilot, Routing: routing,
+		CustomImages: []string{managementImage, replacementImage}}
 	for _, name := range models {
 		catalog.SharedModels = append(catalog.SharedModels, cetirunv1alpha1.AIGatewayCatalogModel{Name: name, ContextWindow: 200000})
 	}

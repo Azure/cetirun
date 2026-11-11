@@ -33,11 +33,13 @@ const mockCatalog = vi.hoisted(() => ({
     sharedModels: [{ name: "gpt-6" }, { name: "gpt-6-mini" }],
     githubCopilot: true,
     agentTypes: ["openclaw", "hermes", "custom"],
+    customImages: ["registry.example.com/team/agent@sha256:" + "a".repeat(64)],
   } as {
     known: boolean;
     sharedModels: { name: string }[];
     githubCopilot: boolean;
     agentTypes: string[] | null;
+    customImages: string[];
   },
 }));
 vi.mock("../../hooks/useCreateOptions", () => ({
@@ -70,6 +72,7 @@ describe("CreateForm with the AI Gateway", () => {
       sharedModels: [{ name: "gpt-6" }, { name: "gpt-6-mini" }],
       githubCopilot: true,
       agentTypes: ["openclaw", "hermes", "custom"],
+      customImages: ["registry.example.com/team/agent@sha256:" + "a".repeat(64)],
     };
   });
 
@@ -225,14 +228,14 @@ describe("CreateForm with the AI Gateway", () => {
       renderForm();
       await user.selectOptions(screen.getByRole("combobox", { name: /Default model/ }), "gpt-6-mini");
       await user.selectOptions(screen.getByRole("combobox", { name: /Agent Type/ }), "custom");
-      await user.type(screen.getByRole("textbox", { name: /Agent Image/ }), "registry.example.com/team/agent:1.0");
+      await user.type(screen.getByLabelText(/Agent Image/), mockCatalog.data.customImages[0]);
       expect(screen.queryByRole("combobox", { name: /Default model/ })).not.toBeInTheDocument();
       expect(screen.getByRole("switch", { name: "Use shared models" })).toBeChecked();
       await user.click(screen.getByRole("switch", { name: "Use GitHub Copilot" }));
       await user.click(screen.getByRole("button", { name: "Create Agent" }));
       expect(mockMutate).toHaveBeenCalledWith(
         expect.objectContaining({
-          agent: { type: "custom", image: "registry.example.com/team/agent:1.0", username: "vibe" },
+          agent: { type: "custom", image: mockCatalog.data.customImages[0], username: "vibe" },
           team: undefined,
           model: undefined,
           modelAccess: { sharedModels: true, githubCopilot: false },

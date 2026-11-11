@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -44,6 +45,8 @@ type CustomImageUser struct {
 	UID int64 `json:"uid"`
 	GID int64 `json:"gid"`
 }
+
+var errCustomImageNotApproved = errors.New("Custom image is not approved")
 
 func ParseCustomRuntimeConfig(raw string) (CustomRuntimeConfig, error) {
 	var cfg CustomRuntimeConfig
@@ -120,9 +123,16 @@ func NewKubernetesCustomBindings(r *AgentReconciler, cfg CustomRuntimeConfig) *K
 func (p *KubernetesCustomBindings) authorize(instance *api.Agent) error {
 	if !p.config.Enabled || instance.Spec.Agent.Type != api.AgentTypeCustom ||
 		instance.Spec.Agent.Image == nil || !slices.Contains(p.config.ApprovedImages, *instance.Spec.Agent.Image) {
-		return fmt.Errorf("Custom image is not approved")
+		return errCustomImageNotApproved
 	}
 	return nil
+}
+
+func (p *KubernetesCustomBindings) ApprovedImages() []string {
+	if !p.config.Enabled {
+		return []string{}
+	}
+	return append([]string{}, p.config.ApprovedImages...)
 }
 
 func (p *KubernetesCustomBindings) UsesAIGateway(instance *api.Agent) bool {
