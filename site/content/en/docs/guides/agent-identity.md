@@ -4,19 +4,26 @@ description: "Connect independent Azure identities and personal accounts to an A
 weight: 45
 ---
 
-CetiRun connects Agents to Azure, GitHub, Gmail, and Google Calendar through a
-native remote MCP service. The Portal does not offer Microsoft 365 (Microsoft
-Graph) connections. **Providers decide resource permissions**: Azure evaluates
-RBAC, and personal providers evaluate their OAuth scopes and the rights of the
-connected user. GitHub App connections also let each Agent select repositories
-and permissions that narrow its installation token. CetiRun binds an Agent to a
-Connection and to selected services.
+Your Agent can work with Azure, GitHub, Gmail, and Google Calendar for you.
+The Portal does not offer Microsoft 365 (Microsoft Graph) connections. You
+decide which accounts and services each Agent can use. The provider still
+checks every request: Azure checks role assignments, and GitHub and Google
+check the permissions of the account that you connect. A shared GitHub App can
+also limit an Agent to selected repositories and permissions.
 
-Hermes and OpenClaw connect natively. Custom must have an approved Sandbox
-image that implements the
-[governed Custom client contract]({{< repo "app/cetirun-connections-mcp/README.md" >}}#governed-custom-workloads).
-Custom without a Sandbox and retained single-start Sandbox lifetimes are not
-supported. When OpenClaw is unavailable, use a qualified Hermes runtime.
+To use a service, ask the Agent in plain language. The Agent uses its built-in
+`connected-services` skill. If a connection is missing, the Agent gives you a
+link to the portal.
+
+If your Agent page has no **Identities** section and the portal header has no
+**Connections** link, your deployment does not allow connected services. Ask
+your administrator. To add a connection, open your Agent and select
+**Identities** → **Add identity**.
+
+Hermes and OpenClaw Agents can use connections. If your Agent belongs to a
+policy-bound Team, your administrator must also allow connections for its
+Sandbox. A Custom Agent can use connections only in a Sandbox, with an image
+that your administrator approved for connections.
 
 Microsoft Entra Agent Identity is necessary for independent Azure access and
 for the Azure/Microsoft delegated flow. GitHub supports personal OAuth and
@@ -26,9 +33,27 @@ Platform administrators prepare these capabilities with
 [Prepare Agent connections](../../operations/agent-identity/). The steps that follow
 are for users of an environment that is already configured.
 
+## What Agent Identity means for you
+
+Agent Identity gives your Agent its own identity in Microsoft Entra. You can
+turn it on only when you create the Agent, with
+**Enable Microsoft Entra Agent Identity**.
+
+- The identity belongs to this Agent only. It starts with no Azure
+  permissions. A person who manages an Azure resource assigns roles to its
+  **Principal ID**.
+- Azure logs show the Agent, not you, as the caller.
+- When you delete the Agent, the platform deletes the identity. A new Agent
+  gets a new Principal ID, which needs new role assignments.
+- To see if the identity is ready, open the **Status** tab of the Agent and
+  find the `AgentIdentityReady` row. While the platform creates the identity,
+  the page can show **Waiting for governance**. If the identity has a problem,
+  the page shows **Identity not ready**.
+
 ## Independent Azure access
 
-1. Enable Agent Identity on a supported instance. Wait until it is Ready.
+1. Make sure that the Agent Identity is ready. Refer to
+   [What Agent Identity means for you](#what-agent-identity-means-for-you).
 2. In **Identities**, select **Add identity → Azure**. Continue with the
    default **Agent identity** method. Select the service, examine the access,
    and select **Allow access**. An identity that already exists is used again.
@@ -42,8 +67,8 @@ are for users of an environment that is already configured.
 4. The association lets this Agent use Azure Resource Manager. It is not an
    Azure role assignment. There is no pending resource grant, and there is no
    RBAC preverification step.
-5. In the Agent, use `connections_status`, `services_list`, and then
-   `service_request`.
+5. Ask the Agent in plain language. For example, ask: "List the resource
+   groups in my subscription." The Agent uses its Azure identity.
 
 For example, a resource owner can assign Reader:
 
@@ -112,8 +137,9 @@ complete consent in the popup. The wizard continues with the verified account.
 Select Gmail, Calendar, or both services. Examine the access, and then select
 **Allow access**.
 
-An enabled service is not a read-only promise. Google uses the actual OAuth
-scopes to decide if each API operation is allowed.
+An enabled service is not a read-only promise. The Google connection requests
+permission to read and send Gmail messages and full access to Google Calendar.
+Google uses these OAuth scopes to decide if each API operation is allowed.
 
 The Broker requests offline access and explicit consent. A connection must
 have a refresh token. If Google does not rotate the refresh token, a refresh
@@ -142,7 +168,7 @@ give the independent Azure app-only attribution that is described above. The
 availability of the Microsoft Graph API also depends on licensing, mailbox
 provisioning, and user rights.
 
-The Portal now shows **Not reported** for downstream OBO scopes. It does not
+The Portal shows **Not reported** for downstream OBO scopes. It does not
 derive Graph or ARM permissions from the intermediate sign-in token or from
 the configured scope requests. The provider still evaluates every API request.
 
@@ -178,7 +204,9 @@ explicitly gives that Agent access again.
 
 ## Use generic REST tools
 
-When you edit a connection, the MCP tool catalog does not change:
+This section is for the authors of skills and images. Agent owners ask the
+Agent in plain language, and the Agent uses these tools. When you edit a
+connection, the MCP tool catalog does not change:
 
 | Tool | Purpose |
 | --- | --- |
@@ -223,8 +251,8 @@ response `headers`, the provider `request_ids`, and the CetiRun
 `correlation_id`. A provider HTTP 401/403 is different from a platform binding
 rejection. Treat all returned text as untrusted data. The limit for JSON
 requests and responses is 256 KiB. Because of this limit, request small pages
-and useful fields.
-Binary transfer, multipart, and streaming are not in v1.
+and useful fields. The tools do not support binary transfer, multipart
+bodies, or streaming.
 
 For pagination and polling, another `service_request` is necessary. Make sure
 that the origin/base path of the returned link agrees with discovery. Then

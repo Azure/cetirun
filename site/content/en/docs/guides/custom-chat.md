@@ -1,202 +1,120 @@
 ---
 title: "Chat with a Custom Agent"
-description: "Use a private Custom Chat endpoint and keep conversation history in your browser."
+description: "Chat in the portal with a Custom Agent that has no Web UI, and keep the conversation history in your browser."
 weight: 45
 ---
 
-Portal Chat is available for Custom Agents that set `spec.agent.port` and leave
-`spec.agent.webUI` false. Hermes and OpenClaw keep their native interfaces.
-Custom Web UI and headless instances do not use this Chat page.
+Portal Chat lets you chat with a Custom Agent in the portal. The **Chat** entry
+shows in the sidebar of the Agent when these conditions are true:
 
-The Portal authenticates each request and validates the instance ownership and
-the applied runtime. Then it calls the private Agent Service. It does not call a
-model provider on the Agent's behalf, execute tools, or manage image-specific
-login.
+- The Agent is a Custom Agent with an HTTP port.
+- The Agent does not serve a Web UI.
+- Your deployment allows Portal Chat.
 
-## Enable the feature
-
-Chat is disabled by default. Before you enable it, deploy compatible Portal,
-Operator and runtime charts. The runtime chart must advertise
-`cetirun.microsoft.com/portal-chat: v1`. Older pinned charts keep their
-behavior and do not get Chat access automatically.
-
-For the platform umbrella, one setting enables Portal Chat and configures its
-private runtime caller:
-
-```yaml
-global:
-  portalChat:
-    enabled: true
-    identityRealm: "entra:YOUR_TENANT_ID"
-```
-
-Replace the realm with a stable identifier for your authentication provider and
-tenant. The realm is not a credential. Keep it unchanged across Portal replicas
-and normal upgrades. A change to the realm selects a different browser-history
-partition.
-
-The trusted authentication gateway must supply its opaque
-`X-Auth-Request-User` identity header. Agent Identity and its Broker are not
-necessary for Chat. If that subject is not present, Chat does not use an alias
-as a fallback.
-
-This setting does not enable Custom provisioning, approve an image, add a Team
-entitlement, or release a Sandbox hold. Keep those controls in place. The
-Portal must be served over HTTPS, and its configured `PORTAL_ORIGIN` must match
-the browser origin.
-
-For components that are installed independently, set `chat.enabled` and
-`chat.identityRealm` on the Portal chart. Then, on the Operator chart, configure
-callers that match the Portal. For example, if the Portal release is named
-`portal-release` in namespace `platform-system`, use this configuration:
-
-```yaml
-chatAccess:
-  enabled: true
-  callers:
-    - namespace: platform-system
-      podLabels:
-        app.kubernetes.io/name: cetirun-portal
-        app.kubernetes.io/instance: portal-release
-```
-
-Use the actual Portal Pod labels. If you enable Chat, the Portal gets read
-access to Services, NetworkPolicies, CiliumNetworkPolicies and private
-VirtualServices. Chat itself reads no Secrets, and it does no exec operations
-and no workload writes.
-
-For governed Custom, `chat.sandboxStateNamespace` selects the Operator
-namespace. By default, this is the configured Gateway catalog namespace, which
-is usually `cetirun-system`. The setting also grants read-only access to the
-execution ConfigMaps in that namespace.
-
-Before the Portal forwards a request, it validates these items:
-
-- The current Agent intent
-- The owned namespace, workload, and Service
-- The complete API-defaulted workload template
-- The applied Cilium caller rule
-- The private route
-
-Held, stale or mismatched execution cannot use the non-Sandbox Chat path as a
-fallback.
-
-Operator configures the private caller through the common policy compiler.
-Without Sandbox selection, Operator configures it through the Custom bindings
-that already exist instead. It does not publish the Chat port on the public
-gateway. A common-policy caller change is part of normal policy reprojection.
-Non-Sandbox caller changes that affect only bindings do not replace an
-unchanged Agent Pod.
-
-Portal and Agent Web UIs can use paths on the same hostname. In normal Chat
-operations, account and Agent UID partitions keep records separate. But paths
-and database names do not isolate same-origin scripts. A Custom Web UI on that
-origin can access the browser storage that holds these records.
-
-A deployment that uses local history accepts this shared browser trust
-boundary. To protect against untrusted same-origin applications, a separate
-origin is necessary. This feature does not supply that protection. Keep the
-gateway-only Portal access restrictions. Before you open access, validate the
-actual NetworkPolicy and mesh path.
+Hermes and OpenClaw Agents use their own interfaces, which you open with
+**Agent UI**. A Custom Agent with a Web UI uses **Web UI**. To enable Portal
+Chat for a deployment, administrators refer to
+[Enable Portal Chat](../../operations/portal-chat/).
 
 ## Start a conversation
 
-Open an eligible instance. Then select **Chat**. Select a model identifier that
-the Agent returns. Enter a message. Then use **Send** or
-Ctrl+Enter / Command+Enter. The Enter key inserts a newline, and input-method
-composition does not submit a message.
+1. Open the Agent, and select **Chat**.
+2. In the model list, select a model that the Agent offers.
+3. Enter a message.
+4. Select the send button (arrow), or press Ctrl+Enter (Command+Enter on
+   macOS).
 
-An empty or unavailable model list is separate from HTTP readiness. Complete
-the model setup through the supported workflow of the image, not through a
-Portal Chat credential field. For a Gateway-backed image, use
-**Sign in with GitHub** in the instance Overview for private Copilot access. As
-an alternative, use a shared model that an administrator supplied. Chat
-continues to call the Agent, which calls the AI Gateway with its own Virtual
-Key. No model credential is sent to the browser.
+The Enter key adds a new line. Text that you type with an input method does
+not send the message. While the browser saves the history, you cannot send a
+message or select another conversation.
 
-The Chat page lets you create, select, rename, and delete local conversations
-and copy text. Replies appear incrementally. **Stop** stops the reception of
-the reply and propagates the cancellation. It does not prove that tools stopped.
-It also does not undo side effects, revoke model access, or stop provider
-billing.
+The reply shows while the Agent writes it. To stop the reply, select the stop
+button. The Agent gets the cancellation, but a tool that already started can
+finish, and its effects stay. If you leave the Chat page, you also stop the
+reception of the reply.
 
-The send action and conversation selection stay disabled until local history
-completes its update. If you leave Chat, the reception of the reply stops.
-Local saves that already started can finish. But late results do not update a
-replacement Chat page or send another request.
+On the Chat page, you can create, select, rename, and delete conversations,
+and copy text. A new conversation does not start a new Agent. The same Agent
+keeps its files, its tools, and its private memory.
 
-Interrupted, failed and incomplete replies keep their actual state. A page
-refresh does not resend a request. Before you explicitly start a new turn,
-examine uncertain results. A new Chat conversation starts a new UI transcript,
-not a new Agent. The same Agent still owns its workspace, tools and private
-memory.
+If the model list is empty, the Agent has no models yet. Complete the model
+setup of the image. For an image that uses the AI Gateway, sign in to GitHub
+Copilot on the **Overview** tab, or ask your administrator to share a model.
+Chat does not ask for model credentials, and it does not send them to the
+browser.
+
+When a reply fails or stops, the conversation shows the actual state of the
+reply. A page refresh does not send the request again. Before you send the
+next message, examine a reply with an uncertain result.
 
 ## Where history lives
 
-History and drafts live in IndexedDB on the current browser profile and Portal
-origin. Portal has no history database, history PVC, background queue or cloud
-sync. It passes the selected prior messages with each request. As a result, an
-Agent with no native history API can still receive multi-turn context.
+The Chat history and your drafts are in your browser, not in the portal or in
+the Agent. The portal sends the earlier messages of the conversation with each
+request, so the Agent gets the context of the conversation.
 
-Records are partitioned by the authenticated account and the actual Agent UID.
-A replacement instance with the same name does not inherit old records.
-**Local history** also gives read-only access to records whose instance was
-removed or whose Chat endpoint is no longer available. A local record never
-grants server access.
+- The history is kept for each account and for each Agent. A new Agent with
+  the same name does not get the history of a deleted Agent.
+- **Local history** in the portal header shows the conversations that this
+  browser keeps. It also shows the conversations of Agents that you deleted.
+  You can read these conversations, but you cannot send new messages to them.
+- The history stays after you sign out. In the **Sign out** dialog, you can
+  clear the history of your account in this browser first.
 
-By default, local history stays after you sign out. The sign-out dialog can
-clear the local history of this account first. If the dialog clears it, this
-does not remove Agent files, native sessions, memory, another account's records
-or other Portal preferences.
+> **Warning:** The history is not a backup, and it is not encrypted. You lose
+> the history in these cases:
+>
+> - You clear the site data of the browser.
+> - A private browser session ends.
+> - The browser removes stored data to free space.
+> - The device fails.
+>
+> On a shared computer, use a separate browser profile, and clear the history
+> before you leave.
 
-Browser data can be lost when site data is cleared, a private browser session
-ends, the browser evicts storage, or a device fails. Local history is not a
-backup. There is no application-level encryption. On shared devices, use a
-separate browser profile. Clear records when applicable. The platform cannot
-remotely remove all copies that are already saved in browsers.
+Other web applications on the same address as the portal can read this
+browser storage. The platform cannot delete the history in your browser.
+Clearing the history does not remove the files, the sessions, or the memory of
+the Agent.
 
 ## Limits and failures
 
-The initial implementation keeps up to 100 conversations and 50 MiB of text and
-drafts per account, with 2,000 messages per conversation. When the local history
-is full, it asks the user to remove records. It does not silently delete the
-oldest conversations. Storage errors stop new sends and stay visible. The
-Portal does not silently switch to temporary memory storage.
+| Limit | Value |
+| --- | --- |
+| Conversations for each account | 100 |
+| Text and drafts for each account | 50 MiB |
+| Messages in one conversation | 2,000 |
+| Earlier message pairs in one request | 49 |
+| Size of one request | 1 MiB |
+| Size of the message that you enter | 64 KiB |
+| Size of one reply | 4 MiB |
+| Duration of one request | 10 minutes |
 
-Each request includes at most 49 complete prior message pairs and the new
-input, in an encoded body of at most 1 MiB. The current input is limited to
-64 KiB of UTF-8 text. The page reports omitted context, but it does not delete
-stored history. There is no automatic summary, continuation or retry after a
-context-limit error.
+The connection, the first response, and the idle time have shorter limits.
 
-Replies are limited to 4 MiB. The request limit is ten minutes. The connect,
-first-response and idle limits are shorter. The Agent can apply lower limits.
+When the local history is full, Chat asks you to delete conversations. It does
+not delete earlier conversations by itself. When Chat cannot save the history,
+you cannot send new messages, and the page shows the error. Chat does not
+switch to temporary storage.
 
-Browser locks prevent concurrent Portal Chat sends to the same Agent from tabs
-in the same profile. They do not coordinate different devices. Server
-connection limits apply to each Portal replica. They are not a global execution
-queue or an exactly-once guarantee. Busy Agents must report their own
-concurrency limits.
+When a conversation has more earlier messages than one request can carry, the
+page tells you which context it leaves out. It does not delete the history.
+Chat does not summarize the conversation, and it does not send the request
+again automatically.
 
-Operator creates an Agent-owned mesh-only VirtualService with retries disabled
-for the private Chat Service. Before the Portal forwards a request, it validates
-this route. Request headers alone cannot override the retry behavior of every
-mesh. The inbound Chat route also disables retries. Any other proxy in the
-deployment must keep this no-replay behavior.
+The Agent can apply lower limits. Two tabs of the same browser profile cannot
+send to the same Agent at the same time. Different devices can.
 
-Instances that are suspended, in deletion, held, not ready, or not yet applied
-cannot accept new Chat requests. The page can still show locally saved
-history. If there is no private network path, the chart is incompatible, or the
-instance binding changed, Chat reports the problem. Chat does not use another
-URL, model, or Agent as a fallback.
+An Agent that is suspended, in deletion, held, or not ready cannot accept new
+messages. The Chat page can still show the history that the browser keeps. If
+the Agent cannot be reached, Chat reports the problem. Chat does not send the
+request to another Agent, URL, or model.
 
-A secure browser context with IndexedDB, Web Locks, BroadcastChannel and
-streaming fetch is necessary for Chat. When a database-version conflict occurs,
-Chat keeps the data and asks for compatible Portal code or a refreshed tab.
-Chat does not delete the database to recover.
+Chat needs a secure (HTTPS) browser context with IndexedDB, Web Locks,
+BroadcastChannel, and streaming fetch. If the page reports a database version
+conflict, refresh the tab. Chat keeps the data and does not delete the
+database.
 
-For the image HTTP contract, see [Agent Harness](../../reference/agent-harness/#chat).
-For instance operations, see [Lifecycle](../lifecycle/). Browser,
-authentication, network and real-model qualification are separate checks. A
-rendered chart or a passed synthetic conversation test does not establish
-production readiness.
+For the HTTP contract of the image, refer to
+[Agent Harness](../../reference/agent-harness/#chat). For the Agent controls,
+refer to [Manage your Agent](../lifecycle/).

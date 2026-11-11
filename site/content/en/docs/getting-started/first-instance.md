@@ -1,211 +1,184 @@
 ---
-title: "Your first instance"
-description: "Create a persistent OpenClaw or Hermes workspace on a CetiRun deployment that already exists."
+title: "Create your first Agent"
+description: "Create a Hermes, OpenClaw, or Custom Agent in the portal, open it, and sign in to its models."
 weight: 10
 ---
 
+An Agent is your own long-lived AI agent. You create it in the CetiRun portal.
+It keeps its files in a persistent home directory when it restarts. This page shows
+how to create an Agent, open it, and connect its models.
+
 ## Before you begin
 
-You must have access to a configured CetiRun portal. You must also be a member
-of the Entra ID group that the portal allows. Agents take their models from the
-AI Gateway: the models that your administrators share, or the models of your
-own GitHub Copilot subscription. Ask your administrator for the actual portal
-URL. In these docs, `https://example.com/` is only a placeholder.
+- Get the portal address from your administrator. In these docs,
+  `https://example.com/` is only a placeholder.
+- Make sure that you are a member of the Microsoft Entra ID group that the
+  portal allows. Your administrator manages this group.
+- Know where your models come from. Your Agent gets its models from the
+  platform's AI Gateway: the models that your administrators share, or the
+  models of your own GitHub Copilot subscription.
 
-The portal's **Sign out** action uses `/oauth2/sign_out` on the portal origin.
-As part of the deployment, we recommend that your administrator make sure that
-sign-out clears the session. For the necessary routing, refer to
-[Istio authentication](../../operations/istio/#prepare-identity-dns-and-tls).
+## Decide before you create
 
-## Create through the portal
+Some choices cannot change in the portal after you create the Agent. These
+choices are the Agent name, the agent type, the Team, the model sources, and
+Agent Identity.
+Nobody can change the Agent name or the agent type. For the other choices,
+ask your administrator. For example, an administrator can change the Team of
+a suspended Agent.
 
-1. Open the portal. Then sign in.
-2. Select **New Agent**. If the deployment allows Hermes, Hermes is the default
-   selection. To use OpenClaw, select OpenClaw explicitly. Both take their
-   models from the AI Gateway.
-3. Enter an optional instance-name suffix and display name. The owner alias
-   comes from your authenticated identity, not from a field that you set. If
-   you leave the name empty, the portal uses your alias as the name. For the
-   synthetic owner `alice`, a suffix such as `example` gives `alice-example`.
-   To let the platform generate the gateway token, leave the token empty.
-4. Optionally, select a **Team**. A Team can select the policy and the Sandbox
-   of the agent, and it can offer its own smart-routing models. To create the
-   agent without a Team, keep **(none)**.
-5. Select the models. The form shows **Use shared models** only when your
-   administrators share models. It shows **Use GitHub Copilot** only when the
-   deployment offers GitHub Copilot. The Policy of the selected Team can limit
-   both. At least one source stays enabled. If the form says that no models are
-   available, ask an administrator to examine model access.
+To use another name or agent type, delete the Agent and create a new one. A
+new Agent starts with an empty home directory. For the data that deletion
+removes, refer to [Protect your data](../../guides/data/).
 
-   In **Default model (optional)**, select a model, or keep **(automatic)** for
-   the deployment default. A Team's smart-routing models show
-   `(smart routing)` after their names.
-6. Select **Enable Microsoft Entra Agent Identity** only when the form shows it
-   and delegated Azure access is necessary for you. Then select
-   **Create Agent**. Wait until the platform provisions the instance. If the
-   instance does not become ready, an administrator can examine the individual
-   readiness conditions.
-7. If you use GitHub Copilot, sign in to it. To sign in, open the instance.
-   Then select **Sign in with GitHub** in the **Models** section of its
-   overview.
+By default, you can have one Agent. For this limit and the other limits,
+refer to [Default limits](../../guides/troubleshooting/#default-limits).
 
-   Authorization alone does not make the models ready. The Operator must also
-   prepare a Ready Copilot proxy and register its routes in the Gateway. Wait
-   for the Copilot status, not only the overall Agent `Ready` condition. If the
-   status stays `ProxyStarting`, follow the
-   [model-readiness checks](../../guides/lifecycle/#separate-provisioning-from-model-readiness).
-   Do not authorize again, and do not use a fixed wait time.
-8. [Choose a model](../../guides/models/). Set the default model in the
-   **Models** section. When you save it, the instance restarts.
-9. To open the console of an OpenClaw instance, use the portal's access
-   action. When the console asks for the gateway token, copy
-   **Gateway Token** from the instance Overview. The first time that a browser
-   connects to an instance, the console also asks to pair that browser. To pair
-   the browser, open the instance's **Terminal** in the portal and run
-   `openclaw devices list`. Approve the pending request of your browser with
-   `openclaw devices approve <request-id>`, then reload the console. By
-   default, `kubectl exec` cannot approve the request, because the exec
-   restriction of the instance denies it.
-10. If Agent Identity was enabled, use the instance overview to
-    [connect Microsoft Entra](../../guides/agent-identity/). Do this before you
-    ask the Agent to examine Azure resources.
+To compare Hermes, OpenClaw, and Custom, refer to
+[Choose an Agent type](../../guides/agent-types/).
 
-The deployment controls the offered agent types, the visibility of Tailscale,
-and the number of instances that each user can create. By default, the portal
-chart allows one instance per user. This is a portal creation limit, not a
-Kubernetes resource quota or a restriction on direct CR creation.
+## Create the Agent
 
-An instance of a Team with an Agent Policy runs in the Team's Sandbox.
-Tailscale is not available in this Sandbox. Agent Identity is available only
-when the Team's Policy allows it. Refer to
-[Policy-bound Teams](../../operations/policy-teams/).
+1. Open the portal and sign in. The **My Agents** page opens.
+2. Select **New Agent**. The creation form opens.
+3. Complete the fields of the form. The table that follows lists them in the
+   order of the form. Select the Team first. A change of the Team can reset the
+   Agent type and clear the fields that you completed.
+4. Select **Create Agent**.
 
-Sources: [creation form]({{< repo "app/cetirun-portal/web/src/components/CreateForm.tsx" >}})
+| Field | What to enter |
+| --- | --- |
+| **Agent Name (optional)** | A short name, or nothing. The portal puts your alias in front of it. For the synthetic owner `alice`, the name `example` gives the Agent name `alice-example`. If you leave the field empty, the Agent name is your alias. Use lowercase letters, digits, and hyphens. The complete Agent name can have a maximum of 35 characters. |
+| **Team (optional)** | Your Team, or **(none)**. The Agent Policy of a Team can limit the Agent types, the models, and the other options that you can select. If the Team has an Agent Policy, the form shows its name and its request limits. An Agent of a policy-bound Team runs in the Sandbox of that Team. In this Sandbox, Tailscale is not available. |
+| **Agent Type** | **Hermes**, **OpenClaw**, or **Custom**. Hermes is the default. The form shows only the types that the deployment and the Team allow. |
+| **Agent Image (optional)** | Nothing, unless your administrator gives you an image. An empty field uses the platform default image. A Custom Agent must have an image. Refer to [Choose an Agent type](../../guides/agent-types/#custom). |
+| **Display Name (optional)** | The name that the portal shows. The default is your sign-in name, for example `alice@example.com`. |
+| **Use private registry credentials** | Keep it off, unless your administrator tells you that the image is in a private registry. |
+| **Use shared models** | On, to use the models that your administrators share. The hint lists these models. The form shows this switch only when shared models are available. |
+| **Use GitHub Copilot** | On, to use the models of your own GitHub Copilot subscription. You sign in to GitHub after you create the Agent. The form shows this switch only when the deployment offers GitHub Copilot. At least one model source stays on. |
+| **Default model (optional)** | **(automatic)**, or the model that new conversations start with. **(automatic)** uses the deployment default. Smart-routing models show `(smart routing)` after their names. You can select GitHub Copilot models only after you sign in. The form shows this field only when shared models or smart-routing models are available, and not for Custom Agents. |
+| **Gateway Token (optional)** | Nothing. The platform then generates the token. The OpenClaw gateway token protects the OpenClaw Control UI. It is not a model credential. Hermes uses its own key. |
+| **Tailscale Auth Key (optional)** | Nothing, unless you use Tailscale. The form shows this field only when the deployment allows Tailscale. Refer to [Connect Tailscale](../../guides/tailscale/). |
+| **Enable Microsoft Entra Agent Identity** | On, if the Agent must work with Azure resources through its own identity. The new identity has no Azure permissions until a resource owner assigns them. The form shows this switch only when the deployment and the Team allow it. Refer to [Agent Connections and Identity](../../guides/agent-identity/). |
+
+Under the fields, the form tells you about memory. When the deployment installs
+the Memory component, memory is on, and your Agent keeps private notes from
+your conversations. All the conversations of the Agent share this memory, also
+group chats and channels. Before you connect the Agent to a shared
+conversation, read [Use memory](../../guides/memory/#which-conversations-use-memory).
+
+If the form says that no models are available, you cannot create the Agent
+with this Team. Ask your administrator to examine model access.
+
+## Wait until the Agent is ready
+
+After you select **Create Agent**, the form closes, and the new Agent shows in
+**My Agents**. The badge next to the Agent name shows its phase:
+
+| Phase | Meaning | What to do |
+| --- | --- | --- |
+| **Pending** | The platform accepted the request and did not start work yet. | Wait. If a governance message shows, follow it. |
+| **Provisioning** | The platform creates the storage, the workload, and the route of the Agent. | Wait. The **Overview** tab of the Agent shows "Provisioning your agent...". |
+| **Ready** | The Agent runs, and you can open it. | Open the Agent. Model sign-in can still be in progress. |
+| **Failed** | A step failed. | Open the **Status** tab. Send the reason to your administrator. |
+| **Suspended** | The Agent is stopped. Its home directory is kept. | Select **Resume Agent**. |
+| **Deleting** | The platform removes the Agent. | No action is possible. |
+
+Provisioning can take several minutes, for example while the platform
+downloads the image. If the phase does not change after 10 minutes, open the
+Agent and select the **Status** tab. The **Conditions** table shows which step
+waits and why.
+
+A message box above the tabs can show a governance status, for example
+**Blocked by policy** or **Waiting for governance**. For each status and the
+next step, refer to [Troubleshoot your Agent](../../guides/troubleshooting/#the-agent-does-not-become-ready).
+
+## Open your Agent
+
+Open the Agent from **My Agents**. In the sidebar, select **Agent UI**. The
+Agent UI opens in the same browser tab. **Agent UI**,
+**Terminal**, and **Desktop** are available only when the phase is **Ready**.
+For the other parts of the Agent page, refer to
+[Tour the portal](../../guides/portal/).
+
+### Open a Hermes Agent
+
+1. Select **Agent UI**. The Hermes Webapp asks you to sign in.
+2. For the username, enter `cetirun`.
+3. For the password, copy **Hermes API / Webapp Key (user: cetirun)** from
+   the **Overview** tab. To copy it, select the copy button next to the key.
+
+The key stays the same after a restart, and after you suspend and resume the
+Agent. The **Username** line on the **Overview** tab shows the Linux user in
+the container, not the Webapp user.
+
+The Webapp runs inside the Hermes gateway process. When you close the
+browser, this process continues to run. A restart of the process ends the
+shells of the Webapp terminal. Your files, sessions, and scheduled jobs stay in the home
+directory. If you connect Hermes to a message channel, such as Discord, you can
+continue a session of that channel in the Webapp. Hermes then sends its replies
+to the channel too.
+
+### Open an OpenClaw Agent
+
+1. Select **Agent UI**. The OpenClaw Control UI asks for the gateway token.
+2. Copy **Gateway Token** from the **Overview** tab, and enter it.
+3. If the Control UI asks to pair the browser, select **Terminal** in the
+   portal sidebar. A shell in the Agent's container opens.
+4. Run `openclaw devices list`. Find the pending request of your browser.
+5. Run `openclaw devices approve <request-id>`.
+6. Reload the Control UI.
+
+OpenClaw asks to pair each new browser one time.
+
+## Sign in to GitHub Copilot
+
+Do these steps if you selected **Use GitHub Copilot** in the form. Find the
+**GitHub Copilot** part of the **Models** section on the **Overview** tab.
+
+1. Select **Sign in with GitHub**. The dialog "Sign in to GitHub Copilot" shows
+   a code.
+2. Copy the code, and select **Open GitHub**. GitHub opens in a new tab.
+3. On GitHub, enter the code and authorize the sign-in. The dialog shows
+   "Waiting for authorization..." until GitHub confirms the sign-in.
+4. When the dialog shows the result, select **Close**. Do not select
+   **Cancel** while the dialog waits, because it cancels the sign-in.
+
+The badge next to **GitHub Copilot** then shows the sign-in progress. The page
+refreshes by itself.
+
+| Badge | Meaning | What to do |
+| --- | --- | --- |
+| **Sign-in required** | The Agent has no GitHub sign-in. | Select **Sign in with GitHub**. |
+| **Starting** | The platform prepares your Copilot models. | Wait. This usually takes a few minutes. Then the Agent restarts one time to get the models. |
+| **Ready** | Your Copilot models are in the model list. | No action is necessary. |
+| **Degraded** | The platform cannot use your sign-in or your models. | Read the message under the badge. If it says "Signing in again may help", select **Sign in again**. |
+
+If the badge does not become **Ready**, refer to
+[GitHub Copilot does not become ready](../../guides/troubleshooting/#github-copilot-does-not-become-ready).
+For the other model tasks, refer to [Choose a model](../../guides/models/).
+
+## Give the Agent access to Azure and other services
+
+If the Agent must work with Azure, GitHub, or Google, give it access on the
+**Overview** tab. In the **Identities** section, select **Add identity**. Then
+select the service. For the steps, refer to
+[Agent Connections and Identity](../../guides/agent-identity/).
+
+The **Identities** section shows only when your deployment allows connected
+services. If you cannot find it, ask your administrator.
+
+## Next steps
+
+- To manage the Agent, refer to [Manage your Agent](../../guides/lifecycle/).
+- To keep your work safe, refer to [Protect your data](../../guides/data/).
+- If something does not work, refer to
+  [Troubleshoot your Agent](../../guides/troubleshooting/).
+
+Administrators can also create Agents with the Kubernetes API. Refer to
+[Administer Agents](../../operations/agent-lifecycle/#create-an-agent-with-kubernetes).
+
+Sources: [creation form]({{< repo "app/cetirun-portal/web/src/components/CreateForm.tsx" >}}),
+[Agent overview]({{< repo "app/cetirun-portal/web/src/components/OverviewSection.tsx" >}}),
+[model section]({{< repo "app/cetirun-portal/web/src/components/AIGatewayBlock.tsx" >}}),
 and [portal instance handler]({{< repo "app/cetirun-portal/internal/handler/instance.go" >}}).
-
-## Create through Kubernetes
-
-You must have permission to create cluster-scoped resources on a configured
-cluster. Save this manifest as `instance.yaml` outside the repository.
-Replace `alice-example` with the instance name and `spec.user.alias` with the
-identity of its owner. When you apply the manifest, the instance and its
-resources are created.
-
-```yaml
-apiVersion: cetirun.microsoft.com/v1alpha1
-kind: Agent
-metadata:
-  name: alice-example
-spec:
-  team: example-team
-  sandboxRef: standard
-  agent:
-    type: hermes
-  modelAccess:
-    sharedModels: true
-  gatewayTokenSecretRef: gateway-token
-  user:
-    alias: alice
-    displayName: Alice
-```
-
-Keep `metadata.name` and `spec.user.alias` stable. The instance namespace, Helm
-release, and URL path come from the name. The ownership comes from the alias.
-Do not use `ui`, because the controller reserves it.
-
-`spec.team` and `spec.sandboxRef` select the policy and isolation settings that
-an administrator defines. You must set `spec.agent`. If you do not set its
-`type`, Hermes is the default. The effective type and runtime username cannot
-change after creation.
-
-An agent with `spec.sandboxRef` must request its model sources. Without
-`modelAccess.sharedModels: true` or `modelAccess.githubCopilot: true`, it gets
-no model. The Policy of the Team must also allow each source that the agent
-requests.
-
-Validate the manifest against the cluster's installed CRD. This command does
-not save the manifest:
-
-```bash
-kubectl apply --dry-run=server -f instance.yaml
-```
-
-Server-side validation examines admission and the schema. It connects to the
-cluster, but it does not test image pulls, scheduling, storage, routing, or
-identity.
-
-Create the instance:
-
-```bash
-kubectl apply -f instance.yaml
-```
-
-Examine the instance status:
-
-```bash
-kubectl get agents.cetirun.microsoft.com alice-example
-kubectl wait --for=condition=Ready agents.cetirun.microsoft.com/alice-example --timeout=10m
-kubectl wait --for=condition=IngressReady agents.cetirun.microsoft.com/alice-example --timeout=2m
-kubectl get agents.cetirun.microsoft.com alice-example -o jsonpath='{.status.namespace}{"\n"}{.status.accessUrl}{"\n"}'
-```
-
-If `gateway-token` does not exist in `cetirun-alice-example`, the
-[controller]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}})
-creates it. The Secret contains `OPENCLAW_GATEWAY_TOKEN` and the separate
-`CETIRUN_AUTH_KEY`. Hermes also must have `API_SERVER_KEY` and `hermes.env`,
-and the controller supplies them. Do not put tokens in the CR or print the
-Secret for diagnosis. If you supply a Secret that already exists, make sure
-that its OpenClaw token is valid. The name of a Secret alone does not validate
-its contents.
-
-`spec.model` is optional. It names the default model of the agent, as the AI
-Gateway offers it, for example `auto`. Without it, the operator supplies its
-deployment default. For an agent of a policy-bound Team, the Policy must allow
-the model. If it does not, the agent does not run. Its `PolicyResolved`
-condition is then `False` with the reason `PolicyDenied`, and the message names
-the model.
-
-If `spec.helm.version` is empty, it is set to the
-operator's runtime chart version at the first reconciliation. This pins the
-instance chart. A change to only the operator's default chart version does not
-upgrade the instances that already exist.
-
-Open the URL in `status.accessUrl`. `Ready` reports workload readiness
-independently of ingress. `IngressReady=True` confirms VirtualService
-reconciliation. Examine TLS, sign-in, and model-provider access separately.
-
-For Hermes, sign in to the native Webapp with the username `cetirun` and the
-Hermes API / Webapp key. The instance Overview page shows this key. The
-key remains unchanged across normal restarts and suspend/resume. Webapp runs
-inside the persistent Hermes gateway. Opening an existing Discord session
-continues that session, so replies can still be delivered to its original
-channel. Closing the browser leaves the gateway running. Gateway restarts
-end Webapp terminal shells; persistent files, sessions and cron data stay in
-HOME.
-
-For OpenClaw, enter the gateway token. Then approve the request to pair the browser
-from the instance's Terminal, as in the portal steps above.
-
-## Private memory
-
-By default, OpenClaw and Hermes Agents keep a private memory of facts from your
-conversations. The memory is in the HOME of the Agent. Every conversation that
-the Agent admits uses the same memory, including group and channel
-conversations.
-
-> **Warning:** A reply in a group or channel can include facts from your private
-> memory. Before you connect your Agent to a shared conversation, limit its
-> Memory to your own sessions. For the settings, refer to
-> [Restrict platforms, senders or conversations]({{< repo "app/cetirun-memory-context/OWNER_ACCESS.md" >}}#restrict-platforms-senders-or-conversations).
-
-## Keep your workspace
-
-The default storage settings keep the home directory across pod restarts.
-
-> **Warning:** Before you delete an instance, back up important data. The
-> deletion of an instance also deletes its namespace and the PVCs in that
-> namespace. A StatefulSet `Retain` policy does not prevent namespace deletion.
-
-For the suspension and deletion behavior, refer to
-[instance lifecycle](../../guides/lifecycle/). Ask your administrator about the
-backup and recovery procedures.

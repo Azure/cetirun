@@ -23,10 +23,10 @@ or preference, or a recommendation you gave.
 1. Call `status` once. Memory reads, writes and bounded learning are enabled by default, with both
    installed learning profiles. Status and generation say nothing about whether a remembered fact is
    true. Respect the current request's `noCapture` and `noMemory` restrictions. The native adapter
-   decides which sessions may use Memory. Hermes permits all host-admitted channels by default,
-   including groups/channels and qualified native descendants. `owner_access` and environment controls
-   can narrow that access; only the adapter can establish a grant. An authorized child inherits its
-   parent's memory project scope and restrictions.
+   decides which sessions may use Memory. By default, it permits all host-admitted channels, including
+   groups/channels and qualified native descendants. `owner_access` and environment controls can narrow
+   that access; only the adapter can establish a grant. An authorized child inherits its parent's memory
+   project scope and restrictions.
    A denied tool call is not permission to read or save private memory by other means.
 2. Call `query` to read stored note bodies. Use a known note's exact title as one `queryTerms` entry,
    or the distinctive words of the question: names, places, products, titles, numbers, activities.

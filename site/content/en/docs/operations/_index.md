@@ -48,6 +48,8 @@ and side effects.
 - [Make and restore backups](backup-restore/) — the data and Secrets that need a backup
 - [Certificates and credentials](certificates/) — the source, renewal, and checks of each credential
 - [Uninstall CetiRun](uninstall/) — the removal order, and the objects that stay
+- [Administer Agents](agent-lifecycle/) — create, inspect, suspend, restart, migrate, update, and delete Agents
+- [Enable Portal Chat](portal-chat/) — the private Chat path for Custom Agents
 
 ## Troubleshooting
 
