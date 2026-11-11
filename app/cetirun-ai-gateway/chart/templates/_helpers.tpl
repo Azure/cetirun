@@ -459,7 +459,6 @@ defaults.
 {{- $_ := set $settings "requestLog" (dict "enabled" (dig "enabled" true $requestLog)) -}}
 {{- $_ = set $settings "spendLogs" (dict "enabled" (dig "enabled" true $spendLogs) "storePrompts" (dig "storePrompts" true $spendLogs) "retention" (dig "retention" "7d" $spendLogs)) -}}
 {{- $monitor := dict "enabled" (dig "enabled" false $podMonitor) -}}
-{{- $_ = set $monitor "apiVersion" (dig "apiVersion" "azmonitoring.coreos.com/v1" $podMonitor) -}}
 {{- $_ = set $monitor "interval" (dig "interval" "30s" $podMonitor) -}}
 {{- $_ = set $monitor "labels" (dig "labels" dict $podMonitor) -}}
 {{- $metricsSettings := dict "enabled" (dig "enabled" false $metrics) "port" (dig "port" nil $metrics) -}}
@@ -609,13 +608,13 @@ has one.
 {{- end }}
 
 {{/*
-Whether the cluster serves the PodMonitor API the chart is configured for.
-Azure Monitor managed Prometheus installs azmonitoring.coreos.com; a cluster
-without it has no such API, and installing a PodMonitor there would fail.
+Whether the cluster serves the Prometheus Operator's PodMonitor API. A cluster
+without it has no such API, and installing a PodMonitor there would fail. The
+chart ignores metrics.podMonitor.apiVersion, which a release installed with an
+earlier chart version can still hold.
 */}}
 {{- define "cetirun-ai-gateway.podMonitorAvailable" -}}
-{{- $podMonitor := (include "cetirun-ai-gateway.logsAndMetrics" . | fromJson).metrics.podMonitor -}}
-{{- if .Capabilities.APIVersions.Has (printf "%s/PodMonitor" $podMonitor.apiVersion) }}true{{ end }}
+{{- if .Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PodMonitor" }}true{{ end }}
 {{- end }}
 
 {{/*
@@ -659,5 +658,31 @@ keeps the record of each call.
 {{- end }}
 {{- if and (not $settings.spendLogs.enabled) (not $settings.requestLog.enabled) }}
 {{- fail "spendLogs.enabled is false while requestLog.enabled is false, which would leave no record of each call. LiteLLM's spend log is turned off only together with the request log: set requestLog.enabled as well, or keep spendLogs.enabled." }}
+{{- end }}
+{{- end }}
+
+{{/*
+content: prompts and responses to an Azure Data Explorer database, written by
+the Gateway with a workload identity (cetirun_ai_gateway/content.py).
+*/}}
+{{- define "cetirun-ai-gateway.validateContent" -}}
+{{- $content := .Values.content | default dict }}
+{{- if $content.enabled }}
+{{- $endpoint := dig "adx" "endpoint" "" $content }}
+{{- if not (regexMatch "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/?$" (toString $endpoint)) }}
+{{- fail "content.adx.endpoint must be the query URI of the Kusto cluster, such as https://<name>.<region>.kusto.windows.net" }}
+{{- end }}
+{{- if not (regexMatch "^[A-Za-z][A-Za-z0-9]{0,99}$" (toString (dig "adx" "database" "" $content))) }}
+{{- fail "content.adx.database must be the name of the content database: letters and digits" }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" (toString ($content.clusterName | default ""))) }}
+{{- fail "content.clusterName must be a DNS label: every content record names this CetiRun cluster with it, and the console reads only this cluster's" }}
+{{- end }}
+{{- if not (regexMatch "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" (toString ($content.clientId | default ""))) }}
+{{- fail "content.clientId must be the client ID of the managed identity that writes the content database" }}
+{{- end }}
+{{- if not .Values.serviceAccount.create }}
+{{- fail "content.enabled needs serviceAccount.create: the chart names the content identity on the ServiceAccount it creates" }}
+{{- end }}
 {{- end }}
 {{- end }}

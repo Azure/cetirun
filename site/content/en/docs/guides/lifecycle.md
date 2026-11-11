@@ -163,6 +163,7 @@ necessary, include owner reauthorization in the maintenance plan.
 | Current Agent | Suspend | Resume |
 | --- | --- | --- |
 | Ordinary OpenClaw, Hermes, or Custom Agents, and common-executor Sandbox Agents | Allowed when the current owned workload has a confirmed PVC-backed HOME, also during provisioning or recovery | Allowed when suspension is requested |
+| Governed Agent held before bootstrap | Allowed when read-only checks confirm that no runtime namespace, lifetime receipts, grant journal, or execution history exists | Continues bootstrap with the current prerequisites |
 | Ephemeral HOME, or workload storage that is unverified or absent | Unavailable. No retained suspension is accepted | A resume intent that already exists stays available |
 | Pending restart or administrator migration | Suspension takes precedence | Continues the original operation and keeps its request ID and controller safeguards |
 | Recorded legacy single-start Sandbox lifetime | Rejected. The lifetime is not converted | Rejected |
@@ -176,6 +177,17 @@ For both actions, the JSON body must contain the current `uid` and
 `resourceVersion`. The caller must be the owner, and the request must pass the
 normal management origin checks.
 
+Portal also sends the `generation` captured when the confirmation dialog opens
+in the optional `X-CetiRun-Agent-Generation` header. With this positive integer,
+status-only updates do not invalidate the confirmation. A configuration change
+advances the generation and requires a new confirmation before changing the
+suspension intent. Requests that omit the header retain the strict
+resource-version check. For requests with the header, the API uses a conditional
+write and retries one write conflict after rereading the Agent and rechecking
+ownership, generation, and suspension eligibility. The JSON body stays
+compatible with older Portal replicas, which ignore the header and apply their
+strict resource-version check during a rolling update.
+
 They return HTTP `202` with the requested `suspended` value of the Agent, the
 `suspendAvailable`/`resumeAvailable` capabilities, and the current controller
 status. These capabilities show if the intent can be changed, not if compute
@@ -188,6 +200,11 @@ Agent overrides. This is because chart and deployment defaults can select
 owner action returns `409 suspension_home_required` and does not write the
 intent. If the workload storage is absent, unreadable, or not owned, the
 action returns `503 suspension_home_unverified`.
+
+A governed Agent that has not bootstrapped can also be suspended without HOME
+storage. This exception requires proof that no execution lifetime exists; a
+missing workload alone is insufficient. Suspension leaves its prerequisite
+failure available for diagnosis and does not create runtime resources.
 
 The disabled control gives the reason through `suspensionUnavailableReason`.
 No automatic storage conversion or data-loss confirmation is offered. Resume
@@ -482,8 +499,9 @@ claim. Changes to the Model Key and to the context revision go through the
 same gate. The process environment does not refresh in place.
 
 The Operator chart enables the Custom provider by default, with no approved
-images. The non-Sandbox provider reports `CustomBindingsPending` until its image
-approval and other prerequisites are available. Governed Custom instead must have a current common-executor
+images. The non-Sandbox provider reports `CustomImageNotApproved` while image
+approval is missing and `CustomBindingsPending` while other binding prerequisites
+are unavailable. Governed Custom instead must have a current common-executor
 registration and a Gateway-qualified image approval. Chat/headless instances
 have no public Agent UI URL. A declared Web UI uses its authenticated route.
 See [Agent Harness](../../reference/agent-harness/#custom-runtime) for the

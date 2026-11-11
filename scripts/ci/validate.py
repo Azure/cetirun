@@ -20,6 +20,7 @@ MODULES = {"internal": "app/internal", **{name: f"app/cetirun-{name}" for name i
 MODULES["cetirun-connections-mcp"] = "app/cetirun-connections-mcp"
 WORKFLOWS = (
     "memory-context-ci.yml",
+    "observability-ci.yml",
     "operator-ci.yml",
     "portal-ci.yml",
     "agent-broker-ci.yml",
@@ -72,6 +73,14 @@ CHARTS = (
             # keeps the default path under test. ci/render-values.yaml
             # covers external dependencies in the release lint.
             "models[0].litellm_params.model=openai/lint-model",
+        ),
+    ),
+    (
+        "app/cetirun-observability/chart",
+        (
+            "clusterName=lint",
+            "adx.endpoint=https://lint.example.invalid",
+            "ingestor.clientId=66666666-6666-6666-6666-666666666666",
         ),
     ),
     (
@@ -249,6 +258,11 @@ def chart_gate(root):
         ["bash", str(require_file(root / "scripts/cetirun-ai-gateway-helm-test.sh"))],
         root,
         env={**offline_env(), "CHART_DIR": str(root / "app/cetirun-ai-gateway/chart")},
+    )
+    run(
+        ["bash", str(require_file(root / "scripts/cetirun-observability-helm-test.sh"))],
+        root,
+        env={**offline_env(), "CHART_DIR": str(root / "app/cetirun-observability/chart")},
     )
 
 

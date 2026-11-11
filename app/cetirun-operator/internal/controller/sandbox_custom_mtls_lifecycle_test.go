@@ -79,6 +79,10 @@ func TestCommonCustomMTLSSuspensionAndResume(t *testing.T) {
 						!f.current(t).Status.AIGateway.Blocked {
 						t.Fatal("pending suspension did not stop compute and block the key")
 					}
+					pending := f.current(t)
+					if pending.Status.Phase != api.PhasePending || pending.Status.ObservedGeneration != before.Status.ObservedGeneration {
+						t.Fatal("unacknowledged shutdown completed the suspension generation")
+					}
 					main.Status = appsv1.StatefulSetStatus{ObservedGeneration: main.Generation}
 					if err := f.kube.Status().Update(ctx, main); err != nil {
 						t.Fatal(err)
@@ -97,6 +101,7 @@ func TestCommonCustomMTLSSuspensionAndResume(t *testing.T) {
 						f.reconcileOK(t)
 						current = f.current(t)
 						if current.Status.Phase != api.PhaseSuspended || current.Status.AccessURL != "" ||
+							current.Status.ObservedGeneration != current.Generation ||
 							current.Status.AIGateway.KeyID != key || !current.Status.AIGateway.Blocked ||
 							ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 {
 							t.Fatal("mTLS suspension did not retain a stopped, blocked lifetime")
@@ -106,6 +111,7 @@ func TestCommonCustomMTLSSuspensionAndResume(t *testing.T) {
 						}
 					}
 					current.Spec.Suspended, current.Generation = false, current.Generation+1
+					stages := f.installer.stages
 					if err := f.kube.Update(ctx, current); err != nil {
 						t.Fatal(err)
 					}
@@ -113,6 +119,7 @@ func TestCommonCustomMTLSSuspensionAndResume(t *testing.T) {
 					ready()
 					current = f.current(t)
 					if current.UID != before.UID || current.Status.Namespace != before.Status.Namespace ||
+						current.Status.ObservedGeneration != current.Generation || f.installer.stages <= stages ||
 						current.Status.AIGateway.KeyID != key || current.Status.AIGateway.Blocked ||
 						f.workload(t).UID != workloadUID {
 						t.Fatal("mTLS resume replaced the retained lifetime or left its key blocked")

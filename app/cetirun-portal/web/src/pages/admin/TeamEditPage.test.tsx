@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -12,6 +12,7 @@ import * as policies from "../../api/adminPolicy";
 import * as sandboxes from "../../api/adminSandbox";
 import * as marketplaceAPI from "../../api/skillMarketplace";
 import type { Features } from "../../types/features";
+import { AdminConfigurationError } from "../../api/adminError";
 
 vi.mock("../../api/adminTeam");
 vi.mock("../../api/adminPolicy");
@@ -35,11 +36,12 @@ beforeEach(() => {
 
 function renderEditor(path = "/admin/teams/new") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><Routes>
+  const result = render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><Routes>
     <Route path="/admin/teams/new" element={<TeamEditPage />} />
     <Route path="/admin/teams/:name/edit" element={<TeamEditPage />} />
     <Route path="/admin/teams" element={<div>Team list</div>} />
   </Routes></MemoryRouter></QueryClientProvider>);
+  return { ...result, client };
 }
 
 it("creates a Team with its policy, allowed Sandboxes and selected default", async () => {
@@ -92,8 +94,58 @@ it("round-trips bindings and the reviewed version without retrying a stale save"
   expect(screen.getByRole("combobox", { name: "Default Sandbox" })).toHaveValue("small");
   await user.click(screen.getByRole("button", { name: "Save" }));
   expect(await screen.findByText(/Configuration changed/)).toBeInTheDocument();
-  expect(teams.updateTeam).toHaveBeenCalledExactlyOnceWith("new", expect.objectContaining({ uid: "team-uid", resourceVersion: "7", agentPolicyRef: "standard", sandboxRefs: ["small"], defaultSandboxRef: "small" }));
+  expect(teams.updateTeam).toHaveBeenCalledExactlyOnceWith("new", expect.objectContaining({ uid: "team-uid", resourceVersion: "7", generation: 1, agentPolicyRef: "standard", sandboxRefs: ["small"], defaultSandboxRef: "small" }));
   expect(teams.createTeam).not.toHaveBeenCalled();
+});
+
+it("keeps a dirty Team draft through a status-only refresh and sends its generation", async () => {
+  const latest = { ...team, resourceVersion: "8" };
+  vi.mocked(teams.getTeam).mockResolvedValueOnce(team).mockResolvedValue(latest);
+  const user = userEvent.setup(); const { client } = renderEditor("/admin/teams/example/edit");
+  const role = await screen.findByRole("textbox", { name: "Role" });
+  await user.clear(role); await user.type(role, "Platform Engineer");
+  await act(async () => { await client.refetchQueries({ queryKey: ["admin", "team", "example"] }); });
+  expect(role).toHaveValue("Platform Engineer");
+  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(teams.updateTeam).toHaveBeenCalledWith("example", expect.objectContaining({ generation: 1, resourceVersion: "7", role: "Platform Engineer" })));
+});
+
+it("keeps a dirty Team draft and requires an explicit reload after configuration changes", async () => {
+  const latest = { ...team, generation: 2, resourceVersion: "9", role: "Remote Engineer" };
+  const user = userEvent.setup(); const { client } = renderEditor("/admin/teams/example/edit");
+  const role = await screen.findByRole("textbox", { name: "Role" });
+  await user.clear(role); await user.type(role, "Local Engineer");
+  vi.mocked(teams.getTeam).mockResolvedValue(latest);
+  await act(async () => { await client.refetchQueries({ queryKey: ["admin", "team", "example"] }); });
+  expect(role).toHaveValue("Local Engineer");
+  await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeDisabled());
+  expect(screen.getByText(/Your unsaved edits have been kept/)).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Discard edits and reload" }));
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Role" })).toHaveValue("Remote Engineer"));
+  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+});
+
+it("keeps a draft and blocks saving when a background refresh finds the Team deleted", async () => {
+  const user = userEvent.setup(); const { client } = renderEditor("/admin/teams/example/edit");
+  const role = await screen.findByRole("textbox", { name: "Role" });
+  await user.clear(role); await user.type(role, "Local Engineer");
+  vi.mocked(teams.getTeam).mockRejectedValueOnce(new AdminConfigurationError("Team example not found", "team_not_found"));
+  await act(async () => { await client.refetchQueries({ queryKey: ["admin", "team", "example"] }); });
+  expect(role).toHaveValue("Local Engineer");
+  await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeDisabled());
+  expect(screen.getByText(/no longer exists/)).toBeInTheDocument();
+});
+
+it("offers an explicit reload immediately after a Team save conflict", async () => {
+  vi.mocked(teams.updateTeam).mockRejectedValueOnce(new AdminConfigurationError("Configuration changed", "configuration_changed"));
+  const user = userEvent.setup(); renderEditor("/admin/teams/example/edit");
+  const role = await screen.findByRole("textbox", { name: "Role" });
+  await user.clear(role); await user.type(role, "Local Engineer");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByText("Configuration changed")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Discard edits and reload" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
 });
 
 it("preserves existing Sandbox choices but blocks a restrictive policy until they are fixed", async () => {

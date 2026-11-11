@@ -164,7 +164,7 @@ jobs:
           GOTOOLCHAIN: local
         run: go mod download
 
-      - name: Test Portal lifecycle and Sandbox API contracts
+      - name: Test Portal lifecycle and configuration API contracts
         working-directory: app/cetirun-portal
         env:
           GOPROXY: "off"
@@ -172,7 +172,7 @@ jobs:
           GOFLAGS: "-mod=readonly"
           KUBECONFIG: /dev/null
           USE_EXISTING_CLUSTER: "false"
-        run: go test -tags=envtest ./internal/kube ./internal/handler -run '^Test(RetainedRestartThroughServedAPI|SandboxDefaultsThroughPortalAndServedAPI)$' -count=1
+        run: go test -tags=envtest ./internal/kube ./internal/handler -run '^Test(RetainedRestartThroughServedAPI|SandboxDefaultsThroughPortalAndServedAPI|TeamGenerationThroughPortalAndServedAPI)$' -count=1
 
   docker-build:
     name: Operator image CVEs

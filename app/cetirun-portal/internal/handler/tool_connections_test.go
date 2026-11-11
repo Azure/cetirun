@@ -828,6 +828,29 @@ func TestPolicyManagedNativeBindingPreservesBrokerConflict(t *testing.T) {
 	}
 }
 
+func TestConnectionBindingsPreserveRuntimeNotReadyBrokerResponse(t *testing.T) {
+	instance := toolInstance()
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/instances/alice-agent/connection-bindings" {
+			t.Fatalf("unexpected Broker request: %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":{"code":"runtime_not_ready","message":"The Agent runtime is not ready yet"}}`))
+	}))
+	defer broker.Close()
+	h := NewToolConnectionsHandler(kube.NewClient(newFakeClient(instance)), broker.URL, "https://portal.example.invalid")
+	h.HTTPClient = broker.Client()
+	h.RuntimeTypes = []string{"hermes"}
+	request := verifiedToolRequest(httptest.NewRequest(http.MethodGet, "/", nil))
+	request.SetPathValue("name", "alice-agent")
+	response := httptest.NewRecorder()
+	h.ListConnectionBindings(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"runtime_not_ready"`) ||
+		!strings.Contains(response.Body.String(), "The Agent runtime is not ready yet") {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestIndependentAuthorizationResponseAndUsageProxy(t *testing.T) {
 	for _, operation := range []string{"start", "authorization", "usage"} {
 		t.Run(operation, func(t *testing.T) {

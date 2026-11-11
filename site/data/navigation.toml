@@ -70,11 +70,13 @@
       "/docs/guides/teams",
       "/docs/operations/smart-routing",
       "/docs/operations/skill-marketplace",
+      "/docs/operations/observability",
       "/docs/operations/storage",
       "/docs/operations/istio",
       "/docs/guides/agent-ingress-mtls",
       "/docs/operations/entra-agent-identity",
       "/docs/operations/identity-providers",
+      "/docs/operations/cetiadmin",
     ]
   [[modules.groups]]
     title = "Troubleshooting"

@@ -21,11 +21,23 @@ spec:
         every pod went on sending the old key. */}}
         checksum/providers: {{ include (print $.Template.BasePath "/secret-providers.yaml") . | sha256sum }}
         {{- end }}
+        {{- if $metricsEnabled }}
+        {{- /* The ADX-Mon collector of the cetirun-observability chart scrapes
+        the metrics port of Pods with these annotations. */}}
+        adx-mon/scrape: "true"
+        adx-mon/port: {{ include "cetirun-ai-gateway.metricsPort" . | quote }}
+        adx-mon/path: /metrics
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
       labels:
         {{- include "cetirun-ai-gateway.gatewaySelectorLabels" . | nindent 8 }}
+        {{- if dig "enabled" false (.Values.content | default dict) }}
+        {{- /* The workload identity webhook gives the Pod a token for the
+        identity named on its ServiceAccount, which writes the content database. */}}
+        azure.workload.identity/use: "true"
+        {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -196,8 +195,11 @@ func (c *authSDKClient) authorizationHeaderFor(ctx context.Context, userToken, a
 	if err != nil {
 		return "", err
 	}
-	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		return "", errDownstreamForbidden
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return "", toolAuthorizationFailure("permission_denied", http.StatusForbidden)
+	case http.StatusTooManyRequests:
+		return "", toolAuthorizationFailure("throttled", http.StatusTooManyRequests)
 	}
 	if status != http.StatusOK || !strings.HasPrefix(response.AuthorizationHeader, "Bearer ") {
 		return "", errors.New("Auth SDK token exchange failed")
@@ -262,5 +264,3 @@ func scopeContains(scopes, expected string) bool {
 	}
 	return false
 }
-
-var errDownstreamForbidden = fmt.Errorf("downstream request is forbidden")

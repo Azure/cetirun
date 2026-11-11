@@ -18,6 +18,7 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
+	customharness "github.com/Azure/CetiRun/app/cetirun-operator/internal/agents/custom"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"helm.sh/helm/v3/pkg/chartutil"
 	"helm.sh/helm/v3/pkg/engine"
@@ -499,7 +500,7 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 			{Name: "OPENAI_BASE_URL", Value: b.Model.BaseURL},
 			{Name: "OPENAI_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{Name: b.Model.Name}, Key: b.Model.Key,
-			}}}}
+			}}}, {Name: customharness.GatewayModelLimitsEnvironment, Value: customharness.GatewayModelLimits(b.Model.GatewayModels)}}
 		if p.Agent.Port != nil {
 			env = append(env, corev1.EnvVar{Name: "PORT", Value: strconv.Itoa(int(*p.Agent.Port))})
 		}

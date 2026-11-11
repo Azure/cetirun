@@ -9,6 +9,10 @@ gateway and authentication resources. `templates/egress/` contains the
 destination and logging controls for all of the mesh. The operator manages the
 VirtualServices for each instance.
 
+`make deploy` installs and upgrades this chart. Use `deploy.sh` or a manual Helm
+install only for development or for an installation without `make deploy`. Do
+not use them on a cluster that `make deploy` manages.
+
 `deploy.sh` changes both the Helm resources and the AKS Istio shared ConfigMap.
 For a manual Helm install, a separate configuration for external authorization
 is necessary. The chart and the helper do not issue or renew TLS certificates.
@@ -29,9 +33,9 @@ python3 -m pip install --requirement infra/istio/requirements.txt
 
 ## Portal ownership endpoint
 
-For the platform umbrella, set `PORTAL_AUTH_NAMESPACE=cetirun-system` before
-you run `deploy.sh`. The default value for the standalone helper is
-`cetirun-portal`. `PORTAL_AUTH_SERVICE` and `PORTAL_AUTH_CLUSTER_HOST` let you
+For a direct installation of the platform umbrella, without `make deploy`, set
+`PORTAL_AUTH_NAMESPACE=cetirun-system` before you run `deploy.sh`. The default
+value for the standalone helper is `cetirun-portal`. `PORTAL_AUTH_SERVICE` and `PORTAL_AUTH_CLUSTER_HOST` let you
 set custom service locations. Refer to the
 [ownership endpoint configuration](../../site/content/en/docs/operations/istio.md#portal-ownership-endpoint).
 

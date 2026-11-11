@@ -350,13 +350,13 @@ class DeploymentInputTests(DeploymentFixture, unittest.TestCase):
         ]
         deployment = self.deployment(config, "optional-image")
         artifacts = deployment.plan()["artifacts"]
-        self.assertEqual(len(artifacts["images"]), 12)
+        self.assertEqual(len(artifacts["images"]), 13)
         self.assertNotIn("cetirun-vscode", artifacts["images"])
         deployment.preflight()
         inspected = [command[-1] for command in deployment.commands if command[:4] == ["docker", "buildx", "imagetools", "inspect"]]
         excluded = f"{config['release']['registry']}/cetirun-vscode:{config['release']['version']}"
         self.assertNotIn(excluded, inspected)
-        self.assertEqual(sum(reference.endswith(":" + config["release"]["version"]) for reference in inspected), 12)
+        self.assertEqual(sum(reference.endswith(":" + config["release"]["version"]) for reference in inspected), 13)
         self.assertFalse(any(command[4:6] == ["get", "agents.cetirun.microsoft.com"] for command in deployment.commands))
 
     def test_optional_image_exclusion_rejects_referenced_image_before_tools(self):
@@ -669,6 +669,14 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
         self.assertTrue(cookie_reads)
         self.assertTrue(all(".data." not in output and output != "json" for output in cookie_reads))
 
+    def test_external_istio_reads_qualified_gateway(self):
+        deployment = self.external_deployment("external-qualified-gateway")
+        deployment.execute()
+        gets = [command[command.index("get") + 1] for command in deployment.commands
+                if command[0] == "kubectl" and "get" in command]
+        self.assertIn("gateways.networking.istio.io", gets)
+        self.assertNotIn("Gateway", gets)
+
     def test_external_istio_read_failure_stops_before_writes(self):
         deployment = self.external_deployment("external-read-failure")
         deployment.fail = "jsonpath={.spec}"
@@ -679,13 +687,15 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
     def test_default_plan_covers_all_releases_and_supported_components(self):
         deployment = self.deployment()
         plan = deployment.plan()
-        self.assertEqual(len(plan["artifacts"]["images"]), 13)
-        self.assertEqual(len(plan["artifacts"]["charts"]), 8)
+        self.assertEqual(len(plan["artifacts"]["images"]), 14)
+        self.assertEqual(len(plan["artifacts"]["charts"]), 9)
         self.assertEqual(set(plan["releases"]["istio"]["workloads"]), {"oauth2-proxy", "oauth2-proxy-sessions"})
         self.assertEqual(plan["releases"]["broker"]["namespace"], "cetirun-credentials")
+        # The ADX-Mon collection is part of every deployment.
         self.assertEqual(set(plan["releases"]["platform"]["workloads"]), {
             "cetirun-operator", "cetirun-portal", "cetirun-ai-gateway", "cetirun-ai-gateway-postgresql",
-            "cetirun-ai-gateway-valkey", "cetirun-connections-mcp", "cetirun-sandbox-admission"})
+            "cetirun-ai-gateway-valkey", "cetirun-connections-mcp", "cetirun-sandbox-admission",
+            "cetirun-adx-mon-ingestor", "cetirun-telemetry", "cetirun-kube-state-metrics"})
         platform = deployment.values["platform"]
         self.assertTrue(platform["global"]["portalChat"]["enabled"])
         self.assertTrue(platform["cetirun-operator"]["customRuntime"]["enabled"])
@@ -1587,6 +1597,124 @@ class SkillMarketplaceTests(DeploymentFixture, unittest.TestCase):
                         deployment.keys[("cetirun-system", secret)].add(missing)
                     else:
                         deployment.objects[("storageclass", "", "example-marketplace")] = removed
+
+
+# Synthetic ADX-Mon inputs without database names; the example file names them.
+OBSERVABILITY = {
+    "clusterName": "example",
+    "adx": {"endpoint": "https://example.australiaeast.kusto.windows.net"},
+    "ingestorClientId": "55555555-5555-5555-5555-555555555555",
+}
+
+
+class ObservabilityTests(DeploymentFixture, unittest.TestCase):
+    def observability_config(self):
+        config = copy.deepcopy(self.config)
+        config["observability"] = copy.deepcopy(OBSERVABILITY)
+        return config
+
+    def refused(self, config, message):
+        with patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("External command before validation")):
+            with self.assertRaisesRegex(ValueError, message):
+                self.configure(config)
+
+    def test_the_example_turns_it_on(self):
+        _, values = self.configure(self.config)
+        chart = values["platform"]["cetirun-observability"]
+        self.assertIs(chart["enabled"], True)
+        self.assertEqual(chart["clusterName"], "example")
+        self.assertEqual(chart["adx"]["databases"], {"logs": "CetiRunLogs", "metrics": "CetiRunMetrics", "agentLogs": "CetiRunAgents"})
+
+    def test_without_the_block_it_is_refused(self):
+        for enabled in (None, True, False):
+            with self.subTest(enabled=enabled):
+                config = copy.deepcopy(self.config)
+                config.pop("observability")
+                if enabled is not None:
+                    DEPLOY.set_value(config["platform"]["values"], "cetirun-observability.enabled", enabled)
+                self.refused(config, "observability is required")
+
+    def test_block_sets_the_chart_values_with_default_databases(self):
+        _, values = self.configure(self.observability_config())
+        chart = values["platform"]["cetirun-observability"]
+        self.assertIs(chart["enabled"], True)
+        self.assertEqual(chart["clusterName"], "example")
+        self.assertEqual(chart["adx"]["endpoint"], OBSERVABILITY["adx"]["endpoint"])
+        self.assertEqual(chart["adx"]["databases"], {"logs": "CetiRunLogs", "metrics": "CetiRunMetrics", "agentLogs": "CetiRunAgents"})
+        self.assertEqual(chart["ingestor"]["clientId"], OBSERVABILITY["ingestorClientId"])
+
+    def test_invalid_inputs_are_refused_before_tools(self):
+        cases = [
+            ({"observability.clusterName": DELETE}, r"observability\.clusterName is required"),
+            ({"observability.clusterName": "Example_Cluster"}, "must be a DNS label"),
+            ({"observability.adx.endpoint": DELETE}, r"observability\.adx\.endpoint is required"),
+            ({"observability.adx.endpoint": "http://example.kusto.windows.net"}, "query URI of the Kusto cluster"),
+            ({"observability.adx.endpoint": "https://example.kusto.windows.net/CetiRunLogs"}, "without a path"),
+            ({"observability.ingestorClientId": "example-client"}, "client ID of the managed identity"),
+            ({"observability.adx.databases.logs": "cetirun-logs"}, "database name of letters and digits"),
+            ({"observability.adx.databases.agentLogs": "CetiRunLogs"}, "must name three databases"),
+            ({"observability.adx.ingestionUri": "https://ingest-example.kusto.windows.net"}, r"observability\.adx\.ingestionUri is not supported"),
+            ({"platform.values.cetirun-observability.clusterName": "other"},
+             r"cetirun-observability\.clusterName conflicts with the complete deployment inputs"),
+            ({"platform.values.cetirun-observability.enabled": False},
+             r"cetirun-observability\.enabled conflicts with the complete deployment inputs"),
+        ]
+        for changes, message in cases:
+            with self.subTest(changes=list(changes), message=message):
+                config = self.observability_config()
+                for path, value in changes.items():
+                    if value is DELETE:
+                        parent, key = path.rsplit(".", 1)
+                        DEPLOY.get_value(config, parent).pop(key)
+                    else:
+                        DEPLOY.set_value(config, path, value)
+                self.refused(config, message)
+
+    @unittest.skipUnless(shutil.which("helm"), "requires existing Helm for real local chart rendering")
+    def test_an_installation_without_it_gets_the_ingestor_secret_once(self):
+        # An installation by an earlier make deploy, which did not require the collection.
+        with patch.object(DEPLOY, "observability", return_value={"cetirun-observability.enabled": False}):
+            deployment = self.deployment(name="observability-off")
+        self.assertNotIn(("statefulset", "cetirun-system", "cetirun-adx-mon-ingestor"),
+                         {(doc["kind"].lower(), doc["metadata"].get("namespace"), doc["metadata"]["name"])
+                          for doc in deployment.documents["platform"]})
+        deployment.execute()
+        updated = self.deployment(self.observability_config(), "observability-on")
+        for field in ("objects", "keys", "installed", "live", "mesh"):
+            setattr(updated, field, copy.deepcopy(getattr(deployment, field)))
+        updated.execute()
+        secret = ("secret", "cetirun-system", "cetirun-adx-mon-ingestor-tls")
+        self.assertIn(secret, updated.objects)
+        self.assertIn(("statefulset", "cetirun-system", "cetirun-adx-mon-ingestor"), updated.objects)
+        # Once the ingestor exists, a lost Secret is not generated again.
+        updated.objects.pop(secret)
+        updated.writes.clear()
+        with self.assertRaisesRegex(ValueError, "cetirun-adx-mon-ingestor-tls is missing; refusing regeneration"):
+            updated.execute()
+        self.assertEqual(updated.writes, [])
+
+    @unittest.skipUnless(shutil.which("helm"), "requires existing Helm for real local chart rendering")
+    def test_render_uses_the_release_images_and_needs_no_external_reference(self):
+        deployment = self.deployment(self.observability_config(), "observability")
+        documents = deployment.documents["platform"]
+        workloads = {(doc["kind"], doc["metadata"]["name"]): doc for doc in documents
+                     if doc["kind"] in ("Deployment", "StatefulSet", "DaemonSet")}
+        for kind, name in (("DaemonSet", "cetirun-adx-mon-collector"), ("StatefulSet", "cetirun-adx-mon-ingestor"),
+                           ("Deployment", "cetirun-telemetry"), ("Deployment", "cetirun-kube-state-metrics")):
+            self.assertIn((kind, name), workloads)
+            self.assertEqual(workloads[(kind, name)]["metadata"]["namespace"], "cetirun-system")
+        images = {name: workloads[(kind, name)]["spec"]["template"]["spec"]["containers"][0]["image"]
+                  for kind, name in workloads if name in ("cetirun-adx-mon-collector", "cetirun-adx-mon-ingestor", "cetirun-telemetry")}
+        self.assertEqual(images, {"cetirun-adx-mon-collector": "registry.example.com/cetirun-observability:0.1.1",
+                                  "cetirun-adx-mon-ingestor": "registry.example.com/cetirun-observability:0.1.1",
+                                  "cetirun-telemetry": "registry.example.com/cetirun-operator:0.1.1"})
+        # The ingestor's TLS Secret is part of the release, not an input.
+        self.assertFalse([reference for reference in deployment.references() if "adx-mon" in reference[2]])
+        plan = deployment.plan()
+        self.assertIn("cetirun-adx-mon-ingestor", plan["releases"]["platform"]["workloads"])
+        self.assertIn("ADX ingestion with the ingestor identity", plan["notQualified"])
+        bootstrap = {doc["metadata"]["name"] for doc in deployment.bootstrap_documents if doc["kind"] == "DaemonSet"}
+        self.assertIn("cetirun-adx-mon-collector", bootstrap)
 
 
 class MeshTargetTests(unittest.TestCase):

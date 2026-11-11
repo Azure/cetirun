@@ -13,7 +13,8 @@ RuntimeClass, or identity integrations are available.
 ## Offline rendering
 
 If Helm is already installed, this loop examines both agent templates from the
-repository root. It uses synthetic models, credentials, and image repositories:
+repository root. It uses synthetic models, credentials, AI Gateway values, and
+image repositories:
 
 ```bash
 for agent in openclaw hermes; do
@@ -21,6 +22,9 @@ for agent in openclaw hermes; do
     --namespace cetirun-example --set-string agentType="$agent" \
     --set-string secrets.model=example-model \
     --set-string secrets.openclawGatewayToken=example-token \
+    --set-string aiGateway.keySecretName=example-gateway-key \
+    --set-string secrets.apiBase=http://ai-gateway.example.com/v1 \
+    --set-string hermes.env.HERMES_WEBAPP_PUBLIC_URL=https://example.com/ui/example-runtime \
     --set-string openclaw.image.repository=registry.example.com/openclaw-gateway \
     --set-string hermes.image.repository=registry.example.com/hermes-gateway \
     --set-string desktop.image.repository=registry.example.com/cetirun-desktop \
@@ -28,10 +32,14 @@ for agent in openclaw hermes; do
 done
 ```
 
-Do not deploy these placeholders. A local render does not pull images, query
-Secrets that already exist, run init containers or hooks, or examine cluster
-APIs. The chart metadata values `version: 0.1.0` and `appVersion: 0.1.0` are not
-evidence of published artifacts. The connected admission and registry checks
+Do not deploy these placeholders. The chart refuses to render without
+`aiGateway.keySecretName`. Hermes also must have `secrets.apiBase` and
+`hermes.env.HERMES_WEBAPP_PUBLIC_URL`. For the Agents that the operator
+manages, the operator supplies these values.
+
+A local render does not pull images, query Secrets that already exist, run init
+containers or hooks, or examine cluster APIs. The chart metadata values `version: 0.1.0` and
+`appVersion: 0.1.0` are not evidence of published artifacts. The connected admission and registry checks
 and the Helm installation that mutates the cluster are separate steps in
 [platform setup](../../getting-started/platform/).
 
@@ -265,9 +273,33 @@ The chart enables the OpenClaw doctor init step through
 a startup mutation, not a read-only diagnostic. The `doctor.enabled` alias must
 also be true for the step to run. Hermes does not run this init container.
 
-`openclaw.acpx` configures the installed agent communication plugin. Before you
-use it, examine its permissions, allowed adapters, and optional command
-overrides.
+`openclaw.acpx` configures the installed agent communication plugin (ACPX).
+The plugin is enabled by default:
+
+| Value | Default |
+| --- | --- |
+| `openclaw.acpx.enabled` | `true` |
+| `openclaw.acpx.dispatch.enabled` | `true` |
+| `openclaw.acpx.allowedAgents` | `claude`, `codex`, and `opencode` |
+| `openclaw.acpx.permissionMode` | `approve-all` |
+
+With these defaults, OpenClaw can start sessions of the `claude`, `codex`, and
+`opencode` adapters through ACP. `approve-all` approves the tool requests of
+these sessions without a prompt. To change this behavior, set one of these
+values:
+
+- `openclaw.acpx.permissionMode: approve-reads` approves only read requests.
+- `openclaw.acpx.permissionMode: deny-all` refuses all tool requests.
+- `openclaw.acpx.enabled: false` disables the plugin.
+
+For the Agents that the operator manages, set these values in the operator's
+deployment-wide `cetirun.helmValues`. Before you use the plugin, also examine
+its optional command overrides in `openclaw.acpx.agents`.
+
+`openclaw.git.azureDevOps.enabled` is also `true` by default. At
+initialization, it installs a Git credential helper that gets Azure DevOps
+tokens through `az account get-access-token`. Refer to
+[Skills](../../concepts/configuration/#skills).
 
 `hermes.config`, `hermes.env`, and `hermes.gateway` configure Hermes. Model and
 provider values are rendered into the native format of the selected agent.
@@ -314,12 +346,15 @@ allow rules. It is not an HTTPS-only policy or an immutable block on every
 private address.
 
 `execRestriction` renders `admissionregistration.k8s.io/v1` policy and binding
-resources. It does not examine the availability of the cluster API. Before
-installation, examine its
-[fixed service-account exception]({{< repo "app/cetirun-chart/templates/deny-exec-policy.yaml" >}})
-and the necessary administrator access. This exception is not a general
-cluster-admin exception. Do not disable the exec restriction as a
-troubleshooting shortcut.
+resources. It does not examine the availability of the cluster API.
+
+The [policy template]({{< repo "app/cetirun-chart/templates/deny-exec-policy.yaml" >}})
+has no fixed service-account exception. When CetiAdmin is enabled, the operator
+adds an exception for the CetiAdmin service account at runtime, as
+[CetiAdmin](../../operations/cetiadmin/#exec-exception) describes. The policy
+covers only `pods/exec`. Before installation, examine the necessary
+administrator access. Do not disable the exec restriction as a troubleshooting
+shortcut.
 
 The [logger script]({{< repo "app/cetirun-chart/configs/session-logger.sh" >}})
 tails recent OpenClaw session JSONL files or the Hermes gateway log to stdout.
@@ -349,6 +384,7 @@ agent values are still under `cetirun-operator.cetirun.helmValues`.
 | `istio.enabled` | `false`. It must be `true` to acknowledge the separately installed Istio prerequisites. It does not install Istio. |
 | `istio.oauth2Proxy.name`, `namespace` | `oauth2-proxy`, `cetirun-istio`. `make deploy` sets `namespace` to the namespace of the CetiRun Istio release. |
 | `cetirun-operator.enabled`, `cetirun-portal.enabled` | `true`. You can disable each component. |
+| `cetirun-operator.cetiadmin` | CetiAdmin. `enabled` is `true`, and an enabled CetiAdmin needs inputs. See [CetiAdmin values](#cetiadmin-values). |
 | `cetirun-operator.namespace` | `cetirun-system`. Align it with the Helm release namespace. This is necessary for the bundled AI Gateway. |
 | `cetirun-portal.aiGateway.catalogNamespace` | `cetirun-system`. It must equal `cetirun-operator.namespace`, where the operator publishes the shared models. `make deploy` sets both from `platform.namespace`. A standalone portal keeps its own value. |
 | `cetirun-ai-gateway.enabled` | `true`. Disable it only when a Gateway is installed separately in the operator namespace. `make deploy` refuses `false`. |
@@ -358,7 +394,7 @@ agent values are still under `cetirun-operator.cetirun.helmValues`.
 | `cetirun-ai-gateway.priceTable` | `remote`. When a Gateway pod starts, LiteLLM downloads the current price table from GitHub. It uses the copy in the image as a fallback. `bundled` uses only the copy in the image. This is for a cluster without internet access, or for prices pinned to the image. New models and price changes then arrive only with a new image. While the Gateway blocks unpriced models, these limits apply. A shared model that is not in that copy must have a declared price. A GitHub Copilot model that is newer than the image is not offered. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#known-gaps). |
 | `cetirun-ai-gateway.requestLog.enabled` | `true`. One JSON line for each model call on the Gateway's stdout, for the cluster's log collection. The line has the caller, model, tokens, spend, and time data. It carries no request or response content. |
 | `cetirun-ai-gateway.spendLogs.enabled`, `spendLogs.storePrompts`, `spendLogs.retention` | `true`, `true`, and `7d`. LiteLLM writes a row for each call to `LiteLLM_SpendLogs`. With `storePrompts`, the row also holds the prompt and the response of the call. Set `storePrompts: false` to keep only the metadata of the call. The request log pages of the LiteLLM console read this table. Every hour, each Gateway pod deletes rows older than the retention, together with the stored health check results. The first time is an hour after the pod starts. Spend, budgets, and daily usage totals are kept longer than the retention. It is disabled only together with the request log. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#litellms-spend-log). |
-| `cetirun-ai-gateway.metrics.enabled` | `true` in the platform. The Gateway chart defaults to `false`. It serves LiteLLM's Prometheus metrics on port 9090 of each Gateway pod, without authentication. If the Gateway itself listens on 9090, it uses port 9091. `metrics.podMonitor.enabled` is also `true` in the platform. It adds a PodMonitor for Azure Monitor managed Prometheus when the cluster serves its API. |
+| `cetirun-ai-gateway.metrics.enabled` | `true` in the platform. The Gateway chart defaults to `false`. It serves LiteLLM's Prometheus metrics on port 9090 of each Gateway pod, without authentication. If the Gateway itself listens on 9090, it uses port 9091. The pods carry the annotations with which the ADX-Mon collection scrapes that port. |
 | `cetirun-ai-gateway.router.routingStrategy` | `simple-shuffle`. This sets how one deployment of a model is selected. You can also use `least-busy`, `latency-based-routing`, `usage-based-routing-v2`, or `cost-based-routing`. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#choosing-a-deployment). |
 | `cetirun-ai-gateway.router.failover`, `router.continuationAffinity` | `true`. If several deployments are behind one model name, a request that failed on one is sent one more time to another. This is not a retry, and it works with `simple-shuffle` only. In that case, a Responses API continuation goes to the deployment that stored the earlier response. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#routing). |
 | `cetirun-ai-gateway.router.encryptedContentAffinity`, `router.deploymentAffinity` | `true`. It keeps each Responses API conversation on the deployment that encrypted its reasoning. It also keeps each key on the deployment that served it last. This is for the provider's prompt cache. When that deployment fails, the conversation's requests fail with it. This continues until the deployment is in cooldown or the health checks mark it unhealthy. The conversation moves only at that time, without its encrypted reasoning. Keep health checks enabled. A cooldown lasts five seconds. Deployment affinity is off for models with deployments that set `order`. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#encrypted-reasoning-stays-with-its-resource). |
@@ -414,7 +450,7 @@ are important when you install the chart alone:
 | `redis.bundled.enabled`, `redis.host`, `redis.passwordSecret.existingSecret` | `true`, empty, empty. To use your own Redis or Valkey, set `false` and a host. The connection does not use TLS. `make deploy` refuses `false`. |
 | `service.type`, `service.port` | `ClusterIP`, `4000`. The chart creates no Ingress. |
 | `resources`, `postgresql.bundled.resources`, `redis.bundled.resources` | `{}`. Nothing is reserved. See [Resources]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#resources). |
-| `metrics.enabled`, `metrics.podMonitor.enabled` | `false`, `false`. The platform chart sets both to `true`. |
+| `metrics.enabled`, `metrics.podMonitor.enabled` | `false`, `false`. The platform chart sets `metrics.enabled` to `true`. `podMonitor.enabled` adds a PodMonitor of the Prometheus Operator (`monitoring.coreos.com/v1`) when the cluster serves its API. |
 
 The other values, for example `priceTable`, `spendLogs`, `router`, and
 `budgetExceededStatusCode`, have the defaults that the `cetirun-ai-gateway`
@@ -428,12 +464,14 @@ Source: [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}})
 | --- | --- |
 | `replicaCount`, `leaderElection` | `2`, `true` |
 | `domainSuffix` | The deployment domain. It is necessary. |
+| `cetiadmin` | CetiAdmin. `enabled` is `true`, and an enabled CetiAdmin needs inputs and admission prerequisites. See [CetiAdmin values](#cetiadmin-values). |
 | `namespace` | `cetirun-system`. The operator resource templates use it directly. |
 | `istioRevision` | Empty. The operator then detects the revision automatically. |
 | `istioGateway` | `aks-istio-ingress/cetirun-gateway`. Agent VirtualServices use it. |
 | `cetirun.chart.repoURL`, `cetirun.chart.version` | An accessible OCI agent chart and its version |
 | `cetirun.defaultModel` | `gpt-6-astra`. Select a model that is available to the Copilot accounts of your users. |
 | `cetirun.helmValues` | Deployment-wide agent values |
+| `aiGateway.defaultBudget` | `10000`. The monthly budget in USD that the operator writes when it creates the Gateway key of a standard Agent. Later changes in the Gateway are kept. Policy-bound Agents use the budget of their Agent Policy, and CetiAdmin uses `cetiadmin.model.initialMonthlyBudgetUSD`. |
 | `acrDockerSecret` | The registry Secret in the operator namespace, for the Helm client of the operator |
 | `image` | The operator image pin. The pull policy is `IfNotPresent`. An empty tag uses `appVersion`. |
 | `imagePullSecrets` | The values declare it, but the chart does not render it into the operator Deployment. |
@@ -714,6 +752,40 @@ Each instance's `spec.helm.version` is pinned during the first reconciliation.
 As a result, a change to the operator's default chart version alone does not
 upgrade the instances that already exist.
 
+### CetiAdmin values
+
+`cetiadmin` configures [CetiAdmin](../../operations/cetiadmin/), the Hermes
+operations Agent that the operator installs. The platform chart and
+`make deploy` use the same values under `cetirun-operator.cetiadmin`.
+
+| Value | Purpose / default |
+| --- | --- |
+| `cetiadmin.enabled` | `true`. To install the operator without CetiAdmin, set `false`. |
+| `cetiadmin.instanceName` | `cetiadmin`, at most 44 characters. The name of the Agent and of its Team. The Agent runs in the namespace `cetirun-<instanceName>`. |
+| `cetiadmin.owner.alias`, `owner.tenantID`, `owner.objectID` | Empty. Necessary when CetiAdmin is enabled. The Portal alias, the Entra tenant ID, and the Entra object ID of an owner that already exists. |
+| `cetiadmin.model.default`, `model.initialMonthlyBudgetUSD`, `model.githubCopilot` | `auto`, empty, and `false`. The budget is necessary when CetiAdmin is enabled. It is a nonnegative decimal string, for example `"100"`. |
+| `cetiadmin.kubernetes.apiServer`, `kubernetes.caConfigMapName` | `https://kubernetes.default.svc` and `kube-root-ca.crt` |
+| `cetiadmin.kubernetes.apiAudience`, `kubernetes.apiEgressCIDRs` | Empty and `[]`. Both are necessary when CetiAdmin is enabled: a token audience that the API server accepts and that is different from the Connections MCP audience, and the endpoint addresses of the API server as `/32` or `/128` CIDRs. |
+| `cetiadmin.platformReadNamespaces` | `[]`. Other namespaces for read-only diagnostics. |
+| `cetiadmin.monitor.enabled` | `false`. Scheduled health checks. `monitor.deliver` is `local` or `slack`. |
+| `cetiadmin.runtime.version`, `runtime.image`, `runtime.port` | Empty. CetiAdmin then uses the runtime chart and the Hermes profile of the same release. |
+| `cetiadmin.sharedSkills.enabled`, `azureWorkloadIdentity.enabled` | `false` |
+| `cetiadmin.hookTimeoutSeconds` | `600`. The wait budget of the CetiAdmin hooks. Helm's own `--timeout` must also allow this duration. |
+
+An enabled CetiAdmin also needs the admission server, even when
+`sandboxAdmission.enabled` is `false`. The chart refuses to render until these
+items are available:
+
+- Kubernetes 1.37 or later
+- `sandboxAdmission.tlsSecretName`
+- `sandboxAdmission.caBundle`
+- At least one entry in `sandboxAdmission.adminUsers` or
+  `sandboxAdmission.adminGroups`
+- `domainSuffix` and `aiGateway.enabled: true`
+
+For a complete example, refer to
+[Configure CetiAdmin]({{< repo "app/cetirun-platform/README.md" >}}#configure-cetiadmin).
+
 ## Portal chart
 
 Source: [portal values]({{< repo "app/cetirun-portal/chart/values.yaml" >}}).
@@ -804,3 +876,30 @@ lets the worker read the ConfigMap `cetirun-skill-marketplace-teams` and read
 and update the ConfigMap `cetirun-skill-marketplace`. The operator writes the
 first ConfigMap, and it creates the second one. The operator also creates the
 Agents' claims and volumes. Its ClusterRole already has these permissions.
+
+## Observability chart
+
+Source: [observability values]({{< repo "app/cetirun-observability/chart/values.yaml" >}}).
+The platform chart installs it with the `cetirun-observability` values, which
+are off by default. `make deploy` turns it on, and sets the first four rows
+from the required `observability` block of the environment file. For the
+procedure, see [Observability with ADX-Mon](../../operations/observability/).
+
+| Value | Purpose / default |
+| --- | --- |
+| `clusterName` | Necessary. A DNS label that names this CetiRun cluster in every row. |
+| `adx.endpoint` | Necessary. The query URI of the Kusto cluster, `https://<name>.<region>.kusto.windows.net`, without a path. |
+| `adx.databases.logs`, `adx.databases.metrics`, `adx.databases.agentLogs` | `CetiRunLogs`, `CetiRunMetrics`, `CetiRunAgents`. |
+| `ingestor.clientId` | Necessary. The client ID of the managed identity that the ingestor uses through workload identity. |
+| `global.registry`, `global.version` | Empty. With a registry, the images are `<registry>/cetirun-observability` and, for the telemetry program, `<registry>/cetirun-operator`. The tag is `image.tag`, then `global.version`, then the `appVersion` of the chart. |
+| `logs.platformNamespaces` | `cetirun-credentials`, `cetirun-istio`, `aks-istio-system`. The release namespace is always included. |
+| `logs.ingressNamespace` | `aks-istio-ingress`. Empty leaves out the ingress gateway's access log. |
+| `logs.agents.enabled` | `true`. The output of every container of Agent Pods, Custom terminals and GitHub Copilot proxies, into the Agent logs database. |
+| `metrics.scrapeInterval`, `metrics.keep`, `metrics.drop` | `60` seconds; the regular expressions of the metric names that are kept, and of those that are dropped even when kept. Every other metric is dropped. |
+| `collector.maxDiskUsage`, `collector.hostPath` | `2147483648` bytes; `/var/lib/cetirun-adx-mon`. The write-ahead log and the log file positions on each node. |
+| `collector.tolerations` | Every taint, so that the collector runs on every node. |
+| `ingestor.storage.size`, `ingestor.maxDiskUsage` | `16Gi`; `12884901888` bytes. |
+| `ingestor.tls.secretName` | Empty. The chart creates a CA and a certificate for the transfer endpoint on the first installation and keeps them. |
+| `kubeStateMetrics.enabled`, `kubeStateMetrics.objects` | `true`; Pods, nodes, Deployments, StatefulSets, DaemonSets, Jobs, claims and namespaces. The chart refuses other kinds. |
+| `telemetry.enabled`, `telemetry.events`, `telemetry.snapshotInterval` | `true`; `warnings-and-cetirun`, also `all` or `none`; `1h`. |
+| `crds.install` | `true`. The ADX-Mon definitions Function, ManagementCommand and SummaryRule. |

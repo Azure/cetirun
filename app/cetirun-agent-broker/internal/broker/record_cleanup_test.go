@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Azure/CetiRun/app/internal/agenttools"
 )
 
 func TestAgentRecordCleanupPreservesSharedCredentials(t *testing.T) {
@@ -40,6 +42,36 @@ func TestAgentRecordCleanupPreservesSharedCredentials(t *testing.T) {
 	}
 	if err := f.store.deleteAgentRecords(ctx, agentFromDocument(f.agent)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCustomAgentRecordCleanupPreservesSharedCredentials(t *testing.T) {
+	f := newNamespaceFixture(t)
+	f.agent.Spec.Agent.Type = "custom"
+	agent := agentFromDocument(f.agent)
+	immutable := true
+	f.customReceipt = &configMapDocument{Immutable: &immutable, Data: map[string]string{"ownership": `{"agentName":"agent","agentUID":"` + agent.UID + `","namespace":"agents","namespaceUID":"namespace-agent"}`}}
+	f.customReceipt.Metadata.Name = agenttools.CustomOwnershipRecordName(agent.UID)
+	f.customReceipt.Metadata.Namespace = "cetirun-system"
+	f.customReceipt.Metadata.OwnerReferences = []ownerReference{agentRecordOwner(agent)}
+	f.store.nativeOperatorNamespace = "cetirun-system"
+	ctx, now := context.Background(), time.Now().UTC()
+	shared := namespaceDelegatedConnection(now)
+	if err := f.store.putConnection(ctx, shared, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.putConnection(ctx, namespaceAgentConnection(now), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.putBinding(ctx, namespaceBinding("personal", shared.Connection.ID, now), ""); err != nil {
+		t.Fatal(err)
+	}
+	f.agent.Metadata.DeletionTimestamp = &now
+	if err := f.store.deleteAgentRecords(ctx, agentFromDocument(f.agent)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.secrets["agents"]) != 0 || len(f.secrets["credentials"]) != 1 {
+		t.Fatal("Custom cleanup deleted shared credentials or retained Agent records")
 	}
 }
 func TestAgentRecordCleanupRetriesDeleteConflict(t *testing.T) {

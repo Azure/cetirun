@@ -175,8 +175,33 @@ func TestPolicyRevisionsAreScopedToTheirEnforcementDomains(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if afterIdentity.gatewayRevision != baseline.gatewayRevision || afterIdentity.credentialRevision == baseline.credentialRevision {
-		t.Fatal("credential policy did not remain isolated from the Gateway revision")
+	if afterIdentity.gatewayRevision != baseline.gatewayRevision || afterIdentity.credentialRevision != baseline.credentialRevision {
+		t.Fatal("optional identity changed an identity-free Agent's enforcement revisions")
+	}
+	agent.Spec.AgentIdentity = &api.AgentIdentitySpec{Enabled: true}
+	active, err := r.resolvePolicy(ctx, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active.credentialRevision == baseline.credentialRevision || active.credentialRevision != credentialPolicyProjection(agent, active.team, active.policy).Revision() {
+		t.Fatal("an identity-enabled Agent must use the complete credential projection")
+	}
+	policy.Spec.AgentIdentity.Required = true
+	policy.Generation++
+	if err := kube.Update(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Status.ObservedGeneration = policy.Generation
+	policy.Status.Conditions[0].ObservedGeneration = policy.Generation
+	if err := kube.Status().Update(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	required, err := r.resolvePolicy(ctx, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if required.credentialRevision == active.credentialRevision || required.gatewayRevision != active.gatewayRevision {
+		t.Fatal("active identity policy edits must still change only the credential projection")
 	}
 }
 

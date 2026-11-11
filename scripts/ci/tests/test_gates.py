@@ -92,7 +92,7 @@ class GateTests(unittest.TestCase):
                 validate.chart_gate(self.root)
         run.assert_not_called()
 
-    def test_all_eight_charts_and_both_runtime_types_are_checked(self):
+    def test_all_nine_charts_and_both_runtime_types_are_checked(self):
         for directory, _ in validate.CHARTS:
             chart = self.root / directory
             chart.mkdir(parents=True, exist_ok=True)
@@ -104,17 +104,18 @@ class GateTests(unittest.TestCase):
         (self.root / "scripts/cetirun-istio-helm-test.sh").write_text("# fixture")
         (self.root / "scripts/cetirun-agent-broker-helm-test.sh").write_text("# fixture")
         (self.root / "scripts/cetirun-ai-gateway-helm-test.sh").write_text("# fixture")
+        (self.root / "scripts/cetirun-observability-helm-test.sh").write_text("# fixture")
         with patch.object(validate, "run") as run:
             validate.chart_gate(self.root)
         commands = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(sum(c[:2] == ["helm", "lint"] for c in commands), 9)
-        self.assertEqual(sum(c[:2] == ["helm", "template"] for c in commands), 9)
+        self.assertEqual(sum(c[:2] == ["helm", "lint"] for c in commands), 10)
+        self.assertEqual(sum(c[:2] == ["helm", "template"] for c in commands), 10)
         self.assertEqual(
             {str(Path(c[3]).relative_to(self.root)) for c in commands if c[:2] == ["helm", "lint"]},
             {
                 "app/cetirun-chart", "app/cetirun-operator/chart", "app/cetirun-portal/chart",
                 "app/cetirun-connections-mcp/chart", "app/cetirun-agent-broker/chart", "app/cetirun-ai-gateway/chart",
-                "app/cetirun-platform", "infra/istio",
+                "app/cetirun-observability/chart", "app/cetirun-platform", "infra/istio",
             },
         )
         self.assertTrue(all("--strict" in c for c in commands if c[1] == "lint"))
@@ -132,6 +133,7 @@ class GateTests(unittest.TestCase):
                 "cetirun-istio-helm-test.sh",
                 "cetirun-agent-broker-helm-test.sh",
                 "cetirun-ai-gateway-helm-test.sh",
+                "cetirun-observability-helm-test.sh",
             ],
         )
 
@@ -589,7 +591,7 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertNotIn(f"- name: {step}\n", jobs["go-api-tests"])
         for step in ("Download Operator API test modules", "Verify generated API artifacts",
                      "Test Agent API admission", "Download Portal API test modules",
-                     "Test Portal lifecycle and Sandbox API contracts"):
+                     "Test Portal lifecycle and configuration API contracts"):
             self.assertIn(f"- name: {step}\n", jobs["go-api-tests"])
             self.assertNotIn(f"- name: {step}\n", jobs["go-unit-tests"])
         self.assertIn("go -C ../internal mod download", jobs["go-api-tests"])
@@ -647,14 +649,14 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("continue-on-error:", text)
         self.assertNotRegex(text, r"git (?:apply|commit|push)")
 
-    def test_portal_lifecycle_and_sandbox_use_the_existing_isolated_admission_job(self):
+    def test_portal_lifecycle_and_configuration_use_the_existing_isolated_admission_job(self):
         text = (validate.ROOT / ".github/workflows/operator-ci.yml").read_text()
         steps = {
             step.splitlines()[0]: step
             for step in text.split("\n      - name: ")[1:]
         }
         download = steps["Download Portal API test modules"]
-        check = steps["Test Portal lifecycle and Sandbox API contracts"]
+        check = steps["Test Portal lifecycle and configuration API contracts"]
         self.assertIn("app/cetirun-portal/go.sum", text)
         self.assertIn("working-directory: app/cetirun-portal", download)
         self.assertIn("run: go mod download", download)
@@ -663,7 +665,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn('GOFLAGS: "-mod=readonly"', check)
         self.assertIn("KUBECONFIG: /dev/null", check)
         self.assertIn('USE_EXISTING_CLUSTER: "false"', check)
-        self.assertIn("run: go test -tags=envtest ./internal/kube ./internal/handler -run '^Test(RetainedRestartThroughServedAPI|SandboxDefaultsThroughPortalAndServedAPI)$' -count=1", check)
+        self.assertIn("run: go test -tags=envtest ./internal/kube ./internal/handler -run '^Test(RetainedRestartThroughServedAPI|SandboxDefaultsThroughPortalAndServedAPI|TeamGenerationThroughPortalAndServedAPI)$' -count=1", check)
         self.assertLess(text.index('echo "KUBEBUILDER_ASSETS=$tools_dir"'), text.index(download))
         self.assertLess(text.index(download), text.index(check))
         self.assertNotIn("continue-on-error:", check)
@@ -716,8 +718,17 @@ class WorkflowContractTests(unittest.TestCase):
             "Operator image CVEs",
             "Portal image CVEs",
             "Agent Identity Broker image CVEs",
+            "Observability image CVEs",
         ):
             self.assertIn(expected, names)
+
+    def test_observability_image_is_built_once_smoke_tested_and_scanned(self):
+        text = (validate.ROOT / ".github/workflows/observability-ci.yml").read_text()
+        self.assertEqual(text.count("uses: docker/build-push-action@"), 1)
+        self.assertEqual(text.count("tags: cetirun-observability:validation"), 1)
+        self.assertIn("--entrypoint /collector", text)
+        self.assertIn("--entrypoint /ingestor", text)
+        self.assertEqual(text.count("scan_image.py --image cetirun-observability:validation"), 1)
 
     def test_scans_reuse_each_component_build(self):
         for component in validate.COMPONENTS:

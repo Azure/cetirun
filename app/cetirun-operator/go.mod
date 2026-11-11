@@ -19,14 +19,14 @@ require (
 	go.yaml.in/yaml/v2 v2.4.5
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.62.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 	golang.org/x/term v0.47.0
 	gomodules.xyz/jsonpatch/v2 v2.5.0
 	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12
 	helm.sh/helm/v3 v3.22.1
-	istio.io/api v1.31.4
-	istio.io/client-go v1.31.4
+	istio.io/api v1.32.0
+	istio.io/client-go v1.32.0
 	k8s.io/api v0.37.2
 	k8s.io/apiextensions-apiserver v0.37.2
 	k8s.io/apimachinery v0.37.2
@@ -43,7 +43,7 @@ require (
 )
 
 require (
-	cel.dev/expr v0.25.3 // indirect
+	cel.dev/expr v0.26.0 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.13.0 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
@@ -148,8 +148,8 @@ require (
 	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.6 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
-	golang.org/x/oauth2 v0.37.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/oauth2 v0.38.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260817212433-ac3dfec99bb1 // indirect

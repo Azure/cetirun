@@ -9,6 +9,16 @@ for each deployment. It supplies OAuth2 Proxy, an Istio Gateway and
 VirtualService, AuthorizationPolicy, redirect and ownership filters, security
 headers, and mesh-wide egress resources.
 
+> **Warning:** If you use `make deploy`, do only the identity, DNS, and
+> certificate steps in [Prepare identity, DNS, and TLS](#prepare-identity-dns-and-tls).
+> `make deploy` installs and upgrades the CetiRun Istio release. It enables
+> mTLS to the Portal ownership endpoint and patches the mesh configuration. Do
+> not also run `infra/istio/deploy.sh` or the
+> [direct Helm installation](#direct-helm-installation) on the same cluster. The
+> helper installs the release without Portal mTLS. When it has a certificate,
+> it also makes a chart-owned `cetirun-tls` Secret, and a later `make deploy`
+> then stops.
+
 ## Prepare identity, DNS, and TLS
 
 1. Enable AKS managed Istio and its external ingress gateway. The
@@ -254,6 +264,11 @@ certificate.
 
 ## Deploy helper inputs
 
+[Install CetiRun](../../getting-started/platform/) with `make deploy` is the
+supported installation path. Use the helper only for development, or for an
+installation without `make deploy`. Do not use it on a cluster that
+`make deploy` manages.
+
 To run [infra/istio/deploy.sh]({{< repo "infra/istio/deploy.sh" >}}), you must
 have Bash, Helm, kubectl, jq, OpenSSL, Python 3, and the pinned PyYAML
 dependency. Before deployment, install the Python dependency:
@@ -328,8 +343,9 @@ helm template cetirun-istio infra/istio --namespace cetirun-istio \
 This command does not validate identity, TLS, Secrets that already exist, or
 the managed mesh configuration. Do not apply this rendered example.
 
-**Connected, mutating:** platform operators can install the local chart with
-a separately prepared private values file:
+**Connected, mutating:** for an installation without `make deploy`, platform
+operators can install the local chart with a separately prepared private values
+file:
 
 ```bash
 helm upgrade --install cetirun-istio infra/istio \
@@ -400,6 +416,11 @@ templates. Helm reconciliation restarts OAuth2 Proxy and the bundled Valkey
 with the new password. Plan for sign-in interruption during this rotation.
 A Secret update alone does not restart existing Pods.
 
+The initial Secret and both Pod templates use the same credentials when the
+chart creates the session store. An upgrade with unchanged credentials and
+settings does not restart the store. Applying this fix to a release created by
+an older chart can cause a one-time rollout if its saved checksum is stale.
+
 When upgrading a cookie-mode installation, explicitly set
 `oauth2Proxy.sessionStore.type: redis`. An existing values file can retain
 `type: cookie` despite the new default. Keep the existing cookie Secret and
@@ -429,6 +450,17 @@ answer `401` instead of a redirect to Entra. This is because a browser cannot
 follow that redirect from a script. Also, an Agent UI can request dozens of
 assets at one time. Otherwise, each of these asset requests starts a sign-in.
 The Portal then asks the user to refresh the page.
+
+On an OAuth2 Proxy error page, **Sign in** starts a new authentication attempt
+and returns to the Portal home page. It does not revisit the failed callback
+URL. If sign-in is temporarily unavailable, wait for the authentication service
+and its session store to recover before trying again. Access remains denied
+while the session cannot be verified; CSRF, nonce, and PKCE checks still apply.
+
+OAuth2 Proxy also checks Redis during startup. The pinned version exits if
+that check fails, and Kubernetes retries it. The error page and safe return
+URL do not remove this startup dependency or make the single-replica store
+highly available.
 
 ## Authentication and ownership
 
@@ -488,7 +520,7 @@ their dedicated header. On other owned Agent routes, such as the Terminal and
 Desktop, the filter removes `Authorization` unless one of the route-bound
 credentials below applies.
 
-The deployment helper also reconciles `authorization` in the
+`make deploy` and `infra/istio/deploy.sh` also reconcile `authorization` in the
 `headersToUpstreamOnAllow` of the canonical oauth2-proxy ext-auth provider.
 When you upgrade an older shared Istio ConfigMap, this step is necessary. Helm
 cannot change that AKS-managed ConfigMap.
@@ -518,8 +550,8 @@ ownership endpoint, where Portal checks the recorded tenant and object IDs.
 An owner's display alias or email can change without changing ownership.
 The token is never forwarded to the Agent.
 
-The complete deployment helper enables both sides. Standalone deployments
-must set `portalAuth.mtls.enabled: true` and an exact
+`make deploy` enables both sides. `infra/istio/deploy.sh` does not. Standalone
+deployments must set `portalAuth.mtls.enabled: true` and an exact
 `portalAuth.mtls.serverIdentity`, such as
 `spiffe://cluster.local/ns/cetirun-portal/sa/cetirun-portal`, in the Istio chart,
 and `istio.internalAuthMTLS: true` in the Portal chart. Use the actual Portal
@@ -578,7 +610,8 @@ If you change the portal service name or namespace, also update
 `portalAuth.clusterHost`. By default, the standalone helper uses
 `cetirun-portal.cetirun-portal.svc.cluster.local:8081`.
 The platform umbrella installs the portal in `cetirun-system`. For this reason,
-set `PORTAL_AUTH_NAMESPACE=cetirun-system` before you run the separate Istio
+if you install the umbrella directly, without `make deploy`, set
+`PORTAL_AUTH_NAMESPACE=cetirun-system` before you run the separate Istio
 deployment helper.
 
 Use `PORTAL_AUTH_SERVICE` for a custom service name or
@@ -593,13 +626,14 @@ does not reconfigure the independent Istio release. Refer to the
 | Setting | Scope |
 | --- | --- |
 | `authPolicy.authExemptPrefixes` | Host prefixes that bypass OAuth2 Proxy |
-| `authPolicy.aliasExemptPrefixes` | Present in values, but not used by the ownership filter |
+| `authPolicy.aliasExemptPrefixes` | Host prefixes that skip the ownership check. Sign-in still applies, unless `authExemptPrefixes` also lists the prefix |
 
 Both prefix lists contain `oauth2` and `llmapi`. `authExemptPrefixes` bypasses
-OAuth2 Proxy for those subdomain hosts. With `aliasExemptPrefixes`, the
-ownership filter does not interpret those shared hosts as instance names.
-Review if they are necessary. These values do not install an LLM gateway or
-supply model request authorization.
+OAuth2 Proxy for those subdomain hosts. For each prefix in
+`aliasExemptPrefixes`, the ownership filter skips the ownership check on the
+host `<prefix>.<domain>`. Add a prefix only for a shared service that does its
+own authorization. Review if they are necessary. These values do not install
+an LLM gateway or supply model request authorization.
 
 The [authorization policy]({{< repo "infra/istio/templates/ingress/authorization-policy.yaml" >}})
 also exempts apex `/oauth2/*`, `/healthz`, and `/readyz`. The static

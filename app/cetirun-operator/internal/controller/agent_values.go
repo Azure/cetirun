@@ -12,6 +12,7 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/observability"
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -97,6 +98,11 @@ func validateRuntimeOverrides(values map[string]any, agentType string) error {
 		for _, field := range []string{"cetirun.microsoft.com/registry-binding-only", "cetirun.microsoft.com/connections-ca-hash", aiGatewayKeyIDPodAnnotation} {
 			if _, present := annotations[field]; present {
 				return fmt.Errorf("platform rollout annotations are platform-owned")
+			}
+		}
+		for key := range annotations {
+			if observability.CollectorAnnotation(key) {
+				return fmt.Errorf("pod annotation %s is reserved for the platform's log and metrics collection", key)
 			}
 		}
 	}

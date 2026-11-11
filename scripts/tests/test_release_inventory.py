@@ -20,9 +20,10 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/cetirun-release.py"
 IMAGES = {"cetirun-base", "openclaw-gateway", "hermes-gateway", "cetirun-desktop", "cetirun-operator",
           "cetirun-ai-gateway", "cetirun-agent-broker", "cetirun-connections-mcp", "cetirun-terminal",
-          "cetirun-portal", "cetirun-vscode", "cetirun-pi-agent", "cetirun-memory-context"}
+          "cetirun-portal", "cetirun-vscode", "cetirun-pi-agent", "cetirun-memory-context",
+          "cetirun-observability"}
 CHARTS = {"cetirun", "cetirun-istio", "cetirun-operator", "cetirun-portal", "cetirun-platform",
-          "cetirun-ai-gateway", "cetirun-agent-broker", "cetirun-connections-mcp"}
+          "cetirun-ai-gateway", "cetirun-agent-broker", "cetirun-connections-mcp", "cetirun-observability"}
 DOCKER = r'''
 import json, os, pathlib, sys
 args = sys.argv[1:]
@@ -254,7 +255,8 @@ class ReleaseInventoryTests(unittest.TestCase):
         store = self.fake_registry()
         scripts = {"cetirun": "cetirun", "cetirun-istio": "istio", "cetirun-operator": "operator",
                    "cetirun-portal": "portal", "cetirun-platform": "platform", "cetirun-ai-gateway": "ai-gateway",
-                   "cetirun-agent-broker": "agent-broker", "cetirun-connections-mcp": "cetirun-connections-mcp"}
+                   "cetirun-agent-broker": "agent-broker", "cetirun-connections-mcp": "cetirun-connections-mcp",
+                   "cetirun-observability": "cetirun-observability"}
         for registry, version in ((None, None), ("registry.example.com", None),
                                   (None, "1.2.3-dev.1"), ("registry.example.com:5000/team/test", "1.2.3-dev.2")):
             env = dict(self.env)
@@ -433,10 +435,11 @@ class ReleaseInventoryTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, f"{step['displayName']}: {result.stderr}")
 
     def test_actual_builders_build_each_image_once_without_push(self):
+        self.env.pop("ACCEPT_VSCODE_SERVER_LICENSE_TERMS")
         result = subprocess.run(["make", "build-images"], env=self.env, cwd=ROOT, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         builds = [command for command in self.commands() if command[:2] == ["buildx", "build"]]
-        self.assertEqual(len(builds), 13)
+        self.assertEqual(len(builds), 14)
         tags = {command[command.index("-t") + 1] if "-t" in command else command[command.index("--tag") + 1] for command in builds}
         self.assertEqual(tags, {self.image(name) for name in IMAGES})
         for command in builds:
@@ -446,6 +449,35 @@ class ReleaseInventoryTests(unittest.TestCase):
         self.assertIn(self.image("cetirun-base"), builds[0])
         vscode = next(command for command in builds if self.image("cetirun-vscode") in command)
         self.assertIn("ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true", vscode)
+
+    def test_release_cli_defaults_to_license_acceptance(self):
+        self.env.pop("ACCEPT_VSCODE_SERVER_LICENSE_TERMS")
+        self.run_release("build-images")
+        vscode = next(command for command in self.commands()
+                      if command[:2] == ["buildx", "build"] and self.image("cetirun-vscode") in command)
+        self.assertIn("ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true", vscode)
+
+    def test_vscode_builder_defaults_to_license_acceptance(self):
+        self.env.pop("ACCEPT_VSCODE_SERVER_LICENSE_TERMS")
+        result = subprocess.run(["bash", "scripts/vscode-docker-build.sh"], env={**self.env, "PUSH": "false"},
+                                cwd=ROOT, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(self.commands()), 1)
+        self.assertIn("ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true", self.commands()[0])
+
+    def test_license_override_stops_build_entrypoints_before_docker(self):
+        commands = (
+            ["make", "build-images"],
+            [sys.executable, "-B", str(SCRIPT), "build-images"],
+            ["bash", "scripts/vscode-docker-build.sh"],
+        )
+        for value in ("false", "", "invalid"):
+            for command in commands:
+                with self.subTest(value=value, command=command):
+                    result = subprocess.run(command, env={**self.env, "ACCEPT_VSCODE_SERVER_LICENSE_TERMS": value},
+                                            cwd=ROOT, capture_output=True, text=True, timeout=30)
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(self.commands(), [])
 
     def test_sbom_generator_override_reaches_all_attestation_builders(self):
         generator = "registry.example.com/tools/sbom-generator@sha256:" + "a" * 64
@@ -457,7 +489,7 @@ class ReleaseInventoryTests(unittest.TestCase):
             "cetirun-portal", "cetirun-pi-agent",
         }
         builds = [command for command in self.commands() if command[:2] == ["buildx", "build"]]
-        self.assertEqual(len(builds), 13)
+        self.assertEqual(len(builds), 14)
         for image in attested:
             command = next(command for command in builds if self.image(image) in command)
             self.assertIn("--provenance=true", command)
@@ -533,12 +565,12 @@ class ReleaseInventoryTests(unittest.TestCase):
                 self.env[key] = previous
 
     def test_optional_vscode_exclusion_skips_license_gate_and_image(self):
-        self.env.pop("ACCEPT_VSCODE_SERVER_LICENSE_TERMS")
+        self.env["ACCEPT_VSCODE_SERVER_LICENSE_TERMS"] = "false"
         plan = json.loads(self.run_release("plan", "--exclude-image", "cetirun-vscode").stdout)
         self.assertNotIn("cetirun-vscode", {entry["name"] for entry in plan["images"]})
         self.run_release("build-images", "--exclude-image", "cetirun-vscode")
         builds = [command for command in self.commands() if command[:2] == ["buildx", "build"]]
-        self.assertEqual(len(builds), 12)
+        self.assertEqual(len(builds), 13)
         self.assertFalse(any(self.image("cetirun-vscode") in command for command in builds))
 
     def test_invalid_image_exclusions_fail_before_docker(self):
@@ -592,11 +624,11 @@ class ReleaseInventoryTests(unittest.TestCase):
             self.assertIn("--push", command)
             self.assertNotIn("--load", command)
 
-    def test_successful_publish_verifies_all_thirteen_images(self):
+    def test_successful_publish_verifies_all_fourteen_images(self):
         self.run_release("publish-images")
         commands = self.commands()
         builds = [command for command in commands if command[:2] == ["buildx", "build"]]
-        self.assertEqual(len(builds), 13)
+        self.assertEqual(len(builds), 14)
         last_build = max(index for index, command in enumerate(commands) if command[:2] == ["buildx", "build"])
         self.assertEqual(commands[last_build + 1], ["buildx", "imagetools", "inspect", self.image("cetirun-pi-agent")])
         for name in IMAGES:

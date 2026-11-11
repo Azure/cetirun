@@ -84,6 +84,20 @@ This choice applies to a direct Helm installation. `make deploy` always enables
 Microsoft delegated access and the Operator lifecycle, as
 [What `make deploy` requires](#what-make-deploy-requires) shows.
 
+An Agent Policy controls whether its Agents can use an Agent Identity. **Disabled**
+rejects an Agent that requests one. **Optional** lets an Agent request one without
+enabling it on existing Agents. **Required** also applies to existing Agents and
+stops an Agent that does not request an identity. Complete the Agent Identity and
+Connections platform configuration before selecting Optional or Required.
+
+After an identity-only policy update is accepted, switching between Disabled and
+Optional does not restart Agents that do not request an identity. Upgrading the
+Operator also preserves those running Agents when their policy is already
+Optional. Installations with configuration coordination still reject identity
+policy edits while the policy has active execution reservations; use their normal
+stop-and-update workflow. This behavior does not change policy-update admission
+or recover Agents stopped by an earlier denial.
+
 ## 1. Prepare access and record the coordinates
 
 Use an authorized Azure CLI session and an explicit Kubernetes context. The
@@ -299,10 +313,14 @@ Do not overwrite its access configuration with the creation example.
 
 Keep the Broker in its private credential namespace. The platform chart rejects
 a Broker installation beside MCP. The Broker can read encrypted records and
-provider Secrets. MCP has no Kubernetes Secret API access. When
-`connectionsMCP.brokerNamespace` and `brokerServiceAccount` are set, the
-Operator creates scoped Broker record permissions in Agent namespaces. Keep
-those fields until cleanup is complete.
+provider Secrets. MCP has no Kubernetes Secret API access.
+
+When `connectionsMCP.brokerNamespace` and `brokerServiceAccount` are set, the
+Operator creates a Role and a RoleBinding in each Agent namespace. They give
+the Broker ServiceAccount `get`, `list`, `create`, `update`, and `delete` on all
+Secrets of that namespace, including the AI Gateway key of the Agent. Secret
+names and labels do not limit this access. Keep those fields until cleanup is
+complete.
 
 Create the namespaces that do not exist. Label both namespaces for the
 installed Istio revision. For a namespace that already exists, examine its

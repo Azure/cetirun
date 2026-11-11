@@ -24,7 +24,9 @@ Sources: [controller values]({{< repo "app/cetirun-operator/internal/controller/
 If `skills.shared` is enabled or a team supplies `skillStorage`, shared skills
 use a separate static PV/PVC. The agent mounts this PV/PVC read-only. The
 defaults for shared skills stay `azureblob-nfs-premium`, `ReadWriteMany`, and
-`100Gi`. By default, `skills.shared` is disabled.
+`100Gi`. The runtime chart disables `skills.shared` by default, but
+`make deploy` enables it for all Agents. Refer to
+[Shared skills storage for `make deploy`](#shared-skills-storage-for-make-deploy).
 
 ## Home provisioning
 
@@ -144,6 +146,27 @@ PRIVATE_DNS_ZONE_ID="/subscriptions/<subscription-id>/resourceGroups/example-net
 PUBLIC_NETWORK_ACCESS=Disabled \
   bash infra/storage/deploy.sh
 ```
+
+### Shared skills storage for `make deploy`
+
+`make deploy` sets `skills.shared: true` for all Agents. Each standard Agent,
+which does not run in a Sandbox, then mounts a static Blob NFS volume. The volume uses the
+top-level `sharedSkills` fields of the environment file.
+
+> **Warning:** `make deploy` examines only that the StorageClass exists. It
+> does not examine the storage account or the container. If they do not exist,
+> the shared skills volume cannot mount, and the Agent Pods stay in
+> `ContainerCreating`. Provision the storage before the first `make deploy`.
+
+Set the four necessary `sharedSkills` fields. Copy three of them from the
+`Deployment Summary` that the storage helper prints:
+
+| Environment file field | Value |
+| --- | --- |
+| `sharedSkills.resourceGroup` | `Resource Group` in the summary |
+| `sharedSkills.storageAccount` | `Storage Account` in the summary |
+| `sharedSkills.containerName` | `Container` in the summary |
+| `sharedSkills.storageClassName` | A Blob NFS StorageClass that exists in the cluster, for example `azureblob-nfs-premium` |
 
 ## NFS security properties
 

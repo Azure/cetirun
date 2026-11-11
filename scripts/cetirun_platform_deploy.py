@@ -71,6 +71,7 @@ CETIADMIN_WRITER_FIELDS = {
 }
 # The Operator reads customRuntime strictly and stops at startup on a field it does not know.
 OPERATOR_VALUES = ROOT / "app/cetirun-operator/chart/values.yaml"
+OBSERVABILITY_VALUES = ROOT / "app/cetirun-observability/chart/values.yaml"
 REMOVED_CUSTOM_FIELDS = {"agentManagedModel", "gatewayImages"}
 # An error names a failed command by its tool, its operands and these options. Other option
 # values can be templates or local files. Tool output can hold rendered Secrets, so it is not shown.
@@ -111,6 +112,19 @@ SKILL_MARKETPLACE_FIELDS = {
 }
 # Keys that the marketplace reads from the repository credentials Secret.
 SKILL_MARKETPLACE_SECRET_KEYS = {"none": (), "token": ("token",), "ssh": ("ssh-privatekey", "known_hosts")}
+# The ADX-Mon collection of logs, events and metrics into Azure Data Explorer,
+# CetiRun's only observability path. The top-level observability block of the
+# environment file is required. make deploy does not call Azure: the Kusto
+# cluster, its databases and the ingestor's identity exist before the
+# deployment.
+OBSERVABILITY = "cetirun-observability"
+OBSERVABILITY_INGESTOR = "cetirun-adx-mon-ingestor"
+OBSERVABILITY_FIELDS = {
+    "observability": ("clusterName", "adx", "ingestorClientId"),
+    "observability.adx": ("endpoint", "databases"),
+    "observability.adx.databases": ("logs", "metrics", "agentLogs"),
+}
+GUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 SCP_URL = re.compile(r"[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^/\s]\S*")
 DNS_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 DNS_SUBDOMAIN = rf"(?=.{{1,253}}$){DNS_LABEL}(?:\.{DNS_LABEL})*"
@@ -284,6 +298,42 @@ def skill_marketplace(config, platform):
               **{f"storage.{field}": storage[field] for field in SKILL_MARKETPLACE_FIELDS["skillMarketplace.storage"]}}
     return {**{f"{SKILL_MARKETPLACE}.{field}": value for field, value in values.items()},
             "cetirun-portal.skillMarketplace.enabled": True, "cetirun-portal.skillMarketplace.catalogNamespace": namespace}
+
+
+def observability(config):
+    """Platform values of the ADX-Mon collection, from its own input block."""
+    switch = f"{OBSERVABILITY}.enabled"
+    if "observability" not in config:
+        raise ValueError("observability is required: ADX-Mon collects the platform's and the Agents' logs, events and "
+                         "metrics into Azure Data Explorer. Name the Kusto cluster, its databases and the ingestor identity")
+    block = mapping(config["observability"], "observability")
+    adx = mapping(block.get("adx", {}), "observability.adx")
+    databases = mapping(adx.get("databases", {}), "observability.adx.databases")
+    for name, section in (("observability", block), ("observability.adx", adx), ("observability.adx.databases", databases)):
+        unknown = sorted(map(str, set(section) - set(OBSERVABILITY_FIELDS[name])))
+        if unknown:
+            raise ValueError(f"{name}.{unknown[0]} is not supported; set other chart values under platform.values.{OBSERVABILITY}")
+    cluster = required(config, "observability.clusterName")
+    if not re.fullmatch(DNS_LABEL, cluster):
+        raise ValueError("observability.clusterName must be a DNS label: every row names this CetiRun cluster with it")
+    endpoint = required(config, "observability.adx.endpoint")
+    if not re.fullmatch(r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?", endpoint):
+        raise ValueError("observability.adx.endpoint must be the query URI of the Kusto cluster, "
+                         "such as https://<name>.<region>.kusto.windows.net, without a path")
+    client = required(config, "observability.ingestorClientId")
+    if not re.fullmatch(GUID, client):
+        raise ValueError("observability.ingestorClientId must be the client ID of the managed identity that the ingestor uses")
+    defaults = yaml_file(OBSERVABILITY_VALUES)["adx"]["databases"]
+    names = {}
+    for field in OBSERVABILITY_FIELDS["observability.adx.databases"]:
+        names[field] = databases.get(field, defaults[field])
+        if not isinstance(names[field], str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,99}", names[field]):
+            raise ValueError(f"observability.adx.databases.{field} must be a database name of letters and digits")
+    if len(set(names.values())) != len(names):
+        raise ValueError("observability.adx.databases must name three databases: Agent logs need readers of their own")
+    return {switch: True, f"{OBSERVABILITY}.clusterName": cluster, f"{OBSERVABILITY}.adx.endpoint": endpoint,
+            f"{OBSERVABILITY}.ingestor.clientId": client,
+            **{f"{OBSERVABILITY}.adx.databases.{field}": name for field, name in names.items()}}
 
 
 def resource_name(value, *, label=False, limit=253):
@@ -620,7 +670,7 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
     values = {name: merge(yaml_file(ROOT / chart / "values.yaml"), config[name].get("values", {}))
               for name, chart in CHARTS.items()}
     platform = values["platform"]
-    for component in ("operator", "portal", "ai-gateway", "connections-mcp"):
+    for component in ("operator", "portal", "ai-gateway", "connections-mcp", "observability"):
         key = f"cetirun-{component}"
         platform[key] = merge(yaml_file(ROOT / f"app/{key}/chart/values.yaml"), platform.get(key, {}))
     pns, bns, ins = (config[name]["namespace"] for name in ("platform", "broker", "istio"))
@@ -708,6 +758,7 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
     for field in ("tenantId", "blueprintClientId", "authorizationClientId", "encryptionClientId", "keyVaultKeyUrl"):
         assignments["broker"][f"agentIdentity.{field}"] = identity[field]
     assignments["platform"].update(skill_marketplace(config, platform))
+    assignments["platform"].update(observability(config))
     for name, fields in assignments.items():
         for field, value in fields.items():
             supplied = get_value(config[name].get("values", {}), field)
@@ -1444,7 +1495,9 @@ class Deployment:
         namespace, name = metadata.get("namespace", self.config["istio"]["namespace"]), metadata["name"]
 
         def read(field):
-            return self.kubectl("get", kind, name, "--namespace", namespace, "-o", "jsonpath={" + field + "}")
+            # A bare Gateway resolves to the Gateway API when its CRDs are installed.
+            qualified = "gateways.networking.istio.io" if kind == "Gateway" else kind
+            return self.kubectl("get", qualified, name, "--namespace", namespace, "-o", "jsonpath={" + field + "}")
 
         def match(field, actual, expected):
             if actual != expected:
@@ -1494,6 +1547,12 @@ class Deployment:
             metadata = value.get("metadata", {})
             return value.get("apiVersion"), value.get("kind"), metadata.get("namespace"), metadata.get("name")
         return self.ingress is not None and identity(doc) in {identity(value) for value in self.ingress.documents}
+
+    def observability_tls_secret(self):
+        """Name of the ADX-Mon ingestor's TLS Secret, as the observability chart names it."""
+        chart = self.values["platform"].get(OBSERVABILITY, {})
+        name = ((chart.get("ingestor") or {}).get("tls") or {}).get("secretName")
+        return name or f"{OBSERVABILITY_INGESTOR}-tls"
 
     def check_retained_postgresql(self):
         storage = self.config["platform"].get("postgresqlStorage")
@@ -1665,7 +1724,11 @@ class Deployment:
                         and metadata["name"] == "oauth2-proxy-sessions"
                         and not self.resource("Deployment", "oauth2-proxy-sessions", namespace)
                         and not self.resource("PersistentVolumeClaim", "oauth2-proxy-sessions", namespace))
-                    if not adding_sessions:
+                    # Turning the ADX-Mon collection on for an installed platform adds the
+                    # ingestor's TLS Secret; once the ingestor exists, the Secret is kept.
+                    adding_observability = (name == "platform" and metadata["name"] == self.observability_tls_secret()
+                        and not self.resource("StatefulSet", OBSERVABILITY_INGESTOR, namespace))
+                    if not adding_sessions and not adding_observability:
                         raise ValueError(f"Retained Secret {namespace}/{metadata['name']} is missing; refusing regeneration")
         if not self.values["platform"]["cetirun-operator"]["enabled"]:
             if "platform" not in self.existing_releases:
@@ -1846,6 +1909,10 @@ class Deployment:
         if self.values["platform"]["cetirun-operator"]["skillMarketplace"].get("enabled"):
             # Its readiness does not wait for a repository sync.
             not_qualified.append("Skill Marketplace repository access and Team publication")
+        if self.values["platform"][OBSERVABILITY].get("enabled"):
+            # The deployment does not reach the Kusto cluster or check the
+            # ingestor identity's roles; the ingestor does at its start.
+            not_qualified.append("ADX ingestion with the ingestor identity")
         return {"target": {key: self.config["target"][key] for key in ("context", "cluster", "server", "clusterUID")},
                 "release": {key: self.config["release"][key] for key in ("registry", "version", "gitSHA")},
                 "releaseOrigins": self.config["_releaseOrigins"],

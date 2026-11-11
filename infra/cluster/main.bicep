@@ -107,11 +107,52 @@ param istioIngressGatewayType string = 'External'
 @description('Optional managed Istio revision. Leave empty to let AKS select its default revision.')
 param istioRevision string = ''
 
-// --- Monitoring parameters ---
+// --- Monitoring: ADX-Mon into Azure Data Explorer (cetirun-observability chart) ---
+// The cluster runs neither Container Insights nor managed Prometheus: the AKS
+// module turns both off.
 
-param enableContainerInsights bool = true
-param enablePrometheusMetrics bool = true
-param logAnalyticsWorkspaceId string = ''
+@allowed(['none', 'create', 'existing'])
+@description('create, the default: a new Kusto cluster in adxResourceGroupName. existing: the databases and roles in the existing cluster adxClusterName. none: no ADX resources; make deploy then needs a Kusto cluster, its databases and an ingestor identity that exist.')
+param adxMode string = 'create'
+
+@description('Kusto cluster name: 4 to 22 lowercase letters and digits, starting with a letter. Kusto cluster names are unique in Azure.')
+param adxClusterName string = 'adx${uniqueString(subscription().subscriptionId, resourceGroupName, clusterName)}'
+
+@description('Resource group of the Kusto cluster. It must exist; deploy.sh creates only the cluster resource group.')
+param adxResourceGroupName string = resourceGroupName
+
+param adxSubscriptionId string = subscription().subscriptionId
+
+@description('Region of a new Kusto cluster. Not every region offers every Kusto SKU, for example the Dev SKUs.')
+param adxLocation string = location
+
+param adxSkuName string = 'Dev(No SLA)_Standard_E2a_v4'
+
+@allowed(['Basic', 'Standard'])
+param adxSkuTier string = 'Basic'
+
+param adxSkuCapacity int = 1
+param adxLogsRetentionDays int = 90
+param adxMetricsRetentionDays int = 30
+param adxAgentLogsRetentionDays int = 14
+
+@description('Namespace of the cetirun-observability release, for the ingestor federated credential.')
+param observabilityNamespace string = 'cetirun-system'
+
+@description('Readers of the logs and metrics databases: objects with principalId and principalType (Group, User or App).')
+param adxViewers array = []
+
+@description('Readers of the Agent logs database, which can hold conversation content.')
+param adxAgentLogsViewers array = []
+
+@description('Create the database of AI Gateway prompts and responses, CetiRunContent, and the Gateway identity that writes it. Needs adxMode create or existing.')
+param adxContent bool = false
+
+@description('Namespace of the platform release, for the AI Gateway\'s federated credential.')
+param platformNamespace string = 'cetirun-system'
+
+@description('Readers of the content database, which holds every AI Gateway prompt and response.')
+param adxContentViewers array = []
 
 // --- Modules ---
 
@@ -149,9 +190,55 @@ module cluster 'modules/aks-cluster.bicep' = {
     istioIngressGatewayEnabled: istioIngressGatewayEnabled
     istioIngressGatewayType: istioIngressGatewayType
     istioRevision: istioRevision
-    enableContainerInsights: enableContainerInsights
-    enablePrometheusMetrics: enablePrometheusMetrics
-    logAnalyticsWorkspaceId: logAnalyticsWorkspaceId
+  }
+}
+
+module adxIngestorIdentity 'modules/adx-ingestor-identity.bicep' = if (adxMode != 'none') {
+  name: 'deploy-adx-ingestor-identity'
+  params: {
+    name: '${clusterName}-adx-ingestor'
+    location: location
+    tags: tags
+    oidcIssuerUrl: cluster.outputs.oidcIssuerUrl
+    namespace: observabilityNamespace
+  }
+}
+
+// The AI Gateway's identity for its content: the platform chart names the
+// Gateway's ServiceAccount cetirun-ai-gateway.
+module gatewayContentIdentity 'modules/adx-ingestor-identity.bicep' = if (adxMode != 'none' && adxContent) {
+  name: 'deploy-gateway-content-identity'
+  params: {
+    name: '${clusterName}-gateway-content'
+    location: location
+    tags: tags
+    oidcIssuerUrl: cluster.outputs.oidcIssuerUrl
+    namespace: platformNamespace
+    serviceAccountName: 'cetirun-ai-gateway'
+    credentialName: 'cetirun-ai-gateway'
+  }
+}
+
+module adx 'modules/adx.bicep' = if (adxMode != 'none') {
+  name: 'deploy-adx'
+  scope: resourceGroup(adxSubscriptionId, adxResourceGroupName)
+  params: {
+    clusterName: adxClusterName
+    createCluster: adxMode == 'create'
+    location: adxLocation
+    skuName: adxSkuName
+    skuTier: adxSkuTier
+    skuCapacity: adxSkuCapacity
+    tags: tags
+    logsRetentionDays: adxLogsRetentionDays
+    metricsRetentionDays: adxMetricsRetentionDays
+    agentLogsRetentionDays: adxAgentLogsRetentionDays
+    ingestorClientId: adxIngestorIdentity.?outputs.clientId ?? ''
+    viewers: adxViewers
+    agentLogsViewers: adxAgentLogsViewers
+    createContentDatabase: adxContent
+    contentWriterClientId: gatewayContentIdentity.?outputs.clientId ?? ''
+    contentViewers: adxContentViewers
   }
 }
 
@@ -164,3 +251,11 @@ output nodeResourceGroup string = cluster.outputs.nodeResourceGroup
 output kubeletIdentityObjectId string = cluster.outputs.kubeletIdentityObjectId
 output keyvaultSecretsProviderClientId string = cluster.outputs.keyvaultSecretsProviderClientId
 output keyvaultSecretsProviderObjectId string = cluster.outputs.keyvaultSecretsProviderObjectId
+
+// Inputs of the observability block of the make deploy environment file.
+output adxClusterUri string = adx.?outputs.clusterUri ?? ''
+output adxIngestorClientId string = adxIngestorIdentity.?outputs.clientId ?? ''
+
+// Inputs of the AI Gateway's content values.
+output adxContentDatabase string = adx.?outputs.contentDatabaseName ?? ''
+output adxContentClientId string = gatewayContentIdentity.?outputs.clientId ?? ''

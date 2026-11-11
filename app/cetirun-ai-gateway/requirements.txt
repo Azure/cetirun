@@ -16,6 +16,13 @@
 # frozen lockfile with those extras rather than resolving new versions, then let
 # `pip check` in the build name any backport the new set needs, and dependency
 # review any advisory.
+#
+# Added by CetiRun, not in LiteLLM's lockfile: the Azure Data Explorer SDK that
+# writes prompts and responses to the content database (cetirun_ai_gateway/
+# content.py), at 5.0.2, the newest release whose requirements fit the pins
+# above (later ones pin azure-storage-blob to 12.26.0 and need tenacity 9 and
+# ijson 3.4). Keep them when regenerating from a new LiteLLM release, and
+# move them only to a release that fits that release's pins.
 a2a-sdk==1.1.0
 aiofiles==24.1.0
 aiohappyeyeballs==2.6.1
@@ -36,8 +43,11 @@ azure-ai-contentsafety==1.0.0
 azure-core==1.41.0
 azure-identity==1.25.2
 azure-keyvault-secrets==4.10.0
+azure-kusto-data==5.0.2
+azure-kusto-ingest==5.0.2
 azure-storage-blob==12.28.0
 azure-storage-file-datalake==12.20.0
+azure-storage-queue==12.13.0
 backoff==2.2.1
 boto3==1.43.117
 botocore==1.43.117

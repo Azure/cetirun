@@ -122,10 +122,11 @@ func TestAdminAgentAuditRecordsFieldsWithoutValues(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	instance := adminManagedInstance()
 	instance.Spec.Agent.Type = api.AgentTypeCustom
-	h := adminManagementHandler(newFakeClient(instance))
+	h := adminManagementHandler(newGatewayFakeClient(instance))
+	h.Config.AIGatewayCatalogNamespace = "cetirun-system"
 	w := httptest.NewRecorder()
 	h.UpdateInstance(w, adminManagementRequest(http.MethodPatch,
-		`{"uid":"foreign-agent-uid","resourceVersion":"7","displayName":"Synthetic audit display","agent":{"image":"registry.example.com/agent:audit-test","port":43210}}`))
+		`{"uid":"foreign-agent-uid","resourceVersion":"7","displayName":"Synthetic audit display","agent":{"image":"`+managementImage+`","port":43210}}`))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
@@ -143,7 +144,7 @@ func TestAdminAgentAuditRecordsFieldsWithoutValues(t *testing.T) {
 		!reflect.DeepEqual(record.Fields, []string{"agent.image", "agent.port", "displayName"}) {
 		t.Fatalf("unexpected audit record: %+v", record)
 	}
-	for _, value := range []string{"Synthetic audit display", "registry.example.com/agent:audit-test", "43210"} {
+	for _, value := range []string{"Synthetic audit display", managementImage, "43210"} {
 		if strings.Contains(logs.String(), value) {
 			t.Fatalf("audit log included a configuration value: %s", value)
 		}

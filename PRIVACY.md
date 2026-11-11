@@ -9,11 +9,11 @@ notice.
 
 **The default configuration can collect conversation content in container logs
 and in the AI Gateway's database.** The agent chart enables the session logger.
-The infrastructure templates enable Container Insights and managed Prometheus
-configuration. The AI Gateway keeps the request and the response of each model
-call in its database for seven days. Before you allow sensitive workloads,
-examine these settings. There is no single CetiRun setting that disables
-logging, telemetry, and network activity across every component.
+`make deploy` installs the ADX-Mon collection, which keeps container output in
+Azure Data Explorer. The AI Gateway keeps the request and the response of each
+model call in its database for seven days. Before you allow sensitive
+workloads, examine these settings. There is no single CetiRun setting that
+disables logging, telemetry, and network activity across every component.
 
 ## Data processed by CetiRun
 
@@ -24,6 +24,7 @@ logging, telemetry, and network activity across every component.
 | Agent activity | Prompts, responses, files, tool arguments/results, session history, and user/team context | Agent process and workspace storage. Configured model, tool, and channel services. The AI Gateway's database, for seven days by default. Possibly container logs. |
 | Authentication material | Gateway/API keys, provider credentials, OAuth device-flow state, and optional Tailscale credentials | Kubernetes Secrets, mounted configuration, agent home files, process memory, and the services that authenticate them |
 | Browser and terminal | Commands/output, visited pages, downloads, screenshots, browsing history, and browser login state | Workspace processes and storage. Websites or services that the browser/tools contact. Terminal/desktop streams that go to the user. |
+| CetiAdmin | The operations Agent, enabled by default. It can read the Secrets and, through `kubectl exec`, the HOME files of each standard Agent, which does not run in a Sandbox. It can also read the Pod logs and diagnostic resources of the Agents that it manages. Refer to [CetiAdmin](site/content/en/docs/operations/cetiadmin.md). | The CetiAdmin Agent and its HOME. Its model context, the configured model provider, and the AI Gateway's database, for seven days by default. |
 
 The portal does not show only public metadata. Its authorized instance response
 can include gateway tokens, a Hermes API server key, the CetiRun auth helper
@@ -89,9 +90,8 @@ By default, `metrics.enabled` is `false` in the Gateway chart and `true` in the
 platform chart. When this setting is enabled, each Gateway pod serves
 Prometheus metrics without authentication on a separate port. Their labels
 include virtual key aliases and hashes, user IDs, and Team names, together with
-spend. Anything that can reach the port can read them. The platform chart also
-creates a PodMonitor. As a result, Azure Monitor managed Prometheus collects
-them where it runs.
+spend. Anything that can reach the port can read them. The ADX-Mon collection
+scrapes them into Azure Data Explorer where it runs.
 
 The Gateway's PostgreSQL database keeps daily spend totals for each key, user,
 and Team. Unless `spendLogs.enabled` is `false`, the database also keeps
@@ -113,6 +113,23 @@ With `spendLogs.storePrompts: false`, each record contains only the metadata.
 This setting does not remove the content of records that are already stored.
 A `general_settings` block that is saved in the console can override it.
 
+With `content.enabled: true`, the Gateway writes the request and the response
+of each call to an Azure Data Explorer database instead (`CetiRunContent` when
+the cluster template creates it), and the spend log keeps no content, whatever
+`spendLogs.storePrompts` says. Calls that LiteLLM makes itself, health check
+probes and auto router classifier calls, are not written. The content is
+complete, not shortened, except
+that inline images and files and encrypted reasoning are replaced by notes with
+their type and size. Each record names the Agent, its owner and Team, and the
+LiteLLM user and Team of the key. The Gateway writes and reads it with its own
+workload identity; the ADX-Mon collector and ingestor have no access to that
+database. The console's request pages read a call's content from there and show
+it to administrators, and to other console users only for their own calls and
+Teams. People with the `Viewer` role on that database can read every call.
+The database keeps the content for its retention, seven days in the cluster
+template. Content written while ADX cannot be reached is lost after three
+attempts, and while the Gateway's queue is full.
+
 When these rows and the stored health-check results are older than
 `spendLogs.retention`, LiteLLM deletes them. The default value is seven days,
 and the check occurs every hour. An empty retention keeps them.
@@ -127,31 +144,42 @@ and the Gateway chart's
 
 ### Infrastructure collection and traffic metadata
 
-The cluster template sets `enableContainerInsights` and
-`enablePrometheusMetrics` to `true` by default. With these settings, the
-template enables the Container Insights monitoring add-on and managed
-Prometheus. It also defines data collection rules and associations for
-Container Insights and for managed Prometheus. The rules for Container Insights
-include ContainerLogV2. The collected data is sent to the configured Azure Log
-Analytics and Azure Monitor workspaces.
-
-Container Insights then collects container stdout and stderr outside
-`kube-system`, together with Kubernetes inventory, events and performance data.
+The cluster template turns Container Insights and managed Prometheus off.
+`make deploy` installs the `cetirun-observability` chart, which sends logs,
+Kubernetes events and metrics to Azure Data Explorer with ADX-Mon. Its
+collector reads the container output of the platform namespaces into the
+`CetiRunLogs` database, and the output of every container of the Agent Pods,
+Custom terminals and GitHub Copilot proxies into the `CetiRunAgents` database.
 That output includes the session logger's output that is described above and
-what Agents print themselves. This output can include conversation text.
-Successful collection still depends on the deployed collectors, permissions,
-and settings. Source configuration alone does not prove that a live cluster
-collects data.
+what Agents print themselves. This output can include conversation text. Its
+telemetry program writes each Agent's namespace, owner alias, display name,
+email, Entra tenant and object IDs, Team and policy, and Kubernetes events,
+into `CetiRunLogs`. Metrics go to the `CetiRunMetrics` database; the AI
+Gateway's metric labels include key aliases, user IDs and Team names. The
+chart does not copy container environment variables. Retention is a property
+of each database: the cluster template sets 90 days for logs, 30 days for
+metrics and 14 days for Agent logs. Successful collection still depends on the
+deployed collectors, permissions, and settings. Source configuration alone
+does not prove that a live cluster collects data.
 
-By default, Container Insights also copies the environment variables of every
-container into its `ContainerInventory` table. This copy includes values that
-come from Kubernetes Secrets. The cluster helper creates the settings in
+A cluster that runs Container Insights anyway collects container stdout and
+stderr into a Log Analytics workspace. By default, Container Insights also
+copies the environment variables of every container into its
+`ContainerInventory` table. This copy includes values that come from
+Kubernetes Secrets. The cluster helper creates the settings in
 `infra/cluster/container-azm-ms-agentconfig.yaml`, which disable that
 collection for the cluster. On a cluster that already has agent settings, the
-helper examines them to find if they disable that collection. CetiRun
-containers that keep credentials in their environment disable it for
-themselves with `AZMON_COLLECT_ENV=False`. A cluster that runs the add-on
-without these settings collects those values.
+helper examines them to find if they disable that collection.
+
+Some CetiRun containers that keep credentials in their environment also
+disable the collection for themselves with `AZMON_COLLECT_ENV=False`. They are
+the AI Gateway with its bundled PostgreSQL and Valkey, each Agent's GitHub
+Copilot proxy, and OAuth2 Proxy with its Valkey session store. Two other
+containers keep credentials in their environment but do not set the variable.
+The credentials of the Agent runtime container include the Gateway key and the
+native authentication keys of the Agent. The Broker keeps the OAuth client
+secrets of its GitHub and Google providers when you configure them. A cluster
+that runs the add-on without the cluster-wide settings collects these values.
 
 The Istio chart sets `egress.accessLog.enabled` to `true` by default. Its Envoy
 filters write traffic metadata to stdout. This metadata includes timestamps,
@@ -167,11 +195,13 @@ collection of those metrics in a deployment depends on the monitoring
 configuration of that deployment.
 
 Source: [cluster defaults](infra/cluster/main.bicep),
-[collection destinations and retention](infra/cluster/modules/aks-cluster.bicep),
+[Container Insights and managed Prometheus off](infra/cluster/modules/aks-cluster.bicep),
 [Container Insights agent settings](infra/cluster/container-azm-ms-agentconfig.yaml),
 [Istio defaults](infra/istio/values.yaml),
 [Envoy access-log fields](infra/istio/templates/egress/accesslog.yaml),
-and [operator metrics configuration](app/cetirun-operator/cmd/main.go).
+[operator metrics configuration](app/cetirun-operator/cmd/main.go),
+[ADX-Mon collection](app/cetirun-observability/chart/templates/_helpers.tpl),
+and [Azure Data Explorer databases and retention](infra/cluster/modules/adx.bicep).
 
 ## Network and third-party boundaries
 
@@ -254,29 +284,31 @@ cloud logs, backups, retained volumes, browser devices, or external providers.
 Effective retention depends on the PVC/PV lifecycle, reclaim policy, storage
 backend, backup policies, and downstream services.
 
-When the infrastructure template creates a Log Analytics workspace, it sets
-`retentionInDays` to 30. A workspace that already exists, per-table settings,
-exports, and other stores can have different retention. CetiRun does not
-implement one global deletion schedule across these systems.
+The cluster template sets the retention of each Azure Data Explorer database
+of the ADX-Mon collection: 90 days for logs, 30 days for metrics, and 14 days
+for Agent logs. Databases that already exist, exports, and other stores can
+have different retention. CetiRun does not implement one global deletion
+schedule across these systems.
 
 Source: [OAuth2 Proxy configuration](infra/istio/templates/ingress/oauth2-proxy-deployment.yaml),
 [theme storage](app/cetirun-portal/web/src/context/ThemeContext.tsx),
 [desktop process configuration](app/cetirun-chart/configs/desktop-entrypoint.sh),
 [volume mounts and retention](app/cetirun-chart/templates/statefulset.yaml),
 [instance deletion](app/cetirun-operator/internal/controller/agent_controller.go),
-and [Log Analytics configuration](infra/cluster/modules/aks-cluster.bicep).
+and [Azure Data Explorer retention](infra/cluster/modules/adx.bicep).
 
 ## Deployment operator checklist
 
 - Tell users which models, tools, channels, and monitoring systems receive their
   data. Also tell them if conversation content is collected in logs.
 - Examine `logger.enabled`, agent logging, `desktop.logging`,
-  `egress.accessLog.enabled`, the AI Gateway's `requestLog` and `metrics`,
-  collection rules, and metrics scraping separately. If you disable only the
-  session logger, this does not disable the other paths.
+  `egress.accessLog.enabled`, the AI Gateway's `requestLog` and `metrics`, the
+  `cetirun-observability` chart, and metrics scraping separately. If you
+  disable only the session logger, this does not disable the other paths.
 - Restrict access to the portal, Kubernetes Secrets, workspace volumes, desktop
-  and terminal endpoints, operational logs, and monitoring workspaces. Evaluate
-  administrators and automation identities as data-access roles.
+  and terminal endpoints, operational logs, and the Azure Data Explorer
+  databases of the logs and metrics. Evaluate administrators and automation
+  identities as data-access roles.
 - Set retention, backup, export, and deletion procedures for each storage
   location. Handle provider-side data separately from local instance deletion.
 - Before use, examine added skills, tools, images, and provider settings. Do not

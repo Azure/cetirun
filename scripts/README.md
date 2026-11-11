@@ -37,8 +37,9 @@ commands do not connect to a registry. `REGISTRY` defaults to the public
 `mcr.microsoft.com/aks/ai-runtime/cetirun` prefix; `VERSION` defaults to the
 Runtime Chart version, and the source SHA defaults to HEAD. Environment or
 CLI overrides affect temporary build/package inputs, not the source checkout.
-Selections containing VS Code require an
-explicit license acceptance. Publication refuses a tag that already exists
+`ACCEPT_VSCODE_SERVER_LICENSE_TERMS` defaults to `true`, so selections containing
+VS Code do not require a separate acceptance flag or prompt. An explicit `false`
+stops those builds. Publication refuses a tag that already exists
 unless `--force` is explicit. It distinguishes registry errors from artifacts
 that do not exist, and makes sure that chart pulls work. You can still use each
 component build script independently.

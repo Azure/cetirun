@@ -127,7 +127,9 @@ data:
       {{- end }}
       {{- end }}
       {{- $spendLogs := (include "cetirun-ai-gateway.logsAndMetrics" . | fromJson).spendLogs }}
-      store_prompts_in_spend_logs: {{ $spendLogs.storePrompts }}
+      {{- /* With content in Azure Data Explorer, the spend log keeps no copy:
+      the console reads a call's content from there. */}}
+      store_prompts_in_spend_logs: {{ and $spendLogs.storePrompts (not (dig "enabled" false (.Values.content | default dict))) }}
       {{- with $spendLogs.retention }}
       # spendLogs.retention: LiteLLM deletes the rows of its spend log older
       # than this, and the stored health check results as well. Each replica

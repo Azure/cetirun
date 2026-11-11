@@ -31,10 +31,12 @@ and side effects.
 - [Configure a team](../guides/teams/) — team context, provider defaults, and skills
 - [Smart routing](smart-routing/) — routers, classifiers, and where requests went
 - [Skill Marketplace](skill-marketplace/) — approved skills from one Git repository for the Agents of policy-bound Teams
+- [Observability with ADX-Mon](observability/) — logs, Kubernetes events and metrics in Azure Data Explorer
 - [Storage](storage/)
 - [Istio authentication and egress](istio/)
 - [Entra Agent Identity setup](entra-agent-identity/) — Blueprint, federation and Azure/Microsoft authorization
 - [Identity provider setup](identity-providers/) — GitHub App, GitHub OAuth and Google OAuth
+- [CetiAdmin](cetiadmin/) — the operations Agent that the operator installs by default, its access, and how to disable it
 
 ## Troubleshooting
 

@@ -19,7 +19,8 @@ Code CLI and Web Server under the Microsoft Visual Studio Code Server license:
 https://code.visualstudio.com/license/server
 The first-party installer and path adapter are MIT-licensed; this does not
 relicense the official binaries or authorize hosting or redistribution. The
-build requires explicit license acceptance and retains the server notices.
+build defaults ACCEPT_VSCODE_SERVER_LICENSE_TERMS to true and retains the
+server notices.
 Copilot and user-installed extensions remain subject to their own service and
 license terms. This example is not included in platform publishing targets.
 
@@ -177,6 +178,13 @@ copyright, attribution, and source-distribution obligations where applicable.
   the Prisma CLI and engines fetched at build time. It deliberately omits
   litellm-enterprise, which carries the BerriAI Enterprise License. The
   bundled PostgreSQL and Valkey run their own Azure Linux images from MCR.
+* app/cetirun-observability/Dockerfile builds the ADX-Mon collector and
+  ingestor (MIT, Copyright (c) Microsoft Corporation) from a checksum-pinned
+  upstream commit with the Go modules vendored in that source, and ships its
+  license as /licenses/adx-mon.LICENSE. The cetirun-observability chart also
+  runs kube-state-metrics (Apache-2.0) from its MCR image, pinned by digest,
+  and installs the ADX-Mon custom resource definitions from the same
+  upstream commit.
 * The portal binary embeds a frontend bundle built from
   app/cetirun-portal/web/package-lock.json. Its generated JavaScript notice
   accompanies that bundle and includes installed production dependencies and

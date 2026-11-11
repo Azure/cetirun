@@ -758,7 +758,7 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 		resp.Phase = "Pending"
 	}
 	if resp.SuspendAvailable {
-		if err := h.Kube.CheckSuspensionHome(ctx, instance); err != nil {
+		if err := h.Kube.CheckSuspension(ctx, instance); err != nil {
 			slog.Warn("Retained suspension storage check failed", "name", instance.Name, "error", err)
 			resp.SuspendAvailable = false
 			resp.SuspensionUnavailableReason = kube.ErrSuspensionHomeUnverified.Error()

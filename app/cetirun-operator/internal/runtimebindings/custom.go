@@ -25,8 +25,9 @@ type ObjectReference struct {
 
 type ModelAccess struct {
 	ObjectReference
-	BaseURL string `json:"baseURL"`
-	Key     string `json:"key"`
+	BaseURL       string                `json:"baseURL"`
+	Key           string                `json:"key"`
+	GatewayModels []agents.GatewayModel `json:"gatewayModels,omitempty"`
 }
 
 // CopilotProxy contains platform-owned references only. Its token and proxy key
@@ -95,7 +96,8 @@ type Custom struct {
 func (b Custom) HarnessBindings() agents.Bindings {
 	bindings := agents.Bindings{ContextRevision: b.Context.Revision,
 		WebBasePath: "/ui/" + b.AgentName + "/", WebInstance: b.AgentUID}
-	bindings.Model = agents.ModelBinding{BaseURL: b.Model.BaseURL, CredentialSlot: "model", Revision: b.Model.Revision}
+	bindings.Model = agents.ModelBinding{BaseURL: b.Model.BaseURL, CredentialSlot: "model", Revision: b.Model.Revision,
+		Gateway: true, GatewayModels: b.Model.GatewayModels}
 	return bindings
 }
 

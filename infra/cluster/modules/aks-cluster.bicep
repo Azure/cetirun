@@ -2,7 +2,9 @@
 // Licensed under the MIT License.
 
 // AKS cluster with system + agent + agent2 node pools, Azure CNI + Cilium overlay networking,
-// Istio service mesh addon, Workload Identity, Azure RBAC, and Container Insights.
+// Istio service mesh addon, Workload Identity, and Azure RBAC. Container Insights and
+// managed Prometheus are off: ADX-Mon (the cetirun-observability chart) collects the
+// logs and metrics.
 
 // --- Cluster parameters ---
 
@@ -99,38 +101,6 @@ param istioIngressGatewayType string
 
 @description('Optional managed Istio revision. Leave empty to let AKS select its default revision.')
 param istioRevision string = ''
-
-// --- Monitoring parameters ---
-
-param enableContainerInsights bool
-param enablePrometheusMetrics bool
-param logAnalyticsWorkspaceId string
-
-// --- Log Analytics workspace (created if no existing ID provided) ---
-
-resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = if (empty(logAnalyticsWorkspaceId)) {
-  name: '${clusterName}-logs'
-  location: location
-  tags: tags
-  properties: {
-    sku: {
-      name: 'PerGB2018'
-    }
-    retentionInDays: 30
-  }
-}
-
-var logAnalyticsWorkspaceResourceId = empty(logAnalyticsWorkspaceId)
-  ? logAnalytics.id
-  : logAnalyticsWorkspaceId
-
-// --- Azure Monitor Workspace for managed Prometheus ---
-
-resource azureMonitorWorkspace 'Microsoft.Monitor/accounts@2023-04-03' = if (enablePrometheusMetrics) {
-  name: '${clusterName}-prometheus'
-  location: location
-  tags: tags
-}
 
 // --- AKS Cluster ---
 
@@ -281,13 +251,13 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-01-01' = {
       snapshotController: { enabled: true }
     }
 
-    // The monitoring add-on runs the Container Insights agent (ama-logs), with
-    // managed identity authentication. What it collects, ContainerLogV2
-    // included, and where it sends it are set by containerInsightsDcr and its
-    // association below. The rule and association alone collect nothing: on a
-    // cluster without the add-on no agent ran and ContainerLogV2 stayed empty.
-    // (containerInsights was removed from azureMonitorProfile in API 2026-01-01)
-    addonProfiles: union({
+    // Container Insights (the omsagent add-on) and managed Prometheus are off.
+    // On Kata node pools with recent AzureLinux node images, their pods restart
+    // in a loop and collect nothing from those nodes, where the platform and
+    // the Agents run; ADX-Mon collects the logs and metrics instead. Both are
+    // off explicitly, so that a deployment over a cluster from an earlier
+    // template turns them off too.
+    addonProfiles: {
       azureKeyvaultSecretsProvider: {
         enabled: true
         config: {
@@ -295,18 +265,13 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-01-01' = {
           rotationPollInterval: '2m'
         }
       }
-    }, enableContainerInsights ? {
       omsagent: {
-        enabled: true
-        config: {
-          logAnalyticsWorkspaceResourceID: logAnalyticsWorkspaceResourceId
-          useAADAuth: 'true'
-        }
+        enabled: false
       }
-    } : {})
+    }
 
     azureMonitorProfile: {
-      metrics: { enabled: enablePrometheusMetrics }
+      metrics: { enabled: false }
     }
 
     autoUpgradeProfile: {
@@ -317,93 +282,6 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-01-01' = {
     apiServerAccessProfile: {
       authorizedIPRanges: [] // Open during M0 dev; lock down in M2
     }
-  }
-}
-
-// --- Container Insights DCR (ContainerLogV2) ---
-
-resource containerInsightsDcr 'Microsoft.Insights/dataCollectionRules@2023-03-11' = if (enableContainerInsights) {
-  name: 'MSCI-${location}-${clusterName}'
-  location: location
-  tags: tags
-  kind: 'Linux'
-  properties: {
-    dataSources: {
-      extensions: [
-        {
-          name: 'ContainerInsightsExtension'
-          extensionName: 'ContainerInsights'
-          streams: ['Microsoft-ContainerInsights-Group-Default']
-          extensionSettings: {
-            dataCollectionSettings: {
-              enableContainerLogV2: true
-            }
-          }
-        }
-      ]
-    }
-    destinations: {
-      logAnalytics: [
-        {
-          workspaceResourceId: logAnalyticsWorkspaceResourceId
-          name: 'la-workspace'
-        }
-      ]
-    }
-    dataFlows: [
-      {
-        streams: ['Microsoft-ContainerInsights-Group-Default']
-        destinations: ['la-workspace']
-      }
-    ]
-  }
-}
-
-resource containerInsightsDcrAssociation 'Microsoft.Insights/dataCollectionRuleAssociations@2023-03-11' = if (enableContainerInsights) {
-  name: 'ContainerInsightsExtension'
-  scope: aksCluster
-  properties: {
-    dataCollectionRuleId: containerInsightsDcr.id
-  }
-}
-
-// --- Prometheus DCR ---
-
-resource prometheusDcr 'Microsoft.Insights/dataCollectionRules@2023-03-11' = if (enablePrometheusMetrics) {
-  name: '${clusterName}-prometheus'
-  location: location
-  tags: tags
-  properties: {
-    dataSources: {
-      prometheusForwarder: [
-        {
-          name: 'PrometheusDataSource'
-          streams: ['Microsoft-PrometheusMetrics']
-        }
-      ]
-    }
-    destinations: {
-      monitoringAccounts: [
-        {
-          accountResourceId: azureMonitorWorkspace.id
-          name: 'MonitoringAccountDestination'
-        }
-      ]
-    }
-    dataFlows: [
-      {
-        streams: ['Microsoft-PrometheusMetrics']
-        destinations: ['MonitoringAccountDestination']
-      }
-    ]
-  }
-}
-
-resource prometheusDcrAssociation 'Microsoft.Insights/dataCollectionRuleAssociations@2023-03-11' = if (enablePrometheusMetrics) {
-  name: 'MSProm-${location}-${clusterName}'
-  scope: aksCluster
-  properties: {
-    dataCollectionRuleId: prometheusDcr.id
   }
 }
 

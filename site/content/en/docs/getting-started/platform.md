@@ -27,13 +27,14 @@ covers smart routing of models and the first call from a client.
 | AKS with managed Istio and an external ingress gateway | Shared authentication and instance routes |
 | OIDC issuer and Workload Identity | Federated identity for OAuth2 Proxy and Agent Identity |
 | Azure Disk CSI and the `default` StorageClass | Default persistent HOME volumes |
-| Blob CSI and `azureblob-nfs-premium` StorageClass, when shared skills are enabled | Optional shared skills volumes |
+| Blob CSI, a Blob NFS StorageClass such as `azureblob-nfs-premium`, and a Blob NFS storage account and container | Shared skills volumes. They are necessary for `make deploy`. Refer to [Shared skills storage for `make deploy`](../../operations/storage/#shared-skills-storage-for-make-deploy) |
 | A compatible `kata-vm-isolation` RuntimeClass | Default agent chart sandbox. Do not silently remove it |
 | Kubernetes 1.37 or later | `make deploy` refuses an older version. Sandbox admission must have this version |
 | Kata node pools and Azure CNI powered by Cilium | Agents of Teams created in the portal run in a Sandbox. Refer to [Policy-bound Teams](../../operations/policy-teams/) |
 | Enforced Kubernetes NetworkPolicy and necessary admission APIs | Runtime isolation rules and the default exec-denial policy |
 | Accessible images and versioned OCI agent chart | Operator fetches the agent chart, and then nodes pull images |
 | Entra ID app, allowed groups, federated credential | Portal login and group-based admission |
+| User names that give a valid Portal alias | The Portal refuses other users. Refer to [User names](#user-names) |
 | Apex DNS and a TLS certificate that matches it. Wildcard names if you use them | Portal, instance routes, and apex `/oauth2/callback`. Optional `publicTLS` in [Public DNS and TLS](../../operations/public-ingress/) can prepare one exact hostname during `make deploy` |
 | Python 3 with PyYAML, Helm, kubectl, OpenSSL, Docker Buildx, Azure CLI/Bicep, jq | `make deploy` and the deployment helpers |
 
@@ -50,6 +51,23 @@ Sources: [runtime values]({{< repo "app/cetirun-chart/values.yaml" >}}),
 and [operator RBAC]({{< repo "app/cetirun-operator/chart/templates/clusterrole.yaml" >}}).
 The chart does not create the RuntimeClass, CSI driver, or Istio control plane.
 
+### User names
+
+The Portal accepts only users whose user name gives a valid alias. The Portal
+takes the part of `preferred_username` before `@` and changes it to lowercase.
+If the token has no `preferred_username`, the Portal uses the email address.
+The alias must be a DNS label:
+
+- 1 to 63 characters
+- Only letters, digits, and hyphens (`-`)
+- A letter at the start, and a letter or a digit at the end
+
+The Portal does not replace characters. For other users, for example
+`jane.doe@example.com` or `jane_doe@example.com`, it returns HTTP 403
+`invalid_identity`. `ownerAlias`, the aliases in
+`platform.values.cetirun-portal.admins.aliases`, and the CetiAdmin
+`owner.alias` must use the same format.
+
 ## 1. Review infrastructure inputs
 
 [Infrastructure](../../operations/infrastructure/) covers the
@@ -65,9 +83,13 @@ demonstration environment.
 ## 2. Configure authentication and storage
 
 Follow [Istio authentication](../../operations/istio/) and
-[persistent storage](../../operations/storage/). The identity redirect URI is
-`https://<domain>/oauth2/callback`. Portal and native-instance routes
-use paths on the apex domain. The Gateway also accepts wildcard hosts, but
+[persistent storage](../../operations/storage/). On the Istio page, do only
+the identity, DNS, and certificate steps. `make deploy` installs and upgrades
+the CetiRun Istio release. Do not also run `infra/istio/deploy.sh` or a direct
+Helm installation of the Istio chart on the same cluster.
+
+The identity redirect URI is `https://<domain>/oauth2/callback`. Portal and
+native-instance routes use paths on the apex domain. The Gateway also accepts wildcard hosts, but
 that does not create a VirtualService for each subdomain. Configure DNS and
 certificates for the hosts that you serve. A wildcard certificate alone does
 not cover the apex.
@@ -89,7 +111,11 @@ checks, and namespace sidecar injection work. The shared filter calls the
 portal on port 8081. That port is exempt from mTLS, and its NetworkPolicy must
 restrict it.
 
-Shared skills storage is optional and separate from instance home PVCs. Review
+`make deploy` needs shared skills storage, which is separate from instance
+home PVCs. Before the first run, provision it and set the `sharedSkills`
+fields, as
+[Shared skills storage for `make deploy`](../../operations/storage/#shared-skills-storage-for-make-deploy)
+shows. Review
 `networkPolicy.allowedInternalCIDRs` rather than inherit its
 environment-specific exception. If npm skills are enabled, set
 `skills.npmRegistry` to your approved reachable registry. Istio ServiceEntries
@@ -150,19 +176,20 @@ On this machine, sign in to the registry with `docker login` and
 
 ```bash
 make publish REGISTRY=registry.example.com VERSION=0.1.1 \
-  GIT_SHA="$(git rev-parse HEAD)" ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true
+  GIT_SHA="$(git rev-parse HEAD)"
 ```
 
-The command builds and pushes the 13 images and 8 charts of
+The command builds and pushes the 14 images and 9 charts of
 [`scripts/release-artifacts.json`]({{< repo "scripts/release-artifacts.json" >}}).
 These include the operator, Portal, AI Gateway, Broker, OpenClaw, Hermes, and
 VS Code Server images, and the platform, Istio, and Agent (`helm/cetirun`)
 charts. Then the command pulls each chart back to examine it. Refer to the
 [unified release inventory]({{< repo "DEVELOPMENT.md" >}}#unified-release-inventory).
 
-`ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true` records that you accept the VS Code
-Server license. Without it, the command builds no image. The command stops if
-a tag already exists.
+`ACCEPT_VSCODE_SERVER_LICENSE_TERMS` defaults to `true`, so builds accept the
+[VS Code Server license](https://code.visualstudio.com/license/server) without
+a separate flag or prompt. An explicit `false` stops builds that include VS Code
+Server. The command also stops if a tag already exists.
 
 If you do not accept that license yet, publish the remaining artifacts with the
 release CLI and exclude the declared optional VS Code image explicitly:
@@ -174,7 +201,7 @@ python3 -B scripts/cetirun-release.py publish \
   --exclude-image cetirun-vscode
 ```
 
-This selection publishes 12 images and all 8 charts. The normal `make publish`
+This selection publishes 13 images and all 9 charts. The normal `make publish`
 path deliberately keeps the complete inventory and still requires the license
 acceptance. Use the same selection in the environment file:
 
@@ -363,7 +390,8 @@ longer reads `DOMAIN` or `VALUES_FILE`. It installs these Helm releases:
 - The Agent Broker, in its own credential namespace
 - The platform release, in `cetirun-system` by default. It contains the
   operator, the Sandbox admission server, the portal, the AI Gateway with
-  PostgreSQL and Valkey, and Connections MCP.
+  PostgreSQL and Valkey, Connections MCP, and the ADX-Mon collection of logs
+  and metrics.
 
 OpenClaw and Hermes Agents take their models from the AI Gateway. For the
 shared models and the Gateway console, refer to the
@@ -389,6 +417,11 @@ Before the first run, make sure that these items exist:
 - The StorageClasses for the HOME of Custom Agents, for the Gateway's
   PostgreSQL, and for shared skills. Also the Blob storage of shared skills.
   Refer to [Storage](../../operations/storage/).
+- The Azure Data Explorer resources of the ADX-Mon collection: a Kusto cluster
+  with the logs, metrics, and Agent logs databases, and the ingestor's managed
+  identity with its roles and federated credential. By default, the cluster
+  template creates them. Refer to
+  [Observability with ADX-Mon](../../operations/observability/#prerequisites).
 - The Secrets of the AI Gateway. The commands below create them.
 - The Microsoft-Decision-1 deployment that the smart-routing model `auto`
   uses to classify requests. Deploy the model in an Azure AI Foundry resource,
@@ -425,9 +458,9 @@ Before the first run, make sure that these items exist:
 `make deploy` examines the objects of this list in the cluster, and the images
 and charts in the registry. If one of them does not exist, the run stops before
 it writes. `make deploy` does not call Azure or Microsoft Graph. As a result,
-it does not find a wrong Entra ID, a missing Key Vault key, or a Decision-1
-deployment that does not work. These problems occur only when a component uses
-the resource.
+it does not find a wrong Entra ID, a missing Key Vault key or Kusto database,
+or a Decision-1 deployment that does not work. These problems occur only when
+a component uses the resource.
 
 The AI Gateway reads the provider keys of its models from a Secret. It also
 uses a Secret with its master key, salt key, and console password, and a
@@ -522,11 +555,16 @@ Make a decision about these inputs before the first run:
   Refer to
   [the admission certificate](../../operations/policy-teams/#the-admission-certificate).
 - `platform.values.cetirun-operator.cetiadmin` configures CetiAdmin, the Hermes
-  administration Agent that the operator deploys. `make deploy` enables it by
-  default. Set its owner, its initial monthly budget, and its access to the
-  Kubernetes API, or set `enabled: false`. Its `owner.alias` must be the same as
-  `ownerAlias`. The default model of CetiAdmin is `auto`. Refer to
-  [Configure CetiAdmin]({{< repo "app/cetirun-platform/README.md" >}}#configure-cetiadmin).
+  operations Agent that the operator deploys and that `make deploy` enables by
+  default. CetiAdmin can read the Secrets of each standard Agent and run
+  commands in its Pods. Set its owner, its initial monthly budget, and its
+  access to the Kubernetes API, or set `enabled: false`. Its `owner.alias` must
+  be the same as `ownerAlias`. The default model of CetiAdmin is `auto`. Before
+  you set these values, read [CetiAdmin](../../operations/cetiadmin/).
+- `platform.values.cetirun-operator.aiGateway.defaultBudget` sets the initial
+  monthly Gateway budget of each standard Agent, 10000 USD by default. No Agent
+  Policy limits these Agents. Refer to
+  [Policy-bound Teams](../../operations/policy-teams/).
 - `platform.values.cetirun-ai-gateway.models` holds the shared models. It must
   contain callable models. The default `modelRouting.mode: auto` also requires
   the smart-routing model `auto`, which uses the decision model
@@ -582,8 +620,10 @@ Sandbox execution stays disabled until you enable it, as
 `make deploy` run enables it, together with Sandbox execution or after it.
 
 A change to the models replaces the Gateway's Pods. When a shared model is
-added or removed, or when its limits change, the Agents that use shared models
-restart one time. Refer to
+added or removed, or when its limits change, the Agents that can use that model
+restart one time. Before you remove a shared model, remove its name from each
+Agent Policy that allows it. Otherwise, the operator stops the Agents of that
+Agent Policy. Refer to
 [Choose a model](../../guides/models/#runtime-configuration).
 
 Other changes also replace the Gateway's Pods, for example a new release
@@ -594,9 +634,13 @@ registrations still require current backend IPs and labels until they migrate.
 Upgrade all readers and follow the coordinated configuration-change workflow
 before adopting the new registration.
 
-With `istio.mode: external`, `make deploy` does not upgrade the CetiRun Istio
-release. Configure that release to reach the portal: use
-`PORTAL_AUTH_NAMESPACE=cetirun-system` with its deployment helper. Refer to
+With `istio.mode: external`, `make deploy` does not install or upgrade the
+CetiRun Istio release. The release must already exist. Its Gateway, EnvoyFilter,
+AuthorizationPolicy, and other routing objects must be equal to the objects
+that `make deploy` renders. If they are not equal, the run stops. A release that
+`infra/istio/deploy.sh` installs is not equal, even with
+`PORTAL_AUTH_NAMESPACE=cetirun-system`, because the helper does not enable
+Portal mTLS. Refer to
 [portal ownership endpoint](../../operations/istio/#portal-ownership-endpoint).
 
 The Operator subchart creates the Registry source namespace, which is kept on
@@ -619,12 +663,20 @@ helm template cetirun-operator app/cetirun-operator/chart \
   --set-string image.repository=registry.example.com/cetirun-operator \
   --set-string image.tag=example-build \
   --set-string cetirun.chart.repoURL=oci://registry.example.com/helm/cetirun \
-  --set-string cetirun.chart.version=0.1.0 > /dev/null
+  --set-string cetirun.chart.version=0.1.0 \
+  --set cetiadmin.enabled=false > /dev/null
 ```
 
-This render runs without cluster or registry access. During installation,
-examine artifact availability and rollout status. For the agent chart, refer to
-[runtime render](../../reference/helm/#offline-rendering).
+This render runs without cluster or registry access. The operator chart
+enables CetiAdmin by default. An enabled CetiAdmin needs owner, budget,
+Kubernetes API, and admission inputs, so this render disables it. During
+installation, examine artifact availability and rollout status. For the agent
+chart, refer to [runtime render](../../reference/helm/#offline-rendering).
+
+The operator helper sets no CetiAdmin values, so the example below disables
+CetiAdmin with `HELM_SET_ARGS`. To install CetiAdmin, use a direct Helm
+installation with a reviewed values file instead. Supply the inputs that
+[CetiAdmin](../../operations/cetiadmin/#configure-cetiadmin) lists.
 
 After you complete the prerequisites, run the deployment scripts from the
 repository root. Before you run these commands, replace all example values:
@@ -632,6 +684,7 @@ repository root. Before you run these commands, replace all example values:
 ```bash
 REGISTRY=registry.example.com CHART_VERSION=0.1.0 IMAGE_TAG=example-build \
 CETIRUN_CHART_VERSION=0.1.0 DOMAIN=example.com \
+HELM_SET_ARGS="cetiadmin.enabled=false" \
   bash app/cetirun-operator/deploy/deploy.sh
 
 REGISTRY=registry.example.com CHART_VERSION=0.1.0 IMAGE_TAG=example-build \
@@ -735,15 +788,18 @@ key, and the Gateway's log. Stop the port-forward after the test.
 
 A Team is optional for a new agent. An agent without a Team can use every
 shared conversational model, including `auto` when automatic routing is
-configured. An administrator
-creates Teams in the portal's administration pages, with an Agent Policy and a
-Sandbox. The agents of such a Team run in its Sandbox, after you configure
-[Policy-bound Teams](../../operations/policy-teams/). A Team can also give its
-agents its own smart-routing models. To configure them, continue with
+configured. No Agent Policy applies to it, and every signed-in user can select
+any Team.
+
+An administrator creates Teams in the portal's administration pages, with an
+Agent Policy and a Sandbox. The agents of such a Team run in its Sandbox, after
+you configure [Policy-bound Teams](../../operations/policy-teams/). A Team can
+also give its agents its own smart-routing models. To configure them, continue with
 [Smart routing](../../operations/smart-routing/).
 
-When shared skills are enabled, also examine `azureblob-nfs-premium` and the
-`blob.csi.azure.com` CSI driver. Blob CSI is not necessary for HOME storage.
+`make deploy` enables shared skills. Also examine the StorageClass in
+`sharedSkills.storageClassName` and the `blob.csi.azure.com` CSI driver. Blob
+CSI is not necessary for HOME storage.
 
 By default, the standalone portal helper uses the namespace `cetirun-portal`.
 When you examine an independent installation, use that namespace instead.
@@ -761,8 +817,9 @@ work:
 Review the
 [same-origin sign-out checks](../../operations/istio/#prepare-identity-dns-and-tls).
 Test both successful and denied requests. Examine `IngressReady` independently
-of `Ready`. Then give users the portal address and the
-[first-instance guide](../first-instance/).
+of `Ready`. Make sure that the user names in the allowed groups give valid
+aliases, as [User names](#user-names) describes. Then give users the portal
+address and the [first-instance guide](../first-instance/).
 
 Before you enable Tailscale, shared storage, and cloud log collection for
 users, test them separately.

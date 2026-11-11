@@ -54,7 +54,7 @@ data migration. Retention does not protect against a schema downgrade.
 | `gatewayTokenSecretRef` | Necessary native Secret name for Hermes and OpenClaw. Not allowed for Custom |
 | `agent` | Necessary Harness configuration object |
 | `agent.type` | `hermes` (default), `openclaw`, or `custom`. It cannot be changed |
-| `agent.image` | Necessary for Custom. After it is set, it cannot be cleared. Built-in defaults are pinned from the selected chart |
+| `agent.image` | Necessary for Custom. Use the exact `<repository>@sha256:<digest>` reference from the Operator's `customRuntime.approvedImages`; a tag reference is never approved. After it is set, it cannot be cleared. Built-in defaults are pinned from the selected chart |
 | `agent.registrySecretRef.name` | Optional reference to a Portal-managed source Secret. The reference has no namespace, key, or inline credentials |
 | `agent.username` | The default is `vibe`. Non-root image username that cannot be changed |
 | `agent.port` | HTTP port, 1–65535. Necessary for a Custom Web UI, and optional in other cases. For Custom, an omitted port means that the Agent is headless |
@@ -89,11 +89,19 @@ For minimal YAML, see [first instance](../../getting-started/first-instance/).
 The operator resolves Hermes and OpenClaw images and ports through the Harness
 interface. The `vibe` username is necessary for their profiles. Custom uses a
 separate runtime path that supports non-default usernames. Without a binding
-provider, it reports `CustomBindingsPending`. The Operator chart enables the
-`customRuntime` Kubernetes provider by default, but administrators must still
-approve image digests and their numeric UID/GID. Its empty default approval
+provider, a non-Sandbox Custom Agent reports `CustomRuntimeDisabled`. The Operator
+chart enables the `customRuntime` Kubernetes provider by default, but
+administrators must still approve image digests. Numeric `imageUsers` entries are required for FQDN
+capture, not every Custom Agent. Its empty default approval
 list authorizes no images. Portal Custom self-service is enabled by default
 and can be restricted through `features.allowedAgentTypes`.
+The Portal requires a published image approval before creation or an image
+change, including administrator updates. For non-Sandbox Custom Agents, the
+Operator reports `CustomImageNotApproved` if a directly submitted Agent is not
+approved or its approval was withdrawn; it retries after the configuration
+changes. Other unavailable binding prerequisites report `CustomBindingsPending`.
+For policy-governed Sandbox Custom Agents, a disabled provider or unapproved
+image instead reports `PolicyResolved=False` with reason `PolicyDenied`.
 
 Private images use `agent.registrySecretRef.name` to refer to a Portal-managed
 source Secret. Before the operator copies the Secret to the runtime namespace
@@ -288,10 +296,25 @@ Portal administrators can create and edit Teams with `agentPolicyRef`,
 `sandboxRefs`, and `defaultSandboxRef`. The Portal accepts only complete
 bindings and validates the referenced resources. It also makes sure that the
 default is in the allowed Sandbox set and that the Policy allows the Team
-Skills. The Team DTO returns these fields together with `uid` and
-`resourceVersion`. Updates and deletes must send those two version fields. A
-stale version returns `409 Conflict`, and a request without those version fields
-returns `428 Precondition Required`.
+Skills. The Team DTO returns these fields together with `uid`, `resourceVersion`,
+and `generation`. Updates and deletes must send `uid` and `resourceVersion` and
+should also send the reviewed generation in the `X-CetiRun-Team-Generation`
+header. The API also accepts a JSON `generation` field; if both are supplied,
+they must match. With a generation, status-only
+updates do not invalidate the request; a changed configuration or replacement
+Team returns `409 Conflict`. Without a generation, the exact resource version
+is still required for older clients. Missing required version fields return
+`428 Precondition Required`; an explicitly supplied generation must be a positive
+integer, or the request returns `400 Bad Request`.
+
+The Portal browser uses the header and keeps the existing JSON body shape.
+Older Portal replicas ignore this header and apply the exact resource-version
+check during a rolling upgrade. JSON generation fields require an updated
+backend because older replicas reject unknown body fields.
+
+The Portal uses the latest resource version for a conditional write after it
+checks the reviewed configuration. A race during submission can still conflict;
+uncertain coordinated writes retain their existing recovery requirements.
 
 The Teams list shows compatibility for the saved Policy and all selected
 Sandboxes. Expand a Team to see its overall compatibility, labeled Policy and
@@ -306,8 +329,10 @@ from Team compatibility. None of these observations proves that an Agent applied
 its Policy or is ready to run.
 
 The Operator records this report in the optional `Team.status.compatibility`
-field. It examines saved configurations every 15 seconds and after Policy or
-Sandbox changes. The report identifies the Team, Policy, and each Sandbox by
+field. It examines saved configurations at most 15 seconds apart and after Policy
+or Sandbox changes. An unchanged report keeps its timestamps until five seconds
+before expiry, when it is renewed. Changed results are published immediately.
+The report identifies the Team, Policy, and each Sandbox by
 name, UID, and generation, with `checkedAt` and `validUntil` timestamps. The
 report expires after 30 seconds. The Portal shows `Pending` when no report
 exists and `Unknown` when an observation expires or a referenced version
@@ -317,6 +342,12 @@ The report is for display. It does not change the Team `Accepted` condition or
 authorize Agent execution. The admin Team API includes the report, the Team
 generation, and deletion state. The Sandbox API also returns generation,
 observed generation, and conditions.
+
+The Team editor preserves unsaved input across background refreshes. If the
+saved configuration changes, it keeps the draft and asks you to discard it and
+reload before saving. Status-only refreshes do not replace the draft. The Team
+deletion dialog shows errors inside the dialog; after a configuration conflict,
+reload and review the current Team before confirming deletion again.
 
 Edit pages show field validation and errors from the current save. They do not
 examine unsaved drafts or show saved status as a draft result. Kubernetes

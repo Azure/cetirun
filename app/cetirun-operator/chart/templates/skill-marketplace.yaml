@@ -154,6 +154,9 @@ spec:
         app.kubernetes.io/instance: {{ .Release.Name }}
       annotations:
         sidecar.istio.io/inject: "false"
+        adx-mon/scrape: "true"
+        adx-mon/port: "8080"
+        adx-mon/path: /metrics
         {{- with $worker.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

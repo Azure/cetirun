@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -39,7 +40,7 @@ const (
 // plan: scale the supplied StatefulSet to zero without changing its UID, owner
 // or protected annotations, and wait for Pods referencing HOME to terminate.
 // Providers need workload patch/Pod read permissions and must honor context
-// deadlines. The default operator has no provider and waits.
+// deadlines. A disabled Custom runtime has no provider and waits.
 type CustomBindingProvider interface {
 	Resolve(context.Context, *api.Agent, *api.Team) (runtimebindings.Custom, error)
 	ApproveApply(context.Context, *api.Agent, *appsv1.StatefulSet, CustomApplyOperation) (CustomApplyLease, error)
@@ -162,13 +163,17 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 		return r.rejectCustomConfig(ctx, instance, err)
 	}
 	if r.CustomBindings == nil {
-		return r.customWaiting(ctx, instance, "CustomBindingsPending",
-			"Custom requires platform model, HOME, context, policy and lifecycle bindings")
+		return r.customWaiting(ctx, instance, "CustomRuntimeDisabled",
+			"Custom provisioning is disabled; ask an administrator to enable the runtime and approve an image digest")
 	}
 	resolveCtx, cancelResolve := context.WithTimeout(ctx, customProviderTimeout)
 	bindings, err := r.CustomBindings.Resolve(resolveCtx, instance.DeepCopy(), team)
 	cancelResolve()
 	if err != nil {
+		if errors.Is(err, errCustomImageNotApproved) {
+			return r.customWaiting(ctx, instance, "CustomImageNotApproved",
+				"Custom image is not approved; ask an administrator to approve this exact sha256 image reference or select an approved image")
+		}
 		return r.customWaiting(ctx, instance, "CustomBindingsPending", "Platform binding resolution is not ready")
 	}
 	bindings.RestartRequestID = instance.Spec.RestartRequestID
@@ -298,6 +303,13 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 	}
 	if err := r.ensureCustomOwnership(ctx, instance, bindings, current); err != nil {
 		return r.customWaiting(ctx, instance, "CustomOwnershipConflict", err.Error())
+	}
+	// Ordinary Custom does not receive a Connections MCP runtime endpoint, but
+	// the Broker still owns its per-Agent binding records. Reconcile this after
+	// the immutable ownership receipt exists so the Broker can prove the
+	// namespace without changing Custom namespace garbage collection semantics.
+	if err := r.reconcileConnectionsMCPBrokerRBAC(ctx, instance, true); err != nil {
+		return r.customWaiting(ctx, instance, "BrokerStorageAccessFailed", "Broker storage access setup failed")
 	}
 	if current != nil &&
 		strings.HasPrefix(instance.Status.ObservedOperatorHash, prepared.PlanHash+":") &&
@@ -553,25 +565,35 @@ func (r *AgentReconciler) suspendCustom(ctx context.Context, instance *api.Agent
 	keyErr := r.suspendGatewayKey(ctx, instance)
 	stopErr := r.stopCustomWorkload(ctx, instance)
 	terminalErr := r.stopCustomTerminal(ctx, instance)
-	if err := r.stopCustomCopilot(ctx, instance); err != nil && terminalErr == nil {
-		terminalErr = err
-	}
+	copilotErr := r.stopCustomCopilot(ctx, instance)
 	routeErr := r.removeCustomPlatformRoute(ctx, instance)
 	if stopErr == nil {
 		stopErr = r.removeRegistryCredentials(ctx, instance)
 	}
+	completionErr := r.retryCustomCompletion(ctx, instance)
+	suspensionErr := errors.Join(keyErr, stopErr, terminalErr, copilotErr, routeErr, completionErr)
+	stopped := false
+	if suspensionErr == nil {
+		stopped, suspensionErr = r.observeCustomSuspension(ctx, instance)
+	}
 	instance.Status.AccessURL = ""
-	instance.Status.Phase = api.PhaseSuspended
-	if stopErr != nil {
-		instance.Status.Phase = api.PhasePending
+	instance.Status.Phase = api.PhasePending
+	reason, message := "SuspensionPending", "Waiting for Custom workload shutdown and access revocation"
+	if suspensionErr == nil && stopped {
+		instance.Status.Phase = api.PhaseSuspended
+		instance.Status.ObservedGeneration = instance.Generation
+		reason, message = "Suspended", "Custom workload shutdown and access revocation are confirmed"
+	} else if keyErr != nil {
+		reason, message = "SuspendGatewayBlockFailed", "Waiting for AI Gateway key blocking to be confirmed"
+	} else if terminalErr != nil || copilotErr != nil {
+		reason, message = "CustomAuxiliarySuspensionBlocked", "Waiting for Custom auxiliary workload shutdown"
+	} else if suspensionErr != nil && stopErr == nil && routeErr == nil && completionErr == nil {
+		reason, message = "CustomSuspensionObservationFailed", "Waiting for authoritative Custom shutdown observations"
 	}
-	if terminalErr != nil {
-		instance.Status.Phase = api.PhasePending
+	for _, condition := range []string{api.ConditionReady, api.ConditionPodReady, api.ConditionIngressReady} {
+		setCondition(&instance.Status.Conditions, condition, metav1.ConditionFalse, reason, message)
 	}
-	setCondition(&instance.Status.Conditions, api.ConditionReady, metav1.ConditionFalse, "InstanceSuspended", "Custom workload requested to scale to zero")
-	setCondition(&instance.Status.Conditions, api.ConditionPodReady, metav1.ConditionFalse, "Suspended", "Suspension requested; writer shutdown requires separate observation")
-	setCondition(&instance.Status.Conditions, api.ConditionIngressReady, metav1.ConditionFalse, "Suspended", "Platform access removed")
-	setCustomServiceConditions(instance, customAccess{}, metav1.ConditionFalse, "Suspended")
+	setCustomServiceConditions(instance, customAccess{}, metav1.ConditionFalse, reason)
 	if routeErr != nil {
 		setCondition(&instance.Status.Conditions, api.ConditionIngressReady, metav1.ConditionFalse,
 			"SuspendIngressRemovalFailed", routeErr.Error())
@@ -580,26 +602,11 @@ func (r *AgentReconciler) suspendCustom(ctx context.Context, instance *api.Agent
 		setCondition(&instance.Status.Conditions, api.ConditionPodReady, metav1.ConditionFalse,
 			"CustomSuspensionBlocked", stopErr.Error())
 	}
-	if err := r.retryCustomCompletion(ctx, instance); err != nil {
+	if completionErr != nil {
 		setCondition(&instance.Status.Conditions, api.ConditionReady, metav1.ConditionFalse,
 			"CustomCompletionPending", "Suspension requested; previous apply completion is still pending")
 	}
-	if err := r.updateCustomStatus(ctx, instance, previous); err != nil {
-		return ctrl.Result{}, err
-	}
-	if stopErr != nil {
-		return ctrl.Result{}, stopErr
-	}
-	if terminalErr != nil {
-		return ctrl.Result{}, terminalErr
-	}
-	if routeErr != nil {
-		return ctrl.Result{}, routeErr
-	}
-	if keyErr != nil {
-		return ctrl.Result{}, keyErr
-	}
-	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, errors.Join(suspensionErr, r.updateCustomStatus(ctx, instance, previous))
 }
 
 func (r *AgentReconciler) removeCustomPlatformRoute(ctx context.Context, instance *api.Agent) error {

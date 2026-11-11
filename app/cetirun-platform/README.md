@@ -79,13 +79,15 @@ REGISTRY=registry.example.com/team/test VERSION=0.1.1-dev.1 \
 | `broker` | Separate credential namespace/release and Broker Chart values, for example, references to TLS Secrets that exist and references to provider credential Secrets. The helper stops if a provider Secret that the file names does not exist. Remove the providers that you do not register |
 | `platform` | Platform release/namespace and umbrella values, for example, admission, provider credentials, model deployments, and qualified Custom images |
 | `platform.values.cetirun-operator.cetiadmin` | CetiAdmin owner assignment, initial budget, exact API access, optional migration source, and runtime options |
-| `sharedSkills` | The shared Skills storage fields that exist in the runtime chart, for example, storage class, resource group, account, and container |
+| `sharedSkills` | Necessary. The shared Skills storage fields that exist in the runtime chart: storage class, resource group, account, and container. The helper sets `skills.shared: true` for all Agents. It examines only that the StorageClass exists, so provision the Blob NFS account and container first. Refer to [Storage](../../site/content/en/docs/operations/storage.md#shared-skills-storage-for-make-deploy) |
 | `skillMarketplace` | Optional. The Git repository of the [Skill Marketplace](#skill-marketplace), its credentials Secret, and its Blob NFS container |
+| `observability` | The ADX-Mon collection of logs, events, and metrics: the name of this CetiRun cluster in every row, the query URI of the Kusto cluster, its logs, metrics, and Agent logs databases, and the client ID of the ingestor's managed identity. See [Observability with ADX-Mon](../../site/content/en/docs/operations/observability.md) |
 
 The managed Istio control plane, ingress workload, DNS, cloud identity
-federation/permissions, storage classes, and referenced Secrets are
-prerequisites unless the optional public DNS/TLS preparation below supplies
-the public hostname and certificate. Provision the other requirements through
+federation/permissions, storage classes, referenced Secrets, and the Azure
+Data Explorer resources of the ADX-Mon collection are prerequisites unless the
+optional public DNS/TLS preparation below supplies the public hostname and
+certificate. Provision the other requirements through
 the environment's approved workflow. Azure DNS mode uses `az` with the configured
 subscription; the helper does not get Key Vault secrets or change
 `current-context`. Every cluster operation uses `target.context`. Before a
@@ -193,7 +195,7 @@ make deploy-plan DEPLOY_CONFIG=/path/to/environment.yaml
 
 The plan validates the inputs and renders local charts in a temporary
 directory. Its JSON lists the target, releases, workloads, the selected images
-and all 8 charts, and `referenceCounts` by resource kind. The JSON does not contain
+and all 9 charts, and `referenceCounts` by resource kind. The JSON does not contain
 reference names, Secret keys, or extra input fields. YAML errors report their
 position but do not show the contents. The plan does not connect to a cluster
 or registry. Python, PyYAML, and Helm must already be installed.
@@ -431,6 +433,20 @@ receipt. Both paths reject foreign ownership. Protected Sandbox namespace
 access does not grant a CetiAdmin exec exception or Secret reads or writes.
 Pod, log, and Event diagnostics remain available. Ordinary runtime namespace
 Secret permissions are unchanged.
+
+An authorized administrator or Portal can delete an ordinary Agent that has
+an Operator-managed CetiAdmin exec binding, including a suspended retained
+Agent or one with a retained native-auth rotation marker. The Operator
+withdraws that binding and performs normal finalizer and namespace cleanup.
+CetiAdmin's runtime identity cannot delete Agents, and
+other callers cannot add, replace, or remove the protected binding annotation.
+The installed CetiAdmin Agent remains protected by its installation lifecycle.
+
+For installations affected by a binding-protection rejection on Agent DELETE,
+upgrade both the Operator and admission server to a release containing the
+fix, then retry normal deletion. Existing Agents can keep their pinned runtime
+images and Charts; no runtime restart, binding-annotation patch, or manual
+finalizer removal is needed for this repair.
 
 When Copilot is enabled, the configured Portal authoring identity can record
 the owner's Copilot model list, sign-in generation, and sign-in timestamp on

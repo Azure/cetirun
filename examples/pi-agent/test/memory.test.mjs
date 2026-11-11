@@ -122,7 +122,8 @@ test("the real Pi SDK refreshes private context without retaining it in native h
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
-  const env = { ...f.env, OPENAI_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`, OPENAI_API_KEY: "sk-dummy-fixture-key" };
+  const env = { ...f.env, OPENAI_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`, OPENAI_API_KEY: "sk-dummy-fixture-key",
+    CETIRUN_GATEWAY_MODEL_LIMITS: JSON.stringify({ version: 1, models: [{ id: "shared-example", contextWindow: 131072, maxOutputTokens: 4096 }] }) };
   const cwd = path.join(f.home, "workspace");
   const services = await createPiServices(f.home, cwd, env, "pi-tui");
   const model = (await services.modelAccess.models(AbortSignal.timeout(5000)))[0];

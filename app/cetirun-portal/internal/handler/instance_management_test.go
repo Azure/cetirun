@@ -276,6 +276,7 @@ func TestCustomImageUpgradePreservesInstanceConfiguration(t *testing.T) {
 				instance.Spec.Agent.WebUI = true
 			case "suspended":
 				instance.Spec.Suspended = true
+				instance.Spec.Helm.Version = "0.1.17"
 			}
 			want := instance.DeepCopy()
 			want.Spec.Agent.Image = ptr.To(replacementImage)
@@ -384,5 +385,65 @@ func TestCustomOwnerCanUpdateWithoutAdditionalPolicy(t *testing.T) {
 	stored, err := h.Kube.GetInstance(context.Background(), "alice")
 	if err != nil || *stored.Spec.Agent.Port != 9090 {
 		t.Fatalf("owner's port update was not applied: %v", err)
+	}
+}
+
+func TestCustomImageUpdateRequiresPublishedApproval(t *testing.T) {
+	for _, actor := range []string{"owner", "administrator"} {
+		for _, tc := range []struct {
+			name   string
+			images []string
+			fields string
+			code   int
+			error  string
+		}{
+			{"approved", []string{replacementImage}, `"agent":{"image":"` + replacementImage + `"}`, http.StatusOK, ""},
+			{"unknown approvals", nil, `"agent":{"image":"` + replacementImage + `"}`, http.StatusServiceUnavailable, "custom_images_unknown"},
+			{"empty approvals", []string{}, `"agent":{"image":"` + replacementImage + `"}`, http.StatusConflict, "custom_image_not_approved"},
+			{"withdrawn approval", []string{managementImage}, `"agent":{"image":"` + replacementImage + `"}`, http.StatusConflict, "custom_image_not_approved"},
+			{"tag", []string{replacementImage}, `"agent":{"image":"registry.example.com/assistant:latest"}`, http.StatusBadRequest, "invalid_agent"},
+			{"unchanged image", nil, `"agent":{"image":"` + managementImage + `","port":9090}`, http.StatusOK, ""},
+			{"unrelated edit", nil, `"agent":{"port":9090}`, http.StatusOK, ""},
+		} {
+			t.Run(actor+"/"+tc.name, func(t *testing.T) {
+				instance := customManagementInstance()
+				cm := catalogConfigMap("gpt-6")
+				var catalog api.AIGatewayCatalog
+				if err := json.Unmarshal([]byte(cm.Data[api.AIGatewayCatalogKey]), &catalog); err != nil {
+					t.Fatal(err)
+				}
+				catalog.CustomImages = tc.images
+				raw, err := json.Marshal(catalog)
+				if err != nil {
+					t.Fatal(err)
+				}
+				cm.Data[api.AIGatewayCatalogKey] = string(raw)
+				fc := newFakeClient(instance, cm)
+				cfg := gatewayConfig()
+				h := &InstanceHandler{Kube: kube.NewClient(fc), Config: cfg}
+				body := `{"uid":"agent-alice","resourceVersion":"1","displayName":"Updated",` + tc.fields + `}`
+				w := httptest.NewRecorder()
+				if actor == "owner" {
+					h.UpdateInstanceByName(w, managementRequest(http.MethodPatch, body))
+				} else {
+					admin := &AdminInstanceHandler{Kube: h.Kube, Config: cfg}
+					admin.UpdateInstance(w, adminManagementRequest(http.MethodPatch, body))
+				}
+				if w.Code != tc.code {
+					t.Fatalf("update: %d %s", w.Code, w.Body.String())
+				}
+				stored, err := h.Kube.GetInstanceByName(context.Background(), instance.Name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.error != "" {
+					if errorCode(t, w) != tc.error || !reflect.DeepEqual(stored.Spec, instance.Spec) || stored.ResourceVersion != instance.ResourceVersion {
+						t.Fatalf("rejected image update changed the Agent or returned the wrong error: %s", w.Body.String())
+					}
+				} else if tc.name == "approved" && !ptr.Equal(stored.Spec.Agent.Image, &replacementImage) {
+					t.Fatal("approved image update was not persisted")
+				}
+			})
+		}
 	}
 }
