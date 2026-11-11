@@ -205,6 +205,7 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		builder = builder.WatchesMetadata(&istiov1beta1.Gateway{}, handler.EnqueueRequestsFromMapFunc(r.enqueueIngressMTLSSource))
 	}
 	if r.AIGateway.Enabled {
+		builder = builder.Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.enqueueCopilotProxy))
 		if r.aiGatewayEvents == nil {
 			r.aiGatewayEvents = make(chan event.GenericEvent, 1024)
 		}
@@ -638,7 +639,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		}
 
 		identityVerificationDue := agentIdentityVerificationDue(instance, time.Now())
-		aiGatewayDue := r.aiGatewayReconcileDue(instance, time.Now())
+		aiGatewayDue := r.aiGatewayReconcileDue(instance, time.Now()) || r.copilotProxyReadinessLost(ctx, instance)
 		// An Agent whose chart could not be downloaded takes the full path,
 		// which retries the download, until a download succeeds.
 		// A missing namespace also requires the full path, even if the cached

@@ -188,6 +188,15 @@ independently of the Agent replica count. Suspension and policy revocation stop
 both components. Creation before login does not grant Copilot model access, and
 the Portal continues to report sign-in required.
 
+After model registration, the Copilot status still follows the proxy's observed
+readiness. If its Deployment is missing, cannot be read, or has no ready replicas,
+the status returns to `Starting` with reason `ProxyStarting`. Registered routes,
+model lists, login Secrets, and the Agent's Virtual Key are retained. The status
+returns to `Ready` when the proxy recovers, without re-registering those routes.
+This status does not prove that GitHub accepts the token or that a model request
+succeeds. Proxy readiness changes do not block approved shared models or restart
+the Agent workload.
+
 Suspension does three actions before the chart or bootstrap prerequisites are
 examined. It blocks an AI Gateway key that already exists, stops the owned
 main and auxiliary workloads, and withdraws their route. If the AI Gateway, a

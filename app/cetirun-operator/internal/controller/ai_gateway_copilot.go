@@ -22,7 +22,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
@@ -445,7 +447,6 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 	proxyReady := len(desired) == 0 || r.copilotProxyReady(ctx, instance)
 	var registered []string
 	var failed error
-	pending := false
 	// The routes to remove are those of the Agent's group the status records
 	// and, once the catalog has listed the Gateway, those it lists there: a
 	// route registered just before the operator stopped, before the status
@@ -499,7 +500,6 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 			continue
 		}
 		if !proxyReady {
-			pending = true
 			continue
 		}
 		err := client.AddModel(ctx, registration.request)
@@ -540,13 +540,39 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 	case len(wanted) == 0:
 		copilot.Phase = cetirunv1alpha1.AIGatewayCopilotPhaseDegraded
 		copilot.Reason = "ModelListMissing"
-	case pending:
+	case !proxyReady:
 		copilot.Phase = cetirunv1alpha1.AIGatewayCopilotPhaseStarting
 		copilot.Reason = "ProxyStarting"
 	default:
 		copilot.Phase = cetirunv1alpha1.AIGatewayCopilotPhaseReady
 		copilot.Reason = ""
 	}
+}
+
+// Helm-managed proxies do not necessarily have an Agent owner reference.
+func (r *AgentReconciler) enqueueCopilotProxy(ctx context.Context, object client.Object) []reconcile.Request {
+	if !r.AIGateway.Enabled || object.GetLabels()["app.kubernetes.io/component"] != "copilot-proxy" {
+		return nil
+	}
+	agent := &cetirunv1alpha1.Agent{}
+	name := strings.TrimPrefix(object.GetNamespace(), "cetirun-")
+	if err := r.Get(ctx, client.ObjectKey{Name: name}, agent); err != nil {
+		return nil
+	}
+	if object.GetNamespace() != instanceNamespace(agent.Name) || object.GetName() != copilotProxyServiceName(agent) ||
+		agent.Spec.Suspended || !r.aiGatewayCopilotWanted(agent) {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: agent.Name}}}
+}
+
+func (r *AgentReconciler) copilotProxyReadinessLost(ctx context.Context, instance *cetirunv1alpha1.Agent) bool {
+	if instance.Spec.Suspended || !r.aiGatewayCopilotActive(instance) {
+		return false
+	}
+	copilot := instance.Status.AIGateway.Copilot
+	return copilot.Phase == cetirunv1alpha1.AIGatewayCopilotPhaseReady && len(copilot.Registered) > 0 &&
+		!r.copilotProxyReady(ctx, instance)
 }
 
 // copilotProxyReady reports whether the Agent's Copilot proxy has a ready
