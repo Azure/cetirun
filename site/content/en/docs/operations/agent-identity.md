@@ -1,16 +1,26 @@
 ---
-title: "Agent Identity setup"
-description: "Prepare the identity, encryption, certificates, provider registrations, and platform configuration that Agent connections use."
+title: "Prepare Agent connections"
+description: "Prepare the encryption key, certificates, provider registrations, and platform values that Agent connections use."
 weight: 25
 ---
 
-Use this guide to prepare a CetiRun environment for Agent connections. This
-guide is for platform administrators. After installation, users follow
-[Agent identities](../../guides/agent-identity/). For the cluster, ingress,
-runtime, storage, images, and model prerequisites, start with
-[Install CetiRun](../../getting-started/platform/). The cluster Bicep and the
-platform chart do not create the external identities, provider registrations,
-encryption key, or certificates that this guide describes.
+Agent connections let an Agent call Azure, GitHub, Gmail, and Google Calendar
+with the accounts that its owner connects. The Portal does not offer
+Microsoft 365 (Microsoft Graph) connections. These components supply Agent
+connections:
+
+- The **Broker** stores the encrypted provider authorizations in the
+  credential namespace, `cetirun-credentials`. It issues short-lived
+  credentials for each request.
+- The **Connections MCP** service gives Agents the connection tools. It sends
+  each request to the provider with a credential from the Broker.
+
+This guide is for platform administrators. After installation, users follow
+[Agent Connections and Identity](../../guides/agent-identity/). For the
+cluster, ingress, runtime, storage, images, and model prerequisites, start
+with [Install CetiRun](../../getting-started/platform/). The cluster Bicep and
+the platform chart do not create the external identities, provider
+registrations, encryption key, or certificates that this guide describes.
 
 ## What `make deploy` requires
 
@@ -29,9 +39,12 @@ connections stay optional.
 | `identity.portalClientId` | Client ID of the Portal login application | [Istio authentication](../istio/#register-the-portal-login-application) |
 | `identity.encryptionClientId` | Client ID of the Broker encryption identity | [Step 2](#2-create-the-encryption-foundation) |
 | `identity.keyVaultKeyUrl` | Key Vault key URL | [Step 2](#2-create-the-encryption-foundation) |
-| `identity.blueprintClientId` | Client ID of the Agent Identity Blueprint | [Entra Agent Identity setup](../entra-agent-identity/#create-and-govern-the-blueprint) |
-| `identity.authorizationClientId` | Client ID of the Authorization application | [Entra Agent Identity setup](../entra-agent-identity/#add-microsoft-delegated-access-when-needed) |
-| `platform.values.cetirun-operator.azure.clientId` | Client ID for the Operator ServiceAccount | [Entra Agent Identity setup](../entra-agent-identity/#federate-the-aks-workloads-to-the-blueprint) |
+| `identity.blueprintClientId` | Client ID of the Agent Identity Blueprint | [Prepare Microsoft Entra Agent Identity](../entra-agent-identity/#create-and-govern-the-blueprint) |
+| `identity.authorizationClientId` | Client ID of the Authorization application | [Prepare Microsoft Entra Agent Identity](../entra-agent-identity/#add-microsoft-delegated-access-when-needed) |
+| `platform.values.cetirun-operator.azure.clientId` | Client ID for the Operator ServiceAccount | [Prepare Microsoft Entra Agent Identity](../entra-agent-identity/#federate-the-aks-workloads-to-the-blueprint) |
+
+For the Entra resources behind these IDs, refer to
+[Prepare Microsoft Entra Agent Identity](../entra-agent-identity/#entra-resources-that-make-deploy-requires).
 
 `make deploy` does not call Azure or Microsoft Graph. It does not find a wrong
 ID, a missing federated credential, a missing consent or role assignment, or a
@@ -57,15 +70,17 @@ providers that you do not register in step 4.
 
 ## Choose the capabilities
 
-Portal login identifies the person who manages an Agent. A **Connection**
-stores that person's provider authorization. An Agent's **Identities**
-associates selected connections with that Agent.
+These terms have one meaning on this page:
 
-A Microsoft Entra **Agent Identity** is a separate directory identity. It is
-necessary for independent Azure and Microsoft delegated access. That directory
-identity is not necessary for GitHub and Google connections. But authenticated
-Portal ownership and encrypted storage are still necessary for these
-connections.
+- Portal login identifies the person who manages an Agent.
+- A **Connection** stores the provider authorization of that person. The
+  Portal shows it under **Connections**.
+- The **Identities** tab of an Agent associates selected Connections with
+  that Agent.
+- An **Agent Identity** is a separate identity of the Agent in Microsoft Entra
+  Agent ID. Independent Azure access and Microsoft delegated access need it.
+  GitHub and Google connections do not need it. But they still need
+  authenticated Portal ownership and encrypted storage.
 
 | Capability | Preparation beyond the common foundation |
 | --- | --- |
@@ -143,7 +158,8 @@ Before you enable the Portal feature, complete these prerequisites:
   governed Custom image that implements the [Custom client contract]({{< repo "app/cetirun-connections-mcp/README.md" >}}#governed-custom-workloads).
   For Custom, `custom` must also be in each runtime allowlist below. The native
   common-executor configuration is also necessary for Custom. A change to a
-  type list alone grants nothing.
+  type list alone grants nothing. For Sandbox Agents, also do
+  [Enable Agent connections for Sandbox Agents](#enable-connections-for-sandbox-agents).
 - Network access from the Broker to Kubernetes, Entra sign-in, its Key Vault,
   and configured providers. Network access from MCP to Kubernetes, the Broker
   and the fixed provider API origins. DNS, mesh control-plane access and image
@@ -422,9 +438,9 @@ Agent namespace.
 
 ## 4. Register the selected providers
 
-Complete [Identity providers](../identity-providers/) for GitHub App, GitHub
+Complete [Register GitHub and Google providers](../identity-providers/) for GitHub App, GitHub
 OAuth and Google. For Azure/Microsoft access, also complete
-[Entra Agent Identity setup](../entra-agent-identity/). Store provider Secrets
+[Prepare Microsoft Entra Agent Identity](../entra-agent-identity/). Store provider Secrets
 in `cetirun-credentials`. Keep only their names in Helm values.
 
 There are different browser return paths:
@@ -628,6 +644,67 @@ Live authorization is necessary for these checks. They are not part of
 offline development tests. Local revocation does not recall provider requests
 that were already sent, or tokens that were issued previously.
 
+## Enable Agent connections for Sandbox Agents {#enable-connections-for-sandbox-agents}
+
+The Agents of a policy-bound Team run in a Sandbox. The operator gives such an
+Agent its Connections configuration only after the steps below. The agent type
+of the Agent must also be in the runtime allowlists of the operator, the
+Broker, and the Portal. Without this configuration, the Agent cannot use
+Connections. The Portal can still show **Identities** for the Agent.
+
+Do these steps after you
+[enable Sandbox execution](../policy-teams/#enable-sandbox-execution), and
+before you create Sandbox Agents. A later change to the platform registration
+can affect the Sandbox Agents that exist. Refer to the operator README's
+[coordinated configuration updates]({{< repo "app/cetirun-operator/README.md" >}}#coordinated-configuration-updates).
+
+1. Add these values to the `platform.values` of the environment file. Keep the
+   values that are already there:
+
+   ```yaml
+   platform:
+     values:
+       cetirun-operator:
+         connectionsMCP:
+           nativeEnabled: true
+       cetirun-connections-mcp:
+         nativeSandbox:
+           enabled: true
+           operatorNamespace: cetirun-system
+           peerUID: connections-mcp
+   ```
+
+   `peerUID` is a name that you select and keep stable. The chart puts it on
+   the MCP Pods and in the selector of the MCP Service, as the label
+   `sandbox.cetirun.microsoft.com/peer-uid`. `operatorNamespace` is the
+   namespace of the operator.
+2. Run `make deploy`. A later run stops if it changes the peer identity or the
+   operator namespace of the MCP.
+3. Read the cluster IP of the MCP Service:
+
+   ```bash
+   kubectl get svc cetirun-connections-mcp -n cetirun-system -o jsonpath='{.spec.clusterIPs}'
+   ```
+
+4. In `platform.json`, add the Service to `topology.peers`. Use the same
+   `uid` as `peerUID`, and list every cluster IP of the Service. Also change
+   `topology.revision`:
+
+   ```json
+   "peers": [
+     {"name": "cetirun-connections-mcp", "namespace": "cetirun-system",
+      "uid": "connections-mcp", "ips": ["<MCP_SERVICE_IP>"]}
+   ]
+   ```
+
+5. Update the `sandbox-platform` ConfigMap with the changed `platform.json`.
+   Refer to [The platform registration](../policy-teams/#the-platform-registration).
+
+To verify, create a Sandbox Agent of a supported agent type. In **Identities**,
+add an identity. Then examine `connections_status` in the Agent. For the
+complete contract, refer to the Connections MCP README's
+[governed native workloads]({{< repo "app/cetirun-connections-mcp/README.md" >}}#governed-native-workloads).
+
 ## Troubleshooting
 
 | Symptom | Check next |
@@ -639,11 +716,89 @@ that were already sent, or tokens that were issued previously.
 | MCP cannot reach Broker | HTTPS service port 443, DNS server SAN, CA direction, client `clientAuth` and exact SPIFFE URI, Broker `toolService` identity |
 | MCP rejects an Agent | Audience alignment, live Pod/ServiceAccount/Agent binding, supported runtime and current Agent state. Do not use a manually copied token as a substitute |
 | Agent has no MCP connection | Operator URL/CA source, runtime allowlists, workload configuration and Agent namespace Broker permissions |
-| Entra identity or delegated exchange fails | Follow the [Entra checks](../entra-agent-identity/). Key Vault encryption authority does not grant Blueprint lifecycle authority |
+| Sandbox Agent has no Connections | `connectionsMCP.nativeEnabled`, the MCP `nativeSandbox` values, the MCP peer in `topology.peers`, and `sandboxAdmission.podsEnabled`. Refer to [Enable Agent connections for Sandbox Agents](#enable-connections-for-sandbox-agents) |
+| Agent Identity is `Ready`, but a policy-bound Agent cannot use it | The `CredentialPolicyReady` condition of the Agent. `PolicyApplied` alone does not prove this access: the operator must also read back the current credential policy from the Broker, for the owner and the identity. For Sandbox Agents, the Broker also verifies the current Pod and the protected Sandbox sources |
+| Entra identity or delegated exchange fails | Follow [Troubleshoot Agent Identity](../entra-agent-identity/#troubleshoot-agent-identity). Key Vault encryption authority does not grant Blueprint lifecycle authority |
 | Provider returns 401/403 | Current installation, owner/Admin authority, scopes, consent, resource RBAC, organization policy and token expiry |
 
 Use correlation IDs and sanitized status/errors. Do not collect Secret bodies,
 token files, full Helm values or browser cookies for a public diagnostic bundle.
+
+## Records and audit
+
+Personal Connections belong to their Portal owner. The Broker keeps them
+encrypted in its credential namespace. The namespace of each Agent stores
+these records:
+
+- the bindings of the Agent to Connections
+- the independent Azure Connections of the Agent
+- the references to personal Connections, without credentials
+
+These records have immutable Agent owner references. The deletion of an Agent
+removes them. The personal Connections of the owner stay.
+
+Each credential issue examines the live Agent, the owner, the enabled binding,
+and the service. After the Broker gets the credential, it examines the
+revisions again. A request that was already sent cannot be recalled. There is
+no migration or compatibility workflow for the earlier AgentGrant model.
+
+The MCP has no Kubernetes Secret permissions and no operation-record store.
+Labels do not give Kubernetes RBAC isolation.
+
+The platform audit records these items for each request:
+
+- the Agent UID, and the stable account ID or principal that runs the request
+- the revisions of the Connection and the binding
+- the service, the HTTP method, and the validated target path
+- the duration, the stage, and the outcome
+- the provider status and request IDs, when they are available
+
+The same MCP correlation ID goes to the Broker and to the provider request.
+The audit does not include queries, headers, credentials, or request and
+response bodies. Paths can identify resources or mailboxes. For this reason,
+restrict the access to the audit. The Broker also records identity, OAuth,
+binding, and account-management events, with the verified owner and target
+IDs.
+
+These logs are not an execution ledger. If a request has no completion, or if
+its result is `execution_unknown`, examine the provider state before you try
+again.
+
+## Broker and MCP operation
+
+With a direct Helm installation, you can disable Microsoft delegated access
+(`identityModes.microsoftDelegated.enabled: false`). Then the Broker chart does
+not include the Entra Auth SDK container. Refer to
+[Choose the capabilities](#choose-the-capabilities).
+
+- The readiness of the Broker does not call the SDK. SDK failures do not block
+  other providers. When the SDK is enabled, it runs in the same Pod as the
+  Broker.
+- If you disable a mode, CetiRun blocks its use but keeps the saved
+  connections. Key Vault encryption is still necessary for personal
+  credentials.
+- Management inventory scans read pages of Agents. If a scan is not complete,
+  it fails and returns no partial result.
+- At startup and every five minutes, the Broker removes OAuth transactions
+  that expired more than one hour before. It skips corrupt records. It does
+  not remove Connections, account indexes, or binding tombstones.
+- The Broker and the MCP read the mounted TLS certificates, keys, and trust
+  bundles again every five seconds. If a replacement is not valid, they keep
+  the last valid material. With an expired leaf certificate, new handshakes
+  and outbound requests fail. Requests that already started can finish.
+
+The MCP and the Broker authenticate a workload with three checks. They do not
+use a list of all Agents instead:
+
+- the live Pod and ServiceAccount
+- the Agent owner reference of the namespace
+- a read of the named Agent with its UID
+
+Local tests use synthetic providers. Each deployment must still qualify its
+identity, OAuth configuration, and native runtime on its own cluster. For the
+component settings, refer to the
+[Broker README]({{< repo "app/cetirun-agent-broker/README.md" >}}) and the
+[Connections MCP README]({{< repo "app/cetirun-connections-mcp/README.md" >}}).
 
 ## Rotation, shutdown and recovery
 
@@ -652,29 +807,35 @@ token files, full Helm values or browser cookies for a public diagnostic bundle.
   file-backed. Allow time for the Secret projection delay. Before you revoke
   the old key, make sure that the replacement works. Refer to the
   [provider guide](../identity-providers/).
-- Mount TLS Secrets as whole volumes. Broker/MCP reload mounted TLS material.
-  If an update is not valid, the last valid snapshot is kept.
-- First, add overlapping CA trust. Then rotate leaf certificates. Distribute
-  the MCP CA source to Agent workloads. Make sure that new connections work.
-  Then retire the previous CA.
-- Before you remove old trust, examine Agent reconciliation and the
-  reload/restart conditions of native clients. Server reload alone does not
-  update every client.
+- Mount TLS Secrets as whole volumes. The Broker and the MCP then reload
+  them, as [Broker and MCP operation](#broker-and-mcp-operation) describes.
 - Back up encrypted records together with a recovery plan for their Key Vault
   key versions and identity permissions. Before you return a recovered
   environment to service, use the [restore procedure below](#restore-with-fresh-owner-authorization).
   Encryption does not prove that a backup reflects current owner consent. It
   also does not prevent the use of credentials by an administrator who has
   decryption authority.
-- To retire Entra, stop new identity creation. Keep Operator
-  `agentIdentity.cleanupEnabled`, Blueprint federation and Broker access until
-  the identities and Agent records that exist are cleaned up. During cleanup,
-  keep the Operator's Broker namespace/ServiceAccount settings.
+- To retire Entra, follow
+  [Verify, operate, and remove](../entra-agent-identity/#verify-operate-and-remove).
+  Until the cleanup is complete, also keep the Operator's Broker
+  namespace/ServiceAccount settings.
 - Remove Agent grants before you remove unused Connections. When applicable,
   revoke provider consent or uninstall the App separately. Remove deployments,
   federation, certificates and encryption authority only after you handle the
   dependent records, Agents and backups that you keep. When you troubleshoot,
   do not delete the credential namespace or Key Vault as a first step.
+
+To replace a CA, do these steps in this order:
+
+1. Add the new CA to the trust of every peer, next to the old CA.
+2. Rotate the leaf certificates. Distribute the MCP CA source to Agent
+   workloads, and make sure that new connections work.
+3. Examine Agent reconciliation and the reload/restart conditions of native
+   clients. Server reload alone does not update every client.
+4. Remove the old CA.
+
+Allow time for the Secret projection and the reload delays. A change of trust
+does not close connections that exist.
 
 ### Restore with fresh owner authorization
 
@@ -702,6 +863,11 @@ If a whole-cluster or namespace restore includes those records, use this order:
    the metadata, but do not export Secret bodies. These records are different
    from provider client configuration, TLS Secrets, Key Vault keys and Agent
    lifecycle metadata.
+
+   The Broker namespace also has `credential-policy` records. They hold no
+   credentials. The Broker uses such a record only when it matches the current
+   Agent and its Policy. Without a matching record, the Broker refuses the
+   Agent Identity requests of that policy-bound Agent.
 3. **Clear restored authorization state before you enable management writes.**
    Remove the restored records that you identified above from both storage
    locations. Do not resume old OAuth transactions or restore their

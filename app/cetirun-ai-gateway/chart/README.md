@@ -131,7 +131,7 @@ Agents without a policy then lose that model until the copy is removed. A
 policy-bound Agent whose AgentPolicy allows the model stops: the Operator blocks
 its key until the Gateway offers the model again. The same occurs when a policy
 allows a model that is removed from `models`. See
-[Choose a model](../../../site/content/en/docs/guides/models.md#runtime-configuration).
+[When model changes reach Agents](../../../site/content/en/docs/operations/ai-gateway.md#when-model-changes-reach-agents).
 
 Two identical entries render the same deployment ID. If the Gateway lists this
 ID twice, the Operator does not trust the group.
@@ -483,15 +483,22 @@ models:
 
 **Declare prices explicitly**, when LiteLLM does not know the model, or when
 your contract price differs from the list price. It is your task to keep these
-figures current:
+figures current. Put explicit prices in `litellm_params`:
 
 ```yaml
-    model_info:
+    litellm_params:
+      model: azure/my-gpt4-prod
       input_cost_per_token: 0.0000025
       output_cost_per_token: 0.00001
 ```
 
 If you do neither, the model is refused.
+
+A price in `litellm_params` works for every model: for ordinary models, for
+routers, for a free model with the price `0`, and for `cost-based-routing`. A
+price in `model_info` prices only an ordinary model, and only when it is above
+zero. The CetiRun operator also counts a deployment as priced only by these
+rules.
 
 ### Check what LiteLLM actually holds
 
