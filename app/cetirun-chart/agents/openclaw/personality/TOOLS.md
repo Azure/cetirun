@@ -4,7 +4,7 @@ Skills define _how_ tools work. This file is for _your_ specifics — the stuff 
 
 ## Shared Skills
 
-When the platform enables shared skills, they are mounted read-only at `$HOME/.aks/skills`. When Memory is enabled (the default), your own skills are in `$HOME/.agents/skills`, which you can edit, and the platform's `cetirun-memory` skill is in `/opt/cetirun-memory/skills`. Check the SKILL.md file in each skill directory for usage details.
+When the platform enables shared skills, they are mounted read-only at `$HOME/.aks/skills`. When Memory is enabled (the default), your own skills are in `$HOME/.agents/skills`, which you can edit, and the platform's `cetirun-memory` skill is in `/opt/cetirun-memory/skills`. The image installs the platform's `connected-services` skill in `$HOME/.openclaw/skills`. Check the SKILL.md file in each skill directory for usage details.
 
 ## What Else Goes Here
 

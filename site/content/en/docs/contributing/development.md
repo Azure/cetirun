@@ -21,9 +21,10 @@ it for the commands in these steps.
 
 Keep all Go modules in one checkout. The Operator, the Portal, the Agent
 Identity Broker, and Connections MCP use local `replace` directives for the
-shared `app/internal` packages and the Operator API types. Build the Portal
-frontend before you build the complete Portal binary, so that the binary
-embeds the real web assets.
+shared `app/internal` packages. `app/internal`, the Portal, and the Broker also
+replace the Operator module for its API types. Build the Portal frontend before
+you build the complete Portal binary, so that the binary embeds the real web
+assets.
 
 To start the Portal or the Operator on your workstation, refer to
 [Run components locally]({{< repo "DEVELOPMENT.md" >}}#run-components-locally).

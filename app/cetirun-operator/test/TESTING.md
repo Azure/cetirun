@@ -19,7 +19,7 @@ It pins the target cluster by its UID and does a safe cleanup. Refer to
 | --- | --- |
 | An installed platform | Install CetiRun with `make deploy`. Refer to [Install CetiRun](../../../site/content/en/docs/getting-started/platform.md). The platform includes the Operator, the Portal, and the AI Gateway. Every Agent needs the AI Gateway. |
 | Istio ingress | Necessary. The Operator routes each Agent through the Istio Gateway `aks-istio-ingress/cetirun-gateway` by default. |
-| HOME storage | The StorageClass `default`, or a storage override. On AKS, `default` is Azure Disk with `WaitForFirstConsumer` binding. |
+| HOME storage | An Agent without `spec.sandboxRef` uses the StorageClass `default`, or a storage override. On AKS, `default` is Azure Disk with `WaitForFirstConsumer` binding. A Sandbox Agent uses the HOME storage of its Sandbox (`spec.storage.home`). |
 | A kubectl context for the target | Use an explicit context in each command. |
 | A Team, if the Agent selects a Sandbox | An Agent without `spec.sandboxRef` does not need a Team. A Sandbox Agent needs a Team that allows the Sandbox, and an AgentPolicy that allows its model. Refer to [Policy-bound Teams](../../../site/content/en/docs/operations/policy-teams.md). |
 

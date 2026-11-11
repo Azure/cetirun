@@ -60,13 +60,18 @@ and TLS reload (`tlsreload`). The Operator, the Portal, the Agent Identity
 Broker, and Connections MCP import these packages. Go allows imports of this
 module only from modules under `github.com/Azure/CetiRun/app`.
 
-The modules use local `replace` directives for `app/internal` and for the
-Operator API types. Keep all of these modules in one checkout.
+These four modules use a local `replace` directive for `app/internal`.
+`app/internal`, the Portal, and the Agent Identity Broker also replace the
+Operator module for its API types. Keep all of these modules in one checkout.
 
 ## Tools and dependencies
 
 Install only the tools for the components that you change. The table shows
 where each version is pinned and which checks use the tool.
+
+`make check` needs Linux or a Linux container. The Memory Context module
+builds only on Linux, and `make go-test`, `make go-lint`, and
+`make memory-native-test` include it.
 
 | Tool | Version source | Used by |
 | --- | --- | --- |
@@ -97,6 +102,11 @@ tools="${XDG_CACHE_HOME:-$HOME/.cache}/cetirun/tools"
 python3 -B scripts/ci/install_tools.py --bin-dir "$tools" actionlint shellcheck bicep helm
 export PATH="$tools:$PATH"
 ```
+
+The installer refuses to overwrite a file. To install the tools again, for
+example after a version pin changes, delete the `$tools` directory first. The
+same rule applies to the `$assets` directory in
+[Prepare envtest assets](#prepare-envtest-assets).
 
 Install the Python packages in a virtual environment outside the repository.
 Most Python tests and the chart render scripts import PyYAML from these
@@ -153,7 +163,7 @@ python3 -B scripts/ci/install_tools.py --bin-dir "$assets" envtest
 export KUBEBUILDER_ASSETS="$assets"
 ```
 
-The installer installs `kube-apiserver`, `etcd`, and `kubectl`. It does not
+This command installs `kube-apiserver`, `etcd`, and `kubectl`. It does not
 install a cluster. The API-server tests never connect to a cluster that
 already exists.
 
@@ -213,6 +223,7 @@ gate in the [Quick start](#quick-start) runs the rest.
 | Portal frontend or Go code | [Portal](#portal) |
 | `app/cetirun-agent-broker/` or `app/cetirun-connections-mcp/` | [Agent Identity Broker](#agent-identity-broker) |
 | `app/cetirun-memory-context/` | [Memory Context](#memory-context) |
+| `app/cetirun-observability/` | `bash scripts/cetirun-observability-helm-test.sh` and `python3 -B -m unittest scripts.tests.test_observability_chart -v`. CI also builds and scans the image. |
 | `app/cetirun-ai-gateway/` | [AI Gateway](#ai-gateway) |
 | `app/cetirun-chart/` | [Runtime chart and Python helpers](#runtime-chart-and-python-helpers) |
 | `app/cetirun-platform/` or `infra/` | [Platform chart and infrastructure](#platform-chart-and-infrastructure) |
@@ -282,23 +293,29 @@ workstation. It is not an authentication configuration for a deployment.
 > changes CetiRun resources in that cluster. Use only a development cluster
 > that you have authorization to change.
 
+The backend binary embeds `web/dist`, which a new checkout does not have. The
+first time, build the frontend and start the backend with one command:
+
 ```bash
-make -C app/cetirun-portal backend-run
+make -C app/cetirun-portal run
 ```
 
-The backend reads its settings from the environment variables in
+After the frontend is built, `make -C app/cetirun-portal backend-run` starts
+only the backend. The backend reads its settings from the environment
+variables in
 [`internal/config/config.go`](app/cetirun-portal/internal/config/config.go).
 It listens on `LISTEN_ADDR` (default `:8080`) and `INTERNAL_LISTEN_ADDR`
 (default `:8081`). The `FEATURE_*` settings are off unless you set them to
-`true`. To build the frontend and then start the backend, run
-`make -C app/cetirun-portal run`.
+`true`.
 
 ### Start the Operator
 
 > **Warning:** A local Operator reconciles the CetiRun resources in the
 > cluster of your current kubeconfig context. Use only a disposable
 > development cluster that has the CetiRun CRDs. Make sure that no other
-> Operator runs in that cluster.
+> Operator runs in that cluster. Give the local Operator the same environment
+> variables as the deployed Operator. Without the AI Gateway settings, it
+> scales every built-in Agent to zero and stops the Sandbox Agents.
 
 ```bash
 go -C app/cetirun-operator run ./cmd/main.go \
@@ -307,9 +324,13 @@ go -C app/cetirun-operator run ./cmd/main.go \
 
 The default metrics address of the Operator is `:8080`, which is also the
 default Portal address. The flags above prevent a port conflict. To see all
-flags, add `--help`. The Operator also reads environment variables, for example
-`AI_GATEWAY_ENABLED` and `CETIRUN_SANDBOX_SOURCES`. In a deployment, the
-Operator chart sets them in `chart/templates/deployment.yaml`.
+flags, add `--help`. In a deployment, the Operator chart sets the environment
+variables in `chart/templates/deployment.yaml`. With `AI_GATEWAY_ENABLED=true`,
+the Operator also needs `AI_GATEWAY_URL`, `AI_GATEWAY_MASTER_KEY_SECRET`, and
+`AI_GATEWAY_DEFAULT_BUDGET`, or it stops at startup. `AI_GATEWAY_URL` must be
+a cluster Service URL, `http://<service>.<namespace>.svc.cluster.local:<port>`.
+The Operator sends requests to this URL, so your workstation must be able to
+reach it.
 
 ## Add an agent integration
 
@@ -1109,7 +1130,8 @@ runs `helm dependency update --skip-refresh app/cetirun-platform`, which writes
 
 Component GitHub workflows also start on tags, for example `operator-v*` and
 `hermes-v*`. They push to the registry in the `ACR_REGISTRY` repository
-secret, not to MCR.
+secret, not to MCR. The CetiRun, Operator, Portal, and Istio release workflows
+also push to the registry in the `E2E_ACR_REGISTRY` secret.
 
 ### Unified release inventory
 
@@ -1149,6 +1171,12 @@ tags in the local Docker store. Use an explicit test registry prefix to keep
 them separate. `make deploy-plan` renders the source offline and does not check
 published artifacts. `make deploy` checks that the artifacts exist before it
 writes, and it prints the effective registry, the version, and their origins.
+
+Deployment needs a complete published release that matches the source. The
+source version alone does not show that the artifacts exist or that they are
+compatible. An MCR tag can exist and still hold an older build. Until the
+release is synchronized to MCR, use the explicit registry and version of a
+complete, compatible test release.
 
 The publish targets (`make publish*`, the component chart publishers,
 `PUSH=true`, and component `docker-push`) need an explicit writable registry.

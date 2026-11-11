@@ -13,7 +13,7 @@ introduction to CetiRun, refer to the [root README](../../README.md).
 ## What this example contains
 
 This example uses the Custom runtime contract. It does not add a built-in
-harness or a CRD type, and each image contains one CLI. The example hosts the
+harness or a CRD type, and each image runs one CLI. The example hosts the
 CLIs, not the GitHub cloud agent service, Claude hosted sessions, or Codex Web.
 
 | Agent | Native runtime | Role configuration | Model route |
@@ -71,9 +71,11 @@ integration and the HTTP limits, refer to the
 | Storage | A StorageClass for the private HOME of each Agent |
 | Model access | For the Copilot Agent, a GitHub account with Copilot access to the selected model. For the other two Agents, Gateway models that the Agent policy allows. |
 
-The runtime images contain Python, Git, the HOME initialization tools, and one
-pinned native CLI each. Browser users do not need `az`, Docker, Helm, or
-Kubernetes credentials inside the runtime container.
+The runtime images contain Python, Git, and the HOME initialization tools.
+Each image installs and runs one pinned native CLI. The images also contain
+the CLIs that the CetiRun base image installs, for example Codex and Claude
+Code. Browser users do not need `az`, Docker, Helm, or Kubernetes credentials
+inside the runtime container.
 
 ## Build and test locally
 

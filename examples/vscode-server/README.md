@@ -13,8 +13,8 @@ This example serves a Web UI, not the Custom Chat API.
 Before you build, publish, deploy, or use this example, read the
 [VS Code Server license](https://code.visualstudio.com/license/server).
 Restrictions apply to how you host, share, and redistribute the server. A Pod
-for each user does not authorize a public hosted service. Copilot and
-extensions keep their own terms.
+for each user does not authorize a public hosted service. A separate review is
+necessary for image distribution. Copilot and extensions keep their own terms.
 
 ## Build
 
