@@ -169,9 +169,35 @@ its own key and runs its tools locally. The HTTP adapter still owns no history,
 and Portal Chat supplies the context of each conversation. Automatic model and
 compaction retries are disabled.
 
-The adapter uses a 32K context estimate and a 2K output ceiling. These values
-are not a claim about the actual limits of every model. Gateway and provider
-limits still apply. Pi's local cost display is not the Gateway's usage ledger.
+The Operator supplies authorized model limits through the platform-owned
+`CETIRUN_GATEWAY_MODEL_LIMITS` environment variable. Pi intersects these limits
+with the models discoverable using its own Gateway key. The metadata cannot
+grant access to another model. A missing, invalid, or incomplete limit produces
+`model_limits_unavailable` before a completion request; Pi does not guess the
+model's context window from its name or fall back to a fixed 32K window.
+For a missing limit, an administrator must verify the Gateway's
+`model_info.max_input_tokens` and `model_info.max_output_tokens` for every
+eligible deployment and router answer target. Correct the authoritative model
+metadata; do not insert an instance environment override to bypass the check.
+
+The default output budget is 2,048 tokens, bounded by the model's output limit
+and any smaller explicit SDK caller budget. Before each model call, including
+calls after tools, Pi checks the actual SDK context estimate with its 4,096-token
+safety allowance. A one-token output ceiling is unusable and is rejected even
+when it comes from model metadata. If the full selected budget does not fit, it reports
+`context_budget_exceeded` instead of silently clamping the request to one token.
+This estimate includes the context the SDK receives, not just the owner's last
+message. Earlier tools in the same run may already have completed. Pi does not
+truncate the conversation or retry it automatically. Gateway and provider limits
+still apply; an SDK estimate is not a provider tokenizer measurement.
+
+Budget diagnostics contain numeric limits and estimates, the final outbound
+cap, and request correlation identifiers. They do not contain conversation
+content, tool arguments, credentials, or model response text. Compare the Pi
+outbound cap with the corresponding Gateway observation to locate a changed
+limit. A stored Gateway cap alone does not establish where it was introduced,
+and provider `prompt_tokens` must not be substituted for the SDK estimate.
+Pi's local cost display is not the Gateway's usage ledger.
 
 Shared models appear only when the Gateway grants access. If Copilot is enabled,
 use **Sign in with GitHub** on the Portal Overview. The platform deploys a
@@ -230,6 +256,55 @@ digest. The Operator replaces the active Pod and uses its HOME PVC again, but
 does not reseed it. Select an image that is compatible with the user, files,
 and native sessions that exist. Deletion of an Agent deletes its namespace and
 PVCs and is not a restart procedure.
+
+### Upgrade a retained Pi instance
+
+Updating the Operator or Portal does **not** update an existing Custom Agent's
+`spec.agent.image`. Portal's **Upgrade** action advances the Runtime Chart pin;
+it also leaves the Custom image unchanged. A Pi budget repair therefore needs
+an explicitly selected, approved Pi image digest. The executable and SDK live
+under `/opt/cetirun-pi` in the image; no HOME reseeding is necessary.
+
+Use the following procedure only in an authorized environment and after the
+candidate artifacts have been published and approved:
+
+1. Keep the instance suspended. Record its old image and Chart pins, Agent UID,
+   namespace and workload identities, and PVC UIDs and specs. Confirm there are
+   no running Pods or replicas. Do not copy HOME contents or credentials into a
+   diagnostic report.
+2. Deploy the compatible control plane and approve the new Pi image digest in
+   the platform's Custom image configuration. Preserve the existing storage
+   profile, username, Team, Policy, Sandbox, and model grants.
+3. Keep a compatible Runtime Chart pin. The historical Custom templates from
+   source `97224f57` already render the Harness environment list; metadata
+   delivery does not itself require changing their Chart contract. Verify the
+   actual selected Chart, not just the currently installed control plane. If
+   that Chart does not support the required Custom contract, explicitly use
+   **Upgrade** to select the platform's qualified Chart version first.
+4. Reload the instance and use Portal's edit operation to select the approved
+   Pi digest. The API equivalent is `PATCH /api/v1/instances/{name}` with the
+   current `uid`, `resourceVersion`, and `agent.image`. Reload between separate
+   edits; do not bypass stale-object or admission checks. Keep `suspended: true`.
+   If any step fails, leave the instance suspended.
+5. Resume normally. Require Ready at the current generation, confirm the actual
+   running image digest and the projected model limits, and compare the retained
+   namespace/workload/PVC identities and PVC specs with the baseline.
+6. Submit one fresh synthetic exact-marker prompt through authenticated Portal
+   Chat, without retries. Capture the marker, terminal `finish_reason: stop`,
+   and `[DONE]`, and correlate the numeric Pi/Gateway budget observations. Only
+   after this succeeds, check browser-local history across normal suspend/resume.
+   This does not establish server/HOME conversation persistence.
+7. Suspend normally and verify shutdown and PVC continuity. If qualification
+   fails, preserve the observations and stop; do not repeat model calls as a
+   diagnostic loop. Roll back image/Chart pins through the same controlled
+   configuration workflow while suspended, preserving HOME and identity.
+
+An old Pi image ignoring the new environment variable remains an old runtime.
+A new Pi image without model-limit metadata fails explicitly before inference.
+Offline rendering and synthetic SDK tests qualify these contracts, not the live
+Portal, mesh, provider, or storage path. The historical one-token response in
+[#516](https://github.com/Azure/cetirun/issues/516) remains distinct from proof
+that the SDK introduced that particular request's limit.
 
 Only `ttyd.enabled` is an instance override. The terminal image, port, and
 gateway identity belong in the Operator's platform values, not in

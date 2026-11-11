@@ -100,6 +100,25 @@ func Error(w http.ResponseWriter, status int, code, message string) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": message}})
 }
 
+func agentErrorFromResponse(reader io.Reader) string {
+	data, err := readBounded(reader, FrameBytes)
+	if err != nil {
+		return ""
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(data, &body) != nil {
+		return ""
+	}
+	if !isSafeAgentErrorCode(body.Error.Code) {
+		return ""
+	}
+	return body.Error.Code
+}
+
 func (c *Client) Complete(ctx context.Context, w http.ResponseWriter, target Target, request Request, requestID string) {
 	raw, _ := json.Marshal(request)
 	w.Header().Set("X-CetiRun-Chat-Dispatch", "started")
@@ -111,10 +130,13 @@ func (c *Client) Complete(ctx context.Context, w http.ResponseWriter, target Tar
 	defer res.Body.Close()
 	if res.StatusCode != 200 {
 		status, code := 502, "agent_reported_error"
+		message := "The Agent did not complete this request. It will not be retried."
 		if res.StatusCode == 429 {
 			status, code = 429, "chat_busy"
+		} else if safe := agentErrorFromResponse(res.Body); safe != "" {
+			code, message = safe, reportedAgentErrorMessage(safe)
 		}
-		Error(w, status, code, "The Agent did not complete this request. It will not be retried.")
+		Error(w, status, code, message)
 		return
 	}
 	media, _, _ := mime.ParseMediaType(res.Header.Get("Content-Type"))
@@ -135,11 +157,12 @@ func (c *Client) Complete(ctx context.Context, w http.ResponseWriter, target Tar
 		}
 		result, _, err := normalize(body, "chatcmpl-"+requestID, request.Model, false)
 		if err != nil {
-			code := "agent_protocol_error"
+			code, message := "agent_protocol_error", "The Agent did not return a completed response."
 			if errors.Is(err, ErrAgent) {
-				code = "agent_reported_error"
+				code = reportedAgentErrorCode(err)
+				message = reportedAgentErrorMessage(code)
 			}
-			Error(w, 502, code, "The Agent did not return a completed response.")
+			Error(w, 502, code, message)
 			return
 		}
 		encoded, _ := json.Marshal(result)
@@ -166,8 +189,8 @@ func (c *Client) Complete(ctx context.Context, w http.ResponseWriter, target Tar
 		code := "agent_stream_interrupted"
 		message := "The response did not complete. The Agent may still be running."
 		if errors.Is(err, ErrAgent) {
-			code = "agent_reported_error"
-			message = "The Agent reported a failed response. Earlier tool actions may have completed; the request will not be replayed."
+			code = reportedAgentErrorCode(err)
+			message = reportedAgentErrorMessage(code)
 		}
 		_ = writer.write("data: {\"error\":{\"code\":\"" + code + "\",\"message\":\"" + message + "\"}}\n\n")
 	}

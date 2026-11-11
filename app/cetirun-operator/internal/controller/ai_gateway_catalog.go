@@ -57,6 +57,9 @@ type aiGatewayCatalog struct {
 	fetchedAt time.Time
 	sharedSet []aiGatewayCatalogModel
 	ids       map[string]bool
+	// customLimits is an immutable deployment-level budget snapshot. It is
+	// never published or used to grant access to a model.
+	customLimits *customGatewayLimitView
 	// groups lists the deployment IDs of each access group.
 	groups map[string][]string
 	// modelGroups lists the trusted model groups for each shared model
@@ -104,8 +107,8 @@ type aiGatewayCatalog struct {
 // nothing to keep.
 func (c *aiGatewayCatalog) changedBy(deployments []aigateway.Deployment, blockUnpriced bool) bool {
 	c.mu.RLock()
-	scratch := aiGatewayCatalog{known: c.known, sharedSet: c.sharedSet, fingerprint: c.fingerprint, routerFingerprint: c.routerFingerprint,
-		nonChat: c.nonChat, decision: c.decision}
+	scratch := aiGatewayCatalog{known: c.known, sharedSet: c.sharedSet, customLimits: c.customLimits,
+		fingerprint: c.fingerprint, routerFingerprint: c.routerFingerprint, nonChat: c.nonChat, decision: c.decision}
 	c.mu.RUnlock()
 	if !scratch.known {
 		return false
@@ -148,6 +151,7 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	}
 	trusted := trustedManagedModelGroups(deployments)
 	byName := map[string]aiGatewayCatalogModel{}
+	customLimits := newCustomGatewayLimitView(deployments)
 	modelGroups := map[string][]string{}
 	merge := newCopilotMergeView()
 	chat := map[string]bool{}
@@ -242,8 +246,10 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	changed := !(c.known || c.seeded) || !slices.EqualFunc(c.sharedSet, shared, sameCatalogModel) || c.fingerprint != fingerprint ||
-		c.routerFingerprint != routerFingerprint || !maps.Equal(c.nonChat, nonChat) || !maps.Equal(c.decision, decision)
+		c.routerFingerprint != routerFingerprint || !sameCustomGatewayLimits(c.customLimits, customLimits) ||
+		!maps.Equal(c.nonChat, nonChat) || !maps.Equal(c.decision, decision)
 	c.known, c.seeded, c.fetchedAt, c.sharedSet, c.ids, c.groups, c.modelGroups, c.fingerprint = true, false, now, shared, ids, groups, modelGroups, fingerprint
+	c.customLimits = customLimits
 	c.routers, c.routerFingerprint, c.nonChat, c.decision = routers, routerFingerprint, nonChat, decision
 	c.allowsUnpriced = !blockUnpriced
 	c.copilotMerge = merge
