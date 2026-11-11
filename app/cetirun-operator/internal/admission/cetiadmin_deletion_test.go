@@ -164,3 +164,42 @@ func TestCetiAdminRetainedRotationMarkerProtection(t *testing.T) {
 		}
 	}
 }
+
+func TestCetiAdminLiveNamespaceSecretReceiptProtection(t *testing.T) {
+	for _, mutation := range []string{"delete", "data", "create", "replace", "remove"} {
+		t.Run(mutation, func(t *testing.T) {
+			f := newCetiAdminFixture(t)
+			ctx := context.Background()
+			namespace := &corev1.Namespace{}
+			if err := f.kube.Get(ctx, client.ObjectKey{Name: f.target.Status.Namespace}, namespace); err != nil {
+				t.Fatal(err)
+			}
+			if !namespace.DeletionTimestamp.IsZero() {
+				t.Fatal("this case requires a live namespace")
+			}
+			old := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: f.target.Spec.GatewayTokenSecretRef, Namespace: namespace.Name,
+				Annotations: map[string]string{nativeAuthRotationAnnotation: "retained-rotation-12345678"}},
+				Type: corev1.SecretTypeOpaque, Data: map[string][]byte{"CETIRUN_AUTH_KEY": []byte("synthetic-key")}}
+			next := old.DeepCopy()
+			var nextObject, oldObject client.Object = next, old
+			operation := admissionv1.Update
+			switch mutation {
+			case "delete":
+				operation, nextObject = admissionv1.Delete, nil
+			case "data":
+				next.Data["CETIRUN_AUTH_KEY"] = []byte("synthetic-replacement")
+			case "create":
+				operation, oldObject = admissionv1.Create, nil
+			case "replace":
+				next.Annotations[nativeAuthRotationAnnotation] = "replacement-rotation-12345678"
+			case "remove":
+				next.Annotations = nil
+			}
+			user := authenticationv1.UserInfo{Username: "system:serviceaccount:operator-test:broker", Groups: []string{"system:authenticated"}}
+			response := f.guard.Validate(ctx, adminRequest(t, operation, "", "Secret", "secrets", nextObject, oldObject, user))
+			if want := mutation == "delete" || mutation == "data"; response.Allowed != want {
+				t.Fatalf("allowed=%v, want %v: %v", response.Allowed, want, response.Result)
+			}
+		})
+	}
+}

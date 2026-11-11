@@ -210,6 +210,13 @@ finalizer cleanup. It simulates the Kubernetes
 namespace/PVC controllers that envtest does not run; it does not qualify
 physical storage reclamation, runtime images, or live cluster behavior.
 
+Receipt annotations protect rotation writes, not the Secret's lifetime. An
+identity with Secret deletion permission can also delete a receipt-bearing
+Secret in a live namespace. The admission unit tests cover that boundary and
+data updates that retain the receipt, while rejecting unauthorized receipt
+creation, replacement, or removal. CetiAdmin's own deletion restrictions and
+installation-marker protection still apply.
+
 ### Custom terminal
 
 The Custom terminal uses its own image and
