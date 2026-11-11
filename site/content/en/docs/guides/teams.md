@@ -20,8 +20,7 @@ In the Portal, first create an **Agent Policy** and a **Sandbox** under
 
 - The isolation type, which the form labels **Runtime**: Kata (the default) or
   Container. The form also offers gVisor, but Sandbox execution does not
-  support it. A gVisor Sandbox does not become ready, and its condition reports
-  `UnsupportedControl`.
+  support it, and the Portal does not save a gVisor Sandbox.
 - CPU, memory, and ephemeral-storage requests and limits for the Agent and
   each helper
 - A HOME StorageClass and size

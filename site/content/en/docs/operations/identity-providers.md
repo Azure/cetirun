@@ -226,11 +226,11 @@ container:
 
 - A change to a Broker overlay changes the Broker Pods. The next `make deploy`
   run or Helm upgrade replaces them. A restart is not necessary.
-- A change to only a provider Secret does not replace the Pods. Restart the
-  Broker.
+- A change to only a provider Secret does not replace the Pods, even after
+  `make deploy`. Restart the Broker.
 
-The commands use the default Broker namespace. After `make deploy`, run only
-the second command:
+The commands use the default Broker namespace. After `make deploy` applies a
+Broker overlay change, run only the second command:
 
 ```bash
 kubectl rollout restart deployment/cetirun-agent-broker -n cetirun-credentials

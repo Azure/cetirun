@@ -15,6 +15,7 @@ administrators.
 | Agent | Budget of the key | Who can change it |
 | --- | --- | --- |
 | A standard Agent: an Agent without a Team, or with a Team without an Agent Policy | The operator's `aiGateway.defaultBudget` when the key is created. The default is `10000` USD. The key has no request limits | A platform administrator, in the AI Gateway console. The operator keeps the change |
+| The [CetiAdmin](../cetiadmin/) Agent | `cetiadmin.model.initialMonthlyBudgetUSD` when the key is created. `make deploy` requires this value. `aiGateway.defaultBudget` does not apply | A platform administrator, in the AI Gateway console. The operator keeps the change |
 | An Agent of a policy-bound Team | `modelAccess.gatewayBudget.defaultMonthlyUSD` of the Agent Policy, or the `spec.modelAccess.monthlyBudgetUSD` of the Agent, up to `maxMonthlyUSD` of the Policy | A Portal administrator, in the Policy. An admission administrator, with `kubectl`. The operator sets the key budget again after a change in the console |
 
 `aiGateway.defaultBudget` applies only when the operator creates a key. A

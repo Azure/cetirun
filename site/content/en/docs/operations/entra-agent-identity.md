@@ -735,10 +735,11 @@ retention policy says. If you delete a Blueprint or FIC first, this strands the
 Operator's cleanup path.
 
 `make deploy` does not accept an environment file that disables the Operator
-lifecycle or the Broker modes. With `make deploy`, you can do the steps until
-all tracked Agent Identities are deleted. Keep the lifecycle, the Broker
-modes, the consents, and the FICs after that. To disable them, the
-installation must use the component charts instead of `make deploy`. Refer to
+lifecycle or the Broker's Microsoft delegated access. With `make deploy`, you
+can do the steps until all tracked Agent Identities are deleted. Keep the
+lifecycle, the Microsoft delegated access, the consents, and the FICs after
+that. To disable them, the installation must use the component charts instead
+of `make deploy`. Refer to
 [Use the component chart directly]({{< repo "app/cetirun-platform/README.md" >}}#use-the-component-chart-directly).
 
 ## Troubleshoot Agent Identity

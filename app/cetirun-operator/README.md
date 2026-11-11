@@ -4,8 +4,9 @@ The operator reconciles `Agent`, `Team`, `Sandbox`, and `AgentPolicy` resources
 in `cetirun.microsoft.com/v1alpha1`. Policy assignment and AI Gateway
 projection are active control-plane contracts. With
 `sandboxSources.nativeExecution`, the common executor runs new policy-bound
-Agents in their Sandbox. Without it, and for retained single-start lifetimes,
-policy-bound Agents stay held at zero replicas.
+Agents in their Sandbox, and retained single-start lifetimes keep their
+recorded execution contract. Without that setting, policy-bound Agents stay
+held at zero replicas.
 
 - [Custom-resource reference](../../site/content/en/docs/reference/crds.md)
 - [Agent Harness contract](../../site/content/en/docs/reference/agent-harness.md)
@@ -1471,9 +1472,9 @@ domains. These are the initial single-policy formats, not version upgrades of
 the undeployed dual-policy design. Strict decoding, ownership checks and
 explicit reauthorization stay fail-closed. No migration readers are added.
 
-When the common executor does not run them, the controller holds these Agents.
-This is the case without `sandboxSources.nativeExecution`, and for retained
-single-start lifetimes:
+With `sandboxSources.nativeExecution`, the common executor runs new lifetimes,
+and retained single-start lifetimes keep their recorded execution contract.
+Without that setting, the controller holds these Agents:
 
 - Agents that request Sandbox policy.
 - Agents that belong to a Team with policy settings.

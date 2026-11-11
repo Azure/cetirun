@@ -285,16 +285,20 @@ for a short time while the operator deletes it and adds it again.
 
 The operator owns the virtual key of each Agent. The value of the key is in
 the Secret `ai-gateway-virtual-key` of the Agent. A replacement key resets the
-spend, restores the default budget, and unblocks a blocked key. For this
-reason, the operator does not replace a key that still exists in the AI Gateway.
+spend and unblocks a blocked key. The replacement key also gets its budget
+again from the source in
+[Where the budget of an Agent comes from](../budgets/#where-the-budget-of-an-agent-comes-from).
+For these reasons, the operator does not replace a key that still exists in
+the AI Gateway.
 
-If the Secret is lost while the key exists, the Agent reports `AIGatewayReady`
-as `False` with the reason `KeySecretLost`. The Agent also gets an
-`AIGatewayKeySecretLost` event. To recover, do one of these steps:
+If the Secret is lost, the Agent reports `AIGatewayReady` as `False` with the
+reason `KeySecretLost`. The Agent also gets an `AIGatewayKeySecretLost` event.
+To recover, restore the Secret.
 
-- Restore the Secret.
-- Delete the key in the AI Gateway. The operator then creates a new key with the
-  default budget.
+If `status.aiGateway.keyId` of the Agent is empty, you can delete the key in
+the AI Gateway instead. The operator then creates a new key. If the field has a
+value, the operator does not create a new key, even after you delete the old
+one.
 
 With `operatorIntegration`, the AI Gateway sets
 `general_settings.user_api_key_cache_ttl` to zero. Each new request examines
@@ -473,7 +477,7 @@ kubectl logs -n cetirun-system -c gateway --since=15m --tail=-1 \
 | Copilot phase `SignInRequired`, or Copilot reason `SignInIncomplete` | The owner has not completed the GitHub Copilot sign-in | The owner signs in again on the Agent page |
 | Copilot reason `ProxyStarting` | The Copilot proxy of the Agent is not ready yet | Wait a few minutes |
 | Copilot reason `NotAllowedRouteRemovalFailed` or `PolicyCheckUnavailable` | The operator cannot remove a Copilot route that the Policy no longer allows, or it cannot read the models or prices of the AI Gateway | Shared models continue to work. The operator tries again about every 15 seconds. Examine the AI Gateway |
-| `AIGatewayReady` is `False` with the reason `KeySecretLost` | The Secret of the key is lost, and the key exists | Refer to [Virtual keys](#virtual-keys) |
+| `AIGatewayReady` is `False` with the reason `KeySecretLost` | The Secret of the key is lost | Refer to [Virtual keys](#virtual-keys) |
 | `AIGatewayModelsLimited` event | The Agent can use more models than its configuration can list | Refer to [Model access](../models/#limits) |
 | The models that you added in the console disappeared after a restart | The salt key changed | Restore the salt key. Refer to the chart README's [Upgrade contract]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#upgrade-contract) |
 

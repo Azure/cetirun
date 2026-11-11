@@ -61,8 +61,11 @@ For the Admin pages of the Portal, refer to
   template. The operator writes a CiliumNetworkPolicy for each Agent.
 - **Two nodes for the admission server.** Its two replicas run on different
   nodes. Creates and updates of Agents, Teams, Sandboxes, and Agent Policies
-  wait for one of them. Deletions of Teams, Sandboxes, and Agent Policies also
-  wait. Status updates and the deletion of Agents do not wait.
+  wait for one of them, and so do deletions of Teams, Sandboxes, and Agent
+  Policies. With the [CetiAdmin](../cetiadmin/) webhooks, which the operator
+  chart installs by default, status updates and the deletion of Agents also
+  wait. So do writes to Pods and other workloads in Agent namespaces. The
+  webhooks stay after you disable CetiAdmin on an installation that had it.
 - **ReadWriteOncePod storage.** Each Agent's HOME is a volume that only its Pod
   can mount. Azure Disk supports it.
 
@@ -643,6 +646,7 @@ Use a new `requestID` for each reauthorization, with at most 128 characters
 and no spaces. The admission webhook refuses the update in these cases:
 
 - The caller is not an admission administrator.
+- The `requestID` is the same as in the previous request.
 - The UIDs do not match the new Team, the Sandbox, and the Policy of that Team.
 - The Team does not allow the Sandbox.
 
@@ -660,10 +664,10 @@ operator README's
 
 | Symptom | Cause | Action |
 | --- | --- | --- |
-| A Sandbox or a Policy reports `PrerequisitesUnavailable` with the status `Unknown` | `platform.json` is not valid, for example with an unknown field, a duplicate field, or a wrong type. The operator does not show the details, also not in its log | Compare each field of `platform.json` with the example on this page. Make sure that the file is valid JSON, for example with `jq empty platform.json`. Then replace the ConfigMap |
+| A Sandbox or a Policy reports `PrerequisitesUnavailable` with the status `Unknown` | `platform.json` is not valid, for example with an unknown field, a duplicate field, or a wrong type. The status does not name the field. The operator log gives only the type of error, such as `malformed, unknown or duplicate platform JSON fields` | Compare each field of `platform.json` with the example on this page. Make sure that the file is valid JSON, for example with `jq empty platform.json`. Then replace the ConfigMap |
 | The Portal refuses a new Agent with `runtime_unavailable` | Sandbox execution is not enabled, or the Portal has no runtime profile for the agent type | Do [Enable Sandbox execution](#enable-sandbox-execution) |
 | `kubectl exec`, `attach`, or `port-forward` fails with `ConnectForbidden` | Pod admission refuses interactive access to the Pods of Sandbox Agents | Use the terminal of the Agent in the Portal |
-| Writes to Agents, Teams, Sandboxes, and Agent Policies fail | The admission server is not ready, for example because its certificate expired | Renew the certificate. Refer to [Renew the admission certificate](#renew-the-admission-certificate). Status updates and the deletion of Agents still work |
+| Writes to Agents, Teams, Sandboxes, and Agent Policies fail | The admission server is not ready, for example because its certificate expired | Renew the certificate. Refer to [Renew the admission certificate](#renew-the-admission-certificate). If the CetiAdmin webhooks are installed, status updates and the deletion of Agents also fail until the server is ready. So do writes to Pods and other workloads in Agent namespaces |
 | A Team operation fails with `admission_rejected` | The webhook refused the change | Refer to [Team operations rejected by admission](#team-operations-rejected-by-admission) |
 
 Alert on these metrics of the admission Pods:
