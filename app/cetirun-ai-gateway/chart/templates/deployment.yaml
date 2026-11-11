@@ -21,6 +21,13 @@ spec:
         every pod went on sending the old key. */}}
         checksum/providers: {{ include (print $.Template.BasePath "/secret-providers.yaml") . | sha256sum }}
         {{- end }}
+        {{- if $metricsEnabled }}
+        {{- /* The ADX-Mon collector of the cetirun-observability chart scrapes
+        the metrics port of Pods with these annotations. */}}
+        adx-mon/scrape: "true"
+        adx-mon/port: {{ include "cetirun-ai-gateway.metricsPort" . | quote }}
+        adx-mon/path: /metrics
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

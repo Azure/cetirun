@@ -50,6 +50,10 @@ type sandboxBootstrapObject struct {
 	UID  types.UID `json:"uid,omitempty"`
 }
 
+// The annotation distinguishes newly selected empty storage from legacy v1/v3
+// receipts whose externally supplied skills claim must remain authoritative.
+const sandboxBootstrapSkillsModeAnnotation = "cetirun.microsoft.com/bootstrap-skills-mode"
+
 type sandboxBootstrapReceipt struct {
 	Reconciled     bool                      `json:"reconciled,omitempty"`
 	Version        string                    `json:"version"`
@@ -105,6 +109,10 @@ func (r *AgentReconciler) readSandboxBootstrap(ctx context.Context, agent *api.A
 			(receipt.Version == "v3" && receipt.Reconciled && receipt.ServiceAccount != nil && receipt.Skills == nil && len(receipt.Objects) == 5) ||
 			(receipt.Version == "v4" && receipt.Reconciled && receipt.ServiceAccount != nil && receipt.Skills != nil && len(receipt.Objects) == 7)) {
 		return nil, nil, fmt.Errorf("Sandbox bootstrap ownership receipt is invalid")
+	}
+	if mode := object.Annotations[sandboxBootstrapSkillsModeAnnotation]; mode != "" &&
+		(mode != string(sandboxworkload.SkillsModeEmpty) || receipt.Skills != nil) {
+		return nil, nil, fmt.Errorf("Sandbox bootstrap skills mode is invalid")
 	}
 	size, err := resource.ParseQuantity(receipt.Home.StorageSize)
 	if err != nil || size.Sign() <= 0 || len(validation.IsDNS1123Subdomain(receipt.Home.StorageClass)) != 0 ||
@@ -175,6 +183,56 @@ func (r *AgentReconciler) saveSandboxBootstrap(ctx context.Context, object *core
 	return r.Patch(ctx, object, client.RawPatch(types.MergePatchType, patch))
 }
 
+// verifySuspendedReconciledBootstrap reads every recorded object without
+// repairing it. A suspended Agent must never adopt a same-name replacement or
+// recreate a partial bootstrap lifetime before the normal stop path completes.
+func (r *AgentReconciler) verifySuspendedReconciledBootstrap(ctx context.Context, agent *api.Agent) error {
+	object, receipt, err := r.readSandboxBootstrap(ctx, agent)
+	if err != nil {
+		return fmt.Errorf("read suspended Sandbox bootstrap ownership receipt: %w", err)
+	}
+	desired, inventory := r.sandboxBootstrapObjects(agent, object, receipt), receipt.inventory()
+	if len(desired) != len(inventory) || slices.ContainsFunc(inventory, func(entry *sandboxBootstrapObject) bool { return entry.UID == "" }) {
+		return fmt.Errorf("suspended Sandbox bootstrap ownership receipt is incomplete")
+	}
+	for index, expected := range desired {
+		current := expected.DeepCopyObject().(client.Object)
+		if err := r.customReader().Get(ctx, client.ObjectKeyFromObject(expected), current); err != nil {
+			return fmt.Errorf("read suspended Sandbox bootstrap %s: %w", inventory[index].Kind, err)
+		}
+		if err := validateSandboxBootstrapObject(current, expected, inventory[index].UID, false); err != nil {
+			return fmt.Errorf("validate suspended Sandbox bootstrap %s: %w", inventory[index].Kind, err)
+		}
+	}
+	return nil
+}
+
+// verifySuspendedReconciledLifetime admits the independent suspension path
+// only when the protected runtime namespace is the exact object recorded for
+// this Agent.  It intentionally does not require the full bootstrap inventory
+// to match: stopSandboxBuiltinWorkload separately proves workload ownership
+// before changing replicas, while a Role or other auxiliary drift must not
+// keep an already-owned workload or Gateway key live.  The normal suspended
+// bootstrap verification still requires the complete inventory before it can
+// report suspension as fully verified.
+func (r *AgentReconciler) verifySuspendedReconciledLifetime(ctx context.Context, agent *api.Agent) error {
+	_, receipt, err := r.readSandboxBootstrap(ctx, agent)
+	if err != nil {
+		return fmt.Errorf("read suspended Sandbox bootstrap ownership receipt: %w", err)
+	}
+	if !receipt.Reconciled || receipt.Objects[0].UID == "" {
+		return fmt.Errorf("suspended Sandbox namespace identity is incomplete")
+	}
+	namespace := &corev1.Namespace{}
+	if err := r.customReader().Get(ctx, client.ObjectKey{Name: receipt.Namespace}, namespace); err != nil {
+		return fmt.Errorf("read suspended Sandbox namespace: %w", err)
+	}
+	if err := r.validateSandboxBootstrapNamespace(ctx, agent, namespace); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sandboxPreparationAttempt) error {
 	agent, config := attempt.agent, r.SandboxPreparation.bootstrap
 	accountName, err := r.bootstrapIdentityAccountName(attempt)
@@ -227,7 +285,8 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 				{Kind: "Secret", Name: sandboxRuntimeSecretName(agent)},
 			},
 		}
-		if config.SkillsCatalogConfigMapName != "" {
+		if config.SkillsCatalogConfigMapName != "" &&
+			sandboxSkillsMode(r.SandboxPreparation.NativeExecution, agent, attempt.team) != sandboxworkload.SkillsModeEmpty {
 			publication, err := r.readSandboxSkillsPublication(ctx, config.SkillsCatalogConfigMapName, attempt.team)
 			if err != nil {
 				return err
@@ -258,6 +317,9 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 				Finalizers:      []string{sandbox.BootstrapFinalizer},
 			},
 			Data: map[string]string{sandboxBootstrapReceiptKey: string(raw)},
+		}
+		if receipt.Skills == nil && sandboxSkillsMode(r.SandboxPreparation.NativeExecution, agent, attempt.team) == sandboxworkload.SkillsModeEmpty {
+			object.Annotations[sandboxBootstrapSkillsModeAnnotation] = string(sandboxworkload.SkillsModeEmpty)
 		}
 		if err := r.sandboxBootstrapGuard(ctx, attempt); err != nil {
 			return err
@@ -304,7 +366,7 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 		}
 		publication, err := r.readSandboxSkillsPublication(ctx, config.SkillsCatalogConfigMapName, attempt.team)
 		if err != nil {
-			return fmt.Errorf("recorded skills publication is unavailable; recovery is required: %w", err)
+			return fmt.Errorf("%w: %w", errSkillsPublicationRecovery, err)
 		}
 		if !sameSandboxSkillsPublication(*publication, *receipt.Skills) {
 			return fmt.Errorf("%w: recorded skills publication changed; recovery is required", sandboxworkload.ErrStorageTransitionRequired)

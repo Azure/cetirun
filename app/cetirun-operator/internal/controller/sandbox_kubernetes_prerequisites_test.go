@@ -147,11 +147,11 @@ func assertPrerequisiteRejection(t *testing.T, got controller.SandboxPrerequisit
 
 func TestKubernetesSandboxPrerequisitesNativeEmptySkillsSelection(t *testing.T) {
 	for _, tc := range []struct {
-		name                    string
-		native, claim, omitName bool
-		base, add, remove       []string
-		catalog                 string
-		wantEmpty, wantError    bool
+		name                                   string
+		native, claim, omitName, sharedStorage bool
+		base, add, remove                      []string
+		catalog                                string
+		wantEmpty, wantError                   bool
 	}{
 		{name: "native absent selection", native: true, wantEmpty: true},
 		{name: "native explicit empty selection", native: true, base: []string{}, add: []string{}, wantEmpty: true},
@@ -164,8 +164,10 @@ func TestKubernetesSandboxPrerequisitesNativeEmptySkillsSelection(t *testing.T) 
 		{name: "removal leaves another skill", native: true, base: []string{"example-skill", "another-skill"}, remove: []string{"example-skill"}, wantError: true},
 		{name: "selected skill without claim name", native: true, omitName: true, add: []string{"example-skill"}, wantError: true},
 		{name: "selected skill retains existing claim", native: true, claim: true, base: []string{"example-skill"}},
-		{name: "catalog still requires claim", native: true, catalog: "skills-catalog", wantError: true},
-		{name: "catalog retains existing claim", native: true, claim: true, catalog: "skills-catalog"},
+		{name: "catalog does not require empty Team publication", native: true, catalog: "skills-catalog", wantEmpty: true},
+		{name: "catalog ignores unused existing claim", native: true, claim: true, catalog: "skills-catalog", wantEmpty: true},
+		{name: "shared storage still requires claim", native: true, sharedStorage: true, wantError: true},
+		{name: "shared storage retains claim", native: true, sharedStorage: true, claim: true},
 		{name: "default empty selection requires claim", wantError: true},
 		{name: "default omitted name rejected", omitName: true, wantError: true},
 		{name: "default empty selection retains claim", claim: true},
@@ -178,6 +180,9 @@ func TestKubernetesSandboxPrerequisitesNativeEmptySkillsSelection(t *testing.T) 
 			}
 			team := f.fixture.Team.DeepCopy()
 			team.Spec.Skills = tc.base
+			if tc.sharedStorage {
+				team.Spec.SkillStorage = &api.SkillStorageSpec{ResourceGroup: "example", StorageAccount: "exampleskills", ContainerName: "skills"}
+			}
 			if err := f.client.Update(context.Background(), team); err != nil {
 				t.Fatal(err)
 			}

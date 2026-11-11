@@ -44,6 +44,9 @@ func TestCustomPlatformValuesAreCheckedBeforeAction(t *testing.T) {
 		{"networkPolicy": map[string]any{"blockedCIDRs": []any{"10.0.0.0/33"}}},
 		{"podAnnotations": map[string]any{"bad key": "value"}},
 		{"podAnnotations": map[string]any{"example.com/value": true}},
+		// The platform's log and metrics collection reads adx-mon/ annotations.
+		{"podAnnotations": map[string]any{"adx-mon/scrape": "true"}},
+		{"podAnnotations": map[string]any{"adx-mon/log-destination": "CetiRunLogs:Platform"}},
 	} {
 		input := customInput(nil)
 		for key, value := range values {

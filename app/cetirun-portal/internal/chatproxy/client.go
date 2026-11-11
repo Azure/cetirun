@@ -103,7 +103,7 @@ func Error(w http.ResponseWriter, status int, code, message string) {
 func (c *Client) Complete(ctx context.Context, w http.ResponseWriter, target Target, request Request, requestID string) {
 	raw, _ := json.Marshal(request)
 	w.Header().Set("X-CetiRun-Chat-Dispatch", "started")
-	res, err := c.do(ctx, target, http.MethodPost, "/v1/chat/completions", io.NopCloser(strings.NewReader(string(raw))), request.MemoryMode)
+	res, err := c.do(ctx, target, http.MethodPost, "/v1/chat/completions", strings.NewReader(string(raw)), request.MemoryMode)
 	if err != nil {
 		Error(w, 502, "agent_request_failed", "The connection ended. The Agent may have executed this request.")
 		return

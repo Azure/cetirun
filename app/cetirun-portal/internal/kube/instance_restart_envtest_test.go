@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
@@ -43,6 +44,10 @@ func TestRetainedRestartThroughServedAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	kc, err := client.New(config, client.Options{Scheme: newScheme()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	watchClient, err := client.NewWithWatch(config, client.Options{Scheme: newScheme()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,6 +130,125 @@ func TestRetainedRestartThroughServedAPI(t *testing.T) {
 			if _, err := NewClient(kc).SetInstanceSuspendedByName(ctx, current.Name, replaced, suspended, nil); !errors.Is(err, ErrInstanceChanged) {
 				t.Fatalf("same-name replacement accepted: %v", err)
 			}
+		}
+	})
+	t.Run("proven pre-bootstrap suspension uses only the Agent intent", func(t *testing.T) {
+		preBootstrap := sampleInstance()
+		preBootstrap.Name, preBootstrap.UID, preBootstrap.ResourceVersion, preBootstrap.Generation = "prebootstrap-suspension", "", "", 0
+		preBootstrap.Spec.SandboxRef = "sample-sandbox"
+		preBootstrap.Finalizers = []string{api.Finalizer, api.SandboxHoldFinalizer}
+		preBootstrap.Status = api.AgentStatus{}
+		if err := kc.Create(ctx, preBootstrap, client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
+			t.Fatal(err)
+		}
+		preBootstrap.Status = api.AgentStatus{Phase: api.PhaseFailed, Policy: &api.PolicyStatus{}}
+		if err := kc.Status().Update(ctx, preBootstrap); err != nil {
+			t.Fatal(err)
+		}
+		version := InstanceVersion{UID: preBootstrap.UID, ResourceVersion: preBootstrap.ResourceVersion}
+		updated, err := NewClient(kc).SetInstanceSuspendedByName(ctx, preBootstrap.Name, version, true, nil)
+		if err != nil || !updated.Spec.Suspended || updated.Generation != preBootstrap.Generation+1 ||
+			updated.Status.Phase != api.PhaseFailed || updated.Status.Policy == nil {
+			t.Fatalf("served pre-bootstrap suspension did not preserve the failed diagnostic: %#v, %v", updated, err)
+		}
+		if err := kc.Get(ctx, client.ObjectKey{Name: InstanceNamespace(preBootstrap.Name)}, &corev1.Namespace{}); !apierrors.IsNotFound(err) {
+			t.Fatalf("Portal pre-bootstrap suspension wrote a namespace: %v", err)
+		}
+		retry, err := NewClient(kc).SetInstanceSuspendedByName(ctx, preBootstrap.Name, version, true, nil)
+		if err != nil || retry.ResourceVersion != updated.ResourceVersion || retry.Generation != updated.Generation {
+			t.Fatalf("pre-bootstrap suspend retry wrote a second intent: %v", err)
+		}
+		if _, err := NewClient(kc).SetInstanceSuspendedByName(ctx, preBootstrap.Name, version, false, nil); !errors.Is(err, ErrInstanceChanged) {
+			t.Fatalf("stale pre-bootstrap request reversed the intent: %v", err)
+		}
+	})
+	t.Run("owner suspension tolerates a status-only version change", func(t *testing.T) {
+		statusOnly := sampleInstance()
+		statusOnly.Name, statusOnly.UID, statusOnly.ResourceVersion, statusOnly.Generation = "status-only-suspension", "", "", 0
+		statusOnly.Spec.SandboxRef = "sample-sandbox"
+		statusOnly.Finalizers = []string{api.Finalizer, api.SandboxHoldFinalizer}
+		if err := kc.Create(ctx, statusOnly, client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
+			t.Fatal(err)
+		}
+		statusOnly.Status = api.AgentStatus{Phase: api.PhaseFailed, Policy: &api.PolicyStatus{}}
+		if err := kc.Status().Update(ctx, statusOnly); err != nil {
+			t.Fatal(err)
+		}
+		version := InstanceVersion{UID: statusOnly.UID, ResourceVersion: statusOnly.ResourceVersion, Generation: statusOnly.Generation}
+		statusOnly.Status.Phase = api.PhasePending
+		if err := kc.Status().Update(ctx, statusOnly); err != nil {
+			t.Fatal(err)
+		}
+		if statusOnly.ResourceVersion == version.ResourceVersion || statusOnly.Generation != version.Generation {
+			t.Fatal("served status update did not change only resourceVersion")
+		}
+		updated, err := NewClient(kc).SetInstanceSuspendedByName(ctx, statusOnly.Name, version, true, nil)
+		if err != nil || !updated.Spec.Suspended || updated.Status.Phase != api.PhasePending || updated.Generation != version.Generation+1 {
+			t.Fatalf("served status-only update blocked suspension: %#v, %v", updated, err)
+		}
+	})
+	t.Run("owner suspension retries one served status-only patch conflict", func(t *testing.T) {
+		duringPatch := sampleInstance()
+		duringPatch.Name, duringPatch.UID, duringPatch.ResourceVersion, duringPatch.Generation = "status-conflict-suspension", "", "", 0
+		duringPatch.Spec.SandboxRef = "sample-sandbox"
+		duringPatch.Finalizers = []string{api.Finalizer, api.SandboxHoldFinalizer}
+		if err := kc.Create(ctx, duringPatch, client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
+			t.Fatal(err)
+		}
+		duringPatch.Status = api.AgentStatus{Phase: api.PhaseFailed, Policy: &api.PolicyStatus{}}
+		if err := kc.Status().Update(ctx, duringPatch); err != nil {
+			t.Fatal(err)
+		}
+		version := InstanceVersion{UID: duringPatch.UID, ResourceVersion: duringPatch.ResourceVersion, Generation: duringPatch.Generation}
+		patches := 0
+		wrapped := interceptor.NewClient(watchClient, interceptor.Funcs{Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			patches++
+			if patches == 1 {
+				current := &api.Agent{}
+				if err := c.Get(ctx, client.ObjectKeyFromObject(obj), current); err != nil {
+					return err
+				}
+				current.Status.Phase = api.PhasePending
+				if err := c.Status().Update(ctx, current); err != nil {
+					return err
+				}
+			}
+			return c.Patch(ctx, obj, patch, opts...)
+		}})
+		updated, err := NewClient(wrapped).SetInstanceSuspendedByName(ctx, duringPatch.Name, version, true, nil)
+		if err != nil || !updated.Spec.Suspended || updated.Generation != version.Generation+1 || patches != 2 {
+			t.Fatalf("served status conflict did not perform one safe retry: patches=%d updated=%#v err=%v", patches, updated, err)
+		}
+		retry, err := NewClient(wrapped).SetInstanceSuspendedByName(ctx, duringPatch.Name, version, true, nil)
+		if err != nil || retry.Generation != updated.Generation || retry.ResourceVersion != updated.ResourceVersion || patches != 2 {
+			t.Fatalf("same-intent retry wrote after served suspension: patches=%d retry=%#v err=%v", patches, retry, err)
+		}
+		if _, err := NewClient(wrapped).SetInstanceSuspendedByName(ctx, duringPatch.Name, version, false, nil); !errors.Is(err, ErrInstanceChanged) || patches != 2 {
+			t.Fatalf("old generation reversed the accepted intent: patches=%d err=%v", patches, err)
+		}
+	})
+	t.Run("owner suspension rejects a served specification change", func(t *testing.T) {
+		specChanged := sampleInstance()
+		specChanged.Name, specChanged.UID, specChanged.ResourceVersion, specChanged.Generation = "spec-change-suspension", "", "", 0
+		specChanged.Spec.SandboxRef = "sample-sandbox"
+		specChanged.Finalizers = []string{api.Finalizer, api.SandboxHoldFinalizer}
+		if err := kc.Create(ctx, specChanged, client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
+			t.Fatal(err)
+		}
+		specChanged.Status = api.AgentStatus{Phase: api.PhaseFailed, Policy: &api.PolicyStatus{}}
+		if err := kc.Status().Update(ctx, specChanged); err != nil {
+			t.Fatal(err)
+		}
+		version := InstanceVersion{UID: specChanged.UID, ResourceVersion: specChanged.ResourceVersion, Generation: specChanged.Generation}
+		specChanged.Spec.User.DisplayName = "Concurrent update"
+		if err := kc.Update(ctx, specChanged, client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
+			t.Fatal(err)
+		}
+		if specChanged.Generation != version.Generation+1 {
+			t.Fatal("served specification update did not increment generation")
+		}
+		if _, err := NewClient(kc).SetInstanceSuspendedByName(ctx, specChanged.Name, version, true, nil); !errors.Is(err, ErrInstanceChanged) {
+			t.Fatalf("served specification change was accepted: %v", err)
 		}
 	})
 	if err := kc.Delete(ctx, current, client.Preconditions{UID: &current.UID, ResourceVersion: &current.ResourceVersion}); err != nil {

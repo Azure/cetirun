@@ -29,6 +29,8 @@ export interface RestartInstanceRequest extends InstanceVersion {
 }
 
 export interface SetInstanceSuspendedRequest extends InstanceVersion {
+  /** The displayed configuration generation; status-only changes do not advance it. */
+  generation?: number;
   suspended: boolean;
 }
 

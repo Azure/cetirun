@@ -295,7 +295,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             base = Path(directory)
             for relative in (
                 "cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart",
-                "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart",
+                "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart", "cetirun-observability/chart",
             ):
                 shutil.copytree(ROOT / "app" / relative, base / relative, ignore=shutil.ignore_patterns("charts"))
             for relative, keys in (
@@ -673,7 +673,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         base = Path(temporary.name)
         for relative in (
             "cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart",
-            "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart",
+            "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart", "cetirun-observability/chart",
         ):
             shutil.copytree(ROOT / "app" / relative, base / relative, ignore=shutil.ignore_patterns("charts"))
         chart = base / "cetirun-platform"
@@ -1128,7 +1128,8 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         self.assertEqual(pod["serviceAccountName"], NAME)
         metadata = deployment["spec"]["template"]["metadata"]
         self.assertNotIn("azure.workload.identity/use", metadata["labels"])
-        self.assertEqual(metadata["annotations"], {"sidecar.istio.io/inject": "false"})
+        self.assertEqual(metadata["annotations"], {"sidecar.istio.io/inject": "false", "adx-mon/scrape": "true",
+                                                   "adx-mon/port": "8080", "adx-mon/path": "/metrics"})
         self.assertNotIn("annotations", documents[("ServiceAccount", NAME)]["metadata"])
         container = pod["containers"][0]
         self.assertEqual(container["image"], "registry.example.com/runtime/cetirun-operator:2.0.0@sha256:" + "1" * 64)

@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -61,6 +62,14 @@ type sandboxBootstrapSkills struct {
 	TeamName    string                          `json:"teamName"`
 	Publication sandboxSkillsPublication        `json:"publication"`
 }
+
+// errSkillsPublicationNotApproved marks a Team that has no approved skills
+// publication yet. It waits for the Skill Marketplace or an administrator.
+var errSkillsPublicationNotApproved = errors.New("no skills publication is approved for the exact Team name and UID")
+
+// errSkillsPublicationRecovery marks a recorded publication that is no longer
+// readable. It needs recovery, so it is never a periodic wait.
+var errSkillsPublicationRecovery = errors.New("recorded skills publication is unavailable; recovery is required")
 
 var (
 	sandboxPublicationToken = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
@@ -145,7 +154,7 @@ func (r *AgentReconciler) readSandboxSkillsPublication(ctx context.Context, name
 	}
 	publication, found := document.Teams[team.Name]
 	if !found || publication.TeamUID != team.UID {
-		return nil, fmt.Errorf("%w: no skills publication is approved for the exact Team name and UID", sandboxpolicy.ErrUnavailable)
+		return nil, fmt.Errorf("%w: %w", sandboxpolicy.ErrUnavailable, errSkillsPublicationNotApproved)
 	}
 	return &sandboxBootstrapSkills{
 		Catalog: sandboxSource(catalog, "v1", "ConfigMap"), TeamName: team.Name, Publication: publication,
@@ -243,7 +252,7 @@ func (p *KubernetesSandboxPrerequisites) publishedSkillsSources(ctx context.Cont
 	}
 	publication, err := reader.readSandboxSkillsPublication(ctx, p.SkillsCatalogConfigMapName, team)
 	if err != nil {
-		return nil, fmt.Errorf("recorded skills publication is unavailable; recovery is required: %w", err)
+		return nil, fmt.Errorf("%w: %w", errSkillsPublicationRecovery, err)
 	}
 	if !sameSandboxSkillsPublication(*publication, *receipt.Skills) || skills.Name != receipt.Objects[5].Name {
 		return nil, fmt.Errorf("%w: recorded skills publication changed; recovery is required", sandboxworkload.ErrStorageTransitionRequired)

@@ -191,6 +191,17 @@ stop, or a status write fails, suspension still tries the other shutdown
 operations. A shutdown that is not acknowledged still keeps its source
 reservation. Normal Kubernetes stop requests are not physical fencing.
 
+The Portal may also accept a narrow pre-bootstrap pause for a governed common
+Sandbox Agent when it can authoritatively prove that no execution lifetime
+exists: there is no Agent namespace, bootstrap/preparation/grant receipt,
+bootstrap/preparation finalizer, or status evidence of an enforced or ready
+runtime. A hold left by a failed pre-bootstrap prerequisite is permitted when
+all of those no-lifetime proofs still hold. This does not retain HOME or a
+Gateway key because neither exists yet. Any missing, conflicting, or unreadable
+evidence instead leaves the requested suspension `Pending` and never starts
+bootstrap; resume is the explicit intent that lets the controller try
+provisioning again.
+
 The current Gateway reconciliation also removes the per-Agent Copilot token
 and proxy-key Secrets during explicit suspension. Suspension keeps HOME and the
 Gateway spend, but it does not keep the Copilot sign-in. The owner must sign in
@@ -2072,12 +2083,13 @@ Bootstrap does **not** create an empty replacement for published skills,
 model-provider credentials, Pods, routes, or execution permits. By default, the
 platform must supply the configured, distinct skills claim in the new
 namespace. The claim must have the supported Agent/Team or retained ownership.
-Missing skills are still an explicit prerequisite error.
+Missing selected skills are still an explicit prerequisite error.
 
 As an alternative, the separately selected publication catalog below can
 create static bindings to content that is already published. The only
 exception is the explicitly enabled native profile with an empty effective
-selection and no catalog. It uses the read-only in-Pod directory described
+selection, no Team shared skills storage, and no recorded publication. A
+globally configured catalog does not require an empty Team to publish. It uses the read-only in-Pod directory described
 above. It does not use an empty replacement for published content. Without
 native execution, the stock binary still stops because qualified writer
 exclusion is not available. The native authentication Secret is not evidence
@@ -2209,6 +2221,12 @@ preparation is held. Then recovery is necessary. Automatic migration or
 fallback does not occur. Namespaces that already exist and older `v1`
 bootstrap receipts keep their externally supplied skills mode. If you enable a
 catalog, it does not adopt or migrate them.
+New native empty-skills bootstrap records also carry an explicit empty-mode
+annotation on their operator-owned receipt. This preserves that choice if a
+catalog is enabled later. The receipt JSON versions and existing object
+identities remain unchanged. Older controllers ignore the annotation and may
+hold these new Agents until their original controller is restored; stop new
+candidate fixtures before rolling back the controller.
 
 Held preparation includes the catalog, bootstrap receipt, and PV identities in
 the admission source inventory that it examines. With the catalog enabled, the

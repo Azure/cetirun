@@ -13,7 +13,6 @@ import (
 	"math/big"
 	"reflect"
 	"slices"
-	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -77,11 +76,12 @@ func (r *AgentReconciler) holdPolicyReprojection(ctx context.Context, agent *api
 	// Sandbox preparation pass from deadlocking before the Gateway can observe
 	// and clear its own PolicyReprojection block.
 	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, err
+		// Gateway status is written by reconcileAIGateway itself.
+		return prerequisiteResult(ctx, err, false, nil)
 	}
 	if agentIdentityRequested(agent) || !credentialPolicyVerified(agent, "") {
 		if err := r.reconcileAgentIdentity(ctx, agent); err != nil {
-			return ctrl.Result{RequeueAfter: 15 * time.Second}, errors.Join(err, r.updateStatus(ctx, agent))
+			return prerequisiteResult(ctx, err, false, r.updateStatus(ctx, agent))
 		}
 	}
 	if err := r.updateStatus(ctx, agent); err != nil {
@@ -274,7 +274,13 @@ func (r *AgentReconciler) verifyPolicyAcceptance(ctx context.Context, policy *ap
 		return policyDependency("AgentPolicy acceptance observation is unavailable for generation %d", policy.Generation)
 	}
 	if accepted.Status == metav1.ConditionFalse {
-		return fmt.Errorf("effective AgentPolicy is not accepted")
+		if accepted.Reason == policyRegistrationIncompatibleReason {
+			// Only the platform registration changed since this generation was
+			// accepted: block the key and stop compute, but keep the key so the
+			// Agent recovers when the registration is corrected.
+			return policyDependency("effective AgentPolicy is not accepted: %s: %s", accepted.Reason, accepted.Message)
+		}
+		return fmt.Errorf("effective AgentPolicy is not accepted: %s: %s", accepted.Reason, accepted.Message)
 	}
 	if accepted.Status != metav1.ConditionTrue {
 		return policyDependency("AgentPolicy acceptance observation has an unrecognized status")

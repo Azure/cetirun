@@ -693,6 +693,12 @@ func withNativePublishedSkills(t *testing.T) func(*AgentReconciler, client.Clien
 			t.Fatal("publication requires exactly one fixture Team:", err)
 		}
 		team := &teams.Items[0]
+		// This fixture intentionally consumes published storage even with an
+		// empty package selection; a catalog alone no longer selects it.
+		team.Spec.SkillStorage = &api.SkillStorageSpec{ResourceGroup: "skills-example", StorageAccount: "publishedskills", ContainerName: "skills-v1"}
+		if err := kube.Update(context.Background(), team); err != nil {
+			t.Fatal(err)
+		}
 		raw, err := json.Marshal(map[string]any{
 			"version": "v1", "teams": map[string]any{team.Name: map[string]any{
 				"teamUID": team.UID, "revision": "published-v1",

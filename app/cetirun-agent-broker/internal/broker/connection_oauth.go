@@ -88,8 +88,82 @@ func (s *Server) startAuthorizationMode(w http.ResponseWriter, r *http.Request, 
 		writeAPIError(w, 503, "dependency_unavailable", "Sign-in could not be started", correlationID(r))
 		return
 	}
+	if target != "" {
+		if err := s.store.beginReconnect(r.Context(), owner, *record.Transaction); err != nil {
+			if errors.Is(err, errConflict) || errors.Is(err, errNotFound) {
+				writeAPIError(w, 409, "conflict", "Connection changed; retry sign-in", correlationID(r))
+			} else {
+				writeAPIError(w, 503, "dependency_unavailable", "Sign-in could not be started", correlationID(r))
+			}
+			return
+		}
+	}
 	auditCommit(r)
 	writeJSON(w, 200, map[string]any{"authorizationId": id, "connectionId": target, "authorizationUrl": location, "expiresAt": record.Transaction.ExpiresAt, "browserBindingRequired": requiresConnectionBrowserBinding(provider)})
+}
+
+func (tx connectionTransaction) authorizationID() string {
+	if len(tx.StateHash) != 64 {
+		return ""
+	}
+	return "oauth-" + tx.StateHash[:40]
+}
+
+func (tx connectionTransaction) isCurrentAuthorization(record *connectionRecord) bool {
+	if tx.TargetConnectionID == "" {
+		return record.CurrentAuthorizationID == ""
+	}
+	return record.CurrentAuthorizationID != "" && record.CurrentAuthorizationID == tx.authorizationID()
+}
+
+func (k *kubeClient) beginReconnect(ctx context.Context, owner Owner, tx connectionTransaction) error {
+	id := tx.authorizationID()
+	if id == "" || tx.TargetConnectionID == "" {
+		return errConflict
+	}
+	accountID := tx.ExpectedAccountID
+	if tx.Mode == modeInstallation {
+		accountID = "github-app-user-" + accountID
+	}
+	for attempt := 0; attempt < 8; attempt++ {
+		record, version, err := k.getConnection(ctx, tx.TargetConnectionID)
+		if err != nil {
+			return err
+		}
+		if record.Deleted || !sameOwner(record.Connection.Owner, owner) || record.Connection.Provider != tx.Provider ||
+			connectionMode(record.Connection) != connectionMode(Connection{Mode: tx.Mode}) || record.Connection.AccountID != accountID {
+			return errConflict
+		}
+		record.CurrentAuthorizationID = id
+		if err := k.putConnection(ctx, record, version); errors.Is(err, errConflict) {
+			continue
+		} else {
+			return err
+		}
+	}
+	return errConflict
+}
+
+func (k *kubeClient) clearReconnect(ctx context.Context, owner Owner, tx connectionTransaction) error {
+	for attempt := 0; attempt < 8; attempt++ {
+		record, version, err := k.getConnection(ctx, tx.TargetConnectionID)
+		if errors.Is(err, errNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if record.Deleted || !sameOwner(record.Connection.Owner, owner) || !tx.isCurrentAuthorization(record) {
+			return nil
+		}
+		record.CurrentAuthorizationID = ""
+		if err := k.putConnection(ctx, record, version); errors.Is(err, errConflict) {
+			continue
+		} else {
+			return err
+		}
+	}
+	return errConflict
 }
 
 // Retain results briefly for the initiating window, then remove abandoned and
@@ -203,6 +277,12 @@ func (s *Server) connectionCallback(w http.ResponseWriter, r *http.Request) {
 				auditTarget(r, result, "", "")
 				auditCommit(r)
 			}
+		}
+	}
+	if result == "" && tx.TargetConnectionID != "" {
+		if err := s.store.clearReconnect(r.Context(), record.Connection.Owner, tx); err != nil {
+			s.callbackPage(w, false, id)
+			return
 		}
 	}
 	current, version, err := s.store.getOAuthRecord(r.Context(), "authorization", id)
@@ -319,7 +399,11 @@ func (k *kubeClient) completeAccount(ctx context.Context, owner Owner, tx connec
 		if tx.TargetConnectionID == "" && healthyAccount(record) {
 			return id, nil
 		}
+		if !tx.isCurrentAuthorization(record) {
+			return "", errConflict
+		}
 		record.Credential = &credential
+		record.CurrentAuthorizationID = ""
 		record.RefreshLease = nil
 		record.Transaction = nil
 		record.Connection.AccountDisplay = display
@@ -359,6 +443,9 @@ func (k *kubeClient) completeGitHubInstallationAccount(ctx context.Context, owne
 		if record.Deleted || !sameOwner(record.Connection.Owner, owner) || record.Connection.Provider != "github" || connectionMode(record.Connection) != modeInstallation || record.Connection.AccountID != "github-app-user-"+accountID {
 			return "", errConflict
 		}
+		if !tx.isCurrentAuthorization(record) {
+			return "", errConflict
+		}
 		github := record.Connection.GitHub
 		if pending := record.PendingInstallation; pending != nil {
 			// A provider request started before selection can invalidate this
@@ -373,6 +460,7 @@ func (k *kubeClient) completeGitHubInstallationAccount(ctx context.Context, owne
 			return "", errConflict
 		}
 		record.Credential = &credential
+		record.CurrentAuthorizationID = ""
 		record.RefreshLease = nil
 		record.Transaction = nil
 		if tx.AppSlug == "" {

@@ -67,10 +67,14 @@ inventory or an accepted asynchronous write as a completed operation.
 
 - `binding_required`: give the owner the `connections_start_link` URL to connect.
 - `interaction_required`: ask the owner to reauthorize the intended account.
-- Platform `permission_denied`: the Agent's connection/service binding is denied.
+- Platform `permission_denied`: the Agent's connection/service binding or OBO
+  credential acquisition was denied. This alone does not mean that signing in
+  again will fix it; do not enter a sign-in loop.
   Provider HTTP 401/403: review the provider's consent or resource permissions.
 - `invalid_request`: correct the path, query, headers or JSON shape.
 - `dependency_unavailable`: report the failure without choosing another token path.
+- Platform `throttled`: credential acquisition was rate-limited; report it and
+  retry only as the task warrants. This does not require reauthorization.
 - Provider 429: report throttling and `Retry-After`; retry only as the task warrants.
 - `execution_unknown`: an effect may already have occurred. Inspect provider
   state before considering another request. There are no automatic upstream

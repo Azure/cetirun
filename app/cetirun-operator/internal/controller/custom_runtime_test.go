@@ -13,11 +13,13 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
+	"github.com/Azure/CetiRun/app/internal/agenttools"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/chartutil"
 	"helm.sh/helm/v3/pkg/engine"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -186,6 +188,32 @@ func TestCustomReconcileCreatesHomeInOneChartCall(t *testing.T) {
 	reconcile(false)
 	if hc.installCalled || hc.installCalls != 1 {
 		t.Fatalf("initial provisioning must use one Chart call, got %d", hc.installCalls)
+	}
+	// An existing Ready ordinary Custom Agent must gain and repair Broker record
+	// storage permissions without another Helm apply. Its namespace intentionally
+	// has no Agent OwnerReference, so the Broker uses the immutable receipt.
+	r.ConnectionsMCPBrokerNamespace = "cetirun-credentials"
+	r.ConnectionsMCPBrokerServiceAccount = "cetirun-agent-broker"
+	reconcile(false)
+	secretRole := &rbacv1.Role{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: homeKey.Namespace, Name: "cetirun-agent-tools-broker"}, secretRole); err != nil {
+		t.Fatalf("Ready Custom Agent did not receive Broker Secret Role: %v", err)
+	}
+	receiptRole := &rbacv1.Role{}
+	receiptRoleName := "cetirun-custom-ownership-" + strings.TrimPrefix(agenttools.CustomOwnershipRecordName(string(cr.UID)), "custom-ownership-")
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "cetirun-system", Name: receiptRoleName}, receiptRole); err != nil {
+		t.Fatalf("Ready Custom Agent did not receive receipt read Role: %v", err)
+	}
+	brokerRBACCalls := hc.installCalls
+	if err := c.Delete(ctx, receiptRole); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(false)
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "cetirun-system", Name: receiptRoleName}, receiptRole); err != nil {
+		t.Fatalf("Custom receipt Role drift was not repaired: %v", err)
+	}
+	if hc.installCalls != brokerRBACCalls {
+		t.Fatalf("Broker RBAC repair reapplied the Chart: %d -> %d", brokerRBACCalls, hc.installCalls)
 	}
 
 	originalHome := home.DeepCopy()

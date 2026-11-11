@@ -60,8 +60,8 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 	}
 	if inputs.SkillsMode == sandboxworkload.SkillsModeEmpty &&
 		(!config.NativeExecution || config.bootstrap == nil || len(inputs.PublicationSources) != 0 ||
-			sandboxSkillsMode(config.NativeExecution, config.bootstrap.SkillsCatalogConfigMapName, agent, attempt.team) != inputs.SkillsMode) {
-		return fmt.Errorf("empty skills require native execution, an empty effective selection and no configured catalog or publication")
+			sandboxSkillsMode(config.NativeExecution, agent, attempt.team) != inputs.SkillsMode) {
+		return fmt.Errorf("empty skills require native execution, an empty effective selection, no shared skill storage and no recorded publication")
 	}
 	home := &corev1.PersistentVolumeClaim{}
 	var skills *corev1.PersistentVolumeClaim

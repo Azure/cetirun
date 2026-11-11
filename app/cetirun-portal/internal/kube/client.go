@@ -98,6 +98,10 @@ type UpdateInstanceOpts struct {
 type InstanceVersion struct {
 	UID             types.UID `json:"uid"`
 	ResourceVersion string    `json:"resourceVersion"`
+	// Generation is optional for compatibility with existing lifecycle
+	// clients. Suspension uses it to distinguish a status-only write from a
+	// concurrent specification change.
+	Generation int64 `json:"-"`
 }
 
 // CreateInstanceOptions contains security-sensitive platform-derived fields.

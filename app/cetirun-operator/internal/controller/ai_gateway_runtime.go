@@ -57,7 +57,12 @@ func (r *AgentReconciler) gatewayRuntimeWaiting(ctx context.Context, agent *api.
 		setCondition(&agent.Status.Conditions, condition, metav1.ConditionFalse, reason,
 			"Agent execution requires an AI Gateway binding and a supported Chart")
 	}
-	return ctrl.Result{RequeueAfter: 30 * time.Second}, errors.Join(stopErr, r.updateStatus(ctx, agent))
+	// A failed stop or status write is retried by the error rate limiter;
+	// controller-runtime ignores RequeueAfter with an error.
+	if err := errors.Join(stopErr, r.updateStatus(ctx, agent)); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
 // Suspension blocks an existing key without provisioning a new one or consulting

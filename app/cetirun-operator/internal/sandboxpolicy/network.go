@@ -50,18 +50,18 @@ func canonicalCustomIngress(input *CustomIngress) (*CustomIngress, error) {
 		return nil, nil
 	}
 	if input.Port < 1 || input.Port > 65535 || (!input.WebUI && len(input.ChatCallers) == 0) {
-		return nil, fmt.Errorf("%w: Custom ingress requires a typed HTTP port and an exposure mode", ErrUnsupportedControl)
+		return nil, controlFailure(ErrUnsupportedControl, "Custom ingress requires a typed HTTP port and an exposure mode")
 	}
 	copy := *input
 	copy.ChatCallers = nil
 	for _, caller := range input.ChatCallers {
 		if len(validation.IsDNS1123Label(caller.Namespace)) != 0 || len(caller.PodLabels) == 0 || len(caller.PodLabels) > 16 {
-			return nil, fmt.Errorf("%w: Custom Chat callers require a bounded namespace and Pod selector", ErrUnsupportedControl)
+			return nil, controlFailure(ErrUnsupportedControl, "Custom Chat callers require a bounded namespace and Pod selector")
 		}
 		labels := make(map[string]string, len(caller.PodLabels))
 		for key, value := range caller.PodLabels {
 			if len(validation.IsQualifiedName(key)) != 0 || len(validation.IsValidLabelValue(value)) != 0 || value == "" || key == "io.kubernetes.pod.namespace" {
-				return nil, fmt.Errorf("%w: Custom Chat caller selector is invalid", ErrUnsupportedControl)
+				return nil, controlFailure(ErrUnsupportedControl, "Custom Chat caller selector is invalid")
 			}
 			labels[key] = value
 		}
@@ -80,7 +80,7 @@ func canonicalTerminalIngress(input *TerminalIngress) (*TerminalIngress, error) 
 		return nil, nil
 	}
 	if input.Port < 1024 || input.Port > 65535 {
-		return nil, fmt.Errorf("%w: Custom terminal requires an unprivileged TCP port", ErrUnsupportedControl)
+		return nil, controlFailure(ErrUnsupportedControl, "Custom terminal requires an unprivileged TCP port")
 	}
 	return &TerminalIngress{Port: input.Port}, nil
 }
@@ -103,78 +103,78 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 	}
 	if capabilities.Profile == sandbox.ProfileNativeSingleStart {
 		if adapter.Name != Cilium || adapter.Qualified || adapter.Revision == "" {
-			return platform, fmt.Errorf("%w: native single-start requires an explicitly revisioned cilium adapter without full qualification", ErrUnsupportedControl)
+			return platform, controlFailure(ErrUnsupportedControl, "native single-start requires an explicitly revisioned cilium adapter without full qualification")
 		}
 		if errs := sandbox.CheckNetworkCapabilities(capabilities); len(errs) != 0 {
 			return platform, fmt.Errorf("%w: %v", ErrUnsupportedControl, errs.ToAggregate())
 		}
 		if !capabilities.KubernetesAccess && len(platform.Grants) != 0 {
-			return platform, fmt.Errorf("%w: native Kubernetes grants require explicitly registered support", ErrUnsupportedControl)
+			return platform, controlFailure(ErrUnsupportedControl, "native Kubernetes grants require explicitly registered support")
 		}
 		if len(platform.Identities) != 0 || platform.KubernetesAudience != "" || platform.TokenExpirationSeconds != 0 {
 			if !capabilities.KubernetesAccess && !capabilities.EntraID {
-				return platform, fmt.Errorf("%w: native identity requires explicitly registered Kubernetes or Entra support", ErrUnsupportedControl)
+				return platform, controlFailure(ErrUnsupportedControl, "native identity requires explicitly registered Kubernetes or Entra support")
 			}
 			if err := ValidateIdentityApprovals(platform.Identities); err != nil {
 				return platform, err
 			}
 			for _, identity := range platform.Identities {
 				if (identity.Kubernetes && !capabilities.KubernetesAccess) || (identity.Entra != nil && !capabilities.EntraID) {
-					return platform, fmt.Errorf("%w: native identity exceeds its registered Kubernetes or Entra support", ErrUnsupportedControl)
+					return platform, controlFailure(ErrUnsupportedControl, "native identity exceeds its registered Kubernetes or Entra support")
 				}
 			}
 		}
 	} else if adapter.Name != AzureCNIOverlayCilium || !adapter.Qualified || adapter.Revision == "" {
-		return platform, fmt.Errorf("%w: no qualified candidate adapter registration", ErrUnsupportedControl)
+		return platform, controlFailure(ErrUnsupportedControl, "no qualified candidate adapter registration")
 	}
 	if capabilities.BlockedFQDNs {
 		if capabilities.Profile != sandbox.ProfileNativeSingleStart || platform.EgressSNI == nil {
-			return platform, fmt.Errorf("%w: observed-SNI capture requires the common executor and explicit image registration", ErrUnsupportedControl)
+			return platform, controlFailure(ErrUnsupportedControl, "observed-SNI capture requires the common executor and explicit image registration")
 		}
 		if err := platform.EgressSNI.Validate(); err != nil {
 			return platform, fmt.Errorf("%w: %v", ErrUnavailable, err)
 		}
 		if platform.IngressMTLS != nil && platform.EgressSNI.EnvoyImage != platform.IngressMTLS.Image {
-			return platform, fmt.Errorf("%w: ingress and egress registrations must share one Envoy image", ErrConflict)
+			return platform, controlFailure(ErrConflict, "ingress and egress registrations must share one Envoy image")
 		}
 	} else if platform.EgressSNI != nil {
-		return platform, fmt.Errorf("%w: observed-SNI registration requires declared capture support", ErrUnsupportedControl)
+		return platform, controlFailure(ErrUnsupportedControl, "observed-SNI registration requires declared capture support")
 	}
 	if capabilities.MutualTLS && capabilities.Profile != sandbox.ProfileNativeSingleStart {
-		return platform, fmt.Errorf("%w: this adapter has no qualified ingress mTLS implementation", ErrUnsupportedControl)
+		return platform, controlFailure(ErrUnsupportedControl, "this adapter has no qualified ingress mTLS implementation")
 	}
 	if platform.IngressMTLS != nil {
 		if capabilities.Profile != sandbox.ProfileNativeSingleStart || !capabilities.MutualTLS {
-			return platform, fmt.Errorf("%w: mTLS registration requires native endpoint support", ErrUnsupportedControl)
+			return platform, controlFailure(ErrUnsupportedControl, "mTLS registration requires native endpoint support")
 		}
 		if err := platform.IngressMTLS.Validate(); err != nil {
 			return platform, fmt.Errorf("%w: %v", ErrUnavailable, err)
 		}
 	} else if capabilities.MutualTLS {
-		return platform, fmt.Errorf("%w: mTLS support requires explicit certificate and endpoint registration", ErrUnavailable)
+		return platform, controlFailure(ErrUnavailable, "mTLS support requires explicit certificate and endpoint registration")
 	}
 	if !adapter.Available {
-		return platform, fmt.Errorf("%w: the registered network adapter is unavailable", ErrUnavailable)
+		return platform, controlFailure(ErrUnavailable, "the registered network adapter is unavailable")
 	}
 	if !slices.Contains(capabilities.Protocols, corev1.ProtocolTCP) || !slices.Contains(capabilities.Protocols, corev1.ProtocolUDP) {
-		return platform, fmt.Errorf("%w: DNS requires both TCP and UDP", ErrUnsupportedControl)
+		return platform, controlFailure(ErrUnsupportedControl, "DNS requires both TCP and UDP")
 	}
 	if len(capabilities.IPFamilies) == 0 {
-		return platform, fmt.Errorf("%w: at least one IP family is required", ErrUnsupportedControl)
+		return platform, controlFailure(ErrUnsupportedControl, "at least one IP family is required")
 	}
 	for _, family := range capabilities.IPFamilies {
 		if family != corev1.IPv4Protocol && family != corev1.IPv6Protocol {
-			return platform, fmt.Errorf("%w: unknown IP family in registration", ErrUnsupportedControl)
+			return platform, controlFailure(ErrUnsupportedControl, "unknown IP family in registration")
 		}
 	}
 	for _, protocol := range capabilities.Protocols {
 		if !slices.Contains([]corev1.Protocol{corev1.ProtocolTCP, corev1.ProtocolUDP, corev1.ProtocolSCTP}, protocol) {
-			return platform, fmt.Errorf("%w: unknown protocol in registration", ErrUnsupportedControl)
+			return platform, controlFailure(ErrUnsupportedControl, "unknown protocol in registration")
 		}
 	}
 	topology := &platform.Topology
 	if topology.Revision == "" || !topology.ManagedPeersComplete {
-		return platform, fmt.Errorf("%w: a revisioned complete managed-peer inventory is required", ErrUnavailable)
+		return platform, controlFailure(ErrUnavailable, "a revisioned complete managed-peer inventory is required")
 	}
 	for _, inventory := range []struct {
 		name   string
@@ -197,15 +197,15 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 		*values = sortedUnique(*values)
 	}
 	if len(topology.DNS) == 0 || len(topology.Gateway) == 0 {
-		return platform, fmt.Errorf("%w: required DNS and Gateway bindings must be resolved", ErrUnavailable)
+		return platform, controlFailure(ErrUnavailable, "required DNS and Gateway bindings must be resolved")
 	}
 	normalizeIP := func(raw string) (string, error) {
 		address, err := netip.ParseAddr(raw)
 		if err != nil || address.Is4In6() || address.Zone() != "" {
-			return "", fmt.Errorf("%w: a resolved endpoint contains an invalid IP address", ErrUnavailable)
+			return "", controlFailure(ErrUnavailable, "a resolved endpoint contains an invalid IP address")
 		}
 		if !supportedFamily(address, capabilities) {
-			return "", fmt.Errorf("%w: a resolved IP family is not qualified", ErrUnsupportedControl)
+			return "", controlFailure(ErrUnsupportedControl, "a resolved IP family is not qualified")
 		}
 		return address.String(), nil
 	}
@@ -213,16 +213,16 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 		if len(validation.IsDNS1123Subdomain(peer.Name)) != 0 || peer.UID == "" ||
 			len(validation.IsValidLabelValue(string(peer.UID))) != 0 ||
 			(peer.Namespace != "" && len(validation.IsDNS1123Label(peer.Namespace)) != 0) {
-			return fmt.Errorf("%w: peers require names, immutable UIDs and valid namespaces", ErrUnavailable)
+			return controlFailure(ErrUnavailable, "peers require names, immutable UIDs and valid namespaces")
 		}
 		if len(peer.PodSelector) != 0 {
 			if capabilities.Profile != sandbox.ProfileNativeSingleStart || peer.Namespace == "" {
-				return fmt.Errorf("%w: Pod selectors require a native namespaced peer", ErrUnsupportedControl)
+				return controlFailure(ErrUnsupportedControl, "Pod selectors require a native namespaced peer")
 			}
 			for key, value := range peer.PodSelector {
 				if len(validation.IsQualifiedName(key)) != 0 || len(validation.IsValidLabelValue(value)) != 0 ||
 					key == "io.kubernetes.pod.namespace" {
-					return fmt.Errorf("%w: Pod selectors require valid Pod labels, not namespace identity overrides", ErrUnsupportedControl)
+					return controlFailure(ErrUnsupportedControl, "Pod selectors require valid Pod labels, not namespace identity overrides")
 				}
 			}
 			if len(peer.IPs) == 0 {
@@ -230,7 +230,7 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 			}
 		}
 		if len(peer.IPs) == 0 {
-			return fmt.Errorf("%w: IP-bound peers require resolved IPs", ErrUnavailable)
+			return controlFailure(ErrUnavailable, "IP-bound peers require resolved IPs")
 		}
 		for i, raw := range peer.IPs {
 			address, err := normalizeIP(raw)
@@ -247,13 +247,13 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 			return nil
 		}
 		if len(peer.IPs) == 0 {
-			return fmt.Errorf("%w: selector-bound DNS and Gateway peers require Service IPs", ErrUnavailable)
+			return controlFailure(ErrUnavailable, "selector-bound DNS and Gateway peers require Service IPs")
 		}
 		for _, raw := range peer.IPs {
 			ip := netip.MustParseAddr(raw)
 			prefix := netip.PrefixFrom(ip, ip.BitLen())
 			if !containedByAny(prefix, topology.ServiceCIDRs) || overlapsAny(prefix, topology.PodCIDRs) {
-				return fmt.Errorf("%w: selector-bound DNS and Gateway peers must pin Service IPs, not Pod or external IPs", ErrUnsupportedControl)
+				return controlFailure(ErrUnsupportedControl, "selector-bound DNS and Gateway peers must pin Service IPs, not Pod or external IPs")
 			}
 		}
 		return nil
@@ -271,7 +271,7 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 		}
 	}
 	if len(topology.DNSResolverIPs) == 0 {
-		return platform, fmt.Errorf("%w: explicit Pod DNS resolver addresses are required", ErrUnavailable)
+		return platform, controlFailure(ErrUnavailable, "explicit Pod DNS resolver addresses are required")
 	}
 	for i, raw := range topology.DNSResolverIPs {
 		address, err := normalizeIP(raw)
@@ -279,13 +279,13 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 			return platform, err
 		}
 		if !dnsIPs[address] {
-			return platform, fmt.Errorf("%w: each Pod resolver must belong to an approved DNS peer", ErrUnavailable)
+			return platform, controlFailure(ErrUnavailable, "each Pod resolver must belong to an approved DNS peer")
 		}
 		topology.DNSResolverIPs[i] = address
 	}
 	topology.DNSResolverIPs = sortedUnique(topology.DNSResolverIPs)
 	if len(topology.DNSResolverIPs) > 3 {
-		return platform, fmt.Errorf("%w: the protected Pod can configure at most three DNS server IPs", ErrUnsupportedControl)
+		return platform, controlFailure(ErrUnsupportedControl, "the protected Pod can configure at most three DNS server IPs")
 	}
 	topology.DNS, err = canonicalObjects(topology.DNS)
 	if err != nil {
@@ -309,14 +309,14 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 				return platform, err
 			}
 			if len(dest.TrustedProxyCIDRs) != 0 && (!group.ingress || len(dest.Peer.PodSelector) == 0) {
-				return platform, fmt.Errorf("%w: proxy CIDRs require a selector-bound native ingress peer", ErrUnsupportedControl)
+				return platform, controlFailure(ErrUnsupportedControl, "proxy CIDRs require a selector-bound native ingress peer")
 			}
 			if len(dest.Peer.PodSelector) != 0 && group.ingress {
 				if len(dest.Peer.IPs) != 0 {
-					return platform, fmt.Errorf("%w: selector-bound ingress must not pin Pod IPs", ErrUnsupportedControl)
+					return platform, controlFailure(ErrUnsupportedControl, "selector-bound ingress must not pin Pod IPs")
 				}
 				if len(dest.TrustedProxyCIDRs) == 0 {
-					return platform, fmt.Errorf("%w: selector-bound ingress requires explicit trusted proxy Pod CIDRs", ErrUnavailable)
+					return platform, controlFailure(ErrUnavailable, "selector-bound ingress requires explicit trusted proxy Pod CIDRs")
 				}
 				for j, raw := range dest.TrustedProxyCIDRs {
 					prefix, err := parsePrefix(raw, capabilities)
@@ -325,14 +325,14 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 					}
 					if err := ValidateProxyTrust(prefix.String()); err != nil ||
 						!containedByAny(prefix, topology.PodCIDRs) || overlapsAny(prefix, proxyExclusions) {
-						return platform, fmt.Errorf("%w: trusted proxy CIDRs must be bounded Pod networks excluding services, nodes, management and metadata", ErrUnsupportedControl)
+						return platform, controlFailure(ErrUnsupportedControl, "trusted proxy CIDRs must be bounded Pod networks excluding services, nodes, management and metadata")
 					}
 					dest.TrustedProxyCIDRs[j] = prefix.String()
 				}
 				dest.TrustedProxyCIDRs = sortedUnique(dest.TrustedProxyCIDRs)
 			} else if len(dest.Peer.PodSelector) != 0 {
 				if !group.serviceSelectors {
-					return platform, fmt.Errorf("%w: Pod selectors are supported only for native DNS, Gateway and ingress", ErrUnsupportedControl)
+					return platform, controlFailure(ErrUnsupportedControl, "Pod selectors are supported only for native DNS, Gateway and ingress")
 				}
 				if err := validateServiceSelector(dest.Peer); err != nil {
 					return platform, err
@@ -377,7 +377,7 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 	}
 	for _, peer := range topology.Peers {
 		if len(peer.PodSelector) != 0 {
-			return platform, fmt.Errorf("%w: Pod selectors must be registered as native DNS, Gateway or ingress destinations", ErrUnsupportedControl)
+			return platform, controlFailure(ErrUnsupportedControl, "Pod selectors must be registered as native DNS, Gateway or ingress destinations")
 		}
 	}
 	allPeers := slices.Clone(topology.Peers)
@@ -399,12 +399,12 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 	seenUIDs, seenIPs := map[string]bool{}, map[string]string{}
 	for _, peer := range allPeers {
 		if seenUIDs[string(peer.UID)] {
-			return platform, fmt.Errorf("%w: a peer UID has inconsistent resolved membership", ErrUnavailable)
+			return platform, controlFailure(ErrUnavailable, "a peer UID has inconsistent resolved membership")
 		}
 		seenUIDs[string(peer.UID)] = true
 		for _, ip := range peer.IPs {
 			if uid, exists := seenIPs[ip]; exists && uid != string(peer.UID) {
-				return platform, fmt.Errorf("%w: an IP is shared by distinct peer identities", ErrUnavailable)
+				return platform, controlFailure(ErrUnavailable, "an IP is shared by distinct peer identities")
 			}
 			seenIPs[ip] = string(peer.UID)
 		}
@@ -479,10 +479,10 @@ func compileNetwork(input CompileInput, tlsPlan ...*ingressmtls.Plan) (NetworkPl
 			return plan, err
 		}
 		if !containedByAny(prefix, internal) {
-			return plan, fmt.Errorf("%w: internal exceptions must be within registered internal networks", ErrUnsupportedControl)
+			return plan, controlFailure(ErrUnsupportedControl, "internal exceptions must be within registered internal networks")
 		}
 		if overlapsAny(prefix, hardDenied) {
-			return plan, fmt.Errorf("%w: internal exceptions cannot include management, metadata or nodes", ErrConflict)
+			return plan, controlFailure(ErrConflict, "internal exceptions cannot include management, metadata or nodes")
 		}
 		ports, err := canonicalPorts(rule.Ports, capabilities)
 		if err != nil {
@@ -494,11 +494,11 @@ func compileNetwork(input CompileInput, tlsPlan ...*ingressmtls.Plan) (NetworkPl
 			// Cilium does not support SCTP pod-to-VIP policies. Native SCTP
 			// grants target direct endpoints, never Service or API exceptions.
 			if overlapsAny(prefix, topology.ServiceCIDRs) {
-				return plan, fmt.Errorf("%w: native SCTP internal exceptions cannot include Service VIP ranges", ErrUnsupportedControl)
+				return plan, controlFailure(ErrUnsupportedControl, "native SCTP internal exceptions cannot include Service VIP ranges")
 			}
 			for _, destination := range topology.KubernetesAPI {
 				if overlapsAny(prefix, peerCIDRs(destination.Peer)) {
-					return plan, fmt.Errorf("%w: native SCTP internal exceptions cannot include Kubernetes API destinations", ErrConflict)
+					return plan, controlFailure(ErrConflict, "native SCTP internal exceptions cannot include Kubernetes API destinations")
 				}
 			}
 		}
@@ -518,19 +518,19 @@ func compileNetwork(input CompileInput, tlsPlan ...*ingressmtls.Plan) (NetworkPl
 	}
 	if policy.KubernetesAccess != nil {
 		if len(topology.KubernetesAPI) == 0 {
-			return plan, fmt.Errorf("%w: explicit Kubernetes access requires resolved API destinations", ErrUnavailable)
+			return plan, controlFailure(ErrUnavailable, "explicit Kubernetes access requires resolved API destinations")
 		}
 		required = append(required, topology.KubernetesAPI...)
 	}
 	for _, destination := range required {
 		for _, port := range destination.Ports {
 			if slices.Contains(blockedPorts, port) {
-				return plan, fmt.Errorf("%w: a blocked port prevents required DNS, Gateway or Kubernetes API access", ErrConflict)
+				return plan, controlFailure(ErrConflict, "a blocked port prevents required DNS, Gateway or Kubernetes API access")
 			}
 			if port.Port == 53 && (port.Protocol == corev1.ProtocolTCP || port.Protocol == corev1.ProtocolUDP) {
 				for _, ip := range destination.Peer.IPs {
 					if !slices.Contains(dnsIPs, ip) {
-						return plan, fmt.Errorf("%w: port 53 is reserved to the approved DNS peers", ErrConflict)
+						return plan, controlFailure(ErrConflict, "port 53 is reserved to the approved DNS peers")
 					}
 				}
 			}
@@ -539,11 +539,11 @@ func compileNetwork(input CompileInput, tlsPlan ...*ingressmtls.Plan) (NetworkPl
 			ip := netip.MustParseAddr(raw)
 			prefix := netip.PrefixFrom(ip, ip.BitLen())
 			if overlapsAny(prefix, hardDenied) {
-				return plan, fmt.Errorf("%w: a required destination overlaps management, metadata or node exclusions", ErrConflict)
+				return plan, controlFailure(ErrConflict, "a required destination overlaps management, metadata or node exclusions")
 			}
 			for _, blocked := range blockedCIDRs {
 				if blocked.Contains(ip) {
-					return plan, fmt.Errorf("%w: a blocked CIDR prevents required DNS, Gateway or Kubernetes API access", ErrConflict)
+					return plan, controlFailure(ErrConflict, "a blocked CIDR prevents required DNS, Gateway or Kubernetes API access")
 				}
 			}
 			grants = append(grants, addressGrant{prefix, destination.Ports})
@@ -553,7 +553,7 @@ func compileNetwork(input CompileInput, tlsPlan ...*ingressmtls.Plan) (NetworkPl
 				// Changing backend IPs cannot be mapped to stable endpoint denies.
 				// Reject this combination rather than bypass a Pod CIDR restriction.
 				if overlapsAny(blocked, topology.PodCIDRs) {
-					return plan, fmt.Errorf("%w: blocked Pod CIDRs cannot be enforced on selector-bound service backends", ErrUnsupportedControl)
+					return plan, controlFailure(ErrUnsupportedControl, "blocked Pod CIDRs cannot be enforced on selector-bound service backends")
 				}
 			}
 		}
@@ -691,7 +691,7 @@ func compileNetwork(input CompileInput, tlsPlan ...*ingressmtls.Plan) (NetworkPl
 		}
 	} else {
 		if len(topology.Ingress) == 0 {
-			return plan, fmt.Errorf("%w: authenticated ingress requires a registered authenticating Gateway", ErrUnavailable)
+			return plan, controlFailure(ErrUnavailable, "authenticated ingress requires a registered authenticating Gateway")
 		}
 		var ingressPeers []Peer
 		for _, destination := range topology.Ingress {
@@ -705,7 +705,7 @@ func compileNetwork(input CompileInput, tlsPlan ...*ingressmtls.Plan) (NetworkPl
 				}
 			}
 			if destination.Peer.Namespace == "" {
-				return plan, fmt.Errorf("%w: authenticated ingress requires protected managed Gateway identities", ErrUnsupportedControl)
+				return plan, controlFailure(ErrUnsupportedControl, "authenticated ingress requires protected managed Gateway identities")
 			}
 			if input.NativeExecution {
 				if len(destination.Peer.PodSelector) != 0 {
@@ -713,7 +713,7 @@ func compileNetwork(input CompileInput, tlsPlan ...*ingressmtls.Plan) (NetworkPl
 				} else {
 					for _, ip := range destination.Peer.IPs {
 						if !netip.MustParseAddr(ip).IsGlobalUnicast() {
-							return plan, fmt.Errorf("%w: native proxy trust requires unicast ingress peer IPs", ErrUnsupportedControl)
+							return plan, controlFailure(ErrUnsupportedControl, "native proxy trust requires unicast ingress peer IPs")
 						}
 						plan.TrustedProxyIPs = append(plan.TrustedProxyIPs, ip)
 					}
@@ -815,7 +815,7 @@ func compileTerminalNetwork(input CompileInput, terminal TerminalIngress) (*Cili
 	// controller-issued ServiceAccount token. Do not render a terminal policy
 	// until the platform snapshot has explicitly resolved that destination.
 	if len(topology.KubernetesAPI) == 0 {
-		return nil, fmt.Errorf("%w: terminal requires resolved Kubernetes API destinations", ErrUnavailable)
+		return nil, controlFailure(ErrUnavailable, "terminal requires resolved Kubernetes API destinations")
 	}
 	spec := CiliumPolicySpec{
 		EndpointSelector: metav1.LabelSelector{MatchLabels: map[string]string{
@@ -850,7 +850,7 @@ func compileTerminalNetwork(input CompileInput, terminal TerminalIngress) (*Cili
 			}
 			cidrs := peerCIDRs(destination.Peer)
 			if len(cidrs) == 0 {
-				return nil, fmt.Errorf("%w: terminal ingress requires resolved Gateway addresses", ErrUnavailable)
+				return nil, controlFailure(ErrUnavailable, "terminal ingress requires resolved Gateway addresses")
 			}
 			spec.Ingress = append(spec.Ingress, IngressRule{FromCIDRSet: cidrRules(cidrs), ToPorts: ports})
 		}
@@ -905,7 +905,7 @@ func parsePrefix(raw string, capabilities sandbox.Capabilities) (netip.Prefix, e
 		return netip.Prefix{}, fmt.Errorf("invalid network CIDR")
 	}
 	if !supportedFamily(prefix.Addr(), capabilities) {
-		return netip.Prefix{}, fmt.Errorf("%w: a CIDR IP family is not qualified", ErrUnsupportedControl)
+		return netip.Prefix{}, controlFailure(ErrUnsupportedControl, "a CIDR IP family is not qualified")
 	}
 	return prefix.Masked(), nil
 }
@@ -1013,7 +1013,7 @@ func canonicalPortsOptional(ports []api.AgentPolicyPort, capabilities sandbox.Ca
 
 func canonicalPorts(ports []api.AgentPolicyPort, capabilities sandbox.Capabilities) ([]api.AgentPolicyPort, error) {
 	if len(ports) == 0 {
-		return nil, fmt.Errorf("%w: every destination requires explicit ports", ErrUnavailable)
+		return nil, controlFailure(ErrUnavailable, "every destination requires explicit ports")
 	}
 	result := slices.Clone(ports)
 	for i := range result {
@@ -1026,7 +1026,7 @@ func canonicalPorts(ports []api.AgentPolicyPort, capabilities sandbox.Capabiliti
 		}
 		if !slices.Contains([]corev1.Protocol{corev1.ProtocolTCP, corev1.ProtocolUDP, corev1.ProtocolSCTP}, port.Protocol) ||
 			!slices.Contains(capabilities.Protocols, port.Protocol) {
-			return nil, fmt.Errorf("%w: destination protocol is not qualified", ErrUnsupportedControl)
+			return nil, controlFailure(ErrUnsupportedControl, "destination protocol is not qualified")
 		}
 	}
 	return canonicalObjects(result)
@@ -1194,7 +1194,7 @@ func managedPeerPorts(peer Peer, grants []addressGrant, blocks []netip.Prefix, b
 			return nil, err
 		}
 		if i > 0 && !slices.Equal(ports, previous) {
-			return nil, fmt.Errorf("%w: managed peer addresses require inconsistent controls", ErrUnsupportedControl)
+			return nil, controlFailure(ErrUnsupportedControl, "managed peer addresses require inconsistent controls")
 		}
 		previous = ports
 	}
@@ -1233,7 +1233,7 @@ func partitionGrants(grants []addressGrant, capabilities sandbox.Capabilities) (
 		}
 		if !partial {
 			if len(result) == MaxNetworkRules/2 {
-				return fmt.Errorf("%w: partitioned grants exceed the network rule budget", ErrConflict)
+				return controlFailure(ErrConflict, "partitioned grants exceed the network rule budget")
 			}
 			canonical, err := canonicalObjects(ports)
 			if err != nil {

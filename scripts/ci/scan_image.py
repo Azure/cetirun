@@ -22,6 +22,7 @@ IMAGES = (
     "cetirun-terminal:validation",
     "cetirun-portal:validation",
     "cetirun-agent-broker:validation",
+    "cetirun-observability:validation",
 )
 
 

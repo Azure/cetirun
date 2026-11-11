@@ -64,9 +64,100 @@ func (r *AgentReconciler) usesReconciledSandbox(ctx context.Context, agent *api.
 	return receipt.Reconciled, nil
 }
 
+// suspendUnbootstrappedReconciledSandbox confirms the one case where a
+// policy-bound Agent may be suspended before it has persistent HOME: no owned
+// execution lifetime was ever created. It must run before policy resolution or
+// bootstrap, because those paths can otherwise create the very evidence this
+// check relies on. A confirmed existing lifetime falls through to normal stop
+// handling. Any other durable or historical evidence is held Pending: it is
+// unsafe to call bootstrap until an operator has resolved that evidence.
+func (r *AgentReconciler) suspendUnbootstrappedReconciledSandbox(ctx context.Context, agent *api.Agent) (bool, ctrl.Result, error) {
+	if !agent.Spec.Suspended || agent.Spec.SandboxRef == "" || agent.Spec.RestartRequestID != "" ||
+		agent.Status.ObservedRestartRequestID != "" || agent.Spec.PlannedMigration != nil || agent.Status.PlannedMigration != nil ||
+		controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) {
+		return false, ctrl.Result{}, nil
+	}
+	// A protected receipt may describe either a completed lifetime or an
+	// interrupted write. A complete inventory proof remains required before a
+	// suspended lifetime can be treated as verified.  Stopping is narrower:
+	// once the recorded namespace identity is confirmed, independently-owned
+	// workload shutdown and Gateway key blocking must not be delayed by an
+	// unrelated bootstrap inventory drift such as an operator Role update.
+	// Otherwise do not touch a replacement namespace.
+	if controllerutil.ContainsFinalizer(agent, sandbox.BootstrapFinalizer) {
+		if err := r.verifySuspendedReconciledLifetime(ctx, agent); err != nil {
+			return r.holdUnbootstrappedSuspension(ctx, agent)
+		}
+		return false, ctrl.Result{}, nil
+	}
+	namespace := &corev1.Namespace{}
+	if err := r.customReader().Get(ctx, client.ObjectKey{Name: instanceNamespace(agent.Name)}, namespace); err == nil {
+		return false, ctrl.Result{}, nil
+	} else if !apierrors.IsNotFound(err) {
+		return r.holdUnbootstrappedSuspension(ctx, agent)
+	}
+	for _, key := range []client.ObjectKey{
+		r.sandboxBootstrapKey(agent),
+		r.sandboxPreparationKey(agent),
+		{Namespace: r.sandboxGrantJournal().Namespace, Name: sandboxpolicy.GrantJournalName(agent.UID)},
+	} {
+		object := &corev1.ConfigMap{}
+		if err := r.customReader().Get(ctx, key, object); err == nil {
+			return r.holdUnbootstrappedSuspension(ctx, agent)
+		} else if !apierrors.IsNotFound(err) {
+			return r.holdUnbootstrappedSuspension(ctx, agent)
+		}
+	}
+	if preBootstrapSuspensionHasHistory(agent) {
+		return r.holdUnbootstrappedSuspension(ctx, agent)
+	}
+	agent.Status.Phase, agent.Status.AccessURL = api.PhaseSuspended, ""
+	agent.Status.ObservedGeneration = agent.Generation
+	for _, condition := range []string{api.ConditionReady, api.ConditionPodReady, api.ConditionSandboxReady, api.ConditionIngressReady} {
+		setCondition(&agent.Status.Conditions, condition, metav1.ConditionFalse,
+			"Suspended", "Suspension is confirmed before Sandbox bootstrap; provisioning waits for resume")
+	}
+	return true, ctrl.Result{RequeueAfter: 15 * time.Second}, r.updateStatus(ctx, agent)
+}
+
+// holdUnbootstrappedSuspension records an incomplete pause without creating a
+// finalizer, contacting external services, or touching runtime resources. It
+// handles receipt-before-finalizer interruptions and lost historical evidence
+// conservatively: resuming is the explicit path that permits bootstrap again.
+func (r *AgentReconciler) holdUnbootstrappedSuspension(ctx context.Context, agent *api.Agent) (bool, ctrl.Result, error) {
+	agent.Status.Phase, agent.Status.AccessURL = api.PhasePending, ""
+	for _, condition := range []string{api.ConditionReady, api.ConditionPodReady, api.ConditionSandboxReady, api.ConditionIngressReady} {
+		setCondition(&agent.Status.Conditions, condition, metav1.ConditionFalse,
+			"SuspensionPending", "Suspension requested; bootstrap evidence is incomplete")
+	}
+	return true, ctrl.Result{RequeueAfter: 15 * time.Second}, r.updateStatus(ctx, agent)
+}
+
+func preBootstrapSuspensionHasHistory(agent *api.Agent) bool {
+	if agent.Status.Namespace != "" || agent.Status.HelmReleaseName != "" ||
+		agent.Status.AIGateway != nil || agent.Status.Sandbox != nil ||
+		agent.Status.HelmMaintenance != nil || agent.Status.RegistryCredentials != nil ||
+		agent.Status.Phase == api.PhaseReady {
+		return true
+	}
+	for _, condition := range []string{api.ConditionReady, api.ConditionPodReady, api.ConditionSandboxReady, api.ConditionIngressReady, api.ConditionHelmDeployed} {
+		if isConditionTrue(agent.Status.Conditions, condition) {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *AgentReconciler) bootstrapReconciledSandbox(ctx context.Context, agent *api.Agent) error {
 	if r.SandboxPreparation.bootstrap == nil {
 		return fmt.Errorf("Sandbox reconciliation requires owned bootstrap")
+	}
+	// Suspension never advances bootstrap. A complete receipt is sufficient for
+	// the read-only verification this caller needs while the normal stop path
+	// converges. A missing or partial receipt is held by the caller instead of
+	// creating the next namespace, HOME, Secret, or workload object.
+	if agent.Spec.Suspended {
+		return r.verifySuspendedReconciledBootstrap(ctx, agent)
 	}
 	attempt, err := r.resolveSandboxInputs(ctx, agent, false, true)
 	if err != nil {
@@ -1099,7 +1190,11 @@ func (r *AgentReconciler) holdReconciledSandboxWithStatus(ctx context.Context, a
 		}
 	}
 	failures = append(failures, r.updateStatus(ctx, agent))
-	return ctrl.Result{RequeueAfter: 15 * time.Second}, errors.Join(failures...)
+	// controller-runtime ignores RequeueAfter with an error.
+	if err := errors.Join(failures...); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 }
 
 func (r *AgentReconciler) stopReconciledSandboxForSuspension(ctx context.Context, agent *api.Agent) error {
