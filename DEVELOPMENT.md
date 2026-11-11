@@ -188,6 +188,25 @@ the command with `GOPROXY=off GOTOOLCHAIN=local GOFLAGS=-mod=readonly`. If a
 toolchain or dependency is not available, make sure that the check fails and
 does not start an implicit download.
 
+### CetiAdmin binding cleanup
+
+Focused offline checks for deleting an Agent with an existing exec-admin binding:
+
+```bash
+go -C app/cetirun-operator test ./internal/admission ./internal/controller -run '^TestCetiAdmin' -count=1
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestCetiAdminBoundAgentDeletionAPIServer$' -count=1
+```
+
+The API-server regression uses the rendered control-plane admission contract
+and real RBAC to delete suspended Custom, OpenClaw, and Hermes Agents with
+retained old image and Chart pins and a previous native-auth rotation marker.
+It checks binding withdrawal while the Agent is still deleting, rejects
+binding edits by an ordinary Portal identity, and runs normal Operator
+finalizer cleanup. It simulates the Kubernetes
+namespace/PVC controllers that envtest does not run; it does not qualify
+physical storage reclamation, runtime images, or live cluster behavior.
+
 ### Custom terminal
 
 The Custom terminal uses its own image and

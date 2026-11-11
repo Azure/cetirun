@@ -432,6 +432,20 @@ access does not grant a CetiAdmin exec exception or Secret reads or writes.
 Pod, log, and Event diagnostics remain available. Ordinary runtime namespace
 Secret permissions are unchanged.
 
+An authorized administrator or Portal can delete an ordinary Agent that has
+an Operator-managed CetiAdmin exec binding, including a suspended retained
+Agent or one with a retained native-auth rotation marker. The Operator
+withdraws that binding and performs normal finalizer and namespace cleanup.
+CetiAdmin's runtime identity cannot delete Agents, and
+other callers cannot add, replace, or remove the protected binding annotation.
+The installed CetiAdmin Agent remains protected by its installation lifecycle.
+
+For installations affected by a binding-protection rejection on Agent DELETE,
+upgrade both the Operator and admission server to a release containing the
+fix, then retry normal deletion. Existing Agents can keep their pinned runtime
+images and Charts; no runtime restart, binding-annotation patch, or manual
+finalizer removal is needed for this repair.
+
 When Copilot is enabled, the configured Portal authoring identity can record
 the owner's Copilot model list, sign-in generation, and sign-in timestamp on
 the installed CetiAdmin Agent. This exception changes only those annotations.
