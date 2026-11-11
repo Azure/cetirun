@@ -676,7 +676,7 @@ func TestDeployedAgentStillRejectsOtherPreparationFailures(t *testing.T) {
 			err: &helm.ChartDownloadError{Chart: "oci://registry.example.com/helm/cetirun:0.1.29", Version: "0.1.29",
 				Err: errors.New("synthetic registry outage")},
 			specChange: true,
-			want:       "Agent chart 0.1.29 could not be downloaded from the registry; the operator will retry",
+			want:       "Agent chart 0.1.29 could not be downloaded from the registry (unknown: see the operator log); the operator will retry",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
