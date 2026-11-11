@@ -10,6 +10,38 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 GO_IMAGE = re.compile(r"([a-zA-Z0-9._/-]*golang):([^\s@]+)(?:@sha256:([0-9a-f]{64}))?")
+GO_BUILDER_FROM = re.compile(
+    r"(?m)^FROM(?: --platform=\$BUILDPLATFORM)? "
+    r"(?P<image>mcr\.microsoft\.com/oss/go/microsoft/golang):"
+    r"(?P<version>[^\s@]+)@sha256:(?P<digest>[0-9a-f]{64}) AS \S+$"
+)
+MICROSOFT_GO_BOOTSTRAP_VERSION = "1.27.3-1"
+MICROSOFT_GO_BOOTSTRAP_DIGEST = "2b3c026371fe2221a588f80cfb5dbc592af1efd3be0d53297676c7f3a612a5d9"
+MICROSOFT_GO_RELEASE = "1.27.4-1"
+MICROSOFT_GO_ARCHIVES = {
+    "amd64": (
+        "https://download.visualstudio.microsoft.com/download/pr/"
+        "b32709ee-0545-4d3f-913f-bf51b626be52/"
+        "33fbba165da669d1cb19d3799e623805/go1.27.4-20261110.2.linux-amd64.tar.gz",
+        "423eee29e71d3da6b8d59f7fa080ca21f28015857af58f3da5349c264a5f3f2f",
+    ),
+    "arm64": (
+        "https://download.visualstudio.microsoft.com/download/pr/"
+        "b32709ee-0545-4d3f-913f-bf51b626be52/"
+        "a5caf67eaca4942d973c08bb1e54fa40/go1.27.4-20261110.2.linux-arm64.tar.gz",
+        "8bd381cdc3a3dc932117a3c32ac49ac8787d8a32ca4fba13ecbac890265afd3a",
+    ),
+}
+GO_BUILDERS = {
+    "app/cetirun-agent-broker/Dockerfile",
+    "app/cetirun-chart/Dockerfile.base",
+    "app/cetirun-connections-mcp/Dockerfile",
+    "app/cetirun-memory-context/Dockerfile",
+    "app/cetirun-observability/Dockerfile",
+    "app/cetirun-operator/Dockerfile",
+    "app/cetirun-operator/Dockerfile.terminal",
+    "app/cetirun-portal/Dockerfile",
+}
 
 
 class GoToolchainTests(unittest.TestCase):
@@ -28,8 +60,8 @@ class GoToolchainTests(unittest.TestCase):
 
     def test_security_floor(self):
         self.assertRegex(self.version, r"^\d+\.\d+\.\d+$")
-        # GO-2026-6809 is fixed in Go 1.27 starting with 1.27.3.
-        self.assertGreaterEqual(tuple(map(int, self.version.split("."))), (1, 27, 3))
+        # GO-2026-6859 is fixed in Go 1.27 starting with 1.27.4.
+        self.assertGreaterEqual(tuple(map(int, self.version.split("."))), (1, 27, 4))
 
     def test_module_minimums_match(self):
         modules = sorted(path for path in self.paths if path.name == "go.mod")
@@ -65,23 +97,58 @@ class GoToolchainTests(unittest.TestCase):
         for path in sorted(self.paths):
             if path.name != "Dockerfile" and not path.name.startswith("Dockerfile."):
                 continue
-            for image, version, digest in GO_IMAGE.findall(path.read_text()):
-                with self.subTest(path=path.relative_to(ROOT), image=image):
-                    self.assertEqual(image, "mcr.microsoft.com/oss/go/microsoft/golang")
-                    # A Microsoft packaging revision does not change the Go release.
-                    self.assertRegex(version, rf"^{re.escape(self.version)}(?:-\d+)?$")
-                    self.assertRegex(digest, r"^[0-9a-f]{64}$")
+            text = path.read_text()
+            builders_in_file = list(GO_BUILDER_FROM.finditer(text))
+            with self.subTest(path=path.relative_to(ROOT), check="Go builder coverage"):
+                self.assertEqual(
+                    [
+                        (builder["image"], builder["version"], builder["digest"])
+                        for builder in builders_in_file
+                    ],
+                    GO_IMAGE.findall(text),
+                    "Every Go image must be a digest-pinned Microsoft builder with "
+                    "the verified Go 1.27.4 overlay",
+                )
+            for builder in builders_in_file:
+                with self.subTest(path=path.relative_to(ROOT), image=builder["image"]):
+                    self.assertEqual(
+                        builder["image"], "mcr.microsoft.com/oss/go/microsoft/golang"
+                    )
+                    # MCR has not published the Microsoft 1.27.4 image yet. Every
+                    # builder starts from this digest-pinned Microsoft base and must
+                    # immediately replace it with the verified 1.27.4 archive below.
+                    self.assertEqual(builder["version"], MICROSOFT_GO_BOOTSTRAP_VERSION)
+                    self.assertEqual(builder["digest"], MICROSOFT_GO_BOOTSTRAP_DIGEST)
+                    overlay = self.microsoft_go_overlay()
+                    self.assertTrue(
+                        text[builder.end() :].startswith(overlay),
+                        "Go 1.27.4 overlay must immediately follow the builder FROM",
+                    )
                     builders.add(path.relative_to(ROOT).as_posix())
-                    digests.add(digest)
-        self.assertTrue(
-            {
-                "app/cetirun-chart/Dockerfile.base",
-                "app/cetirun-agent-broker/Dockerfile",
-                "app/cetirun-operator/Dockerfile",
-                "app/cetirun-portal/Dockerfile",
-            }.issubset(builders)
-        )
+                    digests.add(builder["digest"])
+        self.assertEqual(builders, GO_BUILDERS)
         self.assertEqual(len(digests), 1)
+
+    def microsoft_go_overlay(self):
+        amd64_url, amd64_sha256 = MICROSOFT_GO_ARCHIVES["amd64"]
+        arm64_url, arm64_sha256 = MICROSOFT_GO_ARCHIVES["arm64"]
+        return f'''\
+\n# Use the published Microsoft patch until its MCR image is available.
+# Pins: https://github.com/microsoft/go/releases/tag/v{MICROSOFT_GO_RELEASE}
+ENV GOLANG_VERSION=1.27.4 GOTOOLCHAIN=local
+RUN set -eu; \\
+    case "$(uname -m)" in \\
+      x86_64) go_url="{amd64_url}"; go_sha256={amd64_sha256} ;; \\
+      aarch64) go_url="{arm64_url}"; go_sha256={arm64_sha256} ;; \\
+      *) echo "Unsupported Go build architecture" >&2; exit 1 ;; \\
+    esac; \\
+    curl -fsSL --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 5 "$go_url" -o /tmp/go.tar.gz; \\
+    echo "$go_sha256  /tmp/go.tar.gz" | sha256sum --check; \\
+    rm -rf /usr/local/go; \\
+    tar xzf /tmp/go.tar.gz -C /usr/local; \\
+    rm /tmp/go.tar.gz; \\
+    test "$(go env GOVERSION)" = go{self.version}
+'''
 
     def dependabot_directories(self, ecosystem):
         text = (ROOT / ".github/dependabot.yml").read_text()

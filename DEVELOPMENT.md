@@ -66,8 +66,8 @@ still available for other mirrors. Image tags, chart versions, and the
 Install tools only for the component that you change:
 
 - Git, Bash, Make, and curl for repository commands and loopback download tests.
-- Go 1.27.3, which is the same version as `.go-version`, all module minimums,
-  and the pinned Microsoft Go builder images.
+- Go 1.27.4, which is the same version as `.go-version`, all module minimums,
+  and the checksum-pinned Microsoft Go archive installed in each builder.
 - Node.js 24 and npm for the portal frontend, as in its CI configuration.
 - Helm to lint and render charts locally.
 - Python 3 for the Operator test runner and the standard-library tests under
@@ -1190,7 +1190,13 @@ their own notices.
   modules. CI makes sure that every Go builder is discoverable and shares the
   pinned digest. A Go release upgrade must also change `.go-version` and every
   module's `go` directive to match. Grouped Docker updates do not make those
-  changes.
+  changes. Until MCR publishes the 1.27.4 image, each Go builder installs the
+  official Microsoft 1.27.4-1 archive over the digest-pinned 1.27.3-1 image.
+  The identical install blocks select the build host architecture, verify the
+  archive SHA-256, replace the old Go tree, and verify the installed version.
+  `GOTOOLCHAIN=local` prevents implicit compiler downloads. When the patched
+  MCR image is available, update all builder pins together and remove these
+  temporary install blocks and their bootstrap exception in the toolchain test.
 - Do not commit binaries, `web/dist`, `node_modules`, Python caches or virtual
   environments, coverage output, rendered secrets, or local configuration.
 - Keep third-party copyright, license, and source attribution.
