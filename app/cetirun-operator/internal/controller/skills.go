@@ -41,12 +41,12 @@ func skillsWithoutMarketplace(team *api.Team, overrides api.SkillOverrideSpec, m
 }
 
 // sandboxSkillsMode selects the empty skills source for a native Agent without
-// a published catalog whose effective selection is empty, and the skills claim
-// otherwise. With the Skill Marketplace, the claim holds the subtree of every
+// a shared skills storage selection whose effective selection is empty, and the
+// skills claim otherwise. A global catalog does not require every Team to publish. With the Skill Marketplace, the claim holds the subtree of every
 // Team, and the Agent's HOME initializer copies its Team's release from it.
-func sandboxSkillsMode(native bool, catalog string, agent *api.Agent, team *api.Team) sandboxworkload.SkillsMode {
+func sandboxSkillsMode(native bool, agent *api.Agent, team *api.Team) sandboxworkload.SkillsMode {
 	selection := computeEffectiveSkills(team, agent.Spec.SkillOverrides.Add, agent.Spec.SkillOverrides.Remove)
-	if native && catalog == "" && len(selection) == 0 {
+	if native && len(selection) == 0 && (team == nil || team.Spec.SkillStorage == nil) {
 		return sandboxworkload.SkillsModeEmpty
 	}
 	return ""

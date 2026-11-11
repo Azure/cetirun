@@ -22,7 +22,7 @@ OFFLINE = {
     "HELM_REPOSITORY_CONFIG": os.devnull,
 }
 CHARTS = ("cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart", "cetirun-ai-gateway/chart",
-          "cetirun-connections-mcp/chart")
+          "cetirun-connections-mcp/chart", "cetirun-observability/chart")
 NAMESPACE = "cetirun-system"
 WORKER = "cetirun-skill-marketplace"
 # Render-only PEM framing, not a certificate.

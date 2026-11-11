@@ -55,6 +55,7 @@ VERSION_FILES = (
     "app/cetirun-ai-gateway/chart/Chart.yaml",
     "app/cetirun-agent-broker/chart/Chart.yaml",
     "app/cetirun-connections-mcp/chart/Chart.yaml",
+    "app/cetirun-observability/chart/Chart.yaml",
     "app/cetirun-operator/chart/values.yaml",
     "app/cetirun-operator/cmd/main.go",
     "app/cetirun-operator/deploy/deploy.sh",
@@ -166,7 +167,7 @@ class CetiRunVersionTests(unittest.TestCase):
         for relative in (
             "cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart",
             "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart",
-            "cetirun-agent-broker/chart",
+            "cetirun-agent-broker/chart", "cetirun-observability/chart",
         ):
             shutil.copytree(
                 ROOT / "app" / relative, self.root / "app" / relative,

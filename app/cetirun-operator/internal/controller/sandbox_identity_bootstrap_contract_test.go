@@ -5,11 +5,7 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
-
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestNativeEntraBootstrapReceiptVersionMatrix(t *testing.T) {
@@ -25,34 +21,10 @@ func TestNativeEntraBootstrapReceiptVersionMatrix(t *testing.T) {
 		} {
 			t.Run(kind+"/"+test.name, func(t *testing.T) {
 				ctx := context.Background()
-				f, input := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, kind, true, false,
+				f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, kind, true, false,
 					withReconciledCoordination(t), withNativeEntra(t))
 				if test.catalog {
-					raw, err := json.Marshal(map[string]any{
-						"version": "v1", "teams": map[string]any{input.Team.Name: map[string]any{
-							"teamUID": input.Team.UID, "revision": "published-v1",
-							"source": map[string]any{
-								"resourceGroup": "skills-example", "storageAccount": "publishedskills",
-								"containerName": "skills-v1", "storageClassName": "azureblob-nfs-premium", "storageSize": "1Gi",
-							},
-						}},
-					})
-					if err != nil {
-						t.Fatal(err)
-					}
-					catalog := &corev1.ConfigMap{
-						ObjectMeta: metav1.ObjectMeta{Name: "skills-catalog", Namespace: f.r.OperatorNamespace},
-						Data:       map[string]string{SandboxSkillsCatalogKey: string(raw)},
-					}
-					if err := f.kube.Create(ctx, catalog); err != nil {
-						t.Fatal(err)
-					}
-					f.r.SandboxPreparation.bootstrap.SkillsCatalogConfigMapName = catalog.Name
-					prerequisites, ok := f.r.SandboxPreparation.Prerequisites.(*KubernetesSandboxPrerequisites)
-					if !ok {
-						t.Fatal("fixture must use authoritative Kubernetes prerequisites")
-					}
-					prerequisites.SkillsCatalogConfigMapName = catalog.Name
+					withNativePublishedSkills(t)(f.r, f.kube)
 				}
 				for range 4 {
 					f.reconcileOK(t)

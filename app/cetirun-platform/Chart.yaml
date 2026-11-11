@@ -25,3 +25,7 @@ dependencies:
     version: 0.1.1
     repository: file://../cetirun-ai-gateway/chart
     condition: cetirun-ai-gateway.enabled
+  - name: cetirun-observability
+    version: 0.1.1
+    repository: file://../cetirun-observability/chart
+    condition: cetirun-observability.enabled

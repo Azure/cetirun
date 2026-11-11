@@ -28,7 +28,7 @@ type NativeBinding struct {
 	Audience        string      `json:"audience"`
 	Destination     Destination `json:"destination"`
 	ParentSessionID string      `json:"parentSessionId,omitempty"`
-	// Hermes sets this only after its owner policy and native spawn hook agree.
+	// Native adapters set this only after verifying host-owned child lineage.
 	OwnerAuthorizedChild bool                 `json:"ownerAuthorizedChild,omitempty"`
 	NoCapture            bool                 `json:"noCapture"`
 	NoMemory             bool                 `json:"noMemory"`
@@ -57,7 +57,7 @@ func (b NativeBinding) request(event NativeEvent) (Request, error) {
 	if b.Adapter != AdapterVersion || !slices.Contains([]string{"openclaw", "hermes", "pi-http", "pi-tui", "custom"}, b.Entrypoint) || b.NativeVersion == "" || !validText(b.NativeVersion, 128) || !validText(b.SessionID, 256) || b.SessionID == "" || b.OpportunityID == "" || !validText(b.OpportunityID, 256) || !filepath.IsAbs(b.CWD) || filepath.Clean(b.CWD) != b.CWD || b.CWD == "/" || event.EventID == "" || !validText(event.EventID, 256) {
 		return Request{}, problem(2, "InvalidNativeBinding")
 	}
-	if b.OwnerAuthorizedChild && (b.Entrypoint != "hermes" || b.ParentSessionID == "" || b.ParentSessionID == b.SessionID || !validText(b.ParentSessionID, 256) || b.Delegation != nil) {
+	if b.OwnerAuthorizedChild && (!slices.Contains([]string{"hermes", "openclaw"}, b.Entrypoint) || b.ParentSessionID == "" || b.ParentSessionID == b.SessionID || !validText(b.ParentSessionID, 256) || b.Delegation != nil) {
 		return Request{}, problem(4, "InheritedContextUnavailable")
 	}
 	if b.Evaluation || b.ParentSessionID != "" && b.Delegation == nil && !b.OwnerAuthorizedChild {

@@ -593,7 +593,8 @@ func TestGitHubInstallationPendingSelectionRecoversAfterConcurrentUnauthorizedRe
 			// A listing request obtained this token before selection started,
 			// then returned unauthorized after the durable index claim.
 			f.server.markGitHubAppInteractionRequired(context.Background(), inFlight)
-			tx := connectionTransaction{Provider: "github", Mode: modeInstallation, AppSlug: "cetirun", TargetConnectionID: sourceID, ExpectedAccountID: "42"}
+			tx := connectionTransaction{Provider: "github", Mode: modeInstallation, AppSlug: "cetirun", TargetConnectionID: sourceID, ExpectedAccountID: "42", StateHash: stateHash("synthetic-reconnect")}
+			stageOAuthTransaction(t, f, &tx)
 			fresh := providerCredential{AccessToken: "reauthorized", RefreshToken: "reauthorized-refresh", ExpiresAt: time.Now().Add(time.Hour)}
 			if _, err := f.server.store.completeGitHubInstallationAccount(context.Background(), owner, tx, fresh, "octocat", "42", time.Now().UTC()); err != nil {
 				t.Fatalf("pending selection could not reauthorize: %v", err)

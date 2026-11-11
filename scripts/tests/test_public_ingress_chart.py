@@ -21,6 +21,7 @@ DEPENDENCIES = (
     "cetirun-operator/chart",
     "cetirun-portal/chart",
     "cetirun-ai-gateway/chart",
+    "cetirun-observability/chart",
 )
 RELEASE_NAMESPACE = "cetirun-system"
 INGRESS_NAMESPACE = "aks-istio-ingress"

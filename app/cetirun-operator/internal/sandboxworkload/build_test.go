@@ -311,6 +311,22 @@ func TestGatewayProviderOverridesAreRejectedBeforeMerge(t *testing.T) {
 	}
 }
 
+func TestCollectorAnnotationsAreRejectedBeforeMerge(t *testing.T) {
+	for name, validate := range map[string]func(map[string]any, []string) error{
+		"native": w.ValidateUserValues, "reconciled": w.ValidateReconciledUserValues,
+	} {
+		for _, key := range []string{"adx-mon/scrape", "adx-mon/log-destination"} {
+			values := map[string]any{"podAnnotations": map[string]any{key: "CetiRunLogs:Platform"}}
+			if err := validate(values, nil); err == nil {
+				t.Errorf("%s values set %s", name, key)
+			}
+		}
+	}
+	if err := w.ValidateReconciledUserValues(map[string]any{"podAnnotations": map[string]any{"example.com/team": "a"}}, nil); err != nil {
+		t.Fatalf("unrelated annotation rejected: %v", err)
+	}
+}
+
 func TestResourcesIncludeHelpersInitAndOverhead(t *testing.T) {
 	req := func(cpu string) corev1.ResourceRequirements {
 		return corev1.ResourceRequirements{Requests: testfixture.ResourceList(cpu, "1Gi", "1Gi"), Limits: testfixture.ResourceList(cpu, "1Gi", "1Gi")}

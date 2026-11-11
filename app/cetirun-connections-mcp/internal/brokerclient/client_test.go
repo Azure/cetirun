@@ -147,6 +147,46 @@ func TestClientBoundsResponsesAndSanitizesRedirectFailures(t *testing.T) {
 	}
 }
 
+func TestIssuePreservesCredentialFailureCodes(t *testing.T) {
+	for _, test := range []struct {
+		status int
+		code   string
+		want   string
+	}{
+		{403, "permission_denied", "permission_denied"},
+		{429, "throttled", "throttled"},
+		{401, "interaction_required", "interaction_required"},
+		{503, "dependency_unavailable", "dependency_unavailable"},
+		{403, "unknown-private-code", "dependency_unavailable"},
+	} {
+		t.Run(test.code, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				calls++
+				if request.URL.Path != "/internal/v1/service-credentials/issue" {
+					t.Errorf("unexpected path %s", request.URL.Path)
+				}
+				writer.Header().Set("Content-Type", "application/json")
+				writer.WriteHeader(test.status)
+				_ = json.NewEncoder(writer).Encode(map[string]any{"error": map[string]string{
+					"code": test.code, "message": testResponseKey,
+				}})
+			}))
+			defer server.Close()
+			client, err := New(brokerURL(t, server.URL))
+			if err != nil {
+				t.Fatal(err)
+			}
+			client.http = server.Client()
+			response, err := client.Issue(context.Background(), NewRequest(testCallerProof, "microsoft_graph", "connection", nil, nil))
+			assertErrorCode(t, err, test.want, testCallerProof, testResponseKey, "unknown-private-code")
+			if response.AccessToken != "" || calls != 1 {
+				t.Fatalf("failed issuance returned a token or retried: calls=%d", calls)
+			}
+		})
+	}
+}
+
 type tlsFixture struct {
 	ca              certificateAuthority
 	caFile          string

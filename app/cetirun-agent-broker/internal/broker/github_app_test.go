@@ -175,7 +175,9 @@ func TestGitHubAppReconnectPreservesSelectedInstallation(t *testing.T) {
 	if err := fixture.server.store.putConnection(context.Background(), record, version); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixture.server.store.completeGitHubInstallationAccount(context.Background(), fixture.grant.Owner, connectionTransaction{Provider: "github", Mode: modeInstallation, TargetConnectionID: record.Connection.ID}, providerCredential{AccessToken: "new", RefreshToken: "refresh", ExpiresAt: time.Now().Add(time.Hour)}, "renamed-octocat", "42", time.Now().UTC()); err != nil {
+	tx := connectionTransaction{Provider: "github", Mode: modeInstallation, TargetConnectionID: record.Connection.ID, ExpectedAccountID: "42", StateHash: stateHash("synthetic-reconnect")}
+	stageOAuthTransaction(t, fixture, &tx)
+	if _, err := fixture.server.store.completeGitHubInstallationAccount(context.Background(), fixture.grant.Owner, tx, providerCredential{AccessToken: "new", RefreshToken: "refresh", ExpiresAt: time.Now().Add(time.Hour)}, "renamed-octocat", "42", time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	current, _, err := fixture.server.store.getConnection(context.Background(), record.Connection.ID)
@@ -198,7 +200,9 @@ func TestGitHubAppReconnectWithoutSelectedInstallationStaysPendingSelection(t *t
 	if err := fixture.server.store.putConnection(context.Background(), record, version); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixture.server.store.completeGitHubInstallationAccount(context.Background(), fixture.grant.Owner, connectionTransaction{Provider: "github", Mode: modeInstallation, TargetConnectionID: record.Connection.ID, AppSlug: "cetirun"}, providerCredential{AccessToken: "new", RefreshToken: "new-refresh", ExpiresAt: time.Now().Add(time.Hour)}, "renamed-octocat", "42", time.Now().UTC()); err != nil {
+	tx := connectionTransaction{Provider: "github", Mode: modeInstallation, TargetConnectionID: record.Connection.ID, AppSlug: "cetirun", ExpectedAccountID: "42", StateHash: stateHash("synthetic-reconnect")}
+	stageOAuthTransaction(t, fixture, &tx)
+	if _, err := fixture.server.store.completeGitHubInstallationAccount(context.Background(), fixture.grant.Owner, tx, providerCredential{AccessToken: "new", RefreshToken: "new-refresh", ExpiresAt: time.Now().Add(time.Hour)}, "renamed-octocat", "42", time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	current, _, err := fixture.server.store.getConnection(context.Background(), record.Connection.ID)

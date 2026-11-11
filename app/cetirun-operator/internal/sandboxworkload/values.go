@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/observability"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -84,6 +85,13 @@ func ValidateReconciledUserValues(values map[string]any, authorizedSecrets []str
 			"persistence", "resources", "securityContext", "podSecurityContext", "networkPolicy", "sidecarScope",
 			"autoscaling", "ingress", "execRestriction":
 			return fmt.Errorf("Sandbox Helm value %q is controlled by the selected Sandbox or AgentPolicy", name)
+		case "podAnnotations":
+			annotations, _ := value.(map[string]any)
+			for key := range annotations {
+				if observability.CollectorAnnotation(key) {
+					return fmt.Errorf("pod annotation %s is reserved for the platform's log and metrics collection", key)
+				}
+			}
 		}
 	}
 	return nil
