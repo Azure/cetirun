@@ -7,6 +7,7 @@ import importlib.util
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -135,6 +136,12 @@ class RepositoryDocsTests(unittest.TestCase):
             "## Example\n"
             "## Notes {.wide}\n"
             "## The {name}\n"
+            "## Settings {#settings .wide data-level=2}\n"
+            "## Spaced { #spaced }\n"
+            "## Empty {}\n"
+            "## Not attributes {#bad id!}\n"
+            "## Unclosed {#ab\n"
+            "## #Upper}\n"
         )
         self.assertEqual(
             anchors,
@@ -145,6 +152,12 @@ class RepositoryDocsTests(unittest.TestCase):
                 "example-1",
                 "notes",
                 "the-name",
+                "settings",
+                "spaced",
+                "empty",
+                "not-attributes-bad-id",
+                "unclosed-ab",
+                "upper",
             },
         )
         self.write("README.md", "[Restart](guide.md#restart-while-retaining-home)\n")
@@ -153,6 +166,16 @@ class RepositoryDocsTests(unittest.TestCase):
             "# Guide\n\n## Restart your Agent {#restart-while-retaining-home}\n",
         )
         self.assertEqual(check_site.check_repository_links(self.root), [])
+
+    def test_heading_attributes_take_linear_time(self):
+        for attributes in ("{{#" + "---=!#" * 20000, "{{-=" + "!-=" * 40000):
+            with self.subTest(attributes=attributes[:10]):
+                heading = f"## Title {attributes}\n"
+                start = time.perf_counter()
+                check_site.markdown_anchors(heading)
+                check_site.plain_text(heading)
+                check_site.page_style_findings(heading)
+                self.assertLess(time.perf_counter() - start, 1)
 
     def test_missing_trademark_statement_fails(self):
         self.write("README.md", "# CetiRun\n")

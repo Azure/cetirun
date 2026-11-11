@@ -357,10 +357,8 @@ def check_generated(root: Path, base_url: str) -> list[str]:
 
 FRONTMATTER = re.compile(r"---\n(.*?)\n---\n", re.DOTALL)
 HEADING = re.compile(r"#{1,6}\s+(.+?)\s*#*\s*$")
-# Hugo attributes at the end of a heading line, such as {#custom-id .class}.
-HEADING_ATTRIBUTES = re.compile(
-    r"[ \t]*\{((?:[ \t]*(?:[#.][\w-]+|[\w-]+=[^\s}]+))+)[ \t]*\}[ \t]*$", re.MULTILINE
-)
+# One Hugo heading attribute, such as #custom-id, .class, or key=value.
+HEADING_ATTRIBUTE = re.compile(r"[#.][\w-]+|[\w-]+=[^\s}]+")
 MARKDOWN_LINK = re.compile(r"(?<!!)\[([^\]\n]+)\]\(([^)\n]+)\)")
 
 
@@ -408,18 +406,32 @@ def markdown_prose(text: str) -> str:
     return "\n".join(prose_lines(text))
 
 
+def split_attributes(line: str) -> tuple[str, str]:
+    """Split Hugo attributes, such as {#custom-id .class}, from the end of a line.
+
+    Return the text before the attributes and the custom anchor, or "" if there
+    is no anchor. A line without valid attributes stays the same. String methods
+    keep the time linear: one regular expression for this grammar can backtrack
+    exponentially.
+    """
+    body = line.rstrip()
+    start = body.rfind("{")
+    if start < 0 or not body.endswith("}"):
+        return line, ""
+    tokens = body[start + 1 : -1].split()
+    if not all(HEADING_ATTRIBUTE.fullmatch(token) for token in tokens):
+        return line, ""
+    anchor = next((token[1:] for token in tokens if token.startswith("#")), "")
+    return body[:start].rstrip(), anchor
+
+
 def heading_lines(prose: list[str]) -> list[tuple[int, str, str]]:
     """Return the line, the text, and the custom anchor or "" of each heading."""
-    headings = []
-    for number, line in enumerate(prose, 1):
-        if match := HEADING.match(line):
-            text, anchor = match[1], ""
-            if attributes := HEADING_ATTRIBUTES.search(text):
-                text = text[: attributes.start()]
-                if custom := re.search(r"#([\w-]+)", attributes[1]):
-                    anchor = custom[1]
-            headings.append((number, text, anchor))
-    return headings
+    return [
+        (number, *split_attributes(match[1]))
+        for number, line in enumerate(prose, 1)
+        if (match := HEADING.match(line))
+    ]
 
 
 def markdown_headings(prose: list[str]) -> dict[str, str]:
@@ -791,7 +803,7 @@ def plain_text(text: str) -> str:
     text = re.sub(r"\{\{[<%].*?[%>]\}\}", "", text)
     text = LINK_TEXT.sub(r"\1", text)
     text = re.sub(r"<[^>\n]*>", "", text)
-    text = HEADING_ATTRIBUTES.sub("", text)
+    text = "\n".join(split_attributes(line)[0] for line in text.split("\n"))
     return re.sub(r"https?://\S+", "URL", text)
 
 
