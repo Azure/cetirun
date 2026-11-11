@@ -330,6 +330,125 @@ func TestCetiAdminExecWithdrawalAfterAgentDeletion(t *testing.T) {
 	}
 }
 
+func TestCetiAdminExecDeletionRevokesRetainedBinding(t *testing.T) {
+	f := newExecFixture(t, api.AgentTypeHermes)
+	if err := f.grant(); err != nil {
+		t.Fatal(err)
+	}
+	agent := f.agent()
+	agent.Finalizers = []string{"example.com/retain-until-cleanup"}
+	agent.Spec.Agent.Image = ptr.To("registry.example.com/hermes:retained-old")
+	agent.Spec.Helm.Version = "0.0.1-retained"
+	f.update(agent)
+	if err := f.kube.Delete(f.ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	deleting := f.agent()
+	if deleting.DeletionTimestamp == nil {
+		t.Fatal("retained Agent deletion did not persist a deletion timestamp")
+	}
+	writes := len(f.attempts)
+	if err := f.grant(); err == nil || len(f.attempts) != writes {
+		t.Fatal("deleting Agent retained an active exec grant")
+	}
+	if err := f.r.revokeRuntimeExec(f.ctx, f.binding.Record(), f.target.Agent.Name); err != nil {
+		t.Fatal("deleting retained Agent prevented binding revocation", err)
+	}
+	current := f.agent()
+	if current.UID != f.target.Agent.UID || current.DeletionTimestamp == nil ||
+		current.Annotations[registryauth.ExecAdminBindingAnnotation] != "" ||
+		current.Spec.Agent.Image == nil || *current.Spec.Agent.Image != "registry.example.com/hermes:retained-old" ||
+		current.Spec.Helm.Version != "0.0.1-retained" {
+		t.Fatal("revocation did not preserve the deleting retained Agent")
+	}
+	policy := f.policy()
+	if len(policy.Spec.MatchConditions) != 0 || policy.Annotations[cetiAdminExecReceipt] != "" {
+		t.Fatal("deleting retained Agent kept an exec exception")
+	}
+	writes = len(f.attempts)
+	if err := f.grant(); err == nil || len(f.attempts) != writes {
+		t.Fatal("deleting Agent received a new exec exception")
+	}
+}
+
+func TestCetiAdminExecDeletionRevocationAcceptsLostAcknowledgement(t *testing.T) {
+	f := newExecFixture(t, api.AgentTypeHermes)
+	if err := f.grant(); err != nil {
+		t.Fatal(err)
+	}
+	agent := f.agent()
+	agent.Finalizers = []string{"example.com/retain-until-cleanup"}
+	f.update(agent)
+	if err := f.kube.Delete(f.ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	lost := false
+	f.afterPatch = func(object client.Object) error {
+		if _, ok := object.(*api.Agent); !ok || lost {
+			return nil
+		}
+		lost = true
+		return errors.New("lost acknowledgement")
+	}
+	if err := f.r.revokeRuntimeExec(f.ctx, f.binding.Record(), f.target.Agent.Name); err != nil || !lost {
+		t.Fatal("deleting Agent revocation did not accept its exact readback", err)
+	}
+	if current := f.agent(); current.DeletionTimestamp == nil || current.Annotations[registryauth.ExecAdminBindingAnnotation] != "" {
+		t.Fatal("lost acknowledgement left a deleting Agent binding behind")
+	}
+}
+
+func TestCetiAdminExecRejectsGrantWhenDeletionStarts(t *testing.T) {
+	f := newExecFixture(t, api.AgentTypeHermes)
+	agent := f.agent()
+	agent.Finalizers = []string{"example.com/retain-until-cleanup"}
+	f.update(agent)
+	deletionStarted := false
+	f.beforePatch = func(object client.Object) error {
+		if _, ok := object.(*api.Agent); !ok || deletionStarted {
+			return nil
+		}
+		deletionStarted = true
+		return f.kube.Delete(f.ctx, f.agent())
+	}
+	if err := f.grant(); err == nil || !deletionStarted {
+		t.Fatal("grant was accepted after deletion started")
+	}
+	if current := f.agent(); current.DeletionTimestamp == nil || current.Annotations[registryauth.ExecAdminBindingAnnotation] != "" {
+		t.Fatal("deletion race created an exec binding")
+	}
+	if policy := f.policy(); len(policy.Spec.MatchConditions) != 0 || policy.Annotations[cetiAdminExecReceipt] != "" {
+		t.Fatal("deletion race enabled the exec exception")
+	}
+}
+
+func TestCetiAdminExecRejectsGrantWhenDeletionStartsAfterAnnotationWrite(t *testing.T) {
+	f := newExecFixture(t, api.AgentTypeHermes)
+	agent := f.agent()
+	agent.Finalizers = []string{"example.com/retain-until-cleanup"}
+	f.update(agent)
+	deletionStarted := false
+	f.afterPatch = func(object client.Object) error {
+		if _, ok := object.(*api.Agent); !ok || deletionStarted {
+			return nil
+		}
+		deletionStarted = true
+		return f.kube.Delete(f.ctx, f.agent())
+	}
+	if err := f.grant(); err == nil || !deletionStarted {
+		t.Fatal("grant was accepted after deletion started during annotation write")
+	}
+	if current := f.agent(); current.DeletionTimestamp == nil || current.Annotations[registryauth.ExecAdminBindingAnnotation] == "" {
+		t.Fatal("post-write deletion did not retain the Agent binding for cleanup")
+	}
+	if policy := f.policy(); len(policy.Spec.MatchConditions) != 0 || policy.Annotations[cetiAdminExecReceipt] != "" {
+		t.Fatal("post-write deletion enabled the exec exception")
+	}
+	if err := f.r.revokeRuntimeExec(f.ctx, f.binding.Record(), f.target.Agent.Name); err != nil {
+		t.Fatal("post-write deletion binding did not converge through cleanup", err)
+	}
+}
+
 func TestCetiAdminExecWithdrawalReportsConflictingReceipt(t *testing.T) {
 	f := newExecFixture(t, api.AgentTypeHermes)
 	if err := f.grant(); err != nil {
