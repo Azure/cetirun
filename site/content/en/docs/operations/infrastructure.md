@@ -347,6 +347,23 @@ With `create` or `existing`, the template also creates these resources:
   databases, and for the principals in `adxAgentLogsViewers` on the Agent logs
   database.
 
+With `adxContent` set to `true`, the template also creates the database of AI
+Gateway prompts and responses:
+
+- The database `CetiRunContent` with 7 days of retention, its table `Content`,
+  the ingestion mapping `ContentMapping`, and the function `GatewayContent()`.
+- The user-assigned managed identity `<clusterName>-gateway-content`, with a
+  federated credential for the Gateway's service account `cetirun-ai-gateway`
+  in `platformNamespace`, and the roles `Ingestor` and `Viewer` on that
+  database only. The ADX-Mon ingestor gets no role on it.
+- The role `Viewer` for the principals in `adxContentViewers`. Every prompt and
+  response is in this database: keep the list short.
+
+The outputs `adxContentDatabase` and `adxContentClientId` are the AI Gateway's
+`content.adx.database` and `content.clientId`; see "Content in Azure Data
+Explorer" in the
+[Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}).
+
 The default SKU, `Dev(No SLA)_Standard_E2a_v4`, has one engine node and no SLA.
 Use it for evaluation. A cluster with no ingestion or queries for five days
 stops, and you must start it again. The outputs `adxClusterUri` and

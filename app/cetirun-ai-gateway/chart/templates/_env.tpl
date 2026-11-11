@@ -124,6 +124,18 @@ Everything the proxy needs, including credentials held in chart-managed Secrets.
   value: "false"
 {{- end }}
 {{- end }}
+{{- with .Values.content }}
+{{- if .enabled }}
+{{- /* Prompts and responses to the content database, with the Pod's workload
+       identity (cetirun_ai_gateway/content.py). */}}
+- name: CETIRUN_CONTENT_ENDPOINT
+  value: {{ .adx.endpoint | quote }}
+- name: CETIRUN_CONTENT_DATABASE
+  value: {{ .adx.database | quote }}
+- name: CETIRUN_CONTENT_CLUSTER
+  value: {{ .clusterName | quote }}
+{{- end }}
+{{- end }}
 {{ include "cetirun-ai-gateway.monitoringEnv" . }}
 {{- end }}
 

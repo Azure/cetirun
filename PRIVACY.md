@@ -113,6 +113,23 @@ With `spendLogs.storePrompts: false`, each record contains only the metadata.
 This setting does not remove the content of records that are already stored.
 A `general_settings` block that is saved in the console can override it.
 
+With `content.enabled: true`, the Gateway writes the request and the response
+of each call to an Azure Data Explorer database instead (`CetiRunContent` when
+the cluster template creates it), and the spend log keeps no content, whatever
+`spendLogs.storePrompts` says. Calls that LiteLLM makes itself, health check
+probes and auto router classifier calls, are not written. The content is
+complete, not shortened, except
+that inline images and files and encrypted reasoning are replaced by notes with
+their type and size. Each record names the Agent, its owner and Team, and the
+LiteLLM user and Team of the key. The Gateway writes and reads it with its own
+workload identity; the ADX-Mon collector and ingestor have no access to that
+database. The console's request pages read a call's content from there and show
+it to administrators, and to other console users only for their own calls and
+Teams. People with the `Viewer` role on that database can read every call.
+The database keeps the content for its retention, seven days in the cluster
+template. Content written while ADX cannot be reached is lost after three
+attempts, and while the Gateway's queue is full.
+
 When these rows and the stored health-check results are older than
 `spendLogs.retention`, LiteLLM deletes them. The default value is seven days,
 and the check occurs every hour. An empty retention keeps them.

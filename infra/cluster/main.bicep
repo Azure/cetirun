@@ -154,6 +154,15 @@ param adxViewers array = []
 @description('Readers of the Agent logs database, which can hold conversation content.')
 param adxAgentLogsViewers array = []
 
+@description('Create the database of AI Gateway prompts and responses, CetiRunContent, and the Gateway identity that writes it. Needs adxMode create or existing.')
+param adxContent bool = false
+
+@description('Namespace of the platform release, for the AI Gateway\'s federated credential.')
+param platformNamespace string = 'cetirun-system'
+
+@description('Readers of the content database, which holds every AI Gateway prompt and response.')
+param adxContentViewers array = []
+
 // --- Modules ---
 
 module cluster 'modules/aks-cluster.bicep' = {
@@ -207,6 +216,21 @@ module adxIngestorIdentity 'modules/adx-ingestor-identity.bicep' = if (adxMode !
   }
 }
 
+// The AI Gateway's identity for its content: the platform chart names the
+// Gateway's ServiceAccount cetirun-ai-gateway.
+module gatewayContentIdentity 'modules/adx-ingestor-identity.bicep' = if (adxMode != 'none' && adxContent) {
+  name: 'deploy-gateway-content-identity'
+  params: {
+    name: '${clusterName}-gateway-content'
+    location: location
+    tags: tags
+    oidcIssuerUrl: cluster.outputs.oidcIssuerUrl
+    namespace: platformNamespace
+    serviceAccountName: 'cetirun-ai-gateway'
+    credentialName: 'cetirun-ai-gateway'
+  }
+}
+
 module adx 'modules/adx.bicep' = if (adxMode != 'none') {
   name: 'deploy-adx'
   scope: resourceGroup(adxSubscriptionId, adxResourceGroupName)
@@ -224,6 +248,9 @@ module adx 'modules/adx.bicep' = if (adxMode != 'none') {
     ingestorClientId: adxIngestorIdentity.?outputs.clientId ?? ''
     viewers: adxViewers
     agentLogsViewers: adxAgentLogsViewers
+    createContentDatabase: adxContent
+    contentWriterClientId: gatewayContentIdentity.?outputs.clientId ?? ''
+    contentViewers: adxContentViewers
   }
 }
 
@@ -240,3 +267,7 @@ output keyvaultSecretsProviderObjectId string = cluster.outputs.keyvaultSecretsP
 // Inputs of the observability block of the make deploy environment file.
 output adxClusterUri string = adx.?outputs.clusterUri ?? ''
 output adxIngestorClientId string = adxIngestorIdentity.?outputs.clientId ?? ''
+
+// Inputs of the AI Gateway's content values.
+output adxContentDatabase string = adx.?outputs.contentDatabaseName ?? ''
+output adxContentClientId string = gatewayContentIdentity.?outputs.clientId ?? ''
