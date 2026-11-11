@@ -580,6 +580,15 @@ spec:
                               description: Name is the model's name in the Gateway,
                                 which the Agent uses.
                               type: string
+                            reasoning:
+                              description: |-
+                                Reasoning reports that the Agent can set a reasoning effort for the
+                                model: the Gateway's price table says that the entry the route is
+                                billed as reasons, and the Agent's GitHub Copilot proxy passes a
+                                reasoning effort on for the model, which it does for Claude and GPT
+                                models only. The Agent is configured to set a reasoning effort for Name
+                                only when every model behind Name reasons.
+                              type: boolean
                             shared:
                               description: |-
                                 Shared reports that Name is a shared model's name: the Gateway serves
@@ -692,6 +701,13 @@ spec:
                         reason:
                           description: Reason explains why the router is not granted.
                           type: string
+                        reasoning:
+                          description: |-
+                            Reasoning reports that the Agent is configured to set a reasoning
+                            effort for the router: every model that the router sends requests to
+                            answer reasons. The Agent's own GitHub Copilot routes under the names
+                            of these models count too.
+                          type: boolean
                         vision:
                           description: |-
                             Vision reports that the Agent is configured to send images to the

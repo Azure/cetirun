@@ -380,6 +380,58 @@ func TestPriceTableReadsPricesAndImageSupport(t *testing.T) {
 	}
 }
 
+// LiteLLM's model info says whether a deployment's model reasons; only an
+// explicit true counts.
+func TestListModelsReadsWhetherADeploymentReasons(t *testing.T) {
+	client, _ := testServer(t, func(recordedRequest) (int, string) {
+		return 200, `{"data":[
+			{"model_name":"thinks","litellm_params":{"model":"azure/gpt-5.4-nano"},"model_info":{"id":"a","supports_reasoning":true}},
+			{"model_name":"plain","litellm_params":{"model":"azure/gpt-4.1-mini"},"model_info":{"id":"b","supports_reasoning":false}},
+			{"model_name":"router","litellm_params":{"model":"auto_router/complexity_router"},"model_info":{"id":"c","supports_reasoning":null}},
+			{"model_name":"odd","litellm_params":{"model":"azure/x"},"model_info":{"id":"d","supports_reasoning":"true"}},
+			{"model_name":"no-info","litellm_params":{"model":"azure/y"}}
+		]}`
+	})
+	deployments, err := client.ListModels(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"thinks": true, "plain": false, "router": false, "odd": false, "no-info": false}
+	if len(deployments) != len(want) {
+		t.Fatalf("got %d deployments", len(deployments))
+	}
+	for _, deployment := range deployments {
+		if deployment.Reasoning != want[deployment.ModelName] {
+			t.Errorf("%s: Reasoning = %v, want %v", deployment.ModelName, deployment.Reasoning, want[deployment.ModelName])
+		}
+		if deployment.Vision {
+			t.Errorf("%s: Vision follows supports_vision only", deployment.ModelName)
+		}
+	}
+}
+
+// The price table names the models that reason; only an explicit true counts.
+func TestPriceTableReadsReasoningSupport(t *testing.T) {
+	client, _ := testServer(t, func(recordedRequest) (int, string) {
+		return 200, `{
+			"sample_spec":{"input_cost_per_token":0,"supports_reasoning":"true or false"},
+			"gpt-5.5":{"input_cost_per_token":0.000001,"supports_reasoning":true},
+			"gpt-4.1":{"input_cost_per_token":0.000002,"supports_reasoning":false},
+			"github_copilot/gemini-3.8-flash":{"input_cost_per_token":0.00000075,"supports_reasoning":true},
+			"null-reasoning":{"output_cost_per_token":0.00002,"supports_reasoning":null},
+			"no-reasoning-field":{"output_cost_per_token":0.00002}
+		}`
+	})
+	table, err := client.PriceTable(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantReasoning := map[string]bool{"gpt-5.5": true, "github_copilot/gemini-3.8-flash": true}
+	if !maps.Equal(table.Reasoning, wantReasoning) || len(table.Vision) != 0 {
+		t.Fatalf("reasoning %v vision %v", table.Reasoning, table.Vision)
+	}
+}
+
 func TestListModelsReadsTheMode(t *testing.T) {
 	client, _ := testServer(t, func(recordedRequest) (int, string) {
 		return 200, `{"data":[

@@ -245,6 +245,12 @@ request fits every tier.
 The Agent sends images to a router only when every model that the router sends
 requests to accepts images. Refer to [Images](../../guides/models/#images).
 
+In the same way, OpenClaw offers reasoning levels for a router only when every
+model that the router sends requests to reasons. Refer to
+[Reasoning](../../guides/models/#reasoning). For a Team's router, the Team's
+`status.modelRouters[].nonReasoningModels` lists the tier models that do not
+reason. The Team page in the Portal shows them with the router.
+
 ## 5. Check where requests go
 
 Send a short question to the Agent. Then send a request for a design or a proof.

@@ -114,9 +114,19 @@ func openClawInitContainers(t *testing.T, rendered map[string]string) []corev1.C
 	return sts.Spec.Template.Spec.InitContainers
 }
 
-// openClawProvider returns the openai provider entry of the rendered OpenClaw
-// configuration.
+// openClawProvider returns the Gateway provider entry, cetirun, of the
+// rendered OpenClaw configuration.
 func openClawProvider(t *testing.T, rendered map[string]string) map[string]any {
+	t.Helper()
+	return openClawProviders(t, rendered)[openClawGatewayProvider]
+}
+
+// openClawGatewayProvider is the provider ID of the AI Gateway in OpenClaw.
+const openClawGatewayProvider = "cetirun"
+
+// openClawProviders returns every provider entry of the rendered OpenClaw
+// configuration.
+func openClawProviders(t *testing.T, rendered map[string]string) map[string]map[string]any {
 	t.Helper()
 	configMap := &corev1.ConfigMap{}
 	if err := yaml.Unmarshal([]byte(rendered["cetirun/templates/configmap.yaml"]), configMap); err != nil {
@@ -130,7 +140,7 @@ func openClawProvider(t *testing.T, rendered map[string]string) map[string]any {
 	if err := json.Unmarshal([]byte(configMap.Data["openclaw.json"]), &config); err != nil {
 		t.Fatal(err)
 	}
-	return config.Models.Providers["openai"]
+	return config.Models.Providers
 }
 
 func TestAIGatewayChartWiring(t *testing.T) {
