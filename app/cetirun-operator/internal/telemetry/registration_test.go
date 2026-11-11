@@ -110,7 +110,7 @@ func TestRegistrationWaitsForMissingResources(t *testing.T) {
 		}
 	}
 	// A second pass adds no second handler.
-	if _, err := r.registerInventory(ctx, c); err != nil {
+	if _, _, err := r.registerInventory(ctx, c); err != nil {
 		t.Fatal(err)
 	}
 	for name, informer := range c.informers {
@@ -151,5 +151,50 @@ func TestResourcesInstalledLaterGetASnapshotAtOnce(t *testing.T) {
 		if !strings.Contains(out.String(), `"kind":"`+kind.logType+`"`) {
 			t.Fatalf("no completed %s snapshot once the resources appeared", kind.logType)
 		}
+	}
+}
+
+func TestResourcesInstalledBeforeTheFirstRetryGetASnapshotAtOnce(t *testing.T) {
+	c := &stubCache{installed: map[string]bool{}}
+	var out bytes.Buffer
+	r := &Recorder{Writer: NewWriter(&out), Events: EventsNone, Log: logr.Discard()}
+	if err := r.Register(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	// The snapshot at start finds no registered kind and writes nothing.
+	if err := r.Snapshot(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	// The resources appear before the first retry, which registers every
+	// kind at once without having reported any as missing.
+	c.install(LogTypeAgent, LogTypeTeam, LogTypeAgentPolicy, LogTypeSandbox)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := r.RunRegistration(ctx, c, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range kinds {
+		if !strings.Contains(out.String(), `"kind":"`+kind.logType+`"`) {
+			t.Fatalf("no completed %s snapshot after the first retry registered it", kind.logType)
+		}
+	}
+}
+
+func TestKindsRegisteredAtStartGetNoSnapshotFromTheRetry(t *testing.T) {
+	c := &stubCache{installed: map[string]bool{}}
+	c.install(LogTypeAgent, LogTypeTeam, LogTypeAgentPolicy, LogTypeSandbox)
+	var out bytes.Buffer
+	r := &Recorder{Writer: NewWriter(&out), Events: EventsNone, Log: logr.Discard()}
+	if err := r.Register(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := r.RunRegistration(ctx, c, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	// The snapshot at start covers them; the retry adds none of its own.
+	if strings.Contains(out.String(), LogTypeSnapshot) {
+		t.Fatalf("the retry wrote a snapshot for kinds registered at start: %s", out.String())
 	}
 }

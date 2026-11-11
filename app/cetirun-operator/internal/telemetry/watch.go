@@ -82,16 +82,17 @@ func (r *Recorder) Register(ctx context.Context, c cache.Cache) error {
 			return fmt.Errorf("event handler: %w", err)
 		}
 	}
-	_, err := r.registerInventory(ctx, c)
+	_, _, err := r.registerInventory(ctx, c)
 	return err
 }
 
 // registerInventory adds handlers for the inventory kinds that are not
-// registered yet. A kind whose CustomResourceDefinition is not installed, as
-// when this program starts before the CetiRun platform, is left out and
-// counted as missing; other errors stop the registration.
-func (r *Recorder) registerInventory(ctx context.Context, c cache.Cache) (int, error) {
-	missing := 0
+// registered yet, and returns how many it added and how many are missing. A
+// kind whose CustomResourceDefinition is not installed, as when this program
+// starts before the CetiRun platform, is left out and counted as missing;
+// other errors stop the registration.
+func (r *Recorder) registerInventory(ctx context.Context, c cache.Cache) (int, int, error) {
+	added, missing := 0, 0
 	for _, kind := range kinds {
 		if r.isRegistered(kind.logType) {
 			continue
@@ -102,7 +103,7 @@ func (r *Recorder) registerInventory(ctx context.Context, c cache.Cache) (int, e
 			continue
 		}
 		if err != nil {
-			return missing, fmt.Errorf("%s informer: %w", kind.logType, err)
+			return added, missing, fmt.Errorf("%s informer: %w", kind.logType, err)
 		}
 		if _, err := informer.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
 			AddFunc:    func(object any) { r.inventory(kind, object, ActionUpsert) },
@@ -114,7 +115,7 @@ func (r *Recorder) registerInventory(ctx context.Context, c cache.Cache) (int, e
 				r.inventory(kind, object, ActionDelete)
 			},
 		}); err != nil {
-			return missing, fmt.Errorf("%s handler: %w", kind.logType, err)
+			return added, missing, fmt.Errorf("%s handler: %w", kind.logType, err)
 		}
 		r.mu.Lock()
 		if r.registered == nil {
@@ -122,8 +123,9 @@ func (r *Recorder) registerInventory(ctx context.Context, c cache.Cache) (int, e
 		}
 		r.registered[kind.logType] = true
 		r.mu.Unlock()
+		added++
 	}
-	return missing, nil
+	return added, missing, nil
 }
 
 func (r *Recorder) isRegistered(logType string) bool {
@@ -138,20 +140,23 @@ func (r *Recorder) isRegistered(logType string) bool {
 func (r *Recorder) RunRegistration(ctx context.Context, c cache.Cache, interval time.Duration) error {
 	reported := false
 	for {
-		missing, err := r.registerInventory(ctx, c)
+		added, missing, err := r.registerInventory(ctx, c)
 		if err != nil {
 			return err
+		}
+		if added > 0 {
+			// A complete snapshot of the kinds registered now, not after the
+			// snapshot interval: a snapshot taken before they were registered
+			// left them out.
+			if c.WaitForCacheSync(ctx) {
+				if err := r.Snapshot(ctx, c); err != nil {
+					r.Log.Error(err, "write the inventory snapshot")
+				}
+			}
 		}
 		if missing == 0 {
 			if reported {
 				r.Log.Info("the CetiRun resources are installed; inventory records start")
-				// A complete snapshot of the new kinds now, not after the
-				// snapshot interval.
-				if c.WaitForCacheSync(ctx) {
-					if err := r.Snapshot(ctx, c); err != nil {
-						r.Log.Error(err, "write the inventory snapshot")
-					}
-				}
 			}
 			return nil
 		}

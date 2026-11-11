@@ -129,13 +129,21 @@
         Objects = tolong(Snapshot['objects'])
 }
 
-.create-or-alter function with (folder = "CetiRun", docstring = "The current Agents, with their latest record: those of the latest complete snapshot of each cluster and those created or changed after it started. An Agent with a delete record is never current.", skipvalidation = "true") AgentInventory() {
+.create-or-alter function with (folder = "CetiRun", docstring = "The current Agents, with their latest record: those of the latest complete snapshot of each cluster whose entries have all arrived, and those created or changed after it started. An Agent with a delete record is never current.", skipvalidation = "true") AgentInventory() {
     let history = AgentInventoryHistory();
     // Kubernetes never reuses a UID: an Agent with a delete record is gone,
     // also when a snapshot entry comes after the delete.
     let deleted = history | where Action == "delete" | distinct Cluster, AgentUid;
+    // The collector uploads batches concurrently, so a completion record can
+    // arrive before some entries of its snapshot. A snapshot counts once all
+    // of them have arrived; until then, the previous one does.
+    let received = history
+        | where Action == "snapshot" and isnotempty(SnapshotId)
+        | summarize Received = count_distinct(AgentUid) by Cluster, SnapshotId;
     let lastSnapshot = InventorySnapshots()
         | where Kind == "cetirun.inventory.agent"
+        | join kind=leftouter received on Cluster, SnapshotId
+        | where coalesce(Received, long(0)) == Objects
         | summarize arg_max(Started, SnapshotId) by Cluster
         | project Cluster, LatestSnapshot = SnapshotId, Started;
     // A cluster with a complete snapshot: the Agents it saw, and the Agents

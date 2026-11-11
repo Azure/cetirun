@@ -68,7 +68,10 @@ gets the namespace.
 `AgentInventory()` lists the current Agents: those in the latest complete
 snapshot of each cluster, and those created or changed after that snapshot
 started. A snapshot is complete once the telemetry program has written every
-object of a kind. An Agent that was deleted while the program was not running
+object of a kind. It counts once all of its entries have reached ADX: the
+collector uploads batches in parallel, so the record that marks a snapshot
+complete can arrive before some of its entries. Until then, the previous
+snapshot counts. An Agent that was deleted while the program was not running
 drops out with the snapshot it takes when it starts again. An Agent with a
 delete record is never current.
 
