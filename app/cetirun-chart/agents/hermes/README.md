@@ -214,7 +214,8 @@ workloads retain their configured scratch limit.
 
 The managed Hermes image discovers personal, configured and shared skills
 alongside the installed Memory assets. The source-hash guarded
-`configs/apply-memory-skills.py` patch keeps
+[`apply-memory-skills.py`](../../configs/apply-memory-skills.py) patch in the
+chart `configs/` directory keeps
 the reserved `cetirun-memory` skill bound to
 `/opt/cetirun-memory/skills/cetirun-memory/SKILL.md` in both the native catalog and
 direct skill lookup. User or shared copies cannot replace it by directory name,

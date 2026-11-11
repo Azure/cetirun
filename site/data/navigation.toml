@@ -101,6 +101,7 @@
       "/docs/reference/agent-harness",
       "/docs/reference/helm",
       "/docs/reference/scripts",
+      "/docs/reference/examples",
     ]
 
 [[modules]]

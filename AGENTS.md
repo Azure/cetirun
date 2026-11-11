@@ -54,9 +54,13 @@ Before you change the repository, read [CONTRIBUTING.md](CONTRIBUTING.md),
   everything with `make publish REGISTRY=registry.example.com`. If only one
   artifact class is requested, use `make publish-images` or
   `make publish-charts`.
-- The publish process includes the `cetirun-pi-agent` demo and makes sure that
-  the Charts can be pulled. It does not log in to the registry, deploy to
-  Kubernetes, or authorize changes to another registry or environment.
+- The publish process includes the `cetirun-pi-agent` demo and the
+  `cetirun-vscode` image, and makes sure that the Charts can be pulled. It does
+  not log in to the registry, deploy to Kubernetes, or authorize changes to
+  another registry or environment. Its image builds accept the VS Code Server
+  license terms by default. To publish the other images without the VS Code
+  Server image, refer to
+  [DEVELOPMENT.md](DEVELOPMENT.md#unified-release-inventory).
 
 ## Public-data and review boundary
 

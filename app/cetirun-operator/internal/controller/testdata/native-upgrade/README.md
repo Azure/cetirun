@@ -27,9 +27,13 @@ are used.
 
 ## Regeneration
 
-Use Go 1.27.4 and the separately prepared dependencies that
-[DEVELOPMENT.md](../../../../../../DEVELOPMENT.md) describes. From the current
-checkout, select a new temporary directory:
+Use Go 1.27.4. The source revision needs module versions that the current
+`go.sum` does not list. The dependencies that
+[DEVELOPMENT.md](../../../../../../DEVELOPMENT.md) describes are therefore not
+sufficient. The commands below download the modules of the source revision
+first. This step needs network access. The export after it runs offline.
+
+From the current checkout, select a new temporary directory:
 
 ```bash
 source_root="$(git rev-parse --show-toplevel)"
@@ -37,6 +41,7 @@ fixture_dir="$source_root/app/cetirun-operator/internal/controller/testdata/nati
 old_root="$(mktemp -d)"
 git clone --no-hardlinks --no-checkout "$source_root" "$old_root/repo"
 git -C "$old_root/repo" checkout --detach 6414494154151b2daf74d39d1e989ebeb7ea5020
+GOTOOLCHAIN=go1.27.4 go -C "$old_root/repo/app/cetirun-operator" mod download
 cp "$fixture_dir/export_test.go" \
   "$old_root/repo/app/cetirun-operator/internal/controller/export_native_upgrade_test.go"
 CETIRUN_UPGRADE_FIXTURE_OUT="$fixture_dir/pre-proxy.json" \

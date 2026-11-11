@@ -5,9 +5,25 @@ Gateway model. New Agents use the explicitly enabled common executor, not a
 production failover or complete AgentPolicy conformance test.
 
 For the scoped Kubernetes API checks that can be run on an authorized AKS
-target, read [AKS workflow](aks/README.md). The local `platform-probe.py`
-documented below has a Kind/Docker/QEMU and hostpath-CSI contract; it is not an
+target, read [AKS workflow](aks/README.md). For a local Kind, Docker, QEMU, and
+host-path CSI environment, use the `platform-probe.py` in
+[Local native Sandbox validation](local/README.md). The local probe is not an
 AKS qualification tool.
+
+## How to use this page
+
+Most sections of this page are one-time platform preparation for an
+administrator. The steps for each run are at the end. Read the sections in this
+order:
+
+| Section | Reader | When |
+| --- | --- | --- |
+| [Ordinary-container backend](#ordinary-container-backend) | Administrator | One time, only for the `container` backend |
+| [Prepare one authorized target](#prepare-one-authorized-target) | Administrator | One time for each target |
+| [Helper memory](#helper-memory), [Default startup window](#default-startup-window), and [HOME access mode](#home-access-mode) | Administrator | When you configure the Sandbox |
+| [Kubernetes API access](#kubernetes-api-access), [Scoped internal egress](#scoped-internal-egress), [Governed SCTP egress](#governed-sctp-egress), [Rollout-stable DNS and AI Gateway](#rollout-stable-dns-and-ai-gateway), and [Rollout-stable managed ingress](#rollout-stable-managed-ingress) | Administrator | Only for the optional feature in the heading |
+| [Create, connect and use](#create-connect-and-use) | Agent owner and administrator | Each run |
+| [Delete and verify cleanup](#delete-and-verify-cleanup) | Agent owner and administrator | Each run |
 
 ## Ordinary-container backend
 
@@ -69,8 +85,8 @@ key. mTLS does not grant them. Keep `enforcementObservation` and
 The [offline checks](../../DEVELOPMENT.md) use synthetic platform observations.
 Live Kata and ordinary-container acceptance, CSI file retention, actual Gateway
 spend, and Cilium traffic tests stay a separate target-specific qualification.
-The `local/` Kata qualification tools below are not a container runtime
-installer.
+The [local Kata validation tools](local/README.md) are not a container
+runtime installer.
 
 ## Prepare one authorized target
 
@@ -213,7 +229,9 @@ private run directory. Replace these items:
 
 - `native-home` with the registered CSI storage class.
 - `example-model` with the exact authorized Gateway catalog ID.
-- The image and chart pins with the candidate artifacts.
+- The image and chart pins with the candidate artifacts. The OpenClaw image is
+  `<registry>/openclaw-gateway:<appVersion>`, with the `appVersion` of the
+  selected chart.
 - The synthetic owner fields.
 
 Use a fresh Agent name and a matching user alias applicable to the

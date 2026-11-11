@@ -10,11 +10,11 @@ The HOME PVC keeps workspace files, installed extensions, and server state.
 Browser-profile settings and BYOK secrets use VS Code's browser storage.
 This example serves a Web UI, not the Custom Chat API.
 
-Before you use this example, read the
+Before you build, publish, deploy, or use this example, read the
 [VS Code Server license](https://code.visualstudio.com/license/server).
 Restrictions apply to how you host, share, and redistribute the server. A Pod
-for each user does not authorize a public hosted service. A separate review is
-necessary for image distribution. Copilot and extensions keep their own terms.
+for each user does not authorize a public hosted service. Copilot and
+extensions keep their own terms.
 
 ## Build
 
@@ -34,8 +34,13 @@ The build accepts the VS Code Server license by default. An explicit
 prebuilt images already contain the runtime acceptance setting.
 
 For a custom `BASE_IMAGE`, supply Node.js 24, Git, Python with tarfile's `data`
-extraction filter, and the CetiRun HOME initializer's tools. This example is
-not published with the platform images. Deploy an approved image by digest.
+extraction filter, and the CetiRun HOME initializer's tools.
+
+The release builds and publishes `cetirun-vscode` with the platform images.
+For the license setting of the release targets and how to exclude this image,
+refer to the
+[unified release inventory](../../DEVELOPMENT.md#unified-release-inventory).
+Deploy an approved image by digest.
 
 The `runtime-source` stage gives mode `0644` to copied JavaScript modules and
 mode `0755` to application directories. It also makes the bundled Gateway
@@ -61,8 +66,15 @@ cetirun-operator:
     fsGroup: 1024
 ```
 
-In [agent.yaml](agent.yaml), replace the example owner, image digest, and chart
-version. Then apply the file to your approved cluster:
+In [agent.yaml](agent.yaml), replace these values:
+
+- The example owner.
+- The image digest.
+- The chart version.
+- The Team and the Sandbox. Use an existing Team and a Sandbox that this Team
+  allows.
+
+Then apply the file to your approved cluster:
 
 ```bash
 kubectl --context <cluster-context> apply -f examples/vscode-server/agent.yaml

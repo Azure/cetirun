@@ -7,8 +7,14 @@ weight: 10
 
 ## Toolchain
 
-The site pins **Hugo extended 0.164.0**, **Docsy 0.16.0**, Bootstrap 5.3.8,
-and Font Awesome 6.7.2. Use these tools:
+The site pins its tools and dependencies in these files:
+
+- Hugo extended: `HUGO_VERSION` in [`site/Makefile`]({{< repo "site/Makefile" >}})
+- Docsy: [`site/go.mod`]({{< repo "site/go.mod" >}})
+- Bootstrap, Font Awesome, jQuery, and Lunr:
+  [`site/package.json`]({{< repo "site/package.json" >}}) and its lock file
+
+Use these tools:
 
 - Go 1.27.4 to install the pinned Hugo binary. This version matches the
   repository's [`.go-version`]({{< repo ".go-version" >}}).
@@ -23,50 +29,38 @@ When you change the toolchain, refer to the official
 
 ## Check and preview
 
-Run these commands from the repository root:
+Run these commands from the repository root. Install the dependencies one
+time. This step needs network access. It builds Hugo extended, downloads the
+Hugo modules and the npm packages, and builds the site:
 
 ```bash
-make -C site check
+make -C site build
+```
+
+`make -C site deps` installs only the Hugo binary and the npm packages. It does
+not download the Hugo modules, so it is not sufficient for the offline gate.
+
+After each edit, run the documentation gate, which runs offline, and preview
+the site:
+
+```bash
+make docs-check
 make -C site serve
 ```
 
 Open `http://localhost:1313/cetirun/`. By default, the server binds to
-loopback. If that port is not available, use `PORT=1314`.
+loopback. If that port is not available, add `PORT=1314`. If a Hugo extended
+binary of the pinned version is already installed, add
+`HUGO=/absolute/path/to/hugo` to each command. `make -C site test` runs only the
+validator tests. `make check` does not include documentation.
 
-If you use a Hugo binary that already exists and matches the pinned version, it
-is not necessary to build another one:
+`make docs-check` runs `make -C site check` with Go toolchain and module
+downloads and npm network access disabled. Keep `module.proxy = ""` in
+`hugo.toml`. With this value, Hugo inherits the `GOPROXY=off` setting of the
+gate and does not replace it with its default `direct` mode.
 
-```bash
-make -C site check HUGO=/absolute/path/to/hugo
-make -C site serve HUGO=/absolute/path/to/hugo PORT=1314
-```
-
-The first run downloads Go/Hugo modules and npm dependencies. After that run,
-the validator tests are offline:
-
-```bash
-make -C site test
-```
-
-To separate dependency setup from the repository's offline documentation gate,
-run these commands:
-
-```bash
-make -C site deps
-make docs-check
-```
-
-If you use a Hugo binary that already exists, pass
-`HUGO=/absolute/path/to/hugo` to both commands. `make check` does not include
-documentation. Run `make docs-check` separately.
-
-The root gate disables automatic Go toolchain/module downloads and sets npm to
-offline mode. As a result, you must install the dependencies first. Keep
-`module.proxy = ""` in `hugo.toml`. With this value, Hugo inherits the gate's
-`GOPROXY=off` setting and does not replace it with its default `direct` mode.
-
-`check` runs those tests and the repository-wide header check. It builds the
-site and then validates these items:
+`check` runs the validator tests and the repository-wide header check. It
+builds the site and then validates these items:
 
 - Internal URLs and fragments
 - Repository Markdown entry points and heading anchors
@@ -80,15 +74,22 @@ site and then validates these items:
 It does not run the deployment examples. Static checks do not replace
 keyboard, screen-reader, mobile, or browser visual review.
 
+To test a different host or subpath, add a base URL, for example
+`make -C site check BASE_URL=https://docs.example.com/preview/`. The default
+project subpath is `/cetirun/`.
+
 By default, the Hugo cache is in `$XDG_CACHE_HOME/cetirun/hugo` or
-`$HOME/.cache/cetirun/hugo`, outside the worktree. `.bin`, `node_modules`,
-`public`, and `resources` are ignored build products. Do not commit them.
+`$HOME/.cache/cetirun/hugo`, outside the worktree. To use a different
+location, set `HUGO_CACHEDIR`. `.bin`, `node_modules`, `public`, and
+`resources` are ignored build products. Do not commit them.
 
 ## Edit content
 
 Add Markdown under `site/content/en/docs` with a title, a description, and a
-numeric weight. Use a section `_index.md` to give a reader an entry point. Keep
-relative links valid from the rendered URL, with its trailing slash.
+numeric weight. The `weight` orders the child pages on a section landing page.
+It does not set the sidebar order. Use a section `_index.md` to give a reader
+an entry point. Keep relative links valid from the rendered URL, with its
+trailing slash.
 
 Use the `repo` shortcode for links to source paths. The validator makes sure
 that the target exists in the checkout. Keep descriptions specific enough to
@@ -98,36 +99,69 @@ When you add or move a file under `docs/`, update the checker's `POINTERS` map
 or `DOC_ASSETS` classification. When you replace a document with a pointer,
 keep the inbound repository links and their heading anchors.
 
-Keep future work on one short Roadmap page. Do not add detailed plans or
-unimplemented usage instructions to other documentation. Keep current usage
-and its limitations accurate until the implementation changes.
+Keep future work on one short Roadmap page. Its front matter has
+`status: planned`, and the page shows a visible `**Status: planned.**` label.
+Do not add detailed plans, design contracts, or executable setup examples to
+it. Do not add unimplemented usage instructions to other documentation. Keep
+current usage and its limitations accurate until the implementation changes.
+
+Keep the Trademarks section of the root README and its guideline link. The
+checks require them.
 
 Assign every page to one module in `site/data/navigation.toml`: Overview,
-User Guide, Operations, Reference, or Contributing. Navigation is scoped to
-that module on both the landing page and its child pages. Source paths can
-stay unchanged. The checks reject pages without an assignment, duplicates, and
+User Guide, Operations, Reference, or Contributing. The sidebar shows the pages
+in the order of the `pages` list in that file. Navigation is scoped to that
+module on both the landing page and its child pages. Source paths can stay
+unchanged. The checks reject pages without an assignment, duplicates, and
 cross-module sidebar entries.
 
-Put user tasks under User Guide. Operations groups platform tasks into Install,
-Configuration, and Troubleshooting. Link to Reference for field and parameter
-definitions. Do not repeat these definitions.
+Put user tasks under User Guide, in the Get Started, Using Agents, or
+Integrations group. Operations groups platform tasks into Install,
+Configuration, and Troubleshooting. Add a page to the group that matches its
+task. Link to Reference for field and parameter definitions. Do not repeat
+these definitions.
 
 ### Writing style
 
+Write all English documentation in ASD-STE100 Simplified Technical English
+(Issue 9). The most important rules are these:
+
+- Write one topic in each sentence. Keep procedural sentences to at most 20
+  words and descriptive sentences to at most 25 words.
+- Write one topic in each paragraph, with at most six sentences.
+- In procedures, use the imperative and one action in each step. Put a
+  condition before the action: "If ..., do ...".
+- Use the active voice and the simple present tense.
+- Use simple, common words, with one meaning for each word. Use one name for
+  each item on all pages.
+- Do not use phrasal verbs. For example, write "configure" or "install", not
+  "set up".
+- Keep the articles. Do not use contractions. Use noun clusters of at most
+  three words.
+- Use lists and tables for complex content.
+
+Also follow these project rules:
+
+- After a limitation, write what the reader can do or link to it. For example,
+  write "The flag only hides the Tailscale controls. To disable Tailscale for
+  one Agent, use **Disable Tailscale** in its editor." Do not write only "The
+  flag does not disable Tailscale."
+- Use "examine" only for an action of a person. For a tool or a command, use
+  "check", "validate", or "render". For example, write "A local render checks
+  only the templates", not "A local render does not examine Azure".
 - Name concepts and reference pages with short noun phrases, such as
   **Architecture** and **Security**. Name tasks with actions, such as
   **Choose a model** or **Manage an instance**.
-- Use present tense and active voice. Describe what the product does. Do not
-  narrate development work or compare the product with an unfinished design.
+- Describe what the product does. Do not narrate development work or compare
+  the product with an unfinished design.
 - Start with the reader's task or the component's purpose. Avoid introductions
   that only announce what the page describes.
-- Explain prerequisites and limitations at the point where they are necessary
-  for the reader. State the consequence and the necessary action. Use warnings
-  for security or data-loss risks.
+- Explain prerequisites and limitations where the reader needs them. Use a
+  warning for a security or data-loss risk, and put it before the step that it
+  applies to. In the warning, state the consequence and the action to take.
 - Keep API fields, commands, defaults, and identifiers accurate. An edit to the
   prose must not change their meaning or imply that a defect is fixed.
-- Keep future work on Roadmap. When a compatibility difference is important,
-  use a specific version.
+- When a compatibility difference is important, use a specific version.
 
 Use the [Kubernetes documentation style guide](https://kubernetes.io/docs/contribute/style/style-guide/)
 for technical text. Use Google's
@@ -144,16 +178,20 @@ re-encode, or replace that source image.
 ## Publication
 
 The base URL is configured for a possible `/cetirun/` project site, so that
-local validation finds subpath mistakes. A base URL is not a deployment. This
-repository change supplies only pull-request validation and local preview.
-There is no Pages deployment workflow, deployment permission, or enabled
-publication step.
+local validation finds subpath mistakes. The repository provides pull-request
+validation and local preview only. It does not publish the site. There is no
+Pages deployment workflow, deployment permission, or enabled publication step.
 
-The `CetiRun docs checks` workflow runs for changes to the site, its source
-components, repository scripts, Go-version file, Makefile, or linked policies.
-It uses the repository Go version and the site's dependency locks. The workflow
-does not make its check a repository-required gate. That is a maintainer
-setting outside the site sources.
+The [`CetiRun docs checks` workflow]({{< repo ".github/workflows/cetirun-docs-validation.yml" >}})
+uses the repository Go version and the dependency locks of the site. Keep it
+read-only, with `contents: read` permissions. Its `paths` filter lists the
+changes that start it. The filter does not include `examples/`, `AGENTS.md`, or
+`CODE_OF_CONDUCT.md`. But the site links to files in `examples/` and to
+`CODE_OF_CONDUCT.md`, and the checks validate the links in `AGENTS.md`. If you
+change, move, or remove one of these files, run `make docs-check` locally.
+
+The workflow does not make its check a repository-required gate. That is a
+maintainer setting outside the site sources.
 
 ## Theme and third-party assets
 
@@ -162,8 +200,14 @@ theme selection, and client-side search. CetiRun supplies its own home layout,
 styles, and local-asset head. jQuery and Lunr are bundled from pinned npm
 dependencies. The site configures no analytics service.
 
+The [page head]({{< repo "site/layouts/_partials/head.html" >}}) reads the
+`td-color-theme` value from the browser `localStorage`. It uses this value to
+apply the theme that the reader selected.
+
 Keep upstream license notices with dependencies. For dependency license
 locations and the content map, refer to
 [the site source guide]({{< repo "site/README.md" >}}). These statements are
 about the documentation site, not about telemetry in the CetiRun runtime or how
-the runtime handles data.
+the runtime handles data. They also do not cover the request logs of a hosting
+provider or the external sites that links open. Review the hosting behavior
+separately.
