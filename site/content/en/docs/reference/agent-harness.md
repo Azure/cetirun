@@ -90,18 +90,22 @@ rejects every image until an administrator approves its immutable digest. No
 image is approved by default. The list holds at most 64 entries, and each entry
 must have the form `<repository>@sha256:<64 hex digits>`. An Agent's
 `spec.agent.image` must exactly match an entry. Numeric `imageUsers` entries are
-required when
-the selected policy enables FQDN capture; other images keep their image-owned
-identity and must be qualified for the configured HOME storage.
+required when the selected policy enables FQDN capture; other images keep their
+image-owned identity and must be qualified for the configured HOME storage.
 
 The Operator publishes approved image references in its catalog. The Portal
-shows those references when creating a Custom Agent and rejects tags or images
-outside the published list before creating the Agent. An unavailable or empty
-list blocks Custom creation, not other Agent types. The Operator still checks
-the current approval before provisioning. An Agent submitted directly, or
-whose approval changed after creation, reports `CustomImageNotApproved` and
-waits for administrator approval. Approval allows that Agent to retry without
-being recreated.
+shows those references when creating a Custom Agent or editing its image. Both
+owner and administrator image updates must select an approved digest. An
+unavailable or empty list blocks Custom creation and image changes, not other
+Agent types or unrelated edits. The Operator still checks the current approval
+before provisioning. A non-Sandbox Custom Agent submitted directly, or whose
+approval changed after creation, reports `CustomImageNotApproved` and waits for
+administrator approval. Approval allows that Agent to retry without being
+recreated. For policy-governed Sandbox Custom Agents, a disabled provider or
+an unapproved image instead reports `PolicyResolved=False` with reason
+`PolicyDenied`, because the common executor requires a Gateway-qualified image.
+After the first catalog is published, image approvals refresh even when the
+Gateway is unavailable; the catalog retains its last known model availability.
 
 Custom uses its own Go adapter and chart branch. For Custom, a built-in profile,
 native provider, configuration template or preferred model name is not
@@ -274,8 +278,8 @@ Gateway controller to provision the Virtual Key of each approved Agent. It does
 not create another Gateway or database, publish skills, or invent a storage
 handoff.
 
-Without the provider, an Agent reports `CustomRuntimeDisabled`. Other binding
-dependencies can report `CustomBindingsPending`. Objects that are
+Without the provider, a non-Sandbox Custom Agent reports `CustomRuntimeDisabled`.
+Other binding dependencies can report `CustomBindingsPending`. Objects that are
 absent, changed or foreign report `CustomBindingRejected`. Registry references
 use the separate credential synchronizer. Native integrations are still
 rejected. No placeholder credentials or native-secret fallback can start the

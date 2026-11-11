@@ -219,11 +219,13 @@ func (h *InstanceHandler) validateAIGatewaySelection(w http.ResponseWriter, r *h
 		return reject(http.StatusConflict, "agent_chart_unsupported", "This deployment's agent chart does not route "+agentTypeNames[agentType]+" agents through the AI Gateway. Ask an administrator to upgrade the agent chart.")
 	}
 	if newAgent && agentType == cetirunv1alpha1.AgentTypeCustom {
-		if catalog.CustomImages == nil {
-			return reject(http.StatusServiceUnavailable, "custom_images_unknown", "The operator has not published Custom image approvals yet. Ask an administrator to check the Custom runtime configuration.")
+		image := ""
+		if req.Agent != nil {
+			image = req.Agent.Image.Value
 		}
-		if req.Agent == nil || !slices.Contains(catalog.CustomImages, req.Agent.Image.Value) {
-			return reject(http.StatusConflict, "custom_image_not_approved", "Choose an approved Custom image pinned by sha256 digest. If none are available, ask an administrator to approve one.")
+		if err := validateCustomImage(catalog, image); err != nil {
+			writeManagementError(w, err)
+			return "", "", nil, false
 		}
 	}
 	sharedAvailable, copilotAvailable := len(catalog.SharedModels) > 0, catalog.GitHubCopilot
@@ -248,6 +250,24 @@ func (h *InstanceHandler) validateAIGatewaySelection(w http.ResponseWriter, r *h
 		return reject(http.StatusForbidden, "model_not_allowed", "The requested default model is not available under the selected Team's Policy and model sources")
 	}
 	return options.Team, options.sandboxRef, &cetirunv1alpha1.ModelAccessSpec{SharedModels: &shared, GitHubCopilot: &copilot}, true
+}
+
+func validateCustomImage(catalog AIGatewayCatalogResponse, image string) error {
+	if catalog.CustomImages == nil {
+		return &managementError{http.StatusServiceUnavailable, "custom_images_unknown", "The operator has not published Custom image approvals yet. Ask an administrator to check the Custom runtime configuration."}
+	}
+	if !slices.Contains(catalog.CustomImages, image) {
+		return &managementError{http.StatusConflict, "custom_image_not_approved", "Choose an approved Custom image pinned by sha256 digest. If none are available, ask an administrator to approve one."}
+	}
+	return nil
+}
+
+func (h *InstanceHandler) validateCustomImageUpdate(ctx context.Context, current cetirunv1alpha1.HarnessSpec, updated *cetirunv1alpha1.HarnessSpec) error {
+	if updated == nil || updated.Type != cetirunv1alpha1.AgentTypeCustom || updated.Image == nil ||
+		current.Image != nil && *current.Image == *updated.Image {
+		return nil
+	}
+	return validateCustomImage(h.sharedModelCatalog(ctx), *updated.Image)
 }
 
 // aiGatewayRouted reports whether the Agent's model traffic uses the Gateway,

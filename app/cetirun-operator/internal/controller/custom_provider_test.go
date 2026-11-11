@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"slices"
 	"strings"
@@ -626,7 +627,7 @@ func TestCustomCatalogPublishesCurrentImageApprovals(t *testing.T) {
 	for _, enabled := range []bool{true, false} {
 		p.config.Enabled = enabled
 		r.CustomBindings = p
-		if err := r.writeAIGatewayCatalog(context.Background(), nil); err != nil {
+		if err := r.writeAIGatewayCatalog(context.Background(), nil, true); err != nil {
 			t.Fatal(err)
 		}
 		cm := &corev1.ConfigMap{}
@@ -644,6 +645,51 @@ func TestCustomCatalogPublishesCurrentImageApprovals(t *testing.T) {
 		if catalog.CustomImages == nil || !slices.Equal(catalog.CustomImages, want) {
 			t.Fatalf("enabled=%v published approvals=%v", enabled, catalog.CustomImages)
 		}
+	}
+}
+
+func TestCustomCatalogRefreshesApprovalsDuringGatewayOutage(t *testing.T) {
+	for _, failure := range []string{"client unavailable", "model listing unavailable"} {
+		t.Run(failure, func(t *testing.T) {
+			r, kube, gateway := aiGatewayTestReconciler(t)
+			provider, _ := providerFixture(t)
+			r.CustomBindings = provider
+			ctx := context.Background()
+			r.publishAIGatewayCatalog(ctx, 0)
+			cm := &corev1.ConfigMap{}
+			key := client.ObjectKey{Namespace: r.catalogNamespace(), Name: api.AIGatewayCatalogConfigMap}
+			if err := kube.Get(ctx, key, cm); err != nil {
+				t.Fatal(err)
+			}
+			var before api.AIGatewayCatalog
+			if err := json.Unmarshal([]byte(cm.Data[api.AIGatewayCatalogKey]), &before); err != nil {
+				t.Fatal(err)
+			}
+			// A new leader has no in-memory catalog or old approval configuration.
+			r.aiGatewayCatalog = aiGatewayCatalog{}
+			if failure == "client unavailable" {
+				r.aiGatewayClientFactory = func(context.Context) (aiGatewayKeyClient, error) {
+					return nil, errors.New("synthetic client failure")
+				}
+			} else {
+				gateway.listErr = errors.New("synthetic listing failure")
+			}
+			for _, approvals := range [][]string{{"registry.example.com/new@sha256:" + strings.Repeat("b", 64)}, {}} {
+				provider.config.ApprovedImages = approvals
+				r.publishAIGatewayCatalog(ctx, 0)
+				if err := kube.Get(ctx, key, cm); err != nil {
+					t.Fatal(err)
+				}
+				var after api.AIGatewayCatalog
+				if err := json.Unmarshal([]byte(cm.Data[api.AIGatewayCatalogKey]), &after); err != nil {
+					t.Fatal(err)
+				}
+				before.CustomImages = approvals
+				if !reflect.DeepEqual(before, after) {
+					t.Fatalf("catalog changed beyond current approvals: before=%+v after=%+v", before, after)
+				}
+			}
+		})
 	}
 }
 

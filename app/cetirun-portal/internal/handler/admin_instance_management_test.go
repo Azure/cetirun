@@ -122,7 +122,8 @@ func TestAdminAgentAuditRecordsFieldsWithoutValues(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	instance := adminManagedInstance()
 	instance.Spec.Agent.Type = api.AgentTypeCustom
-	h := adminManagementHandler(newFakeClient(instance))
+	h := adminManagementHandler(newGatewayFakeClient(instance))
+	h.Config.AIGatewayCatalogNamespace = "cetirun-system"
 	w := httptest.NewRecorder()
 	h.UpdateInstance(w, adminManagementRequest(http.MethodPatch,
 		`{"uid":"foreign-agent-uid","resourceVersion":"7","displayName":"Synthetic audit display","agent":{"image":"`+managementImage+`","port":43210}}`))
