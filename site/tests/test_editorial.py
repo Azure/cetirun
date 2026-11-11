@@ -40,7 +40,7 @@ class EditorialTests(unittest.TestCase):
     def test_development_narrative_is_rejected(self):
         for sentence in (
             "The current implementation supports agents.",
-            "This page describes the current source.",
+            "This page describes the current source code.",
             "This checkout has no installer.",
             "We are refactoring the portal.",
             "The runtime is being rewritten.",
@@ -130,6 +130,7 @@ class StyleRuleTests(unittest.TestCase):
             "This increment adds a flag.",
             "If the checkout includes the root Makefile, run it.",
             "The Portal is being used.",
+            "The Pods were being moved.",
             "The flag currently has no effect.",
             "Support arrives soon.",
             "As of this release, the field is necessary.",
@@ -159,6 +160,9 @@ class StyleRuleTests(unittest.TestCase):
             "Select **Fill in\nlater** to continue.",
             "## Upgrade the chart {#upgrade-soon}\n\nRun the upgrade.",
             "Refer to [the\nguide](../soon/).",
+            "The operator restarts the Agent as soon as the policy changes.",
+            "Restart the Agent as\nsoon as the policy changes.",
+            "The current source of the Team skills is a Git repository.",
         ):
             with self.subTest(text=text):
                 self.assertEqual(check_site.check_editorial_style(text, {}), [])
@@ -209,6 +213,22 @@ class StyleRuleTests(unittest.TestCase):
                 ("timeless", "review"),
             },
         )
+
+    def test_progressive_passive_has_its_own_rule(self):
+        for text, name, advice in (
+            (
+                "The page closes while the Agent is being deleted.",
+                "verb-tense",
+                "simple present",
+            ),
+            ("The runtime is being rewritten.", "dev-narrative", "development"),
+        ):
+            with self.subTest(text=text):
+                (finding,) = check_site.page_style_findings(text)
+                self.assertEqual(
+                    (finding.rule.name, finding.rule.level), (name, "error")
+                )
+                self.assertIn(advice, finding.rule.advice)
 
     def test_stricter_rule_wins_an_overlap(self):
         findings = check_site.page_style_findings("The logger now exports nothing.")

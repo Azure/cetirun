@@ -619,11 +619,11 @@ STYLE_RULES = (
         "dev-narrative",
         "error",
         "describe product behavior rather than development progress",
-        r"\b(?:current\s+(?:implementation|source)|this\s+checkout"
+        r"\b(?:current\s+(?:implementation|source\s+code)|this\s+checkout"
         r"|if\s+the\s+checkout\s+includes|earlier\s+checkout|this\s+increment"
         r"|separately\s+delivered|not\s+defined\s+yet|now\s+supplies"
         r"|we\s+(?:are|['’]re)\s+(?:refactoring|rewriting|rebuilding)"
-        r"|(?:is|are|was|were)\s+being\s+\w+)\b",
+        r"|(?:is|are|was|were)\s+being\s+(?:refactored|rewritten|rebuilt))\b",
     ),
     StyleRule(
         "dev-narrative",
@@ -633,12 +633,18 @@ STYLE_RULES = (
         r"|now\s+exports|in\s+a\s+measurement|measured\s+on\s+an?\s+test)\b",
     ),
     StyleRule(
+        "verb-tense",
+        "error",
+        'use the simple present tense, such as "the operator deletes the Agent"',
+        r"\b(?:is|are|was|were)\s+being\s+\w+",
+    ),
+    StyleRule(
         "timeless",
         "error",
         "describe the product without reference to a date or a release",
-        r"\b(?:currently|presently|nowadays|soon|recently|anymore|for\s+now"
-        r"|at\s+(?:present|the\s+moment|this\s+time)|as\s+of|in\s+the\s+future"
-        r"|going\s+forward)\b",
+        r"\b(?:currently|presently|nowadays|(?<!\bas\s)soon|recently|anymore"
+        r"|for\s+now|at\s+(?:present|the\s+moment|this\s+time)|as\s+of"
+        r"|in\s+the\s+future|going\s+forward)\b",
     ),
     StyleRule(
         "timeless",
@@ -877,8 +883,9 @@ def sentence_case_words(heading: str) -> list[str]:
 def word_findings(lines: list[str]) -> list[StyleFinding]:
     """Apply the pattern rules and compare the capitals of product terms.
 
-    A match of a stricter rule hides an overlapping match of another rule. Bold
-    UI labels, quotations, and names that a rule matches are not checked.
+    A match of a stricter rule, or of an earlier rule of the same level, hides
+    an overlapping match of another rule. Bold UI labels, quotations, and names
+    that a rule matches are not checked.
     """
     text = mask(RULE_NAME, "NAME", mask(LABEL, "UI", "\n".join(lines)))
 
