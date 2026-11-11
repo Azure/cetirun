@@ -54,7 +54,7 @@ data migration. Retention does not protect against a schema downgrade.
 | `gatewayTokenSecretRef` | Necessary native Secret name for Hermes and OpenClaw. Not allowed for Custom |
 | `agent` | Necessary Harness configuration object |
 | `agent.type` | `hermes` (default), `openclaw`, or `custom`. It cannot be changed |
-| `agent.image` | Necessary for Custom. After it is set, it cannot be cleared. Built-in defaults are pinned from the selected chart |
+| `agent.image` | Necessary for Custom. Use the exact `<repository>@sha256:<digest>` reference from the Operator's `customRuntime.approvedImages`; a tag reference is never approved. After it is set, it cannot be cleared. Built-in defaults are pinned from the selected chart |
 | `agent.registrySecretRef.name` | Optional reference to a Portal-managed source Secret. The reference has no namespace, key, or inline credentials |
 | `agent.username` | The default is `vibe`. Non-root image username that cannot be changed |
 | `agent.port` | HTTP port, 1–65535. Necessary for a Custom Web UI, and optional in other cases. For Custom, an omitted port means that the Agent is headless |

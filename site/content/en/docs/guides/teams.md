@@ -8,7 +8,12 @@ A `Team` is a CetiRun configuration resource.
 Both the team and its member instances are cluster-scoped.
 It does not define a membership roster, validate Entra group membership, or
 authorize access to another user's instance. Portal administrators can manage
-teams. Instance owners can select a team.
+teams.
+
+Every signed-in Portal user can select any Team, or no Team, for a new Agent.
+An Agent Policy applies only to the Agents of a Team that has one, so it is not
+an access boundary between users. Refer to
+[Policy-bound Teams](../../operations/policy-teams/).
 
 In the Portal, first create an **Agent Policy** and a **Sandbox** under
 **Admin**. A Sandbox selects these items:
@@ -141,8 +146,12 @@ the Team page in the Portal has a **Skills** section. It lists the skills that
 the Skill Marketplace synchronized from its Git repository. Select the skills
 that the Team's instances get. The Team's Agent Policy must allow each skill.
 A skill that the Policy does not allow shows **Not allowed by the Agent
-Policy**. Enter npm packages separately, in **npm skill packages, one per
-line**, each with the `npm:` prefix.
+Policy**.
+
+> **Warning:** Do not enter packages in **npm skill packages, one per line**
+> for a Team with an Agent Policy. With an `npm:` entry, the Sandbox Agents of
+> the Team do not start. Refer to
+> [Limits](../../operations/skill-marketplace/#limits).
 
 Saving changes to Team skills restarts the Team's running Sandbox Agents one
 time. Their new Pods copy the Team's published skills. OpenClaw and Hermes

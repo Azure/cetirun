@@ -144,10 +144,17 @@ operation. The helper below has no render-only or dry-run mode.
 ## Helper side effects
 
 To run `infra/cluster/deploy.sh`, you must have Bash, Python 3, Azure CLI,
-the Bicep CLI on `PATH`, kubectl, and an Azure session that is already authorized.
-You must also set `RESOURCE_GROUP` and `LOCATION`. `PARAM_FILE` selects the parameters that you
-examined. The helper uses the current Azure subscription and does not select
-one. Confirm that scope independently. The helper does these steps:
+the Bicep CLI on `PATH`, kubectl, and kubelogin. You must also have an Azure
+session that is already authorized. `az aks install-cli` installs kubectl and
+kubelogin. On this cluster, kubectl uses kubelogin to get its Entra tokens.
+
+You must also set `RESOURCE_GROUP` and `LOCATION`. `LOCATION` sets only the
+location of a new resource group. The cluster region comes from `location` in
+the parameter file. `PARAM_FILE` selects the parameters that you examined. The
+helper uses the current Azure subscription and does not select one. Confirm
+that scope independently.
+
+The helper does these steps:
 
 1. It compiles Bicep locally (`--no-restore`), reads the compiled or supplied
    JSON parameters, and checks the effective Kubernetes version. It stops on
@@ -155,7 +162,8 @@ one. Confirm that scope independently. The helper does these steps:
    validated inputs in a private temporary directory, uses those same inputs
    for validation and deployment, and removes the directory on exit.
 2. It installs or updates `aks-preview`. If necessary, it registers the managed
-   Gateway API preview feature.
+   Gateway API preview feature. Then it waits for the registration without a
+   time limit.
 3. It creates or updates the resource group.
 4. It validates and creates the Bicep deployment.
 5. It fetches credentials with `--overwrite-existing`.
@@ -171,6 +179,32 @@ selects local admin credentials. This setting is only for an explicitly
 authorized bootstrap environment that has local accounts enabled. It is not a
 fallback for an Azure RBAC failure. Step 6 writes to `kube-system`. As a
 result, the identity must have write access there, not only read access.
+
+Before you run the helper, give your identity a Kubernetes role that can write
+to `kube-system`, for example **Azure Kubernetes Service RBAC Cluster Admin**.
+The cluster does not exist yet, so assign the role at the scope of the resource
+group. **Connected, mutating:**
+
+1. If the resource group does not exist, create it:
+
+   ```bash
+   az group create --name example-rg --location your-approved-region --output none
+   ```
+
+2. Assign the role at the scope of the resource group:
+
+   ```bash
+   RESOURCE_GROUP_ID=$(az group show --name example-rg --query id --output tsv)
+   az role assignment create --role 'Azure Kubernetes Service RBAC Cluster Admin' \
+     --assignee-object-id "$(az ad signed-in-user show --query id --output tsv)" \
+     --assignee-principal-type User --scope "$RESOURCE_GROUP_ID" --output none
+   ```
+
+A new role assignment can take some minutes to apply. If step 6 stops with an
+access error, examine the access with
+`kubectl auth can-i create configmaps --namespace kube-system`. When the answer
+is `yes`, run the helper again. A new run does all the steps again for the same
+resource group and cluster.
 
 **Connected, mutating example:** use it only after you examine the script and
 the parameters:
@@ -195,7 +229,11 @@ The template enables Microsoft Entra authentication with Azure RBAC for
 Kubernetes authorization. As a result, each person who runs kubectl, Helm, or
 `make deploy` must have an Azure role for the Kubernetes API of the cluster.
 An example is **Azure Kubernetes Service RBAC Cluster Admin**. A new role
-assignment can take some minutes to apply. **Connected, mutating:**
+assignment can take some minutes to apply.
+
+If you assigned the role to yourself at the scope of the resource group before
+the helper ran, it already applies to this cluster. For other administrators,
+assign the role at the scope of the cluster. **Connected, mutating:**
 
 ```bash
 CLUSTER_ID=$(az aks show --resource-group example-rg --name example-cluster \

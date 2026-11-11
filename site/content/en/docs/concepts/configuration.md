@@ -47,8 +47,9 @@ file, but the controller can merge them internally. Refer to the
 An instance refers to a `Team` with `spec.team`. Teams can set these items:
 
 - Role and context rendered for the selected runtime.
-- Up to 100 default skill identifiers. With the Skill Marketplace, these are
-  the names of marketplace skills and `npm:` packages.
+- Up to 100 default skill identifiers. With the Skill Marketplace, the
+  identifiers without the `npm:` prefix are the names of marketplace skills.
+  The Sandbox Agents of a policy-bound Team do not install `npm:` packages.
 - A shared Blob storage location for read-only skills.
 
 A team reference is not a check of organizational membership, and it does not
@@ -123,6 +124,11 @@ common-executor Sandbox Agent of the Team starts, init copies the Team's
 published skills into the Pod. An OpenClaw or Hermes Agent reads this copy
 read-only at `$HOME/.aks/skills`, and a Custom Agent in
 `$HOME/.agents/skills`. Other Agents do not receive marketplace skills.
+
+Only standard Agents install npm packages. A Sandbox Agent with an `npm:`
+entry does not start, as the
+[Skill Marketplace limits](../../operations/skill-marketplace/#limits)
+describe.
 
 Npm packages are installed under `/home/vibe/.cetirun/skills/npm/`. The
 templates add those directories to OpenClaw's `skills.load.extraDirs` or

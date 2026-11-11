@@ -205,8 +205,8 @@ you save a new default, the instance restarts. Custom images select a model
 from the models that are available through the Gateway. They make this
 selection through their own configuration or Chat UI.
 
-When an administrator does one of these actions, the operator updates every
-instance that uses shared models:
+When an administrator does one of these actions, the operator updates the
+affected Agents:
 
 - adds or removes a shared model
 - changes the limits of a shared model
@@ -214,8 +214,28 @@ instance that uses shared models:
 - changes if a shared model is offered, through its price or the Gateway's
   setting
 
-This update restarts these instances. The operator also registers their
-Copilot models again under the names that now apply.
+The affected Agents are the standard Agents that use shared models, and the
+Sandbox Agents whose Agent Policy allows the model. This update restarts their
+instances. The operator also registers their Copilot models again under the
+names that now apply.
+
+> **Warning:** Before you remove a shared model, remove its name from
+> `modelAccess.sharedModels.allowed` in each Agent Policy. If an Agent Policy
+> allows a name that the Gateway catalog does not offer, the operator stops
+> its Agents that use shared models. It also blocks the Gateway key of each of
+> these Agents. Their `PolicyResolved` condition is `False` with the reason
+> `DependencyUnavailable` and the message
+> `the live AI Gateway catalog cannot resolve every authorized shared model`.
+
+The operator also blocks and stops these Agents in these cases:
+
+- The Gateway stops offering the model because the model has no price.
+- A console deployment copies the access group of the model.
+- An administrator removes or renames a Team router that an Agent Policy
+  allows.
+
+To recover, make the Gateway offer the model again, or remove its name from
+the Agent Policy.
 
 If only the base model or routing fields of a shared model change, the change
 reaches the Copilot routes at each instance's next check. This occurs within

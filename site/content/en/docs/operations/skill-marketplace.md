@@ -510,14 +510,13 @@ the skills in the Policy first. Then select them on the Team.
 1. Select **Admin → Agent policies**, and open the Policy of the Team. Under
    **Skill Marketplace skills**, select the skills that the Policy allows. Each
    selected skill adds its name to **Allowed skills**. The other entries of
-   that list stay, for example `npm:` packages. Save the Policy. This change
-   does not restart Agents.
+   that list stay. Save the Policy. This change does not restart Agents.
 2. Select **Admin → Teams**, and open the Team. Under **Skills**, select the
    skills that the Agents of the Team get. **Search skills** finds a skill by
    its name or its description. A skill that the Policy does not allow shows
-   **Not allowed by the Agent Policy**, and you cannot select it. Enter npm
-   packages in **npm skill packages, one per line**, each with the `npm:`
-   prefix.
+   **Not allowed by the Agent Policy**, and you cannot select it. Leave
+   **npm skill packages, one per line** empty: Sandbox Agents do not install
+   `npm:` packages, as [Limits](#limits) describes.
 3. Save the Team. When its skills change, the save restarts the running
    Agents of the Team one time.
 
@@ -597,7 +596,6 @@ spec:
     allowed:
       - pdf-tools
       - web-research
-      - npm:@example/report-skill
   modelAccess:
     sharedModels:
       allowed: [gpt-main]
@@ -621,12 +619,12 @@ spec:
   skills:
     - pdf-tools
     - web-research
-    - npm:@example/report-skill
 ```
 
 - Each entry without the `npm:` prefix names a marketplace skill. The order of
   the entries does not matter. A Team has at most 100 entries, npm packages
-  included.
+  included. Do not add `npm:` entries: the Sandbox Agents of the Team do not
+  install them, as [Limits](#limits) describes.
 - The checks of the Portal do not apply to `kubectl`. The worker lists a
   selected name that the catalog does not have as
   [missing](#retained-and-missing-skills).
@@ -739,7 +737,12 @@ skill, remove it from the Team. Then you can remove it from the Policy.
   such an Agent, with or without a policy. The Agent changes to `Failed` with
   `AgentConfigInvalid` and this message:
   `skillOverrides cannot add or remove Skill Marketplace skills; select them on the Team`.
-  `npm:` entries in `skillOverrides` stay possible.
+  This check does not apply to `npm:` entries in `skillOverrides`.
+- **No npm packages for Sandbox Agents.** The Sandbox Agents of policy-bound
+  Teams do not install `npm:` packages at runtime. If the Team skills or the
+  `skillOverrides` of such an Agent contain an `npm:` entry, the operator does
+  not render the Agent. It reports `SkillsMaterializationPending`, and the Agent
+  does not start. To start the Agent, remove the `npm:` entry.
 - **Name conflicts with private skills.** CetiRun does not compare marketplace
   names with the skills in the HOME of an Agent. The runtime decides which of
   two skills with the same name it uses. For OpenClaw and Hermes, a private

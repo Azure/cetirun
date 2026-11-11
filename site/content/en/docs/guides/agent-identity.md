@@ -4,12 +4,13 @@ description: "Connect independent Azure identities and personal accounts to an A
 weight: 45
 ---
 
-CetiRun connects Agents to Azure, GitHub, Microsoft Graph, Gmail, and Google
-Calendar through a native remote MCP service. **Providers decide resource
-permissions**: Azure evaluates RBAC, and personal providers evaluate their
-OAuth scopes and the rights of the connected user. GitHub App connections also
-let each Agent select repositories and permissions that narrow its installation
-token. CetiRun binds an Agent to a Connection and to selected services.
+CetiRun connects Agents to Azure, GitHub, Gmail, and Google Calendar through a
+native remote MCP service. The Portal does not offer Microsoft 365 (Microsoft
+Graph) connections. **Providers decide resource permissions**: Azure evaluates
+RBAC, and personal providers evaluate their OAuth scopes and the rights of the
+connected user. GitHub App connections also let each Agent select repositories
+and permissions that narrow its installation token. CetiRun binds an Agent to a
+Connection and to selected services.
 
 Hermes and OpenClaw connect natively. Governed common-executor workloads must
 have the explicit [native Connections configuration]({{< repo "app/cetirun-connections-mcp/README.md" >}}#governed-native-workloads).
@@ -140,6 +141,10 @@ third-party connections.
 
 ## Microsoft Graph and personal Azure
 
+The Portal does not offer Microsoft 365 connections. In **Add identity**, the
+**Microsoft 365** choice shows **Not available in this environment**, and you
+cannot select it. To work with Azure resources, use **Azure**.
+
 Personal Azure and Microsoft 365 connections keep the Entra delegated/OBO
 flow. They act with personal delegated authority. They must have the
 configured Entra application consent and a ready Agent Identity. They do not
@@ -206,8 +211,9 @@ For example, list Gmail message IDs:
 
 The services are `azure_arm` (base `/`), `github` (`/`), `microsoft_graph`
 (`/v1.0/`), `google_gmail` (`/gmail/v1/`), and `google_calendar`
-(`/calendar/v3/`). Paths start with `/`, relative to the service base. Query
-values are strings or arrays of strings. Bodies are JSON.
+(`/calendar/v3/`). `microsoft_graph` needs a Microsoft 365 connection, which
+the Portal does not offer. Paths start with `/`, relative to the service base.
+Query values are strings or arrays of strings. Bodies are JSON.
 
 The allowed optional
 headers are If-Match, If-None-Match, Prefer, ConsistencyLevel, and
