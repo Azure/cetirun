@@ -148,6 +148,7 @@ for line in sys.stdin:
             assert lower.get("authorization") == "Bearer " + KEY or lower.get("x-api-key") == KEY, "Wrong Gateway key"
             assert payload["model"] == MODEL, payload["model"]
             context = json.dumps(payload, ensure_ascii=False)
+            assert "Inspect this workspace only." in context, "User task absent from model request"
             assert "platform-main-marker" in context, "Platform main instructions absent"
             assert "platform-skill-marker" in context, "Native platform skills absent"
             enabled = memory_mode != "off"

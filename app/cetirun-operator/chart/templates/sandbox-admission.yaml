@@ -343,6 +343,9 @@ spec:
         app.kubernetes.io/version: {{ include "cetirun-operator.version" . | default .Chart.AppVersion | quote }}
       annotations:
         sidecar.istio.io/inject: "false"
+        adx-mon/scrape: "true"
+        adx-mon/port: "8080"
+        adx-mon/path: /metrics
     spec:
       serviceAccountName: cetirun-sandbox-admission
       automountServiceAccountToken: true

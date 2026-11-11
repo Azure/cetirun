@@ -12,7 +12,7 @@ COPY scripts/ci/install_tools.py scripts/ci/tools.json /tools/
 RUN python3 /tools/install_tools.py --arch "${TARGETARCH}" --bin-dir /out/bin helm
 
 # Build stage
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/oss/go/microsoft/golang:1.27.3-1@sha256:25d710943a357c3b8669289f4f8af073f9c6c2a44a5b31341cf8997ea592dcba AS builder
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/oss/go/microsoft/golang:1.27.3-1@sha256:2b3c026371fe2221a588f80cfb5dbc592af1efd3be0d53297676c7f3a612a5d9 AS builder
 ARG VERSION
 ARG GIT_SHA
 ARG TARGETOS
@@ -29,14 +29,18 @@ RUN go mod download
 COPY app/cetirun-operator/ .
 COPY app/internal/ ../internal/
 
-# Build the manager binary, and the Skill Marketplace worker that the chart
-# runs in a separate Pod.
+# Build the manager binary, the Skill Marketplace worker that the chart
+# runs in a separate Pod, and the telemetry program that the
+# cetirun-observability chart runs.
 RUN CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" go build -a \
     -ldflags "-X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Version=${VERSION} -X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Commit=${GIT_SHA}" \
     -o /manager ./cmd/main.go
 RUN CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" go build \
     -ldflags "-X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Version=${VERSION} -X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Commit=${GIT_SHA}" \
     -o /skill-marketplace ./cmd/skill-marketplace
+RUN CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" go build \
+    -ldflags "-X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Version=${VERSION} -X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Commit=${GIT_SHA}" \
+    -o /telemetry ./cmd/telemetry
 
 # ──────────────────────────────────────────────
 # Runtime stage
@@ -54,6 +58,7 @@ WORKDIR /
 # Copy the compiled binaries.
 COPY --from=builder /manager /manager
 COPY --from=builder /skill-marketplace /skill-marketplace
+COPY --from=builder /telemetry /telemetry
 COPY --from=cetiadmin-tools --chmod=0755 /out/bin/helm /usr/local/share/cetirun/cetiadmin/bin/helm
 
 # Chart is now pulled from OCI registry at runtime.

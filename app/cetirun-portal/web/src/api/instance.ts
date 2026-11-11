@@ -88,7 +88,7 @@ export async function restartInstanceByName(name: string, request: RestartInstan
 }
 
 export async function setInstanceSuspendedByName(name: string, request: SetInstanceSuspendedRequest): Promise<Instance> {
-  const instance = await requestInstanceAction(name, request.suspended ? "suspend" : "resume", request);
+  const instance = await requestInstanceAction(name, request.suspended ? "suspend" : "resume", request, undefined, request.generation);
   if (!instance || instance.uid !== request.uid || typeof instance.resourceVersion !== "string" || !instance.resourceVersion ||
     instance.suspended !== request.suspended || !Number.isSafeInteger(instance.generation) || (instance.generation ?? 0) < 1) {
     throw new Error("The Agent response could not be confirmed. Check its current state or retry the same request.");
@@ -97,11 +97,14 @@ export async function setInstanceSuspendedByName(name: string, request: SetInsta
 }
 
 async function requestInstanceAction(
-  name: string, action: "restart" | "suspend" | "resume", version: InstanceVersion, requestId?: string,
+  name: string, action: "restart" | "suspend" | "resume", version: InstanceVersion, requestId?: string, generation?: number,
 ): Promise<Instance> {
+  const headers: Record<string, string> = {};
+  if (requestId) headers["Idempotency-Key"] = requestId;
+  if (Number.isSafeInteger(generation) && (generation ?? 0) > 0) headers["X-CetiRun-Agent-Generation"] = String(generation);
   const response = await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/${action}`, {
     method: "POST",
-    ...(requestId ? { headers: { "Idempotency-Key": requestId } } : {}),
+    ...(Object.keys(headers).length ? { headers } : {}),
     body: JSON.stringify({ uid: version.uid, resourceVersion: version.resourceVersion }),
   });
   if (!response.ok) {

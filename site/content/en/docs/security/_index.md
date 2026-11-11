@@ -121,8 +121,10 @@ content of this file depends on the installed version and configuration, and it
 is not necessarily a complete transcript.
 
 The [cluster template]({{< repo "infra/cluster/main.bicep" >}}) sets
-`enableContainerInsights` and `enablePrometheusMetrics` to `true` by default.
-It enables managed Prometheus and the Container Insights monitoring add-on. The
+`enableContainerInsights` and `enablePrometheusMetrics` to `true` by default,
+and to `false` when `adxMode` selects Azure Data Explorer for the
+[ADX-Mon collection](../operations/observability/).
+With them, it enables managed Prometheus and the Container Insights monitoring add-on. The
 add-on collects container stdout and stderr. This data includes the session
 logger's output and what Agents print themselves, and both can include
 conversation text. The add-on's collection rules target the configured Azure

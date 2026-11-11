@@ -106,9 +106,9 @@ param enableContainerInsights bool
 param enablePrometheusMetrics bool
 param logAnalyticsWorkspaceId string
 
-// --- Log Analytics workspace (created if no existing ID provided) ---
+// --- Log Analytics workspace (created for Container Insights if no existing ID provided) ---
 
-resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = if (empty(logAnalyticsWorkspaceId)) {
+resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = if (enableContainerInsights && empty(logAnalyticsWorkspaceId)) {
   name: '${clusterName}-logs'
   location: location
   tags: tags

@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Azure/CetiRun/app/internal/agenttools"
 )
 
 const (
@@ -31,6 +33,7 @@ type namespaceFixture struct {
 	version            uint64
 	conflictNextDelete bool
 	server             *httptest.Server
+	customReceipt      *configMapDocument
 }
 
 func newNamespaceFixture(t *testing.T) *namespaceFixture {
@@ -67,7 +70,17 @@ func (fixture *namespaceFixture) serveHTTP(response http.ResponseWriter, request
 		return
 	}
 	if request.Method == http.MethodGet && request.URL.Path == "/api/v1/namespaces/agents" {
-		fixture.writeJSON(response, http.StatusOK, map[string]any{"metadata": secretMetadata{Name: "agents", OwnerReferences: []ownerReference{agentRecordOwner(agentFromDocument(fixture.agent))}}})
+		metadata := secretMetadata{Name: "agents", UID: "namespace-agent"}
+		if fixture.agent.Spec.Agent.Type == "custom" {
+			metadata.Annotations = map[string]string{"cetirun.microsoft.com/agent-uid": fixture.agent.Metadata.UID}
+		} else {
+			metadata.OwnerReferences = []ownerReference{agentRecordOwner(agentFromDocument(fixture.agent))}
+		}
+		fixture.writeJSON(response, http.StatusOK, map[string]any{"metadata": metadata})
+		return
+	}
+	if request.Method == http.MethodGet && fixture.customReceipt != nil && request.URL.Path == "/api/v1/namespaces/cetirun-system/configmaps/"+fixture.customReceipt.Metadata.Name {
+		fixture.writeJSON(response, http.StatusOK, fixture.customReceipt)
 		return
 	}
 	const prefix = "/api/v1/namespaces/"
@@ -88,6 +101,51 @@ func (fixture *namespaceFixture) serveHTTP(response http.ResponseWriter, request
 		return
 	}
 	fixture.handleSecret(response, request, namespace, parts[2])
+}
+
+func TestRecordStoreForOrdinaryCustomUsesOwnershipReceipt(t *testing.T) {
+	fixture := newNamespaceFixture(t)
+	fixture.agent.Spec.Agent.Type = "custom"
+	agent := agentFromDocument(fixture.agent)
+	receipt := `{"agentName":"agent","agentUID":"` + agent.UID + `","namespace":"agents","namespaceUID":"namespace-agent"}`
+	immutable := true
+	fixture.customReceipt = &configMapDocument{Immutable: &immutable, Data: map[string]string{"ownership": receipt}}
+	fixture.customReceipt.Metadata.Name = agenttools.CustomOwnershipRecordName(agent.UID)
+	fixture.customReceipt.Metadata.Namespace = "cetirun-system"
+	fixture.customReceipt.Metadata.OwnerReferences = []ownerReference{agentRecordOwner(agent)}
+	fixture.store.nativeOperatorNamespace = "cetirun-system"
+	store, err := fixture.store.recordStoreForAgent(context.Background(), agent)
+	if err != nil || store.namespace != "agents" {
+		t.Fatalf("recordStoreForAgent() = %#v, %v", store, err)
+	}
+	metadata := secretMetadata{Name: "agents", UID: "namespace-agent", Annotations: map[string]string{"cetirun.microsoft.com/agent-uid": agent.UID}}
+	metadata.Annotations["cetirun.microsoft.com/agent-uid"] = "forged-agent"
+	if err := fixture.store.customRecordNamespaceOwned(context.Background(), agent, metadata); err == nil {
+		t.Fatal("forged namespace annotation was accepted")
+	}
+	metadata.Annotations["cetirun.microsoft.com/agent-uid"] = agent.UID
+	metadata.UID = "replacement-namespace"
+	if err := fixture.store.customRecordNamespaceOwned(context.Background(), agent, metadata); err == nil {
+		t.Fatal("replacement namespace UID was accepted")
+	}
+	metadata.UID = "namespace-agent"
+	fixture.customReceipt.Metadata.OwnerReferences = []ownerReference{{APIVersion: "cetirun.microsoft.com/v1alpha1", Kind: "Agent", Name: agent.Name, UID: "replaced-agent"}}
+	if err := fixture.store.customRecordNamespaceOwned(context.Background(), agent, metadata); err == nil {
+		t.Fatal("foreign receipt owner was accepted")
+	}
+	fixture.customReceipt.Metadata.OwnerReferences = nil
+	if err := fixture.store.customRecordNamespaceOwned(context.Background(), agent, metadata); err == nil {
+		t.Fatal("ownerless receipt was accepted before deletion")
+	}
+	fixture.customReceipt.Metadata.OwnerReferences = []ownerReference{agentRecordOwner(agent)}
+	if connectionMatchesAgent(Connection{Mode: modeDelegated}, agent, namespaceTenant) {
+		t.Fatal("ordinary Custom receipt enabled credential issuance")
+	}
+	mutable := false
+	fixture.customReceipt.Immutable = &mutable
+	if _, err := fixture.store.recordStoreForAgent(context.Background(), agent); err == nil {
+		t.Fatal("mutable Custom ownership receipt was accepted")
+	}
 }
 
 func (fixture *namespaceFixture) handleSecretCollection(response http.ResponseWriter, request *http.Request, namespace string) {

@@ -158,6 +158,7 @@ func TestOwnerSuspensionRequiresAuthenticationAndExactVersionBody(t *testing.T) 
 		}
 		for _, body := range []string{"", `{}`, `{"uid":null,"resourceVersion":"7"}`,
 			`{"uid":"agent-uid","resourceVersion":"7","suspended":true}`,
+			`{"uid":"agent-uid","resourceVersion":"7","generation":2}`,
 			`{"uid":"agent-uid","uid":"other","resourceVersion":"7"}`} {
 			w := httptest.NewRecorder()
 			call(w, managementRequest(http.MethodPost, body))
@@ -165,5 +166,40 @@ func TestOwnerSuspensionRequiresAuthenticationAndExactVersionBody(t *testing.T) 
 				t.Fatalf("invalid version accepted: %d body=%s", w.Code, body)
 			}
 		}
+	}
+}
+
+func TestOwnerSuspensionGenerationHeader(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		values []string
+		status int
+		code   string
+	}{
+		{"missing", nil, http.StatusNotFound, "instance_not_found"},
+		{"valid", []string{"2"}, http.StatusNotFound, "instance_not_found"},
+		{"zero", []string{"0"}, http.StatusBadRequest, "invalid_generation"},
+		{"negative", []string{"-1"}, http.StatusBadRequest, "invalid_generation"},
+		{"not a number", []string{"two"}, http.StatusBadRequest, "invalid_generation"},
+		{"multiple", []string{"2", "3"}, http.StatusBadRequest, "invalid_generation"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := customManagementHandler()
+			r := managementRequest(http.MethodPost, `{"uid":"agent-uid","resourceVersion":"7"}`)
+			for _, value := range tc.values {
+				r.Header.Add(agentGenerationHeader, value)
+			}
+			w := httptest.NewRecorder()
+			h.SuspendInstanceByName(w, r)
+			var response struct {
+				Error struct{ Code string }
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if w.Code != tc.status || response.Error.Code != tc.code {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+		})
 	}
 }

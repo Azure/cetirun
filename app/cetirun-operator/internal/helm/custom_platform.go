@@ -13,6 +13,7 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/observability"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/terminal"
 	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
@@ -143,7 +144,7 @@ func validateCustomPlatformValues(values map[string]any, agent agents.ResolvedAg
 		if key == api.AnnotationRestartRequestID && restartRequestID != "" && value == restartRequestID {
 			continue
 		}
-		if key == "checksum/config" || strings.HasPrefix(key, "cetirun.microsoft.com/") {
+		if key == "checksum/config" || strings.HasPrefix(key, "cetirun.microsoft.com/") || observability.CollectorAnnotation(key) {
 			return fmt.Errorf("Custom pod annotation %s is platform-owned", key)
 		}
 	}

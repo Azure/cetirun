@@ -162,3 +162,10 @@ cetirun-ai-gateway:
   # spendLogs.storePrompts is false. The stdout request log never does.
   spendLogs:
     enabled: true
+
+# -- ADX-Mon collection of the platform's and the Agents' logs, Kubernetes
+# events and metrics into Azure Data Explorer. make deploy turns it on with the
+# observability block of its environment file, which names the Kusto cluster,
+# the databases and the ingestor's Azure identity.
+cetirun-observability:
+  enabled: false

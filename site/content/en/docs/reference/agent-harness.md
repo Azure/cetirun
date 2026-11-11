@@ -531,13 +531,26 @@ Model-based fixture evaluation still must have a supported native route. It is
 limited to four extra model requests per store in a rolling 24-hour window. It
 does not run without an active request or change tool permissions.
 
-The Memory adapters use private memory only in the owner's own conversations.
-For OpenClaw, these are the turns that the owner sends from the Control UI or
-the TUI. For Hermes, these are its CLI, TUI and API server sessions. Other
-conversations include channel conversations (Slack, Telegram and others),
-heartbeats, scheduled jobs, sub-agents and messages between sessions. In these
-conversations, the adapters inject no notes, and the Memory tool does not read
-or save notes.
+OpenClaw and Hermes enable Memory by default for sessions admitted by the host
+on entrypoints that run the Memory adapter. This includes interactive sessions,
+message channels, scheduled tasks and native descendants of an admitted parent;
+OpenClaw heartbeats can also use Memory. Each host still controls access to its
+entrypoints. These sessions share the same Agent-private store, not separate
+stores per sender or channel. Replies in a group or channel can disclose
+recalled material to its participants.
+
+Owners can narrow access with `owner_access` in the host's plugin settings or
+`CETIRUN_MEMORY_OWNER_ACCESS`. These controls can restrict platforms, senders,
+conversations, sub-agents, cron and ACP. Profile and environment restrictions
+both apply, and native descendants inherit their parent's scope and
+restrictions. `CETIRUN_MEMORY_NO_CAPTURE=true` disables writes while allowing
+reads; `CETIRUN_MEMORY_NO_MEMORY=true` disables both. See
+[Memory access for OpenClaw and Hermes]({{< repo "app/cetirun-memory-context/OWNER_ACCESS.md" >}})
+for each host's configuration format and descendant-lifetime rules. Child
+access requires native lineage and a current parent grant; a parent ID in a
+prompt does not authorize it. A child cannot relax inherited restrictions or
+attest an owner preference. Messaging tools still require confirmation before
+sending recalled material outside the session.
 
 There is no Memory policy ConfigMap, installation identity or Portal policy
 editor. The helper does not bind stored notes to an Agent or namespace UID.

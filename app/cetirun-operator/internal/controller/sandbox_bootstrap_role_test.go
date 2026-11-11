@@ -133,6 +133,55 @@ func TestSandboxBootstrapRoleUpgradePreservesLifetime(t *testing.T) {
 	}
 }
 
+func TestSandboxBootstrapRoleDriftStillStopsOwnedLifetimeOnSuspension(t *testing.T) {
+	ctx := context.Background()
+	f, _, role := bootstrapRoleUpgradeFixture(t, "openclaw", "kata")
+	desired, _ := f.r.operatorNamespaceRBAC(role.Namespace)
+	role.Rules = append(append([]rbacv1.PolicyRule(nil), desired.Rules...), rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"configmaps"}, Verbs: []string{"get"}})
+	if err := f.kube.Update(ctx, role); err != nil {
+		t.Fatal(err)
+	}
+	before := f.workload(t)
+	agent := f.current(t)
+	keyID := agent.Status.AIGateway.KeyID
+	token := aigateway.Token(f.gateway.generated[0].Key)
+	if key := f.gateway.keys[token]; key == nil || key.Blocked {
+		t.Fatal("fixture did not retain an unblocked Gateway key")
+	}
+	agent.Spec.Suspended = true
+	agent.Generation++
+	if err := f.kube.Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	stages, rolePatches := f.installer.stages, 0
+	f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+		Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, options ...client.PatchOption) error {
+			if candidate, ok := object.(*rbacv1.Role); ok && candidate.Name == role.Name && candidate.Namespace == role.Namespace {
+				rolePatches++
+			}
+			return c.Patch(ctx, object, patch, options...)
+		},
+	})
+	if _, err := f.reconcile(); err == nil {
+		t.Fatal("full bootstrap inventory drift unexpectedly verified suspension")
+	}
+	stopped := f.workload(t)
+	if stopped.UID != before.UID || ptr.Deref(stopped.Spec.Replicas, -1) != 0 || f.installer.stages != stages {
+		t.Fatalf("Role drift left the recorded workload running: %#v", stopped.Spec.Replicas)
+	}
+	if key := f.gateway.keys[token]; key == nil || !key.Blocked || f.current(t).Status.AIGateway.KeyID != keyID || len(f.gateway.generated) != 1 {
+		t.Fatal("Role drift prevented suspension from retaining and blocking the existing Gateway key")
+	}
+	current := f.current(t)
+	if current.Status.Phase != api.PhasePending || current.Status.AccessURL != "" {
+		t.Fatalf("unverified bootstrap inventory incorrectly completed suspension: %#v", current.Status)
+	}
+	observed := &rbacv1.Role{}
+	if err := f.kube.Get(ctx, client.ObjectKeyFromObject(role), observed); err != nil || !reflect.DeepEqual(observed.Rules, role.Rules) || rolePatches != 0 {
+		t.Fatal("suspension repaired unrelated Role drift:", err)
+	}
+}
+
 func TestSandboxBootstrapRoleUpgradeRejectsUnconfirmedState(t *testing.T) {
 	for _, change := range []string{
 		"extra-rule", "missing-rule", "role-uid", "role-owner", "role-marker", "role-finalizer",

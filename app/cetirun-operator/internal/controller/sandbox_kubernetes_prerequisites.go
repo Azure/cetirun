@@ -179,7 +179,20 @@ func (p *KubernetesSandboxPrerequisites) resolveCurrent(ctx context.Context, req
 		namespace.Annotations[sandboxworkload.AgentUIDAnnotation] != string(agent.UID) {
 		return empty, fmt.Errorf("Sandbox prerequisite namespace protection and exact Agent ownership are required")
 	}
-	mode := sandboxSkillsMode(source.NativeExecution, source.SkillsCatalogConfigMapName, agent, team)
+	mode := sandboxSkillsMode(source.NativeExecution, agent, team)
+	// A recorded publication is a retained storage contract, even when the Team
+	// subsequently clears its selection. Never replace that contract with empty skills.
+	if mode == sandboxworkload.SkillsModeEmpty && (namespace.Annotations[sandboxBootstrapAnnotation] != "" ||
+		slices.Contains(agent.Finalizers, sandbox.BootstrapFinalizer)) {
+		reader := &AgentReconciler{APIReader: source.APIReader, OperatorNamespace: source.OperatorNamespace}
+		record, receipt, err := reader.readSandboxBootstrap(ctx, agent)
+		if err != nil {
+			return empty, err
+		}
+		if receipt.Skills != nil || (source.SkillsCatalogConfigMapName != "" && record.Annotations[sandboxBootstrapSkillsModeAnnotation] == "") {
+			mode = ""
+		}
+	}
 	home := &corev1.PersistentVolumeClaim{}
 	var skills *corev1.PersistentVolumeClaim
 	claims := []struct {

@@ -300,6 +300,21 @@ to the same account. An explicit refresh `invalid_grant` marks sign-in as
 required, but transport failures do not. Old duplicate Connections keep their
 IDs, and `canonicalConnectionId` is projected for selection.
 
+A reconnect records its authorization ID in the encrypted Connection before
+returning a sign-in URL. The last successfully registered attempt is current.
+Only that attempt can replace credentials, including after a storage conflict;
+an older callback cannot overwrite a later sign-in. Starting or cancelling a
+reconnect leaves the existing credentials and bindings intact. Cancellation or
+failure does not revive an earlier attempt. Token refresh preserves the current
+authorization ID and does not invalidate a pending sign-in.
+
+When upgrading from a Broker without this check, pause new sign-ins and drain
+old callback handlers until all old Broker replicas and credential writers have
+been replaced. Old callbacks do not enforce this ordering, and old refresh
+writers can discard the new field. Existing credentials do not need to be
+removed, but unfinished reconnects without a matching current authorization ID
+must be started again. Do not copy an old transaction into that field to resume it.
+
 After one hour elapses from the transaction expiry, expired transactions are
 removed at startup, every five minutes, and on the owner's next sign-in.
 Cleanup scans paginated authorization Secrets in the Broker credential
@@ -345,18 +360,25 @@ There is no migration command or compatibility reader for the previous grant
 model.
 
 The Broker resolves the workload namespace from the live Agent state and
-examines its owner reference. Encrypted records bind the owner, immutable IDs,
-and revisions. Labels and display snapshots support only inventory, and they
-cannot establish authority. Workload authentication uses namespace ownership
-and named Agent reads. It does not fall back to a cluster-wide Agent list.
+examines its Agent owner reference. Ordinary Custom Agents retain their
+separate namespace lifecycle: their Broker records require the matching
+immutable Custom ownership receipt in the Operator namespace, the exact
+Agent/namespace UIDs, and the namespace UID annotation. The Broker receives a
+per-Agent `get` grant for that receipt only; it cannot list Operator
+ConfigMaps. Encrypted records bind the owner, immutable IDs, and revisions.
+Labels and display snapshots support only inventory, and they cannot establish
+authority. Workload authentication uses namespace ownership and named Agent
+reads. It does not fall back to a cluster-wide Agent list.
 
 Management inventory scans use pages of 50 Agents, with a 1 MiB response limit
 for each page. A failed, oversized, or repeated page causes the entire scan to
 fail. The scan does not return partial results.
 
-The Operator supplies Broker Secret RBAC in ordinary managed Agent namespaces.
-This is namespace-wide Secret access, not label-scoped isolation. Records are
-never mounted in Agent workloads.
+The Operator supplies Broker Secret RBAC in ordinary managed and ordinary
+Custom Agent namespaces. This is namespace-wide Secret access, not label-scoped
+isolation. Records are never mounted in Agent workloads. Custom receipt proof
+permits record storage and finalizer cleanup only; it does not enable Custom
+workload credential issuance.
 
 The Operator cleanup endpoint deletes validated records with
 UID/resourceVersion preconditions before the Agent finalizer is released.
