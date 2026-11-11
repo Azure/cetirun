@@ -4,14 +4,15 @@
 
 set -euo pipefail
 if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
-  echo "Usage: REGISTRY=registry.example.com VERSION=X.Y.Z ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true [PUSH=false] vscode-docker-build.sh"
+  echo "Usage: REGISTRY=registry.example.com VERSION=X.Y.Z [ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true] [PUSH=false] vscode-docker-build.sh"
+  echo "ACCEPT_VSCODE_SERVER_LICENSE_TERMS defaults to true."
   exit 0
 fi
 [[ $# -eq 0 ]] || { echo "Use --help" >&2; exit 2; }
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 REGISTRY="${REGISTRY:-$("${repo_root}/scripts/cetirun-release-metadata.sh" registry)}"
 VERSION="${VERSION:-$("${repo_root}/scripts/cetirun-release-metadata.sh" version)}"
-[[ "${ACCEPT_VSCODE_SERVER_LICENSE_TERMS:-}" == true ]] || { echo "Explicit VS Code Server license acceptance is required" >&2; exit 2; }
+[[ "${ACCEPT_VSCODE_SERVER_LICENSE_TERMS-true}" == true ]] || { echo "ACCEPT_VSCODE_SERVER_LICENSE_TERMS defaults to true but was overridden with a non-true value" >&2; exit 2; }
 [[ "${REGISTRY:-}" =~ ^[a-z0-9][a-z0-9.:/_-]*$ && "${REGISTRY}" != *://* ]] || { echo "REGISTRY is required" >&2; exit 2; }
 [[ "${VERSION:-}" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]] || { echo "VERSION is required" >&2; exit 2; }
 [[ "${PUSH:-false}" == true || "${PUSH:-false}" == false ]] || { echo "PUSH must be true or false" >&2; exit 2; }

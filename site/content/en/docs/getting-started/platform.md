@@ -150,7 +150,7 @@ On this machine, sign in to the registry with `docker login` and
 
 ```bash
 make publish REGISTRY=registry.example.com VERSION=0.1.1 \
-  GIT_SHA="$(git rev-parse HEAD)" ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true
+  GIT_SHA="$(git rev-parse HEAD)"
 ```
 
 The command builds and pushes the 14 images and 9 charts of
@@ -160,9 +160,10 @@ VS Code Server images, and the platform, Istio, and Agent (`helm/cetirun`)
 charts. Then the command pulls each chart back to examine it. Refer to the
 [unified release inventory]({{< repo "DEVELOPMENT.md" >}}#unified-release-inventory).
 
-`ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true` records that you accept the VS Code
-Server license. Without it, the command builds no image. The command stops if
-a tag already exists.
+`ACCEPT_VSCODE_SERVER_LICENSE_TERMS` defaults to `true`, so builds accept the
+[VS Code Server license](https://code.visualstudio.com/license/server) without
+a separate flag or prompt. An explicit `false` stops builds that include VS Code
+Server. The command also stops if a tag already exists.
 
 If you do not accept that license yet, publish the remaining artifacts with the
 release CLI and exclude the declared optional VS Code image explicitly:
