@@ -5,6 +5,7 @@ package tools
 import (
 	"bytes"
 	"context"
+	"errors"
 	"github.com/Azure/CetiRun/app/cetirun-connections-mcp/internal/brokerclient"
 	"github.com/Azure/CetiRun/app/cetirun-connections-mcp/internal/identity"
 	"github.com/Azure/CetiRun/app/cetirun-connections-mcp/internal/tools/providers"
@@ -20,6 +21,7 @@ type fakeBroker struct {
 	check        brokerclient.CheckResponse
 	issueChange  func(*brokerclient.IssueResponse)
 	err          error
+	issueErr     error
 	issued       int
 	correlations []string
 }
@@ -39,6 +41,9 @@ func (f *fakeBroker) Issue(ctx context.Context, r brokerclient.Request) (brokerc
 	}
 	if !reflect.DeepEqual(r.CredentialPolicy, f.check.CredentialPolicy) {
 		panic("credential policy revision not forwarded")
+	}
+	if f.issueErr != nil {
+		return brokerclient.IssueResponse{}, f.issueErr
 	}
 	response := brokerclient.IssueResponse{CheckResponse: f.check, AccessToken: "synthetic-private-token", ExpiresAt: time.Now().Add(time.Minute).Format(time.RFC3339)}
 	if f.check.CredentialPolicy != nil {
@@ -97,6 +102,31 @@ func TestBindingAndIssuanceChangesStopExecution(t *testing.T) {
 		if _, err := s.Call(context.Background(), caller, "service_request", arguments()); err == nil || p.calls != 0 {
 			t.Fatal("changed authorization reached provider")
 		}
+	}
+}
+
+func TestIssuanceErrorsPreserveCodeAndStopProviderExecution(t *testing.T) {
+	for _, code := range []string{"permission_denied", "throttled", "interaction_required", "dependency_unavailable"} {
+		t.Run(code, func(t *testing.T) {
+			service, broker, provider, caller, log := serviceFixture()
+			broker.issueErr = &brokerclient.Error{Code: code}
+			result, err := service.Call(context.Background(), caller, "service_request", arguments())
+			var failure *ToolError
+			if !errors.As(err, &failure) || failure.Code != code || failure.CorrelationID == "" {
+				t.Fatalf("issuance error = %v, want %s with correlation", err, code)
+			}
+			if result != nil || broker.issued != 1 || provider.calls != 0 {
+				t.Fatalf("issuance failure reached provider or retried: issued=%d provider=%d", broker.issued, provider.calls)
+			}
+			if !strings.Contains(log.String(), code) {
+				t.Fatal("issuance failure category was not audited")
+			}
+			for _, private := range []string{"private-workload-proof", "synthetic-private-token", "private-body"} {
+				if strings.Contains(log.String(), private) || strings.Contains(err.Error(), private) {
+					t.Fatal("issuance failure leaked private data")
+				}
+			}
+		})
 	}
 }
 

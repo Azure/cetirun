@@ -186,7 +186,10 @@ func (s *Server) toolCredentialsIssue(w http.ResponseWriter, r *http.Request) {
 	token, expiresAt, err := s.issueServiceCredential(r.Context(), connection, input.Service, identity.Agent, binding)
 	if err != nil {
 		code, status := "dependency_unavailable", 503
-		if category, ok := oauthTokenFailureCategory(err); ok && category == string(oauthTokenInvalidGrant) && isSharedConnectionMode(connectionMode(connection.Connection)) {
+		var authorizationError toolAuthorizationError
+		if errors.As(err, &authorizationError) {
+			code, status = authorizationError.code, authorizationError.status
+		} else if category, ok := oauthTokenFailureCategory(err); ok && category == string(oauthTokenInvalidGrant) && isSharedConnectionMode(connectionMode(connection.Connection)) {
 			code, status = "interaction_required", 401
 		}
 		writeAPIError(w, status, code, "Provider credential is unavailable", correlationID(r))
