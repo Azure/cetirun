@@ -29,6 +29,7 @@ const server = createServer(async (request, response) => {
   let raw = "";
   for await (const chunk of request) raw += chunk;
   const body = JSON.parse(raw), index = scenario.requests.length;
+  assert.equal(body.max_completion_tokens, 2048, "native task must retain its full output budget");
   scenario.requests.push(body);
   if (index === 0) {
     scenario.started.resolve();
@@ -42,7 +43,8 @@ const server = createServer(async (request, response) => {
   }
 });
 await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-const env = { ...process.env, OPENAI_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`, OPENAI_API_KEY: "sk-dummy" };
+const env = { ...process.env, OPENAI_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`, OPENAI_API_KEY: "sk-dummy",
+  CETIRUN_GATEWAY_MODEL_LIMITS: JSON.stringify({ version: 1, models: [{ id: "fixture", contextWindow: 131072, maxOutputTokens: 4096 }] }) };
 const services = await createPiServices(home, cwd, { ...env, CETIRUN_MEMORY_ASSETS: undefined }, "pi-tui");
 const model = (await services.modelAccess.models(AbortSignal.timeout(5000)))[0];
 async function createSession() {
