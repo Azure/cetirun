@@ -28,9 +28,13 @@ or provider-side route. Do not broaden model grants before that comparison.
 ## Hermes reasoning parameters
 
 The Gateway guard has synthetic coverage for the LiteLLM rules that remove
-sampling parameters from reasoning models and remove only
-`reasoning_effort: none` when an Azure deployment refuses that value. It leaves
-other effort values to LiteLLM/provider compatibility checks.
+sampling parameters from reasoning models and remove `reasoning_effort: none`
+when an Azure deployment refuses that value. It also removes the whole
+reasoning effort (`reasoning_effort`, or the Responses API `reasoning` object)
+when the LiteLLM-supported parameters of every candidate deployment lack
+`reasoning_effort`. A GitHub Copilot route, or a model that LiteLLM does not
+know, counts as a deployment that takes the effort. Otherwise the guard leaves
+effort values to LiteLLM/provider compatibility checks.
 
 ```text
 python3 -B -m unittest scripts.tests.test_ai_gateway_guard -v
