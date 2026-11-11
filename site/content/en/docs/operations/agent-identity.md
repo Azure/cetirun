@@ -313,10 +313,14 @@ Do not overwrite its access configuration with the creation example.
 
 Keep the Broker in its private credential namespace. The platform chart rejects
 a Broker installation beside MCP. The Broker can read encrypted records and
-provider Secrets. MCP has no Kubernetes Secret API access. When
-`connectionsMCP.brokerNamespace` and `brokerServiceAccount` are set, the
-Operator creates scoped Broker record permissions in Agent namespaces. Keep
-those fields until cleanup is complete.
+provider Secrets. MCP has no Kubernetes Secret API access.
+
+When `connectionsMCP.brokerNamespace` and `brokerServiceAccount` are set, the
+Operator creates a Role and a RoleBinding in each Agent namespace. They give
+the Broker ServiceAccount `get`, `list`, `create`, `update`, and `delete` on all
+Secrets of that namespace, including the AI Gateway key of the Agent. Secret
+names and labels do not limit this access. Keep those fields until cleanup is
+complete.
 
 Create the namespaces that do not exist. Label both namespaces for the
 installed Istio revision. For a namespace that already exists, examine its

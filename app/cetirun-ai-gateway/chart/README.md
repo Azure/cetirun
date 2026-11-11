@@ -127,9 +127,14 @@ meets these conditions:
 
 A console deployment under the same name is not automatically trusted or
 granted. If a console deployment copies the group, the Operator distrusts it.
-Agents then lose that model until the copy is removed. Two identical entries
-render the same deployment ID. If the Gateway lists this ID twice, the Operator
-does not trust the group.
+Agents without a policy then lose that model until the copy is removed. A
+policy-bound Agent whose AgentPolicy allows the model stops: the Operator blocks
+its key until the Gateway offers the model again. The same occurs when a policy
+allows a model that is removed from `models`. See
+[Choose a model](../../../site/content/en/docs/guides/models.md#runtime-configuration).
+
+Two identical entries render the same deployment ID. If the Gateway lists this
+ID twice, the Operator does not trust the group.
 
 Earlier versions of this chart derived the group from the complete model
 configuration. As a result, a change to a model changed its group. The model

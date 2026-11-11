@@ -74,6 +74,7 @@ reported observation; it does not approve a grant or verify live enforcement.
 | `PodReady` is false | StatefulSet rollout generation, ready and updated replicas, probes, and desktop dependencies |
 | `IngressReady` is false | Instance VirtualService and shared gateway |
 | Login loop or 403 | OAuth callback and TLS, groups, sidecar injection, and ownership |
+| Portal returns HTTP 403 `invalid_identity` | The user name. The part before `@` must give a valid alias. The Portal does not replace characters. Refer to [User names](../../getting-started/platform/#user-names) |
 | Agent opens but model fails | AI Gateway conditions, Portal sign-in, selected model entitlement, DNS, and egress. Readiness does not test inference. |
 
 The controller can mark the overall instance `Ready` even when the

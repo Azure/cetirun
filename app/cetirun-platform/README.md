@@ -79,7 +79,7 @@ REGISTRY=registry.example.com/team/test VERSION=0.1.1-dev.1 \
 | `broker` | Separate credential namespace/release and Broker Chart values, for example, references to TLS Secrets that exist and references to provider credential Secrets. The helper stops if a provider Secret that the file names does not exist. Remove the providers that you do not register |
 | `platform` | Platform release/namespace and umbrella values, for example, admission, provider credentials, model deployments, and qualified Custom images |
 | `platform.values.cetirun-operator.cetiadmin` | CetiAdmin owner assignment, initial budget, exact API access, optional migration source, and runtime options |
-| `sharedSkills` | The shared Skills storage fields that exist in the runtime chart, for example, storage class, resource group, account, and container |
+| `sharedSkills` | Necessary. The shared Skills storage fields that exist in the runtime chart: storage class, resource group, account, and container. The helper sets `skills.shared: true` for all Agents. It examines only that the StorageClass exists, so provision the Blob NFS account and container first. Refer to [Storage](../../site/content/en/docs/operations/storage.md#shared-skills-storage-for-make-deploy) |
 | `skillMarketplace` | Optional. The Git repository of the [Skill Marketplace](#skill-marketplace), its credentials Secret, and its Blob NFS container |
 
 The managed Istio control plane, ingress workload, DNS, cloud identity
