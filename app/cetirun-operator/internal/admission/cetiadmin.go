@@ -214,9 +214,8 @@ func (h *CetiAdminHandler) Validate(ctx context.Context, request admission.Reque
 }
 
 func (h *CetiAdminHandler) protectNativeAuthMarker(request admission.Request, snapshot cetiAdminSnapshot) (admission.Response, bool) {
-	if request.Resource.Group == api.GroupVersion.Group && request.Resource.Resource == "agents" &&
-		request.Operation != admissionv1.Create && request.Operation != admissionv1.Update {
-		// A retained rotation intent must not prevent normal Agent deletion.
+	if request.Operation != admissionv1.Create && request.Operation != admissionv1.Update {
+		// Deletion does not write rotation intent or receipts, including Secret cleanup.
 		return admission.Response{}, false
 	}
 	if (request.Resource.Group != api.GroupVersion.Group || request.Resource.Resource != "agents") &&

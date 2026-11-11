@@ -123,6 +123,13 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 			[]byte(`"default": "mcr.microsoft.com/aks/ai-runtime/cetirun/`+image+`"`),
 			[]byte(`"default": "cetirun.azurecr.io/`+image+`"`))
 	}
+	// The session logger's description later stopped naming Container Insights.
+	logger := []byte(`"description": "Session logger sidecar that tails JSONL files to stdout for the cluster's log collection"`)
+	if bytes.Count(chrt.Schema, logger) != 1 {
+		return fmt.Errorf("pre-proxy fixture requires the later session logger description")
+	}
+	chrt.Schema = bytes.Replace(chrt.Schema, logger,
+		[]byte(`"description": "Session logger sidecar that tails JSONL files to stdout for Container Insights"`), 1)
 	var err error
 	chrt.Schema, err = restoreHermesWebappSchema(chrt.Schema)
 	if err != nil {

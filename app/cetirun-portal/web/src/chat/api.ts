@@ -19,6 +19,28 @@ export class ChatError extends Error {
   }
 }
 
+function safeAgentFailure(code: unknown): ChatError | undefined {
+  switch (code) {
+    case "model_limits_unavailable":
+      return new ChatError(
+        "The Agent cannot verify the selected model's limits. The request will not be retried.",
+        code,
+      );
+    case "context_budget_exceeded":
+      return new ChatError(
+        "The conversation exceeds the selected model's context budget. Earlier tool actions may have completed; the request will not be retried.",
+        code,
+      );
+    case "agent_reported_error":
+      return new ChatError(
+        "The Agent reported a failed response. Earlier tool actions may have completed; the request will not be replayed.",
+        code,
+      );
+    default:
+      return undefined;
+  }
+}
+
 export interface ChatTarget {
   name: string;
   uid: string;
@@ -54,6 +76,8 @@ async function call(
         "Chat is unavailable. Refresh the instance before sending again.";
     if (response.headers.get("Content-Type")?.includes("application/json")) {
       const value = await response.json();
+      const reported = safeAgentFailure(value.error?.code);
+      if (reported) throw reported;
       if (typeof value.error?.code === "string") code = value.error.code;
       if (typeof value.error?.message === "string")
         message = value.error.message.slice(0, 1024);
@@ -199,12 +223,11 @@ export async function sendChat(
         }
         const value = JSON.parse(data);
         if (value.error) {
-          const reported = value.error.code === "agent_reported_error";
+          const reported = safeAgentFailure(value.error.code);
+          if (reported) throw reported;
           throw new ChatError(
-            reported
-              ? "The Agent reported a failed response. Earlier tool actions may have completed; the request will not be replayed."
-              : "The response was interrupted. The Agent may still be running.",
-            reported ? "agent_reported_error" : "agent_stream_interrupted",
+            "The response was interrupted. The Agent may still be running.",
+            "agent_stream_interrupted",
           );
         }
         if (

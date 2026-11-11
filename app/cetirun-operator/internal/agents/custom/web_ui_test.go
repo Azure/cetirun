@@ -27,7 +27,8 @@ func TestWebUIIsNotChat(t *testing.T) {
 		t.Fatalf("wrong browser contract: %#v", c)
 	}
 	if !reflect.DeepEqual(c.Environment, []agents.EnvironmentValue{
-		{Name: "HOME", Value: "/home/vibe"}, {Name: "OPENAI_BASE_URL", Value: "https://gateway.example.com/v1"}, {Name: "OPENAI_API_KEY", CredentialSlot: "model"}, {Name: "PORT", Value: "8080"},
+		{Name: "HOME", Value: "/home/vibe"}, {Name: "OPENAI_BASE_URL", Value: "https://gateway.example.com/v1"}, {Name: "OPENAI_API_KEY", CredentialSlot: "model"},
+		{Name: GatewayModelLimitsEnvironment, Value: `{"version":1,"models":[]}`}, {Name: "PORT", Value: "8080"},
 		{Name: "CETIRUN_WEB_BASE_PATH", Value: "/ui/editor/"}, {Name: "CETIRUN_WEB_INSTANCE", Value: "uid-1"},
 	}) {
 		t.Fatalf("browser port or platform environment changed: %#v", c.Environment)

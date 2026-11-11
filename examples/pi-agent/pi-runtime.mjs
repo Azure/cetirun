@@ -7,7 +7,7 @@ import {
   createAgentSession, ModelRuntime, SessionManager, SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { approvedResources } from "./pi-resources.mjs";
-import { gatewayAccess, gatewayConfiguration, gatewayCredentials, GATEWAY_PROVIDER } from "./gateway-runtime.mjs";
+import { gatewayAccess, gatewayConfiguration, gatewayCredentials, GATEWAY_PROVIDER, withGatewayBudget } from "./gateway-runtime.mjs";
 import { RunError } from "./run-error.mjs";
 
 export const PROVIDER = "github-copilot";
@@ -35,9 +35,10 @@ export async function createPiServices(home, cwd = path.join(home, "workspace"),
     retry: { enabled: false },
     enableInstallTelemetry: false,
   });
-  const modelAccess = gateway ? gatewayAccess(modelRuntime, gateway) : undefined;
+  const diagnostics = [];
+  const modelAccess = gateway ? gatewayAccess(modelRuntime, { ...gateway, diagnostics }) : undefined;
   resourceLoader.setMemoryModelRuntime?.(modelRuntime);
-  return { cwd, agentDir, modelRuntime, resourceLoader, settingsManager, modelAccess, diagnostics: [] };
+  return { cwd, agentDir, modelRuntime, resourceLoader, settingsManager, modelAccess, diagnostics };
 }
 
 /** Adapt the real Pi SDK to agent-api.mjs and the optional local auth helper. */
@@ -54,6 +55,7 @@ export async function createPiRuntime(home, env = process.env) {
   return {
     gateway: !!services.modelAccess,
     provider: services.modelAccess ? GATEWAY_PROVIDER : PROVIDER,
+    diagnostics: services.diagnostics,
     skills: () => resourceLoader.getSkills().skills.map(({ name }) => name),
     async authenticated() {
       if (services.modelAccess) return false;
@@ -128,29 +130,32 @@ function replayHTTPHistory(cwd, model, messages) {
 }
 
 async function runHTTPPrompt(session, prompt, signal, onText) {
-  let toolCalls = 0;
-  let limitExceeded = false;
-  const abort = () => { void session.abort().catch(() => {}); };
-  signal.addEventListener("abort", abort);
-  const unsubscribe = session.subscribe((event) => {
-    if (event.type === "tool_execution_start" && ++toolCalls > HTTP_TOOL_BUDGET) {
-      limitExceeded = true;
-      abort();
-    }
-    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-      onText?.(event.assistantMessageEvent.delta);
+  return withGatewayBudget(async (budget) => {
+    let toolCalls = 0;
+    let limitExceeded = false;
+    const abort = () => { void session.abort().catch(() => {}); };
+    signal.addEventListener("abort", abort);
+    const unsubscribe = session.subscribe((event) => {
+      if (event.type === "tool_execution_start" && ++toolCalls > HTTP_TOOL_BUDGET) {
+        limitExceeded = true;
+        abort();
+      }
+      if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+        onText?.(event.assistantMessageEvent.delta);
+      }
+    });
+    try {
+      signal.throwIfAborted();
+      await session.prompt(prompt);
+      signal.throwIfAborted();
+      if (limitExceeded) throw new RunError("tool_budget_exceeded");
+      const last = session.messages.findLast((message) => message.role === "assistant");
+      if (budget.error) throw new RunError(budget.error);
+      if (!last || !["stop", "length"].includes(last.stopReason)) throw new RunError("run_failed");
+      return { text: session.getLastAssistantText() ?? "", toolCalls, finishReason: last.stopReason };
+    } finally {
+      signal.removeEventListener("abort", abort);
+      unsubscribe();
     }
   });
-  try {
-    signal.throwIfAborted();
-    await session.prompt(prompt);
-    signal.throwIfAborted();
-    if (limitExceeded) throw new RunError("tool_budget_exceeded");
-    const last = session.messages.findLast((message) => message.role === "assistant");
-    if (!last || !["stop", "length"].includes(last.stopReason)) throw new RunError("run_failed");
-    return { text: session.getLastAssistantText() ?? "", toolCalls, finishReason: last.stopReason };
-  } finally {
-    signal.removeEventListener("abort", abort);
-    unsubscribe();
-  }
 }

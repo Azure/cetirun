@@ -35,6 +35,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useDeleteInstanceByName, useUpdateInstanceByName, useUpgradeInstanceByName, useInstanceStatusByNameQuery } from "../hooks/useInstance";
 import { useFeatures } from "../hooks/useFeatures";
+import { useAIGatewayCatalog } from "../hooks/useAIGateway";
 import type { Instance, InstanceVersion, UpdateInstanceRequest } from "../types/instance";
 import { agentTypeLabel, phaseBadgeColor } from "../utils/instance";
 import { StatusTab } from "./StatusTab";
@@ -86,6 +87,8 @@ export function OverviewSection({ instance }: { instance: Instance }) {
   const agentCredential = instance.agent.type === "custom" ? undefined : instance.agent.type === "hermes" ? instance.apiServerKey : instance.gatewayToken;
   const agentCredentialLabel = instance.agent.type === "hermes" ? "Hermes API / Webapp Key (user: cetirun)" : "Gateway Token";
   const nativeIntegrations = instance.agent.type !== "custom";
+  const customCatalog = useAIGatewayCatalog(editOpen && !nativeIntegrations);
+  const customImages = customCatalog.data?.customImages;
   const portLabel = instance.agent.webUI ? "Web UI port" : "HTTP port";
   const portValue = instance.agent.port ?? (nativeIntegrations ? "Platform default" : "Headless");
   let portHint = "Leave blank to remove the Agent HTTP endpoint. Terminal and Desktop are independent.";
@@ -143,6 +146,16 @@ export function OverviewSection({ instance }: { instance: Instance }) {
     if (!image && original.agent.image) {
       setEditValidationError("A pinned Agent image cannot be cleared.");
       return;
+    }
+    if (!nativeIntegrations && image !== (original.agent.image ?? "")) {
+      if (customCatalog.isFetching || customCatalog.isError || customImages == null) {
+        setEditValidationError("Custom image approvals are not available yet. Try again after the catalog loads.");
+        return;
+      }
+      if (!customImages.includes(image)) {
+        setEditValidationError("Choose an approved Custom image pinned by sha256 digest. Tags and unapproved images cannot run.");
+        return;
+      }
     }
     setEditValidationError("");
     if (port !== (original.agent.port ?? null)) agent.port = port;
@@ -292,8 +305,12 @@ export function OverviewSection({ instance }: { instance: Instance }) {
                 <Field label="Agent Username" hint="The image user cannot change after creation.">
                   <Input value={instance.agent.username ?? "vibe"} readOnly />
                 </Field>
-                <Field label="Agent Image" hint={nativeIntegrations ? "Overrides require platform approval and Harness compatibility. A pinned image cannot be cleared." : "Changing the image restarts a running Agent and retains HOME. The new image must support the existing data and image user."}>
-                  <Input value={editImage} onChange={(_, data) => { setEditImage(data.value); setEditValidationError(""); }} maxLength={2048} />
+                <Field label="Agent Image" hint={nativeIntegrations ? "Overrides require platform approval and Harness compatibility. A pinned image cannot be cleared." : "Choose an approved sha256 image from the suggestions. Changing the image restarts a running Agent and retains HOME. The image must support the existing data and image user."}>
+                  <Input value={editImage} onChange={(_, data) => { setEditImage(data.value); setEditValidationError(""); }} maxLength={2048}
+                    list={nativeIntegrations ? undefined : "edit-approved-custom-images"} />
+                  {!nativeIntegrations && <datalist id="edit-approved-custom-images">
+                    {customImages?.map((approved) => <option key={approved} value={approved} />)}
+                  </datalist>}
                 </Field>
                 {!nativeIntegrations && <Switch checked={editWebUI} label="Serve Web UI" onChange={(_, data) => setEditWebUI(data.checked)} />}
                 <Field label={editWebUI ? "Web UI Port" : "HTTP Port (optional)"} required={editWebUI} hint={portHint}>

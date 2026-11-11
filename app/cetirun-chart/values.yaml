@@ -559,9 +559,9 @@ tailscale:
   serve: false
 
 # -- Session logger sidecar configuration.
-# Tails session JSONL files to stdout so Container Insights (Azure Monitor)
-# captures full I/O audit logs. Query with:
-#   ContainerLogV2 | where ContainerName == "logger"
+# Tails session JSONL files to stdout, where the cluster's log collection
+# captures them. With the ADX-Mon collection, query the Agent logs database:
+#   AgentLogs | where Container == "logger"
 logger:
   # -- Enable session logger sidecar
   enabled: true

@@ -14,7 +14,7 @@ context.
 > them. Custom has a typed adapter for the common Sandbox executor on Kata and
 > the explicit ordinary-container backend. It must have platform registration,
 > current Team/AgentPolicy authorization and a Gateway-qualified image. Custom
-> without Sandbox selection keeps its opt-in binding provider.
+> without Sandbox selection uses its separate binding provider.
 >
 > Private images use Portal-managed Registry credentials and the Operator's
 > credential synchronizer. Custom supports non-default usernames. Built-in
@@ -86,12 +86,26 @@ and resource names keep the same roles.
 
 The Portal and Operator charts enable Custom support by default. The Operator's
 `customRuntime.approvedImages` list starts empty: the provider can start, but it
-rejects every image until an administrator approves its immutable digest and
-configures its numeric UID/GID. No image is approved by default. The list holds
-at most 64 entries, and each entry must have the form
-`<repository>@sha256:<64 hex digits>`. An Agent whose `spec.agent.image` is not
-exactly equal to an entry does not start, and it reports
-`Custom image is not approved`.
+rejects every image until an administrator approves its immutable digest. No
+image is approved by default. The list holds at most 64 entries, and each entry
+must have the form `<repository>@sha256:<64 hex digits>`. An Agent's
+`spec.agent.image` must exactly match an entry. Numeric `imageUsers` entries are
+required when the selected policy enables FQDN capture; other images keep their
+image-owned identity and must be qualified for the configured HOME storage.
+
+The Operator publishes approved image references in its catalog. The Portal
+shows those references when creating a Custom Agent or editing its image. Both
+owner and administrator image updates must select an approved digest. An
+unavailable or empty list blocks Custom creation and image changes, not other
+Agent types or unrelated edits. The Operator still checks the current approval
+before provisioning. A non-Sandbox Custom Agent submitted directly, or whose
+approval changed after creation, reports `CustomImageNotApproved` and waits for
+administrator approval. Approval allows that Agent to retry without being
+recreated. For policy-governed Sandbox Custom Agents, a disabled provider or
+an unapproved image instead reports `PolicyResolved=False` with reason
+`PolicyDenied`, because the common executor requires a Gateway-qualified image.
+After the first catalog is published, image approvals refresh even when the
+Gateway is unavailable; the catalog retains its last known model availability.
 
 Custom uses its own Go adapter and chart branch. For Custom, a built-in profile,
 native provider, configuration template or preferred model name is not
@@ -264,14 +278,15 @@ Gateway controller to provision the Virtual Key of each approved Agent. It does
 not create another Gateway or database, publish skills, or invent a storage
 handoff.
 
-Without the provider, an Agent reports `CustomBindingsPending`. Objects that are
+Without the provider, a non-Sandbox Custom Agent reports `CustomRuntimeDisabled`.
+Other binding dependencies can report `CustomBindingsPending`. Objects that are
 absent, changed or foreign report `CustomBindingRejected`. Registry references
 use the separate credential synchronizer. Native integrations are still
 rejected. No placeholder credentials or native-secret fallback can start the
 workload.
 
-Administrators can explicitly enable `customRuntime` in the Operator chart for
-qualified image digests. This Kubernetes provider prepares the namespace, HOME
+Administrators approve qualified image digests in `customRuntime.approvedImages`
+in the Operator chart. This default-enabled provider prepares the namespace, HOME
 claim template and canonical context. It also coordinates Pod replacements, for
 example for approved image updates. The runtime Chart keeps and reuses the same
 HOME claim. Every approved Custom image receives only its own Virtual Key and
@@ -948,7 +963,7 @@ The instance heading shows its nonblank Display Name. If the Display Name is
 blank, the heading shows the Agent's name. An owner can clear Display Name with
 an empty string.
 
-### Enabling Custom self-service
+### Configuring Custom self-service
 
 Custom is included in the default Portal type list. To disable Custom
 self-service, remove it from the [Portal chart](../helm/#portal-chart) list:
@@ -962,6 +977,18 @@ Custom uses the Portal login and instance-ownership checks that already exist.
 Set `customRuntime.enabled: false` in the Operator chart to disable its Custom
 provider separately. Update the Operator image and chart together; older
 Operator images reject an enabled provider with an empty approval list.
+These opt-outs apply to direct Helm chart installations. The `make deploy`
+entry point requires the complete platform configuration, including enabled
+Custom support and a nonempty approval list. An empty `allowedAgentTypes: []`
+uses the default type list; it does not disable all types.
+
+When upgrading an installation that previously omitted `customRuntime.enabled`,
+review its retained Custom values before applying the new chart. The provider
+now starts by default and validates that configuration at Operator startup.
+Remove retired `agentManagedModel` and `gatewayImages` fields, replace tag
+approvals with digests, and check storage and image-user entries. Invalid
+configuration stops the Operator, including reconciliation of other types.
+An explicit `customRuntime.enabled: false` keeps the provider disabled.
 Enablement of the type does not enable Agent Identity or make a separate Portal
 admission grant necessary. The backend still examines the type flag, instance
 limits and request fields. This includes immutable fields and concurrent-update

@@ -1104,20 +1104,22 @@ assert_contains "emptyDir: {}" "the sample directory is the pod's own" "${metric
 assert_absent "9090" "the metrics port stays off the Service" "$(render --set metrics.enabled=true -s templates/service.yaml)"
 assert_absent "kind: PodMonitor" "no PodMonitor unless asked for" "${metrics}"
 
-# A PodMonitor on a cluster without its API fails the whole install, and the
-# platform asks for one by default. It is created only where the API exists:
-# Azure Monitor managed Prometheus serves azmonitoring.coreos.com.
+# A PodMonitor on a cluster without its API fails the whole install. It is
+# created only where the Prometheus Operator's API exists; Azure Monitor
+# managed Prometheus' azmonitoring.coreos.com API is not used.
 echo "==> the PodMonitor is created only where the cluster serves its API"
 monitor_args=(--set metrics.enabled=true --set metrics.podMonitor.enabled=true)
 assert_absent "kind: PodMonitor" "no PodMonitor on a cluster without the API" "$(render "${monitor_args[@]}")"
-monitor="$(render "${monitor_args[@]}" --api-versions azmonitoring.coreos.com/v1/PodMonitor -s templates/podmonitor.yaml)"
-assert_contains "apiVersion: azmonitoring.coreos.com/v1$" "the PodMonitor targets Azure Monitor managed Prometheus by default" "${monitor}"
+monitor="$(render "${monitor_args[@]}" --api-versions monitoring.coreos.com/v1/PodMonitor -s templates/podmonitor.yaml)"
+assert_contains "apiVersion: monitoring.coreos.com/v1$" "the PodMonitor is the Prometheus Operator's" "${monitor}"
 assert_contains "port: metrics$" "the PodMonitor scrapes the metrics port" "${monitor}"
 assert_contains "app.kubernetes.io/component: gateway$" "the PodMonitor selects the Gateway pods only" "${monitor}"
-assert_absent "kind: PodMonitor" "the Prometheus Operator's API does not satisfy the Azure one" \
-  "$(render "${monitor_args[@]}" --api-versions monitoring.coreos.com/v1/PodMonitor)"
-assert_contains "apiVersion: monitoring.coreos.com/v1$" "the Prometheus Operator's PodMonitor can be chosen" \
-  "$(render "${monitor_args[@]}" --set-string metrics.podMonitor.apiVersion=monitoring.coreos.com/v1 \
+assert_absent "kind: PodMonitor" "Azure Monitor managed Prometheus' API is not used" \
+  "$(render "${monitor_args[@]}" --api-versions azmonitoring.coreos.com/v1/PodMonitor)"
+# A release installed with an earlier chart version and upgraded with
+# --reuse-values still holds the apiVersion setting, which named that API.
+assert_contains "apiVersion: monitoring.coreos.com/v1$" "an earlier release's apiVersion setting is ignored" \
+  "$(render "${monitor_args[@]}" --set-string metrics.podMonitor.apiVersion=azmonitoring.coreos.com/v1 \
     --api-versions monitoring.coreos.com/v1/PodMonitor -s templates/podmonitor.yaml)"
 assert_rejected "a PodMonitor without metrics" --set metrics.podMonitor.enabled=true
 

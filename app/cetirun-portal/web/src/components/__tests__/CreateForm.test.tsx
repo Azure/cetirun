@@ -11,6 +11,9 @@ const mockFeatures = vi.hoisted(() => ({
   data: { tailscaleEnabled: true, agentIdentityEnabled: false, allowedAgentTypes: ["openclaw", "hermes"] },
 }));
 
+const approvedImage = "registry.example.com/team/assistant@sha256:" + "a".repeat(64);
+const mockApprovals = vi.hoisted(() => ({ images: ["registry.example.com/team/assistant@sha256:" + "a".repeat(64)] as string[] | null }));
+
 vi.mock("../../hooks/useFeatures", () => ({
   useFeatures: () => ({ data: mockFeatures.data, isLoading: false }),
 }));
@@ -18,7 +21,7 @@ vi.mock("../../hooks/useFeatures", () => ({
 vi.mock("../../hooks/useCreateOptions", () => ({
   useCreateOptions: (team: string) => ({
     data: { team, allowedAgentTypes: mockFeatures.data.allowedAgentTypes, aiGatewayEnabled: false,
-      gateway: { known: false, sharedModels: [], githubCopilot: false, agentTypes: [] },
+      gateway: { known: false, sharedModels: [], githubCopilot: false, agentTypes: [], customImages: mockApprovals.images },
       agentIdentity: { allowed: mockFeatures.data.agentIdentityEnabled, required: false } },
     isFetching: false, refetch: vi.fn(),
   }),
@@ -56,6 +59,7 @@ function renderWithQuery(ui: React.ReactElement) {
 describe("CreateForm", () => {
   beforeEach(() => {
     mockMutate.mockClear();
+    mockApprovals.images = [approvedImage];
     mockFeatures.data = {
       tailscaleEnabled: true,
       agentIdentityEnabled: false,
@@ -86,7 +90,7 @@ describe("CreateForm", () => {
     mockFeatures.data.allowedAgentTypes = ["custom"];
     const user = userEvent.setup();
     renderWithQuery(<CreateForm />);
-    await user.type(await screen.findByLabelText(/Agent Image/), "registry.example.com/assistant:1");
+    await user.type(await screen.findByLabelText(/Agent Image/), approvedImage);
     fireEvent.change(screen.getByLabelText("HTTP Port (optional)"), { target: { value: "65536" } });
     fireEvent.submit(screen.getByRole("button", { name: "Create Agent" }).closest("form")!);
     expect(mockMutate).not.toHaveBeenCalled();
@@ -98,7 +102,7 @@ describe("CreateForm", () => {
     mockFeatures.data.agentIdentityEnabled = true;
     const user = userEvent.setup();
     renderWithQuery(<CreateForm />);
-    await user.type(await screen.findByLabelText(/Agent Image/), "registry.example.com/assistant:1");
+    await user.type(await screen.findByLabelText(/Agent Image/), approvedImage);
     expect(screen.queryByLabelText("Enable Microsoft Entra Agent Identity")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Create Agent" }));
     const input = JSON.parse(JSON.stringify(mockMutate.mock.calls[0][0]));
@@ -112,14 +116,14 @@ describe("CreateForm", () => {
     const user = userEvent.setup();
     renderWithQuery(<CreateForm />);
     await user.selectOptions(screen.getByRole("combobox", { name: "Agent Type" }), "custom");
-    await user.type(screen.getByLabelText(/Agent Image/), "registry.example.com/editor:1");
+    await user.type(screen.getByLabelText(/Agent Image/), approvedImage);
     await user.click(screen.getByRole("switch", { name: "Serve Web UI" }));
     fireEvent.submit(screen.getByRole("button", { name: "Create Agent" }).closest("form")!);
     expect(mockMutate).not.toHaveBeenCalled();
     expect(screen.getByText("A port is required when Web UI is enabled.")).toBeInTheDocument();
     await user.type(screen.getByRole("spinbutton", { name: "Web UI Port" }), "8080");
     await user.click(screen.getByRole("button", { name: "Create Agent" }));
-    expect(mockMutate.mock.calls[0][0].agent).toEqual({ type: "custom", image: "registry.example.com/editor:1", username: "vibe", port: 8080, webUI: true });
+    expect(mockMutate.mock.calls[0][0].agent).toEqual({ type: "custom", image: approvedImage, username: "vibe", port: 8080, webUI: true });
     await user.selectOptions(screen.getByRole("combobox", { name: "Agent Type" }), "hermes");
     expect(screen.queryByRole("switch", { name: "Serve Web UI" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Create Agent" }));
@@ -130,7 +134,7 @@ describe("CreateForm", () => {
     mockFeatures.data.allowedAgentTypes = [type];
     const user = userEvent.setup();
     renderWithQuery(<CreateForm />);
-    const image = "registry.example.com/team/assistant:1";
+    const image = approvedImage;
     await user.type(await screen.findByLabelText(/Agent Image/), image);
     await user.click(screen.getByLabelText("Use private registry credentials"));
     await user.type(screen.getByLabelText(/Registry username/), "synthetic-user");
@@ -154,6 +158,26 @@ describe("CreateForm", () => {
     await user.click(screen.getByLabelText("Use private registry credentials"));
     await user.click(screen.getByLabelText("Use private registry credentials"));
     expect(screen.getByLabelText(/Registry password or token/)).toHaveValue("");
+  });
+
+  it.each([null, []])("blocks Custom creation when approvals are %j", async (images) => {
+    mockFeatures.data.allowedAgentTypes = ["custom"];
+    mockApprovals.images = images;
+    renderWithQuery(<CreateForm />);
+    expect(await screen.findByText(images === null ? /Custom image approvals are not available/ : /No Custom images are approved/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create Agent" })).toBeDisabled();
+    fireEvent.submit(screen.getByRole("button", { name: "Create Agent" }).closest("form")!);
+    expect(mockMutate).not.toHaveBeenCalled();
+  });
+
+  it.each(["registry.example.com/team/assistant:latest", "registry.example.com/team/assistant@sha256:" + "b".repeat(64)])("rejects an unapproved Custom image %s", async (image) => {
+    mockFeatures.data.allowedAgentTypes = ["custom"];
+    const user = userEvent.setup();
+    renderWithQuery(<CreateForm />);
+    await user.type(await screen.findByLabelText(/Agent Image/), image);
+    await user.click(screen.getByRole("button", { name: "Create Agent" }));
+    expect(screen.getByText(/Tags and unapproved images cannot run/)).toBeInTheDocument();
+    expect(mockMutate).not.toHaveBeenCalled();
   });
 
   it("renders form fields", () => {

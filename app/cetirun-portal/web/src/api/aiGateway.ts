@@ -17,6 +17,8 @@ export interface SharedModel {
 }
 
 export interface AIGatewayCatalog {
+  /** Approved Custom digests; absent/null until the operator publishes them. */
+  customImages?: string[] | null;
   /** False until the operator has published the shared models. */
   known: boolean;
   sharedModels: SharedModel[];

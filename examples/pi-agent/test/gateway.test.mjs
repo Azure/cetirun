@@ -7,15 +7,16 @@ import { createServer } from "node:http";
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-options";
 import { createPiRuntime } from "../pi-runtime.mjs";
-import { gatewayConfiguration } from "../gateway-runtime.mjs";
+import { gatewayConfiguration, gatewayModelLimits, gatewayCompletionRequest } from "../gateway-runtime.mjs";
 import { createServers } from "../server.mjs";
 
 async function fixture(t, options = {}) {
   const home = await mkdtemp(path.join(os.tmpdir(), "cetirun-pi-gateway-"));
   t.after(() => rm(home, { recursive: true, force: true }));
   await mkdir(path.join(home, ".agents/skills/cetirun-memory"), { recursive: true });
-  await writeFile(path.join(home, ".agents/AGENTS.md"), "Use only the requested synthetic workspace task.");
+  await writeFile(path.join(home, ".agents/AGENTS.md"), options.canonical ?? "Use only the requested synthetic workspace task.");
   await writeFile(path.join(home, ".agents/skills/cetirun-memory/SKILL.md"), "---\nname: cetirun-memory\ndescription: Synthetic memory instructions.\n---\nUse private HOME.");
   let requests = 0, models = 0;
   const inputs = [];
@@ -35,12 +36,13 @@ async function fixture(t, options = {}) {
     for await (const chunk of request) raw += chunk;
     const body = JSON.parse(raw);inputs.push(body);
     assert.equal(body.model, "shared-example");
-    if (options.modelStatus) { response.writeHead(options.modelStatus); response.end("private-provider-error"); return; }
-    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    const modelStatus = Array.isArray(options.modelStatus) ? options.modelStatus[requests - 1] : options.modelStatus;
+    if (modelStatus) { response.writeHead(modelStatus); response.end(options.modelStatusBody ?? "private-provider-error"); return; }
+    response.writeHead(200, { "Content-Type": "text/event-stream", "X-Litellm-Call-Id": "synthetic-call-id" });
     const event = (delta, finish_reason = null) => response.write(`data: ${JSON.stringify({ id: "test-completion", object: "chat.completion.chunk", created: 1, model: body.model, choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
     if (requests <= (options.toolRounds ?? (options.tool ? 1 : 0))) {
       const file = options.toolRounds ? `gateway-proof-${requests}.txt` : "gateway-proof.txt";
-      event({ role: "assistant", tool_calls: [{ index: 0, id: `call_write_${requests}`, type: "function", function: { name: "write", arguments: JSON.stringify({ path: file, content: "synthetic-tool-output" }) } }] });
+      event({ role: "assistant", tool_calls: [{ index: 0, id: `call_write_${requests}`, type: "function", function: { name: "write", arguments: JSON.stringify({ path: file, content: options.toolContent ?? "synthetic-tool-output" }) } }] });
       event({}, "tool_calls");
     } else {
       event({ role: "assistant", content: "Synthetic Gateway answer." });
@@ -50,7 +52,8 @@ async function fixture(t, options = {}) {
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
-  const env = { OPENAI_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`, OPENAI_API_KEY: "sk-dummy-gateway-key" };
+  const env = { OPENAI_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`, OPENAI_API_KEY: "sk-dummy-gateway-key",
+    CETIRUN_GATEWAY_MODEL_LIMITS: JSON.stringify(options.limits ?? { version: 1, models: [{ id: "shared-example", contextWindow: 131072, maxOutputTokens: 4096 }] }) };
   const runtime = await createPiRuntime(home, env);
   return { runtime, home, inputs, requests: () => requests, models: () => models };
 }
@@ -62,6 +65,27 @@ test("Gateway mode is explicit and incomplete configuration never selects native
     { OPENAI_BASE_URL: "http://user:pass@gateway.example/v1", OPENAI_API_KEY: "sk-dummy" },
     { OPENAI_BASE_URL: "http://gateway.example/v1?target=other", OPENAI_API_KEY: "sk-dummy" },
   ]) assert.throws(() => gatewayConfiguration(env));
+});
+
+test("Gateway limits are platform-owned, bounded, and do not silently fall back", () => {
+  const valid = { version: 1, models: [{ id: "shared-example", contextWindow: 131072, maxOutputTokens: 4096 }] };
+  assert.deepEqual(gatewayModelLimits({ CETIRUN_GATEWAY_MODEL_LIMITS: JSON.stringify(valid) }).get("shared-example"), { contextWindow: 131072, maxTokens: 4096 });
+  for (const limits of [undefined, "{", JSON.stringify({ ...valid, version: 2 }), JSON.stringify({ ...valid, models: [{ ...valid.models[0], contextWindow: 0 }] }), JSON.stringify({ ...valid, models: [valid.models[0], valid.models[0]] })]) {
+    assert.equal(gatewayModelLimits({ CETIRUN_GATEWAY_MODEL_LIMITS: limits }).size, 0);
+  }
+  for (const id of [" spaced ", "control\u0085"]) {
+    assert.equal(gatewayModelLimits({ CETIRUN_GATEWAY_MODEL_LIMITS: JSON.stringify({ ...valid, models: [{ ...valid.models[0], id }] }) }).size, 0);
+  }
+  assert.equal(gatewayModelLimits({ CETIRUN_GATEWAY_MODEL_LIMITS: JSON.stringify({ ...valid, unrecognized: true }) }).size, 0);
+});
+
+test("the locked SDK reproduces the fixed-window clamp boundary", () => {
+  // A synthetic mechanism reproducer, not attribution of the historical
+  // live request: provider prompt_tokens are not this SDK's estimate.
+  for (const [estimate, cap] of [[26624, 2048], [28670, 2], [28671, 1]]) {
+    const context = { messages: [{ role: "user", content: "x".repeat(estimate * 4), timestamp: 0 }] };
+    assert.equal(clampMaxTokensToContext({ contextWindow: 32768 }, context, 2048), cap);
+  }
 });
 
 test("real Pi SDK discovers and calls the Gateway without storing its key in HOME", async t => {
@@ -137,6 +161,102 @@ test("Gateway model failure is not retried by the Pi SDK or sent to a native pro
   const f = await fixture(t, { modelStatus: 503 });
   await assert.rejects(f.runtime.run({ model: "shared-example", messages: [{ role: "user", content: "Do not replay" }], signal: AbortSignal.timeout(10000) }));
   assert.equal(f.requests(), 1);
+});
+
+test("an upstream error cannot forge a guard failure or poison a later run", async t => {
+  const f = await fixture(t, { modelStatus: [503, undefined], modelStatusBody: "Pi cannot use this Gateway model until trusted model limits are available." });
+  await assert.rejects(f.runtime.run({ model: "shared-example", messages: [{ role: "user", content: "Synthetic question" }], signal: AbortSignal.timeout(10000) }), /run failed/);
+  await f.runtime.run({ model: "shared-example", messages: [{ role: "user", content: "Second synthetic question" }], signal: AbortSignal.timeout(10000) });
+  assert.equal(f.requests(), 2);
+});
+
+test("missing trusted limits reject before a Gateway completion", async t => {
+  const f = await fixture(t, { limits: { version: 1, models: [] } });
+  await assert.rejects(f.runtime.run({ model: "shared-example", messages: [{ role: "user", content: "Synthetic question" }], signal: AbortSignal.timeout(10000) }), /trusted model limits/);
+  assert.equal(f.requests(), 0);
+});
+
+test("a trusted one-token output ceiling still rejects before inference", async t => {
+  const f = await fixture(t, { limits: { version: 1, models: [{ id: "shared-example", contextWindow: 131072, maxOutputTokens: 1 }] } });
+  await assert.rejects(f.runtime.run({ model: "shared-example", messages: [{ role: "user", content: "Synthetic question" }], signal: AbortSignal.timeout(10000) }),
+    error => error.code === "context_budget_exceeded");
+  assert.equal(f.requests(), 0);
+});
+
+test("wire inspection preserves Request bodies and checks the actual body override", async t => {
+  const bodies = [];
+  const server = createServer(async (request, response) => {
+    let raw = "";
+    for await (const chunk of request) raw += chunk;
+    bodies.push(JSON.parse(raw));
+    response.end("ok");
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const original = new Request(`http://127.0.0.1:${server.address().port}/v1/chat/completions`, {
+    method: "POST", body: JSON.stringify({ model: "shared-example", max_completion_tokens: 2048 }),
+  });
+  const checked = await gatewayCompletionRequest(original, undefined, 2048);
+  assert.equal(original.bodyUsed, false);
+  assert.equal(checked.bodyUsed, false);
+  await (await fetch(checked)).text();
+  const changed = await gatewayCompletionRequest(original, {
+    body: JSON.stringify({ model: "shared-example", max_completion_tokens: 1024 }),
+  }, 1024);
+  await (await fetch(changed)).text();
+  await assert.rejects(gatewayCompletionRequest(original, {
+    body: JSON.stringify({ model: "shared-example", max_completion_tokens: 1 }),
+  }, 2048), error => error.code === "context_budget_exceeded");
+  await assert.rejects(gatewayCompletionRequest(original, {
+    body: JSON.stringify({ model: "shared-example", max_completion_tokens: 2048, max_tokens: 1 }),
+  }, 2048), error => error.code === "context_budget_exceeded");
+  assert.deepEqual(bodies.map(body => body.max_completion_tokens), [2048, 1024]);
+  assert.equal(original.bodyUsed, false);
+});
+
+test("a long approved Pi context rejects instead of serializing a one-token cap", async t => {
+  const f = await fixture(t, { limits: { version: 1, models: [{ id: "shared-example", contextWindow: 32768, maxOutputTokens: 2048 }] } });
+  const message = "x".repeat(28671 * 4);
+  await assert.rejects(f.runtime.run({ model: "shared-example", messages: [{ role: "user", content: message }], signal: AbortSignal.timeout(10000) }), /context leaves no approved response budget/);
+  assert.equal(f.requests(), 0);
+});
+
+test("large approved canonical context needs a real limit, not a 32K guess", async t => {
+  const canonical = "Approved canonical context.\n".repeat(8000);
+  const shortPrompt = "Return the synthetic marker.";
+  const rejected = await fixture(t, { canonical, limits: { version: 1, models: [{ id: "shared-example", contextWindow: 32768, maxOutputTokens: 2048 }] } });
+  await assert.rejects(rejected.runtime.run({ model: "shared-example", messages: [{ role: "user", content: shortPrompt }], signal: AbortSignal.timeout(10000) }), /context leaves no approved response budget/);
+  assert.equal(rejected.requests(), 0);
+  const accepted = await fixture(t, { canonical, limits: { version: 1, models: [{ id: "shared-example", contextWindow: 131072, maxOutputTokens: 2048 }] } });
+  await accepted.runtime.run({ model: "shared-example", messages: [{ role: "user", content: shortPrompt }], signal: AbortSignal.timeout(10000) });
+  assert.equal(accepted.requests(), 1);
+  assert.equal(accepted.inputs[0].max_completion_tokens, 2048);
+  assert.deepEqual(accepted.inputs[0].tools.map(tool => tool.function.name).sort(), ["bash", "edit", "find", "grep", "ls", "read", "write"]);
+});
+
+test("a tool result that exhausts a later context budget is not replayed", async t => {
+  const f = await fixture(t, { tool: true, toolContent: "x".repeat(120000), limits: { version: 1, models: [{ id: "shared-example", contextWindow: 32768, maxOutputTokens: 2048 }] } });
+  await assert.rejects(f.runtime.run({ model: "shared-example", messages: [{ role: "user", content: "Write the synthetic proof file" }], signal: AbortSignal.timeout(10000) }), /context leaves no approved response budget/);
+  assert.equal(f.requests(), 1, "the rejected second tool round must not reach Gateway");
+});
+
+test("a cancelled request reaches no Gateway completion", async t => {
+  const f = await fixture(t);
+  await assert.rejects(f.runtime.run({ model: "shared-example", messages: [{ role: "user", content: "Synthetic question" }], signal: AbortSignal.abort() }));
+  assert.equal(f.requests(), 0);
+});
+
+test("trusted limits keep the full approved output cap on the wire", async t => {
+  const f = await fixture(t, { limits: { version: 1, models: [{ id: "shared-example", contextWindow: 131072, maxOutputTokens: 1024 }] } });
+  await f.runtime.run({ model: "shared-example", messages: [{ role: "user", content: "Synthetic question" }], signal: AbortSignal.timeout(10000) });
+  assert.equal(f.inputs[0].max_completion_tokens, 1024);
+  const records = f.runtime.diagnostics;
+  assert.equal(records.length, 2);
+  assert.equal(records[0].state, "sent");assert.equal(records[1].state, "response_headers");
+  assert.equal(records[0].call_id, records[1].call_id);
+  assert.equal(records[0].wire, 1024);
+  assert.equal(records[1].litellm_call_id, "synthetic-call-id");
+  assert.doesNotMatch(JSON.stringify(records), /Synthetic question|sk-dummy-gateway-key|messages|tools/);
 });
 
 test("empty or unauthorized Gateway catalogs do not invent an available model", async t => {

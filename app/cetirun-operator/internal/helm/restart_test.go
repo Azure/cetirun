@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"helm.sh/helm/v3/pkg/chart"
 	appsv1 "k8s.io/api/apps/v1"
@@ -117,6 +118,9 @@ func TestCustomRetainedRestartSupportsPinnedPreRestartChart(t *testing.T) {
 	chrt := preRestartChart(t)
 	version := chrt.Metadata.Version
 	input := customInput(8080)
+	bindings := input["customBindings"].(runtimebindings.Custom)
+	bindings.Model.GatewayModels = []agents.GatewayModel{{ID: "shared-example", ContextWindow: 128000, MaxTokens: 4096}}
+	input["customBindings"] = bindings
 	input["podAnnotations"] = map[string]any{"example.com/retained": "unchanged"}
 	before, err := PrepareChart(chrt, input)
 	if err != nil {
@@ -131,8 +135,16 @@ func TestCustomRetainedRestartSupportsPinnedPreRestartChart(t *testing.T) {
 		return sts
 	}
 	original := workload(before)
+	limits := ""
+	for _, env := range original.Spec.Template.Spec.Containers[0].Env {
+		if env.Name == "CETIRUN_GATEWAY_MODEL_LIMITS" {
+			limits = env.Value
+		}
+	}
+	if limits != `{"version":1,"models":[{"id":"shared-example","contextWindow":128000,"maxOutputTokens":4096}]}` {
+		t.Fatalf("pinned chart did not preserve the limits projection: %q", limits)
+	}
 	previousHash := before.WorkloadHash
-	bindings := input["customBindings"].(runtimebindings.Custom)
 	for _, requestID := range []string{"request-00000001", "request-00000002"} {
 		bindings.RestartRequestID = requestID
 		input["customBindings"] = bindings
