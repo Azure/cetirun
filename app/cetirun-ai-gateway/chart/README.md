@@ -3184,6 +3184,17 @@ PodMonitor of that API. If the cluster does not serve it, the chart creates no
 PodMonitor. As a result, an install does not fail on a cluster without the
 Prometheus Operator. The cetirun-platform chart creates no PodMonitor.
 
+A release that an earlier chart installed with the PodMonitor of Azure Monitor
+managed Prometheus (`azmonitoring.coreos.com/v1`) loses that PodMonitor with
+its next upgrade. Upgrade such a release before you turn managed Prometheus
+off. When managed Prometheus is off, that API goes away, and each upgrade of
+the release fails until the cluster serves the API again. In this case, create
+the stand-in definition in
+[`infra/cluster/managed-prometheus-podmonitor-crd.yaml`](../../../infra/cluster/managed-prometheus-podmonitor-crd.yaml),
+upgrade the release, and delete the definition, as
+[Infrastructure](../../../site/content/en/docs/operations/infrastructure.md#identity-images-and-collection)
+shows.
+
 Counters lose the increments that a label set makes before its first scrape.
 Counters also start again from zero when a pod restarts. As a result, use the
 metrics for rates, trends, and alerts. For exact spend, use the request log or

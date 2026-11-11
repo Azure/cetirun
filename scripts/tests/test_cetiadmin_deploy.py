@@ -733,7 +733,7 @@ class CetiAdminDeploymentTests(full.DeploymentFixture, unittest.TestCase):
         d.live[("deployment", stop.namespace, "cetirun-operator")] = stop.operator
         stop_reads = []
         def run(command, **kwargs):
-            if command[0] == "kubectl" and command[4] == "get":
+            if command[0] == "kubectl" and command[4] == "get" and command[5] != "--raw":
                 args = command[4:]
                 kind = args[1].lower()
                 name = args[2] if args[2] != "-o" else ""
