@@ -437,7 +437,7 @@ values of the chart, see [Platform chart values](../chart-values/#platform-chart
 | `publicTLS.enabled` | `false`. Prepares public HTTP-01 certificates on the managed Istio ingress listener. cert-manager is a separate installation. See [Public ingress](../../operations/public-ingress/). |
 | `cetirun-connections-mcp.enabled` | `false`. `make deploy` sets `true`. Installs Connections MCP. The subchart has its own necessary values below `cetirun-connections-mcp`, for example its TLS Secret names, its Istio settings, and an HTTPS `broker.baseURL`. The platform chart also needs `cetirun-operator.connectionsMCP.url` and `cetirun-portal.features.agentToolsEnabled: true`. |
 | `cetirun-agent-broker.enabled` | `false`. The platform chart does not include the Agent Identity Broker. If you set `true`, the render fails. Install the Broker as a separate release in its own credential namespace. |
-| `cetirun-observability.enabled` | `false`. Installs the ADX-Mon collection. See [Observability chart](#observability-chart). |
+| `cetirun-observability.enabled` | `false`. Installs the ADX-Mon collection. `make deploy` sets `true` and needs the `observability` block of the environment file. See [Observability chart](#observability-chart). |
 | `istio.oauth2Proxy.name`, `istio.oauth2Proxy.namespace` | `oauth2-proxy`, `cetirun-istio`. `make deploy` sets `namespace` to the namespace of the CetiRun Istio release. |
 | `cetirun-operator.enabled`, `cetirun-portal.enabled` | `true`. You can disable each component. |
 | `cetirun-operator.cetiadmin` | CetiAdmin. `enabled` is `true`, and an enabled CetiAdmin needs inputs. See [CetiAdmin values](#cetiadmin-values). |

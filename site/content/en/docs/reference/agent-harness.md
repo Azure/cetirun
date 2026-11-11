@@ -117,9 +117,9 @@ Gateway is unavailable; the catalog retains its last known model availability.
 Custom uses its own Go adapter and chart branch. For Custom, a built-in profile,
 native provider, configuration template or preferred model name is not
 necessary. The main container keeps the image's ENTRYPOINT/CMD. Gateway-backed
-instances receive `HOME`, `OPENAI_BASE_URL` and a Secret-backed
-`OPENAI_API_KEY`. When the Agent declares an HTTP port, they also receive
-`PORT`. Init does not receive the model credential.
+instances receive `HOME`, `OPENAI_BASE_URL`, a Secret-backed `OPENAI_API_KEY`,
+and `CETIRUN_GATEWAY_MODEL_LIMITS`. When the Agent declares an HTTP port, they
+also receive `PORT`. Init does not receive the model credential.
 
 ### Policy-governed Custom execution
 
@@ -779,7 +779,7 @@ details.
 | Kubernetes identity | Without a Sandbox, the Pod does not mount a ServiceAccount token, and its volume group is the Operator's `customRuntime.fsGroup` (`1024` by default). |
 | Ports and routes | With `port`, the image serves the [Chat](#chat) routes, or the [Web UI](#custom-web-ui) when `webUI` is `true`. Without `port`, the Agent is headless. |
 | Probes | `GET /healthz` on the HTTP port for startup and readiness. Startup runs every 5 seconds and allows 60 failures, so the image must be ready in about 300 seconds. Readiness runs every 10 seconds. In a Sandbox, the timeout of each probe is 3 seconds. Without a Sandbox, it is the Kubernetes default of 1 second. There is no liveness probe, so the platform does not restart a process that hangs. A headless Agent has no HTTP probes. |
-| Environment | Always `HOME`, `OPENAI_BASE_URL`, and `OPENAI_API_KEY`. With a port, `PORT`. With a Web UI, `CETIRUN_WEB_BASE_PATH` and `CETIRUN_WEB_INSTANCE`. With Memory, `CETIRUN_MEMORY_ASSETS=/opt/cetirun-memory` and `CETIRUN_MEMORY_ROOT=$HOME/.cetirun/memory`. With ingress mTLS, `CETIRUN_BIND_HOST=127.0.0.1`. With governed Connections, `CETIRUN_CONNECTIONS_MCP_URL`, `CETIRUN_CONNECTIONS_MCP_TOKEN_FILE`, and `CETIRUN_CONNECTIONS_MCP_CA_FILE`. |
+| Environment | Always `HOME`, `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `CETIRUN_GATEWAY_MODEL_LIMITS`. With a port, `PORT`. With a Web UI, `CETIRUN_WEB_BASE_PATH` and `CETIRUN_WEB_INSTANCE`. With Memory, `CETIRUN_MEMORY_ASSETS=/opt/cetirun-memory` and `CETIRUN_MEMORY_ROOT=$HOME/.cetirun/memory`. With ingress mTLS, `CETIRUN_BIND_HOST=127.0.0.1`. With governed Connections, `CETIRUN_CONNECTIONS_MCP_URL`, `CETIRUN_CONNECTIONS_MCP_TOKEN_FILE`, and `CETIRUN_CONNECTIONS_MCP_CA_FILE`. |
 | Initialization tools | `sh`, `cp`, `mkdir`, `mv`, `rm`, `chmod`, `mktemp`, `find`, and `cmp`. For a Team of the Skill Marketplace, also `sleep`. See [Initialization](#initialization). |
 
 ## Image, storage and model access
@@ -823,9 +823,14 @@ image. The image gets the models from `GET $OPENAI_BASE_URL/models`.
 
 The Operator also sets `CETIRUN_GATEWAY_MODEL_LIMITS` for a Custom image. This
 JSON value has the context window and the output limit of each model that the
-Agent can use. A router has the smallest limits of the models that it can
-select. A model without known limits is not in the value. For the model
-configuration of the built-in runtimes, refer to
+Agent can use. Its `version` is `1`, and each entry of `models` has `id`,
+`contextWindow`, and `maxOutputTokens`. A model with several Gateway
+deployments has their smallest limits. A router has the smallest limits of the
+models that it can select.
+
+A model without known limits is not in the value, and the image should refuse
+it instead of guessing its limits. The variable does not grant access to a
+model. For the model configuration of the built-in runtimes, refer to
 [Choose a model](../../guides/models/).
 
 ## Chat
