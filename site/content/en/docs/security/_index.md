@@ -28,7 +28,8 @@ rules:
 - Users sign in with Microsoft Entra ID before they reach the Portal or an
   Agent.
 - Only the owner of an Agent can open its Agent UI, chat, terminal, and desktop
-  through the ingress gateway.
+  through the ingress gateway. This rule needs a unique alias for each user who
+  can sign in. Refer to [Sign-in and alias](#sign-in-and-alias).
 - Each Agent runs in its own namespace and Pod, with its own HOME volume,
   Secrets, and AI Gateway virtual key.
 - The operator configures each Agent to call models through the AI Gateway.
@@ -101,6 +102,9 @@ OAuth2 Proxy sign-in:
   route of CetiRun uses these hosts. If you add a route for such a host, the
   route is public. For each deployment, remove the prefixes that you do not
   use.
+- With `publicTLS.enabled` of the platform chart, HTTP requests to the apex
+  domain on port 80. The listener `acme-http` serves the HTTP-01 challenges of
+  cert-manager and redirects all other requests to HTTPS.
 
 The ownership filter defines its own fixed path exemptions. The Istio
 templates use `authPolicy.aliasExemptPrefixes` only to identify which hosts
@@ -182,8 +186,8 @@ of the Portal chart). The Portal names it `<alias>`, or `<alias>-<suffix>`.
 | Agent owner | Creates the Agent in the Portal | Opens and uses the Agent. Changes, suspends, resumes, and deletes it. Cannot open the Agents of other users |
 | Portal administrator | The alias is in `admins.aliases` of the Portal chart. `make deploy` adds `ownerAlias`. The Portal reads the list when it starts | Sees all Agents with their status and events. Changes their image, display name, and model, and deletes them. Creates, changes, and deletes Teams, Agent Policies, and Sandboxes. Cannot open the Agent UI, chat, terminal, or desktop of another user's Agent, and does not see Secrets in the Portal |
 | Admission administrator | `sandboxAdmission.adminUsers` and `sandboxAdmission.adminGroups` of the operator chart. The Portal service account is also one | Writes Sandboxes, Agent Policies, and policy-bound Teams through the Kubernetes API |
-| Platform administrator | The Azure and cluster permissions of the deployment | Installs, upgrades, and operates CetiRun. With Kubernetes RBAC, can also read Secrets and use exec in Agent namespaces |
-| CetiAdmin | The operator chart. On by default | Diagnoses and repairs standard Agents with its own Kubernetes permissions. Only its owner can use it. Refer to [CetiAdmin](../operations/cetiadmin/) |
+| Platform administrator | The Azure and cluster permissions of the deployment | Installs, upgrades, and operates CetiRun. With Kubernetes RBAC, can also read the Secrets in Agent namespaces. By default, admission refuses `kubectl exec` in Agent namespaces, also for this role. Refer to [Kubernetes exec restriction](#kubernetes-exec-restriction) |
+| CetiAdmin owner | The user in `cetiadmin.owner` of the operator chart. With `make deploy`, this is the user in `ownerAlias`. CetiAdmin is on by default | Opens CetiAdmin in the Portal and can tell it to use its access. In the namespace of each standard Agent, CetiAdmin can read all Secrets, use `kubectl exec`, and delete Pods. Refer to [CetiAdmin](../operations/cetiadmin/#access) |
 | Agent workload | Runs in the Agent Pod | Uses its HOME, its Secrets, its connections, and the network destinations that its policies allow |
 
 Any signed-in user can see and select any Team. CetiRun does not check Team
@@ -265,33 +269,45 @@ The platform components have more privileges than any Agent:
 - The operator service account can create, change, and delete Secrets,
   namespaces, Roles, RoleBindings, ClusterRoles, ClusterRoleBindings, and
   ValidatingAdmissionPolicies. It can also read the AI Gateway master key.
+  When CetiAdmin is on, the ClusterRole `cetirun-cetiadmin-delegation` also
+  gives it `pods/exec` in all namespaces. Kubernetes RBAC lets the operator
+  give CetiAdmin only the permissions that the operator has.
 - The AI Gateway master key can create and change virtual keys. It also gives
   access to the request records in the AI Gateway database.
 - When connections are on, the Broker can get, list, create, update, and
   delete all Secrets in the namespace of each Agent.
-- CetiAdmin has its own permissions on standard Agents. Refer to
+- When CetiAdmin is on, its service account can read all Secrets and use
+  `kubectl exec` in the namespace of each standard Agent. It can also delete
+  Pods there and change Secrets, ConfigMaps, Services, and workloads. Refer to
   [CetiAdmin](../operations/cetiadmin/#access).
 
 A person who controls the Portal or the operator can read the credentials of
-all Agents.
+all Agents. The owner of CetiAdmin can make CetiAdmin read the credentials of
+all standard Agents.
 
-Sources: [Portal ClusterRole]({{< repo "app/cetirun-portal/chart/templates/clusterrole.yaml" >}})
-and [operator ClusterRole]({{< repo "app/cetirun-operator/chart/templates/clusterrole.yaml" >}}).
+Sources: [Portal ClusterRole]({{< repo "app/cetirun-portal/chart/templates/clusterrole.yaml" >}}),
+[operator ClusterRole]({{< repo "app/cetirun-operator/chart/templates/clusterrole.yaml" >}}),
+and [CetiAdmin delegation]({{< repo "app/cetirun-operator/chart/templates/cetiadmin-delegation.yaml" >}}).
 
 ## Credentials
 
 | Credential | Where it is | Who reads it |
 | --- | --- | --- |
-| OpenClaw gateway token, Hermes API key, and Hermes dashboard secret | Secret `gateway-token` in the Agent namespace, and the environment of the Agent container | The Agent. The Portal shows the token and the API key only to the owner |
+| OpenClaw gateway token, Hermes API key, and the session-signing key `CETIRUN_AUTH_KEY` of the Hermes Webapp | Secret `gateway-token` in the Agent namespace, and the environment of the Agent container | The Agent. The Portal shows the token and the API key only to the owner |
 | Virtual key of the Agent | Secret `ai-gateway-virtual-key`, and the environment of the Agent container | Each process in the Agent container |
 | GitHub token of the owner, for GitHub Copilot | Secret `github-copilot-token` in the Agent namespace. The operator creates it, and the Portal writes the token after the owner signs in | The GitHub Copilot proxy of the Agent |
 | Key of the GitHub Copilot proxy | Secret `ai-gateway-copilot-proxy` in the Agent namespace | The AI Gateway and the proxy |
 | Tailscale auth key | Secret `tailscale-auth` in the Agent namespace | The Agent. The Portal shows it only to the owner |
 | AI Gateway master key, salt key, and console password | The Secrets that the AI Gateway values `auth.*.existingSecret` name, as `make deploy` requires. Without them, the chart creates the Secret `cetirun-ai-gateway-auth` | The AI Gateway. The operator reads the master key from the Secret that its value `aiGateway.masterKeySecret` names |
+| AI Gateway database passwords | The PostgreSQL Secret `cetirun-ai-gateway-postgresql`, which the chart creates, and the Valkey Secret that `redis.passwordSecret.existingSecret` names, as `make deploy` requires | The AI Gateway, PostgreSQL, and Valkey |
 | Model provider credentials | Secrets of the AI Gateway | The AI Gateway |
-| Sign-in sessions | The cookie secret in `oauth2-proxy-credentials`, and the sessions, with refresh tokens, in the Valkey session store on the PVC `oauth2-proxy-sessions` | OAuth2 Proxy |
-| Connection credentials | Encrypted records of the Broker. A key in Azure Key Vault protects their encryption keys. Shared connections are in the Broker namespace. Agent connections and bindings are in the Agent namespace | The Broker |
-| OAuth client secrets of the GitHub and Google providers | The environment of the Broker | The Broker |
+| Sign-in sessions | The cookie secret in `oauth2-proxy-credentials`. The sessions, with refresh tokens, in the Valkey session store on the PVC `oauth2-proxy-sessions`, and the password of that store in the Secret `oauth2-proxy-sessions` | OAuth2 Proxy |
+| OIDC client secret | Only in the `oidc` mode of the Istio chart: the Secret that `oauth2Proxy.oidc.existingSecret` names. The `entra-id` mode, which `make deploy` uses, needs no client secret | OAuth2 Proxy |
+| Connection credentials | Encrypted records of the Broker. A key in Azure Key Vault protects their encryption keys. The personal connections of owners are in the Broker namespace. The Azure connections and the connection bindings of an Agent are in the Agent namespace | The Broker |
+| OAuth client secrets of GitHub and Google, and the private key and client secret of the GitHub App | The Secrets that `providers.github.credentialsSecretName`, `providers.github.app.credentialsSecretName`, and `providers.google.credentialsSecretName` of the Broker chart name, in the Broker namespace | The Broker |
+| Skill Marketplace repository credential | The Secret that `skillMarketplace.repository.existingSecret` of the operator chart names, in the operator namespace: a token, or an SSH key with `known_hosts` | The Skill Marketplace worker |
+| CetiAdmin Slack tokens | The Secret that `cetiadmin.monitor.slackSecretName` of the operator chart names, in the namespace of CetiAdmin. CetiAdmin gets `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` in its environment | CetiAdmin |
+| TLS private keys | `cetirun-tls` in the ingress gateway namespace. The Secrets that `sandboxAdmission.tlsSecretName` of the operator chart, `tls.secretName` of the Broker chart, and `tls.secretName` and `broker.clientTLSSecretName` of the Connections MCP chart name | The ingress gateway, the Sandbox admission server, the Broker, and Connections MCP |
 | Registry credentials | Source Secrets in the `cetirun-registry-credentials` namespace, and a pull Secret `registry-pull-<uid>` in the Agent namespace | The kubelet, to pull the image |
 
 Provider sign-in state and agent configuration can persist under `/home/vibe`. The uninstallation of the Istio authentication
@@ -341,6 +357,7 @@ By default, these stores can contain conversation content:
 | Container logs | The output of the session logger and of the Agents. Container Insights or the optional ADX-Mon collection can copy them to Azure | `logger.enabled` of the agent chart, and the collection settings of the cluster |
 | Memory | The notes of each Agent, in its HOME | `memoryContext.enabled` of the operator chart, `true` by default |
 | HOME | Sessions, files, configuration, and the browser profile of the desktop | The Agent lifecycle |
+| Portal Chat history | The conversations of an owner with a Custom Agent in Portal Chat, in the IndexedDB database `cetirun-portal-chat` of the owner's browser | `global.portalChat.enabled` of the platform chart. `make deploy` sets it to `true` |
 
 The [cluster template]({{< repo "infra/cluster/main.bicep" >}}) turns
 Container Insights and managed Prometheus off. `make deploy` installs the
@@ -386,8 +403,10 @@ Before you delete an Agent, make a backup of HOME. For the details, read
 
 The deletion of an Agent does not erase the other copies of its data. Copies
 can stay in logs, the AI Gateway database, backups, kept volumes, browser
-devices, and external providers. CetiRun has no global erasure schedule.
-Define the retention and the deletion for each store.
+devices, and external providers. The personal connections of the owner also
+stay in the Broker, with their encrypted GitHub and Google tokens. The owner
+can remove them on the **Connections** page. CetiRun has no global erasure
+schedule. Define the retention and the deletion for each store.
 
 ## External services
 

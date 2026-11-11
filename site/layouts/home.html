@@ -52,7 +52,7 @@ Licensed under the MIT License.
       <p class="cr-eyebrow">Existing agents. Shared controls.</p>
       <h2 id="foundation-title">Native agents.<br>Shared platform controls.</h2>
       <p>CetiRun runs agents that already exist, for example OpenClaw and Hermes, and your own agent images. It does not add a new reasoning framework.</p>
-      <p>OAuth2 Proxy signs users in with Microsoft Entra ID, and the ingress gateway lets only the owner open an Agent. CetiAdmin, an operations Agent that the operator installs by default, helps platform administrators diagnose and repair Agents.</p>
+      <p>OAuth2 Proxy signs users in with Microsoft Entra ID. When each user has a unique alias, the ingress gateway lets only the owner open an Agent. CetiAdmin, an operations Agent that the operator installs by default, can read the Secrets of each standard Agent and run commands in its Pod.</p>
       <p class="cr-caption">Isolation depends on the RuntimeClass, the network policies, and the Sandbox of each Agent. <a href="{{ "docs/security/#workload-isolation" | relURL }}">Read about workload isolation.</a></p>
       <a class="cr-text-link" href="{{ "docs/concepts/architecture/" | relURL }}">Understand the architecture <span aria-hidden="true">→</span></a>
     </div>

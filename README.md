@@ -19,7 +19,8 @@ the agent, its model keys, and its data. CetiRun runs these agents for many
 users on one shared AKS cluster:
 
 - **Access:** Users sign in with Microsoft Entra ID. The ingress gateway lets
-  only the owner of an Agent open it.
+  only the owner of an Agent open it. This rule needs a unique alias for each
+  user. The alias is the part of the sign-in name before `@`.
 - **Isolation:** Each Agent runs in its own namespace, in a Kata VM by default,
   and keeps a private, persistent HOME volume.
 - **Models:** The operator configures each Agent to call models through the AI

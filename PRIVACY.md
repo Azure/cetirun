@@ -318,6 +318,9 @@ The deletion of an Agent does not erase the other copies of its data. Copies
 can stay in cloud logs, the AI Gateway database, backups, kept volumes, browser
 devices, and external providers. Effective retention depends on the PVC/PV lifecycle,
 reclaim policy, storage backend, backup policies, and downstream services.
+The personal connections of the owner stay in the Broker namespace, with their
+encrypted GitHub and Google tokens. The owner can remove them on the
+**Connections** page.
 
 The cluster template sets the retention of each Azure Data Explorer database
 of the ADX-Mon collection: 90 days for logs, 30 days for metrics, and 14 days

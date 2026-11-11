@@ -28,7 +28,8 @@ Agents in the self-service Portal.
   each Agent. Each Agent has its own key and a monthly budget. The Agent Policy
   of a Sandbox Agent also sets rate limits.
 - Users sign in through OAuth2 Proxy with Microsoft Entra ID. The
-  **ingress gateway** lets only the owner open an Agent.
+  **ingress gateway** lets only the owner open an Agent. This rule needs a
+  unique [alias](glossary/#alias) for each user.
 
 Read next:
 

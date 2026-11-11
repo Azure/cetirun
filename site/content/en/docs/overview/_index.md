@@ -24,6 +24,8 @@ page, read the [Glossary](../concepts/glossary/).
   private HOME volume, and it can have a terminal and a browser desktop.
 - **Access:** Users sign in with Microsoft Entra ID. The ingress gateway lets
   only the owner open the Agent UI, chat, terminal, and desktop of an Agent.
+  This rule needs a unique alias for each user. The alias is the part of the
+  sign-in name before `@`.
 - **Model access:** The operator configures each Agent to call models through
   the AI Gateway, which is based on LiteLLM. Each Agent has its own key and a
   monthly budget in US dollars. The Agent Policy of a Sandbox Agent also sets
@@ -36,7 +38,7 @@ page, read the [Glossary](../concepts/glossary/).
   Sandbox with Kata or container isolation when Sandbox execution is on.
 - **Skills and memory:** A Team gives its Agents skills. The optional Skill
   Marketplace publishes approved skills from one Git repository. Memory, which
-  is on by default, keeps the private notes of each Agent in its HOME.
+  is on by default, keeps the notes of each Agent in its HOME.
 - **Connections and identity:** An owner gives an Agent access to GitHub,
   Google, or Azure. The Agent Identity Broker keeps the credentials, and the
   Agent uses the services through Connections MCP. An Agent can also get its
@@ -44,7 +46,8 @@ page, read the [Glossary](../concepts/glossary/).
 - **Operations:** `make deploy` installs the platform. Portal administrators
   see all Agents with their status and events.
   [CetiAdmin](../operations/cetiadmin/), an operations Agent that is on by
-  default, helps platform administrators diagnose and repair Agents.
+  default, can read the Secrets of each standard Agent and run commands in its
+  Pod.
   Optional ADX-Mon collection sends logs, events, and metrics to Azure Data
   Explorer.
 
@@ -67,8 +70,9 @@ Before you install CetiRun with `make deploy`, prepare these items. For the
 complete list, read
 [Prepare the environment](../getting-started/platform/#prepare-the-environment).
 
-- **AKS cluster:** managed Istio with an external ingress gateway, Kata node
-  pools, Azure CNI powered by Cilium, and Workload Identity.
+- **AKS cluster:** Kubernetes 1.37 or later, managed Istio with an external
+  ingress gateway, Kata node pools, Azure CNI powered by Cilium, and Workload
+  Identity.
 - **Microsoft Entra ID:** an application for the Portal sign-in, and the Agent
   Identity resources that `make deploy` requires.
 - **Certificates:** certificates for the Agent Identity Broker, Connections

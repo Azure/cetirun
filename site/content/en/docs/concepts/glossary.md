@@ -21,7 +21,8 @@ resource decides. "AI agent" in lowercase means the general idea.
 ### Owner
 
 The user who creates an Agent. Only the owner can open the Agent through the
-ingress gateway: its Agent UI, chat, terminal, and desktop. For the rules, read
+ingress gateway: its Agent UI, chat, terminal, and desktop. This rule needs a
+unique [alias](#alias) for each user. For the rules, read
 [Authentication and authorization](../../security/#authentication-and-authorization).
 
 ### Agent type
@@ -132,9 +133,9 @@ requirements, read [Policy-bound Teams](../../operations/policy-teams/).
 
 ### Standard Agent
 
-An Agent that does not select a policy-bound Team or a Sandbox. It has no Team,
-or a Team without an Agent Policy. It uses the agent chart defaults and the
-deployment-wide settings. No Agent Policy applies to it.
+An Agent that does not select a policy-bound Team or a Sandbox. It can have no
+Team, or a Team without an Agent Policy. It uses the agent chart defaults and
+the deployment-wide settings. No Agent Policy applies to it.
 
 ### Sandbox execution
 
@@ -212,8 +213,8 @@ Teams receive marketplace skills. For the configuration, read
 
 ### Memory
 
-The built-in `cetirun-memory` skill, on by default. It keeps the private notes
-of an Agent in HOME, under `$HOME/.cetirun/memory`. For what it keeps and which
+The built-in `cetirun-memory` skill, on by default. It keeps the notes of an
+Agent in HOME, under `$HOME/.cetirun/memory`. For what it keeps and which
 sessions use it, read
 [Private Memory Context](../../reference/agent-harness/#private-memory-context).
 
@@ -305,8 +306,9 @@ role allows.
   configuration directly through the Kubernetes API.
 - **Platform administrator:** a person who installs, upgrades, and operates
   CetiRun, with the Azure and cluster permissions of the deployment.
-- **CetiAdmin owner:** the user who can use
-  [CetiAdmin](../../operations/cetiadmin/), the operations Agent.
+- **CetiAdmin owner:** the user in `cetiadmin.owner` of the operator chart.
+  Opens [CetiAdmin](../../operations/cetiadmin/), the operations Agent, and can
+  tell it to use its access to standard Agents.
 
 ## Other names
 
@@ -322,6 +324,6 @@ role allows.
 | BYO, Custom runtime, Custom provider, Custom Harness | Custom Agent |
 | runtime, harness (for the agent type) | agent type |
 | runtime chart | agent chart |
-| console, native interface | Agent UI |
-| Reauthorize | **Sign in again**, the label in the Portal |
+| console (of an Agent), native interface | Agent UI |
+| Reauthorize (for a connection) | **Sign in again**, the label in the Portal |
 | administrator (without a role name) | the name of the role |
