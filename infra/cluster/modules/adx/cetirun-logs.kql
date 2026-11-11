@@ -107,6 +107,7 @@
         RecordTime = todatetime(Body['time']),
         Cluster,
         Action = tostring(Body['action']),
+        SnapshotId = tostring(Body['snapshot_id']),
         AgentName = tostring(Agent['name']),
         AgentUid = tostring(Agent['uid']),
         AgentNamespace = tostring(Agent['namespace']),
@@ -125,8 +126,47 @@
         Created = todatetime(Agent['created'])
 }
 
-.create-or-alter function with (folder = "CetiRun", docstring = "The current Agents: the latest inventory record of each Agent that is not deleted.", skipvalidation = "true") AgentInventory() {
-    AgentInventoryHistory()
+.create-or-alter function with (folder = "CetiRun", docstring = "Complete inventory snapshots: one row per cluster, kind and snapshot, written once every object of the kind was written with the snapshot's ID.", skipvalidation = "true") InventorySnapshots() {
+    Telemetry
+    | where Container == "telemetry" and tostring(Body['log_type']) == "cetirun.inventory.snapshot"
+    | extend Snapshot = Body['snapshot']
+    | project
+        RecordTime = todatetime(Body['time']),
+        Cluster,
+        SnapshotId = tostring(Snapshot['id']),
+        Kind = tostring(Snapshot['kind']),
+        Started = todatetime(Snapshot['started']),
+        Objects = tolong(Snapshot['objects'])
+}
+
+.create-or-alter function with (folder = "CetiRun", docstring = "The current Agents, with their latest record: those of the latest complete snapshot of each cluster whose entries have all arrived, and those created or changed after it started. An Agent with a delete record is never current.", skipvalidation = "true") AgentInventory() {
+    let history = AgentInventoryHistory();
+    // Kubernetes never reuses a UID: an Agent with a delete record is gone,
+    // also when a snapshot entry comes after the delete.
+    let deleted = history | where Action == "delete" | distinct Cluster, AgentUid;
+    // The collector uploads batches concurrently, so a completion record can
+    // arrive before some entries of its snapshot. A snapshot counts once all
+    // of them have arrived; until then, the previous one does.
+    let received = history
+        | where Action == "snapshot" and isnotempty(SnapshotId)
+        | summarize Received = count_distinct(AgentUid) by Cluster, SnapshotId;
+    let lastSnapshot = InventorySnapshots()
+        | where Kind == "cetirun.inventory.agent"
+        | join kind=leftouter received on Cluster, SnapshotId
+        | where coalesce(Received, long(0)) == Objects
+        | summarize arg_max(Started, SnapshotId) by Cluster
+        | project Cluster, LatestSnapshot = SnapshotId, Started;
+    // A cluster with a complete snapshot: the Agents it saw, and the Agents
+    // created or changed after it started. An Agent deleted while the
+    // telemetry program was not running is in neither.
+    let reconciled = history
+        | join kind=inner lastSnapshot on Cluster
+        | where SnapshotId == LatestSnapshot or (Action == "upsert" and RecordTime >= Started)
+        | project-away Cluster1, LatestSnapshot, Started;
+    // A cluster without one, from a telemetry program that marks no
+    // snapshots: the latest record of each Agent.
+    let unreconciled = history | join kind=leftanti lastSnapshot on Cluster;
+    union reconciled, unreconciled
     | summarize arg_max(RecordTime, *) by Cluster, AgentUid
-    | where Action != "delete"
+    | join kind=leftanti deleted on Cluster, AgentUid
 }

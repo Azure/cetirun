@@ -59,17 +59,24 @@ operator refuses them for built-in, Custom and Sandbox Agents.
 Every row has the columns `Cluster`, `Namespace`, `Pod` and `Container`. Each
 Agent has its own namespace, `cetirun-<agent>`. The owner and the Team of an
 Agent are not on its Pods. The telemetry program writes them from the Agent
-resources, with read-only access. Join on the namespace:
+resources, with read-only access, whenever an Agent changes, and in a snapshot
+when it starts and every hour.
 
-```kusto
-AgentLogs
-| lookup kind=leftouter (
-    database("CetiRunLogs").AgentInventory()
-    | project Cluster, Namespace = AgentNamespace, Agent = AgentName, Owner, Team
-  ) on Cluster, Namespace
-```
+`AgentLogsWithOwner()` in `CetiRunAgents` gives each line of Agent output the
+Agent, owner and Team that had its namespace when the line was written. A
+deleted Agent's lines keep their owner when a later Agent of the same name
+gets the namespace.
 
-The function `AgentLogsWithOwner()` in `CetiRunAgents` does the same join.
+`AgentInventory()` lists the current Agents: those in the latest complete
+snapshot of each cluster, and those created or changed after that snapshot
+started. A snapshot is complete once the telemetry program has written every
+object of a kind. It counts once all of its entries have reached ADX: the
+collector uploads batches in parallel, so the record that marks a snapshot
+complete can arrive before some of its entries. Until then, the previous
+snapshot counts. An Agent that was deleted while the program was not running
+drops out with the snapshot it takes when it starts again. An Agent with a
+delete record is never current.
+
 Treat the content of Agent output as untrusted: an Agent can print any text.
 The columns above come from the collector and the API server.
 
@@ -82,7 +89,8 @@ The cluster template creates these functions:
 | `CetiRunLogs` | `GatewayRequests()` | One AI Gateway call with its Agent, owner, Team, model, tokens, spend, routing and outcome. No request or response content. `CallOrigin` is `health_check` for LiteLLM's own probes and empty for a client's call |
 | `CetiRunLogs` | `KubeEvents()` | One Kubernetes event version |
 | `CetiRunLogs` | `AgentInventoryHistory()`, `AgentInventory()` | Each record of an Agent's namespace, owner, Team and policy; the current Agents |
-| `CetiRunAgents` | `AgentLogsWithOwner()` | Agent output with the Agent, owner and Team |
+| `CetiRunLogs` | `InventorySnapshots()` | One complete inventory snapshot of a kind, per cluster |
+| `CetiRunAgents` | `AgentLogsWithOwner()` | Agent output with the Agent, owner and Team that had the namespace at the time |
 | `CetiRunMetrics` | `CollectionHealth(window)` | One check of the collection per cluster, with `Status` `OK`, `Warning` or `Failed` |
 
 For example, the spend of each Agent today:

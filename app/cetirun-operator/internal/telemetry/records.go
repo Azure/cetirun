@@ -31,6 +31,8 @@ const (
 	LogTypeTeam        = "cetirun.inventory.team"
 	LogTypeAgentPolicy = "cetirun.inventory.agentpolicy"
 	LogTypeSandbox     = "cetirun.inventory.sandbox"
+	// LogTypeSnapshot marks the snapshot of one inventory kind as complete.
+	LogTypeSnapshot = "cetirun.inventory.snapshot"
 
 	// SchemaVersion changes when a field changes meaning or goes away.
 	SchemaVersion = 1
@@ -43,7 +45,9 @@ const (
 	// ActionDelete records an object that was deleted.
 	ActionDelete = "delete"
 	// ActionSnapshot repeats every object periodically, so the latest state
-	// stays within the retention of the logs.
+	// stays within the retention of the logs. Each snapshot entry carries the
+	// snapshot's ID, and a LogTypeSnapshot record with that ID follows once
+	// every object of the kind is written.
 	ActionSnapshot = "snapshot"
 )
 
@@ -56,11 +60,26 @@ type Record struct {
 	SchemaVersion int                `json:"schema_version"`
 	Time          string             `json:"time"`
 	Action        string             `json:"action,omitempty"`
+	SnapshotID    string             `json:"snapshot_id,omitempty"`
 	Event         *EventRecord       `json:"event,omitempty"`
 	Agent         *AgentRecord       `json:"agent,omitempty"`
 	Team          *TeamRecord        `json:"team,omitempty"`
 	AgentPolicy   *AgentPolicyRecord `json:"agent_policy,omitempty"`
 	Sandbox       *SandboxRecord     `json:"sandbox,omitempty"`
+	Snapshot      *SnapshotRecord    `json:"snapshot,omitempty"`
+}
+
+// SnapshotRecord says that the snapshot of one inventory kind is complete:
+// every object of the kind that existed when it started is written with its
+// ID. An object of that kind that is in no complete snapshot and changed no
+// later than the latest one started no longer exists.
+type SnapshotRecord struct {
+	ID string `json:"id"`
+	// Kind is the log type of the kind's records.
+	Kind string `json:"kind"`
+	// Started is the time before the objects were listed.
+	Started string `json:"started"`
+	Objects int    `json:"objects"`
 }
 
 // ObjectReference names the object an event is about.

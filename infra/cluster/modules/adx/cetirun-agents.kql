@@ -4,10 +4,21 @@
 // Query functions of the CetiRun Agent logs database. __LOGS_DATABASE__ is
 // the name of the logs database; the ADX module of the cluster template
 // replaces it and runs this script. Readers need the logs database too.
-.create-or-alter function with (folder = "CetiRun", docstring = "Agent workload logs with the Agent, owner and Team of their namespace, from the inventory in the logs database.", skipvalidation = "true") AgentLogsWithOwner() {
+.create-or-alter function with (folder = "CetiRun", docstring = "Agent workload logs with the Agent, owner and Team that had their namespace when each line was written, from the inventory in the logs database.", skipvalidation = "true") AgentLogsWithOwner() {
+    // The Agents of each namespace in creation order. An Agent's namespace is
+    // named after the Agent, and a second Agent of the name comes only after
+    // the first is deleted, so each Agent has the namespace from its creation
+    // until the next one's. The first one is also given lines from before its
+    // creation time, and the last one every later line.
+    let owners = database("__LOGS_DATABASE__").AgentInventoryHistory()
+        | summarize arg_max(RecordTime, AgentName, Owner, Team), Created = min(Created) by Cluster, Namespace = AgentNamespace, AgentUid
+        | order by Cluster asc, Namespace asc, Created asc
+        | extend
+            From = iff(prev(Cluster) == Cluster and prev(Namespace) == Namespace, Created, datetime(null)),
+            Until = iff(next(Cluster) == Cluster and next(Namespace) == Namespace, next(Created), datetime(null))
+        | project Cluster, Namespace, Agent = AgentName, AgentUid, Owner, Team, From, Until;
     AgentLogs
-    | lookup kind=leftouter (
-        database("__LOGS_DATABASE__").AgentInventory()
-        | project Cluster, Namespace = AgentNamespace, Agent = AgentName, AgentUid, Owner, Team
-        ) on Cluster, Namespace
+    | join kind=leftouter owners on Cluster, Namespace
+    | where (isnull(From) or Timestamp >= From) and (isnull(Until) or Timestamp < Until)
+    | project-away Cluster1, Namespace1, From, Until
 }
