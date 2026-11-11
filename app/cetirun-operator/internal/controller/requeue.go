@@ -11,6 +11,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 )
@@ -76,4 +77,15 @@ func prerequisiteResult(ctx context.Context, cause error, statusChanged bool, st
 			"reason", cause.Error(), "requeueAfter", prerequisiteRequeue)
 	}
 	return ctrl.Result{RequeueAfter: prerequisiteRequeue}, nil
+}
+
+// holdReconciledBootstrap holds a common-executor Agent whose owned bootstrap
+// did not complete, for example because its Team has no approved Skills
+// publication yet. A classified wait then retries periodically; a failed hold
+// or any other cause stays a reconcile error. The hold writes the Agent only
+// when its status changes, so a repeated wait is not logged again.
+func (r *AgentReconciler) holdReconciledBootstrap(ctx context.Context, agent *api.Agent, cause error) (ctrl.Result, error) {
+	version := agent.ResourceVersion
+	_, holdErr := r.holdPolicyDependencyUnavailable(ctx, agent)
+	return prerequisiteResult(ctx, cause, agent.ResourceVersion != version, holdErr)
 }
