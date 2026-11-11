@@ -1371,6 +1371,16 @@ Without policy intent, the controller still uses the built-in or Custom runtime
 path that already exists. This path includes provisioning, suspension,
 readiness, and deletion.
 
+Ordinary Custom suspension remains `Pending` until the main and auxiliary
+controllers acknowledge zero replicas, no Pods remain, the platform route is
+absent, and Gateway blocking and apply completion succeed. Only then does
+`Suspended` acknowledge the current `metadata.generation` through
+`status.observedGeneration`. Resume applies the runtime again while retaining
+the Agent identity and HOME. These observations confirm ordinary controller
+shutdown; they do not prove physical fencing or volume detachment. The legacy
+built-in registry suspension path keeps its separate zero-generation cache
+invalidation behavior.
+
 Legacy Gateway model sources are on by default, unless they are explicitly
 disabled. New legacy keys get the deployment default budget. Later
 administrator budget changes, spend, reset periods, and emergency blocks are

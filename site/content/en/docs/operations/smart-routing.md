@@ -120,6 +120,12 @@ Pods again, as [Peer labels](../policy-teams/#peer-labels) shows.
 
 ## 2. Allow the routers in an Agent Policy
 
+> **Warning:** Use a new Policy for this step. For a Policy that already has
+> Agents, create the router first, as step 3 shows. Then add `auto-team` to the
+> Policy. Until the router exists, the operator cannot resolve the name, and it
+> stops the Agents of that Policy. Refer to
+> [Choose a model](../../guides/models/#runtime-configuration).
+
 In the Portal, select **Admin → Agent policies → New policy**. Allow the
 harnesses, OpenClaw and Hermes. Under **Allowed shared models**, list the
 routers, the models of their tiers, and their default models, one per line.

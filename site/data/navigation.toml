@@ -76,6 +76,7 @@
       "/docs/guides/agent-ingress-mtls",
       "/docs/operations/entra-agent-identity",
       "/docs/operations/identity-providers",
+      "/docs/operations/cetiadmin",
     ]
   [[modules.groups]]
     title = "Troubleshooting"

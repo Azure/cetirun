@@ -95,6 +95,8 @@ export interface TeamDTO {
 export interface TeamUpsertRequest {
   uid?: string;
   resourceVersion?: string;
+  /** The saved configuration generation. Status-only changes do not change it. */
+  generation?: number;
   agentPolicyRef: string;
   sandboxRefs: string[];
   defaultSandboxRef: string;
@@ -129,18 +131,23 @@ export async function createTeam(req: TeamUpsertRequest): Promise<TeamDTO> {
 }
 
 export async function updateTeam(name: string, req: TeamUpsertRequest): Promise<TeamDTO> {
+  // Keep the JSON shape readable by older Portal servers. The generation header
+  // adds status-insensitive concurrency for servers that support it.
+  const { generation, ...body } = req;
   const response = await apiFetch(`/api/v1/admin/teams/${encodeURIComponent(name)}`, {
     method: "PUT",
-    body: JSON.stringify(req),
+    body: JSON.stringify(body),
+    headers: generation === undefined ? undefined : { "X-CetiRun-Team-Generation": String(generation) },
   });
   if (!response.ok) throw await adminResponseError(response, "Failed to update team");
   return response.json();
 }
 
-export async function deleteTeam(team: Pick<TeamDTO, "name" | "uid" | "resourceVersion">): Promise<void> {
+export async function deleteTeam(team: Pick<TeamDTO, "name" | "uid" | "resourceVersion" | "generation">): Promise<void> {
   const response = await apiFetch(`/api/v1/admin/teams/${encodeURIComponent(team.name)}`, {
     method: "DELETE",
     body: JSON.stringify({ uid: team.uid, resourceVersion: team.resourceVersion }),
+    headers: { "X-CetiRun-Team-Generation": String(team.generation) },
   });
   if (!response.ok && response.status !== 404) {
     throw await adminResponseError(response, "Failed to delete team");

@@ -7,7 +7,7 @@ VERSION ?= $(shell scripts/cetirun-release-metadata.sh version)
 GIT_SHA ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 VERIFY_PULL ?= true
 FORCE_PUBLISH ?= false
-ACCEPT_VSCODE_SERVER_LICENSE_TERMS ?= false
+ACCEPT_VSCODE_SERVER_LICENSE_TERMS ?= true
 DEPLOY_CONFIG ?=
 .DEFAULT_GOAL := help
 
@@ -31,7 +31,7 @@ help:
 	@echo "  Pull defaults use MCR; publishing requires an explicit writable REGISTRY."
 	@echo "  VERSION defaults to the Runtime Chart; MCR publication uses the ADO backing-ACR pipeline."
 	@echo "  Build/publish overrides use temporary copies; only set-version edits source."
-	@echo "  Image builds require ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true"
+	@echo "  ACCEPT_VSCODE_SERVER_LICENSE_TERMS defaults to true for image builds."
 	@echo "Deployment (explicit environment authorization required):"
 	@echo "  make deploy-plan DEPLOY_CONFIG=/path/to/environment.yaml  (offline)"
 	@echo "  make deploy DEPLOY_CONFIG=/path/to/environment.yaml"

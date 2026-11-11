@@ -40,9 +40,11 @@ The gateway's ownership filter takes the instance name from `/ui/<instance>`
 or the first path segment. Then it calls the portal's internal `/internal/auth`
 listener. It does not compare a subdomain alias with the user. Public instance
 APIs also do an ownership check. Keep the internal listener and backend
-Services private. A value named `aliasExemptPrefixes` or
-`authPolicy.adminAliases` is not an ownership bypass, because the filter does
-not use these values.
+Services private.
+
+The filter does not use `authPolicy.adminAliases`. For each prefix in
+`authPolicy.aliasExemptPrefixes`, it skips the ownership check on the host
+`<prefix>.<domain>`. Refer to [Exemptions](../../operations/istio/#exemptions).
 
 Sources: [OAuth2 deployment]({{< repo "infra/istio/templates/ingress/oauth2-proxy-deployment.yaml" >}}),
 [ownership filter]({{< repo "infra/istio/templates/ingress/envoy-filter-alias.yaml" >}}),
@@ -58,7 +60,7 @@ and [portal handlers]({{< repo "app/cetirun-portal/internal/handler/instance.go"
 | Portal | [app/cetirun-portal]({{< repo "app/cetirun-portal" "tree" >}}) | User and admin UI, ownership enforcement in the backend |
 | Shared Istio chart | [infra/istio]({{< repo "infra/istio" "tree" >}}) | Gateway, OAuth2 Proxy, authorization filters, egress logging/policy |
 | Infrastructure | [infra]({{< repo "infra" "tree" >}}) | AKS and Azure Blob NFS Bicep |
-| CetiAdmin | [Operator CetiAdmin module]({{< repo "app/cetirun-operator/internal/cetiadmin" "tree" >}}) | Hermes administration Agent, operations skills, and helpers deployed by the operator |
+| CetiAdmin | [Operator CetiAdmin module]({{< repo "app/cetirun-operator/internal/cetiadmin" "tree" >}}) | Hermes administration Agent, operations skills, and helpers deployed by the operator. Enabled by default. Refer to [CetiAdmin](../../operations/cetiadmin/) for its access |
 
 ## Instance names and routes
 
@@ -102,10 +104,14 @@ and [route tests]({{< repo "app/cetirun-operator/internal/controller/istio_test.
 
 By default, the runtime chart selects `kata-vm-isolation`. A RuntimeClass that
 works and compatible nodes are necessary for this selection. A rendered field
-is not evidence of hardware isolation. `execRestriction.enabled` is `true` by
-default and renders `admissionregistration.k8s.io/v1`
-ValidatingAdmissionPolicy resources. The cluster must support and enforce that
-API. This policy targets `pods/exec`, not the separate browser terminal.
+is not evidence of hardware isolation.
+
+`execRestriction.enabled` is `true` by default and renders
+`admissionregistration.k8s.io/v1` ValidatingAdmissionPolicy resources. The cluster must support and enforce that
+API. This policy targets `pods/exec`, not the separate browser terminal. It
+does not cover `pods/attach`, `pods/portforward`, or ephemeral containers.
+Kubernetes RBAC alone controls these operations. Refer to
+[Kubernetes exec restriction](../../security/#kubernetes-exec-restriction).
 
 The chart allows zero or one runtime replica. If you enable its HPA, both
 `minReplicas` and `maxReplicas` must be 1. This HPA configuration is not

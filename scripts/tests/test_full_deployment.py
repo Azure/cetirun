@@ -669,6 +669,14 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
         self.assertTrue(cookie_reads)
         self.assertTrue(all(".data." not in output and output != "json" for output in cookie_reads))
 
+    def test_external_istio_reads_qualified_gateway(self):
+        deployment = self.external_deployment("external-qualified-gateway")
+        deployment.execute()
+        gets = [command[command.index("get") + 1] for command in deployment.commands
+                if command[0] == "kubectl" and "get" in command]
+        self.assertIn("gateways.networking.istio.io", gets)
+        self.assertNotIn("Gateway", gets)
+
     def test_external_istio_read_failure_stops_before_writes(self):
         deployment = self.external_deployment("external-read-failure")
         deployment.fail = "jsonpath={.spec}"

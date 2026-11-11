@@ -186,6 +186,18 @@ HOME.
 For OpenClaw, enter the gateway token. Then approve the request to pair the browser
 from the instance's Terminal, as in the portal steps above.
 
+## Private memory
+
+By default, OpenClaw and Hermes Agents keep a private memory of facts from your
+conversations. The memory is in the HOME of the Agent. Every conversation that
+the Agent admits uses the same memory, including group and channel
+conversations.
+
+> **Warning:** A reply in a group or channel can include facts from your private
+> memory. Before you connect your Agent to a shared conversation, limit its
+> Memory to your own sessions. For the settings, refer to
+> [Restrict platforms, senders or conversations]({{< repo "app/cetirun-memory-context/OWNER_ACCESS.md" >}}#restrict-platforms-senders-or-conversations).
+
 ## Keep your workspace
 
 The default storage settings keep the home directory across pod restarts.

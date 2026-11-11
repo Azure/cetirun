@@ -439,6 +439,12 @@ func (r *CetiAdminReconciler) patchExecConditions(ctx context.Context, policy *a
 }
 
 func (r *CetiAdminReconciler) patchExecAnnotation(ctx context.Context, agent *api.Agent, raw string) error {
+	// A deletion may continue to revoke a recorded exception, but it must never
+	// grant one. A deletion that starts after the read is fenced by the JSON
+	// patch resourceVersion test and the post-write readback below.
+	if raw != "" && agent.DeletionTimestamp != nil {
+		return cetiadmin.ErrConflict
+	}
 	if current, present := agent.Annotations[registryauth.ExecAdminBindingAnnotation]; (present && current == raw) || (!present && raw == "") {
 		return nil
 	}
@@ -460,7 +466,7 @@ func (r *CetiAdminReconciler) patchExecAnnotation(ctx context.Context, agent *ap
 	if err := r.reader().Get(ctx, client.ObjectKeyFromObject(agent), current); err != nil {
 		return errors.Join(writeErr, err)
 	}
-	if current.UID != agent.UID || current.DeletionTimestamp != nil || !maps.Equal(current.Annotations, annotations) {
+	if current.UID != agent.UID || (raw != "" && current.DeletionTimestamp != nil) || !maps.Equal(current.Annotations, annotations) {
 		return errors.Join(writeErr, cetiadmin.ErrConflict)
 	}
 	*agent = *current

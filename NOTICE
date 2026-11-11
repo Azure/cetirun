@@ -19,7 +19,8 @@ Code CLI and Web Server under the Microsoft Visual Studio Code Server license:
 https://code.visualstudio.com/license/server
 The first-party installer and path adapter are MIT-licensed; this does not
 relicense the official binaries or authorize hosting or redistribution. The
-build requires explicit license acceptance and retains the server notices.
+build defaults ACCEPT_VSCODE_SERVER_LICENSE_TERMS to true and retains the
+server notices.
 Copilot and user-installed extensions remain subject to their own service and
 license terms. This example is not included in platform publishing targets.
 
