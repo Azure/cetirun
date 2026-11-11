@@ -9,8 +9,13 @@ or [Install CetiRun](../site/content/en/docs/getting-started/platform.md).
 
 | Directory | Description |
 |-----------|-------------|
-| `cetirun-platform/` | Umbrella chart that installs the operator and portal together. |
-| `cetirun-operator/` | Kubernetes operator for Agent and Team CRDs and the Hermes-based [CetiAdmin](cetirun-operator/internal/cetiadmin). Includes the operator Helm chart, operations skills, and helpers. |
-| `cetirun-chart/` | Per-instance agent Helm chart. It contains templates, values, configs, and named Dockerfiles for OpenClaw, Hermes, shared base, and desktop images. |
-| `cetirun-portal/` | Self-service portal to create, manage, and monitor runtime instances. It contains a Go backend and a React frontend. |
+| `cetirun-platform/` | Umbrella chart that installs the operator, the Portal, the AI Gateway, Connections MCP, and the optional observability chart together. |
+| `cetirun-operator/` | Kubernetes operator for the Agent, Team, Sandbox, and AgentPolicy CRDs, Sandbox admission, and the Hermes-based [CetiAdmin](../site/content/en/docs/operations/cetiadmin.md), whose source is in `cetirun-operator/internal/cetiadmin`. Includes the operator Helm chart, operations skills, and helpers. |
+| `cetirun-chart/` | Agent chart, with one Helm release for each Agent. It contains templates, values, configs, and named Dockerfiles for OpenClaw, Hermes, shared base, and desktop images. |
+| `cetirun-portal/` | Self-service Portal to create, manage, and monitor Agents. It contains a Go backend and a React frontend. |
 | `cetirun-ai-gateway/` | AI Gateway: the `cetirun-ai-gateway` image, open-source LiteLLM on Azure Linux, and its Helm chart, which installs standalone with bundled PostgreSQL and Valkey. |
+| `cetirun-agent-broker/` | Agent Identity Broker. It keeps the encrypted credentials of Agent connections and gives Connections MCP short-lived tokens. |
+| `cetirun-connections-mcp/` | MCP server that Agents call to use their connections. It calls the external services with short-lived tokens from the Broker. |
+| `cetirun-memory-context/` | The built-in `cetirun-memory` skill, its helper, and the image that installs them into Agents. |
+| `cetirun-observability/` | Optional chart, off by default, that collects logs, Kubernetes events, and metrics into Azure Data Explorer with ADX-Mon. |
+| `internal/` | Go packages that more than one component uses. |

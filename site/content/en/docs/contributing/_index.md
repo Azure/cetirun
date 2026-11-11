@@ -10,8 +10,8 @@ that apply to contributions, start with
 [CONTRIBUTING.md]({{< repo "CONTRIBUTING.md" >}}) and the
 [Code of Conduct]({{< repo "CODE_OF_CONDUCT.md" >}}).
 
-- [Development](development/) — source layout and local setup
-- [Testing](../getting-started/local-checks/) — component and documentation checks
+- [Prepare a development environment](development/) — source layout and local setup
+- [Run local checks](../getting-started/local-checks/) — component and documentation checks
 - [Documentation](site/) — write, preview, and validate the site
 
 Before you file an issue, search the issues that already exist. Before you

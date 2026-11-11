@@ -77,7 +77,7 @@ standard Agent, for example its sessions and its private memory. The data that
 CetiAdmin reads can go into its model context. The AI Gateway sends this
 context to the model provider. By default, the Gateway also keeps the request
 in its spend logs. Refer to
-[Security](../../security/#logging-is-enabled-by-default).
+[Data collection](../../security/#data-collection).
 
 Sources: [permissions]({{< repo "app/cetirun-operator/internal/cetiadmin/permissions.go" >}}),
 [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}}), and

@@ -18,6 +18,11 @@ body:
         - Operator or CRDs
         - Portal backend
         - Portal frontend
+        - AI Gateway
+        - Agent Identity Broker or Connections MCP
+        - Memory
+        - CetiAdmin
+        - Skill Marketplace
         - Runtime plugin
         - Infrastructure or Istio configuration
         - Documentation
@@ -49,7 +54,7 @@ body:
     id: version
     attributes:
       label: Versions
-      description: Include the CetiRun commit, image tag or digest, chart version, and OpenClaw or Hermes version where relevant. Say if a version is unknown.
+      description: Include the CetiRun commit, image tag or digest, chart version, and the version of OpenClaw, Hermes, or the Custom Agent image where relevant. Say if a version is unknown.
     validations:
       required: true
 

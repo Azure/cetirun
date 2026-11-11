@@ -1,41 +1,54 @@
 # Runtime Data and Privacy
 
-CetiRun runs agent workspaces on infrastructure that the deployment operator
-selects. This document describes how data is handled, as the repository's
-application code, charts, and infrastructure templates show. It is not a
-statement that a particular deployment was inspected. It is also not a promise
-about third-party services or a substitute for the operator's own privacy
-notice.
+CetiRun runs Agents on infrastructure that the organization that runs the
+deployment selects. This document describes how data is handled, as the
+repository's application code, charts, and infrastructure templates show. It is
+not a statement that a particular deployment was inspected. It is also not a
+promise about third-party services or a substitute for the privacy notice of
+the organization that runs the deployment.
 
-**The default configuration can collect conversation content in container logs
-and in the AI Gateway's database.** The agent chart enables the session logger.
-`make deploy` installs the ADX-Mon collection, which keeps container output in
-Azure Data Explorer. The AI Gateway keeps the request and the response of each
-model call in its database for seven days. Before you allow sensitive
-workloads, examine these settings. There is no single CetiRun setting that
-disables logging, telemetry, and network activity across every component.
+**The default configuration can keep conversation content in container logs,
+in the AI Gateway's database, and in the memory notes of each Agent.** The AI
+Gateway keeps the request and the response of each model call in its database
+for seven days. With `content.enabled`, it keeps them in an Azure Data Explorer
+database instead. The agent chart enables the session logger, and `make deploy`
+installs the ADX-Mon collection, which keeps container output in Azure Data
+Explorer. Memory, which is on by default, keeps the notes of each Agent in its
+HOME. Before you allow sensitive workloads, check these settings. No single
+CetiRun setting disables logging, telemetry, and network activity across every
+component.
 
 ## Data processed by CetiRun
 
 | Surface | Data and purpose | Where it can be processed or stored |
 | --- | --- | --- |
-| Portal and sign-in | User alias, preferred username, display name, email claims, group authorization, and administrator status. These items are used to identify users and authorize access. | Browser, OAuth2 Proxy/identity provider, portal request context, and application logs. Instance ownership/profile fields are also stored in Kubernetes resources. |
-| Workspace management | Instance and team names, owner alias, model selection, profile information, configuration, status, events, and resource identifiers | Portal, operator, Kubernetes API objects, Helm release state, and operational logs |
-| Agent activity | Prompts, responses, files, tool arguments/results, session history, and user/team context | Agent process and workspace storage. Configured model, tool, and channel services. The AI Gateway's database, for seven days by default. Possibly container logs. |
-| Authentication material | Gateway/API keys, provider credentials, OAuth device-flow state, and optional Tailscale credentials | Kubernetes Secrets, mounted configuration, agent home files, process memory, and the services that authenticate them |
-| Browser and terminal | Commands/output, visited pages, downloads, screenshots, browsing history, and browser login state | Workspace processes and storage. Websites or services that the browser/tools contact. Terminal/desktop streams that go to the user. |
+| Portal and sign-in | User alias, preferred username, display name, email claims, group authorization, and Portal administrator status. These items are used to identify users and authorize access. | Browser, OAuth2 Proxy/identity provider, portal request context, and application logs. Agent ownership and profile fields are also stored in Kubernetes resources. |
+| Agent management | Agent and Team names, owner alias, model selection, profile information, configuration, status, events, and resource identifiers | Portal, operator, Kubernetes API objects, Helm release state, and operational logs |
+| Agent activity | Prompts, responses, files, tool arguments/results, session history, and user/team context | Agent process and HOME storage. Configured model, tool, and channel services. The AI Gateway's database, or its Azure Data Explorer content database when `content.enabled` is on, for seven days by default. Possibly container logs. |
+| Authentication material | The OpenClaw gateway token, the Hermes API key, the AI Gateway virtual key, provider credentials, OAuth device-flow state, and optional Tailscale credentials | Kubernetes Secrets, mounted configuration, agent home files, process memory, and the services that authenticate them |
+| Browser and terminal | Commands/output, visited pages, downloads, screenshots, browsing history, and browser login state | Agent processes and HOME storage. Websites or services that the browser/tools contact. Terminal/desktop streams that go to the user. |
 | CetiAdmin | The operations Agent, enabled by default. It can read the Secrets and, through `kubectl exec`, the HOME files of each standard Agent, which does not run in a Sandbox. It can also read the Pod logs and diagnostic resources of the Agents that it manages. Refer to [CetiAdmin](site/content/en/docs/operations/cetiadmin.md). | The CetiAdmin Agent and its HOME. Its model context, the configured model provider, and the AI Gateway's database, for seven days by default. |
+| Agent memory | Facts and lessons that the Agent keeps from its sessions. All sessions that the agent admits can read and write them, also channel and group chats. A reply in a group can quote them. | The `$HOME/.cetirun/memory` directory on the HOME volume. The AI Gateway receives the model calls that use the notes. |
+| Connections | The external accounts that an owner connects to an Agent, for example GitHub, Google, or Azure, and the encrypted tokens of these accounts | The Agent Identity Broker, in Kubernetes Secrets of the Broker namespace and of the Agent namespace. Connections MCP and the connected services, for each call that the Agent makes. |
+| Portal Chat history | The conversations of an owner with a Custom Agent in Portal Chat | The IndexedDB database `cetirun-portal-chat` in the owner's browser. The Custom Agent. |
 
-The portal does not show only public metadata. Its authorized instance response
-can include gateway tokens, a Hermes API server key, the CetiRun auth helper
-key, and a configured Tailscale auth key. Treat browser access to a workspace
-and its API responses as access to sensitive information. Do not publish
-browser network captures, session files, or support bundles before you examine
-them.
+The portal does not show only public metadata. For an OpenClaw or Hermes
+Agent, the authorized Portal API response can include credentials. These are
+the OpenClaw gateway token, the Hermes API key, and a configured Tailscale auth
+key. Treat browser access to an Agent and its API responses as access to
+sensitive information. Do not publish browser network captures, session files,
+or support bundles before you examine them.
+
+For the memory controls of an owner, read the
+[Private Memory Context](site/content/en/docs/reference/agent-harness.md#private-memory-context)
+reference.
 
 Source: [portal claims](app/cetirun-portal/internal/auth/claims.go),
 [authentication middleware](app/cetirun-portal/internal/auth/middleware.go),
 [instance handlers](app/cetirun-portal/internal/handler/instance.go),
+[Portal Chat storage](app/cetirun-portal/web/src/chat/store.ts),
+[memory owner access](app/cetirun-memory-context/OWNER_ACCESS.md),
+[Broker](app/cetirun-agent-broker/README.md),
 [instance API types](app/cetirun-operator/api/v1alpha1/agent_types.go),
 [agent configuration templates](app/cetirun-chart/templates/agents/openclaw/_runtime.tpl),
 and [Hermes configuration templates](app/cetirun-chart/templates/agents/hermes/_runtime.tpl).
@@ -44,16 +57,17 @@ and [Hermes configuration templates](app/cetirun-chart/templates/agents/hermes/_
 
 ### Session and application logs
 
-`logger.enabled` is `true` by default. For OpenClaw, the logger sidecar follows
-active session JSONL files under `/home/vibe/.openclaw/agents` and writes new
-lines to stdout. Those records can contain user input, assistant output, tool
-calls, and tool results. OpenClaw, as the agent image packages it, keeps its
-sessions in SQLite instead and writes no such files. As a result, the logger
-now exports nothing for OpenClaw.
+`logger.enabled` is `true` by default. The logger sidecar copies new lines of
+agent files to stdout:
 
-For Hermes, the logger follows `/home/vibe/.hermes/logs/gateway.log`. The
-content of this file depends on the installed Hermes version and configuration.
-This content is not necessarily a complete transcript.
+- **Hermes:** the logger follows `/home/vibe/.hermes/logs/gateway.log`. The
+  content of this file depends on the installed Hermes version and
+  configuration, and it is not necessarily a complete transcript.
+- **OpenClaw:** the OpenClaw version in the agent image keeps its sessions in
+  SQLite and writes no session JSONL files. Thus, the logger exports no
+  records for it. If an OpenClaw image writes session JSONL files under
+  `/home/vibe/.openclaw/agents`, the logger copies their new lines. These lines
+  can contain user input, assistant output, tool calls, and tool results.
 
 The logger does not redact content. The logger starts to follow each file at
 the current end of that file and does not replay the whole history. The
@@ -63,7 +77,7 @@ Anyone with access to the container logs that contain this output, or to their
 downstream log store, can possibly read the content.
 
 Portal and operator logs also include operational information, for example
-aliases, display names, team/instance names, resource IDs, access URLs,
+aliases, display names, Team and Agent names, resource IDs, access URLs,
 reconciliation status, and errors. Some update logs record field names instead
 of values. But this does not prove that all logs are free of personal data or
 secrets. Agent, terminal, auth-helper, and optional Tailscale processes also
@@ -78,23 +92,23 @@ and [operator reconciliation](app/cetirun-operator/internal/controller/agent_con
 
 ### AI Gateway request log and metrics
 
-The AI Gateway's `requestLog.enabled` is `true` by default. Each model call then
-writes one JSON line to the Gateway's stdout with the call's metadata. This
-metadata contains the virtual key's alias and hash, the user ID, the Team, and
-the Agent's name and UID recorded on the key. It also contains the model, token
-counts, spend, timing, the client's address and user agent, and error text for
-failed calls. Error text can quote the provider's response. The line contains
-no request or response content.
+The AI Gateway's `requestLog.enabled` is `true` by default. Each model call
+then writes one JSON line with the call's metadata to the stdout of the AI
+Gateway. This metadata contains the virtual key's alias and hash, the user ID,
+the Team, and the Agent's name and UID recorded on the key. It also contains
+the model, token counts, spend, timing, the client's address and user agent,
+and error text for failed calls. Error text can quote the provider's response.
+The line contains no request or response content.
 
-By default, `metrics.enabled` is `false` in the Gateway chart and `true` in the
-platform chart. When this setting is enabled, each Gateway pod serves
+By default, `metrics.enabled` is `false` in the AI Gateway chart and `true` in
+the platform chart. When this setting is enabled, each AI Gateway Pod serves
 Prometheus metrics without authentication on a separate port. Their labels
 include virtual key aliases and hashes, user IDs, and Team names, together with
 spend. Anything that can reach the port can read them. The ADX-Mon collection
 scrapes them into Azure Data Explorer where it runs.
 
-The Gateway's PostgreSQL database keeps daily spend totals for each key, user,
-and Team. Unless `spendLogs.enabled` is `false`, the database also keeps
+The PostgreSQL database of the AI Gateway keeps daily spend totals for each
+key, user, and Team. Unless `spendLogs.enabled` is `false`, the database also keeps
 LiteLLM's own record of each call in `LiteLLM_SpendLogs`. The recorded calls
 also include health-check probes. Each record contains the call's metadata, for
 example the key, user, Team, model, token counts, spend, timing, and the error
@@ -105,41 +119,41 @@ request and the response of the call. These include the messages, images,
 tool calls, and tool results that an Agent sends, and the model's answer.
 LiteLLM shortens each value that is longer than 2,048 characters, and keeps its
 start and its end. As a result, a long message or an image is stored only in
-part. The Gateway console's request log pages show these records. Anyone who
-can sign in to the console, use the Gateway's master key, or read its database
-or its backups can read them.
+part. The request log pages of the AI Gateway console show these records.
+Anyone who can sign in to the console, use the AI Gateway master key, or read
+its database or its backups can read them.
 
 With `spendLogs.storePrompts: false`, each record contains only the metadata.
 This setting does not remove the content of records that are already stored.
 A `general_settings` block that is saved in the console can override it.
 
-With `content.enabled: true`, the Gateway writes the request and the response
-of each call to an Azure Data Explorer database instead (`CetiRunContent` when
-the cluster template creates it), and the spend log keeps no content, whatever
-`spendLogs.storePrompts` says. Calls that LiteLLM makes itself, health check
+With `content.enabled: true`, the AI Gateway writes the request and the
+response of each call to an Azure Data Explorer database instead:
+`CetiRunContent` when the cluster template creates it. The spend log then keeps
+no content, whatever `spendLogs.storePrompts` says. Calls that LiteLLM makes itself, health check
 probes and auto router classifier calls, are not written. The content is
 complete, not shortened, except
 that inline images and files and encrypted reasoning are replaced by notes with
 their type and size. Each record names the Agent, its owner and Team, and the
-LiteLLM user and Team of the key. The Gateway writes and reads it with its own
-workload identity; the ADX-Mon collector and ingestor have no access to that
-database. The console's request pages read a call's content from there and show
-it to administrators, and to other console users only for their own calls and
-Teams. People with the `Viewer` role on that database can read every call.
+LiteLLM user and Team of the key. The AI Gateway writes and reads it with its
+own workload identity; the ADX-Mon collector and ingestor have no access to that
+database. The console's request pages read a call's content from there. They
+show it to administrators, and to other console users only for their own calls
+and Teams. People with the `Viewer` role on that database can read every call.
 The database keeps the content for its retention, seven days in the cluster
 template. Content written while ADX cannot be reached is lost after three
-attempts, and while the Gateway's queue is full.
+attempts, and while the queue of the AI Gateway is full.
 
 When these rows and the stored health-check results are older than
 `spendLogs.retention`, LiteLLM deletes them. The default value is seven days,
 and the check occurs every hour. An empty retention keeps them.
 
-Source: [Gateway chart defaults](app/cetirun-ai-gateway/chart/values.yaml),
+Source: [AI Gateway chart defaults](app/cetirun-ai-gateway/chart/values.yaml),
 [platform chart defaults](app/cetirun-platform/values.yaml),
 [request log callback](app/cetirun-ai-gateway/cetirun_ai_gateway/request_log.py),
 the [entrypoint that registers it](app/cetirun-ai-gateway/entrypoint.py),
 [LiteLLM configuration](app/cetirun-ai-gateway/chart/templates/configmap.yaml),
-and the Gateway chart's
+and the AI Gateway chart's
 [spend log section](app/cetirun-ai-gateway/chart/README.md#litellms-spend-log).
 
 ### Infrastructure collection and traffic metadata
@@ -148,19 +162,25 @@ The cluster template turns Container Insights and managed Prometheus off.
 `make deploy` installs the `cetirun-observability` chart, which sends logs,
 Kubernetes events and metrics to Azure Data Explorer with ADX-Mon. Its
 collector reads the container output of the platform namespaces into the
-`CetiRunLogs` database, and the output of every container of the Agent Pods,
-Custom terminals and GitHub Copilot proxies into the `CetiRunAgents` database.
-That output includes the session logger's output that is described above and
-what Agents print themselves. This output can include conversation text. Its
-telemetry program writes each Agent's namespace, owner alias, display name,
-email, Entra tenant and object IDs, Team and policy, and Kubernetes events,
-into `CetiRunLogs`. Metrics go to the `CetiRunMetrics` database; the AI
-Gateway's metric labels include key aliases, user IDs and Team names. The
-chart does not copy container environment variables. Retention is a property
-of each database: the cluster template sets 90 days for logs, 30 days for
-metrics and 14 days for Agent logs. Successful collection still depends on the
-deployed collectors, permissions, and settings. Source configuration alone
-does not prove that a live cluster collects data.
+`CetiRunLogs` database. This database also receives the access log of the
+ingress gateway and the request log of the AI Gateway. The collector reads the
+output of every container of the Agent Pods, Custom terminals, and GitHub
+Copilot proxies into the `CetiRunAgents` database. That output includes the
+session logger's output that is described above and what Agents print
+themselves. This output can include conversation text. The collector reads
+container output from the node logs and does not copy container environment
+variables.
+
+The chart's telemetry program writes each Agent's namespace, owner alias,
+display name, email, Entra tenant and object IDs, Team and policy into
+`CetiRunLogs`. By default, it also writes the warning events and the events
+about CetiRun resources and namespaces. Metrics go to the `CetiRunMetrics`
+database. The AI Gateway's metric labels include key aliases, user IDs, and
+Team names. Retention is a property of each database: the cluster template
+sets 90 days for logs, 30 days for metrics, and 14 days for Agent logs.
+Successful collection still depends on the deployed collectors, permissions,
+and settings. Source configuration alone does not prove that a live cluster
+collects data.
 
 A cluster that runs Container Insights anyway collects container stdout and
 stderr into a Log Analytics workspace. By default, Container Insights also
@@ -182,7 +202,9 @@ secrets of its GitHub and Google providers when you configure them. A cluster
 that runs the add-on without the cluster-wide settings collects these values.
 
 The Istio chart sets `egress.accessLog.enabled` to `true` by default. Its Envoy
-filters write traffic metadata to stdout. This metadata includes timestamps,
+filters write traffic metadata to stdout. The filters apply to each proxy in the
+mesh, including the ingress gateway, so they also record the requests of
+users. This metadata includes timestamps,
 authority/host, HTTP method/path when available, status, and byte counts. It
 also includes duration, upstream addresses, downstream remote addresses, and
 TLS server names. URL paths can contain identifying or sensitive information.
@@ -206,7 +228,7 @@ and [Azure Data Explorer databases and retention](infra/cluster/modules/adx.bice
 ## Network and third-party boundaries
 
 - **Models and agent tools.** Requests from OpenClaw, Hermes, and Custom Agents
-  to models that the platform supplies go through the AI Gateway. The AI
+  to models that the platform supplies use the AI Gateway. The AI
   Gateway forwards prompts, conversation context, file contents, and tool
   output to configured providers. Agent tools can send data and authentication
   information to other services. Model choice alone does not describe every
@@ -215,14 +237,19 @@ and [Azure Data Explorer databases and retention](infra/cluster/modules/adx.bice
   settings, and region of each selected service with that service.
 - **GitHub Copilot authentication and model discovery.** The Portal starts
   GitHub device authorization and stores the completed credential in a
-  Kubernetes Secret in the Agent's namespace. The Operator provisions each
-  Agent's Copilot proxy and Gateway access. The proxy exchanges the credential
+  Kubernetes Secret in the Agent's namespace. The operator provisions each
+  Agent's Copilot proxy and AI Gateway access. The proxy exchanges the credential
   and gets the Copilot model catalog. New sign-ins do not write provider
   credentials into Agent HOME. These operations are separate from inference
-  requests that go through the AI Gateway.
+  requests to the AI Gateway.
 - **Identity.** The ingress sign-in flow uses Microsoft Entra ID. When Agent
   Identity is configured, the operator calls Microsoft Graph to manage Agent
   Identity service principals.
+- **Connections.** When an owner connects a GitHub, Google, or Azure account to
+  an Agent, the Agent Identity Broker keeps the encrypted tokens of that
+  account. Connections MCP gets a short-lived token from the Broker and calls
+  the service for the Agent. Each service receives the requests and the data
+  that the Agent sends to it.
 - **Browser and remote access.** The desktop sidecar runs Google Chrome and
   exposes a desktop through noVNC. ttyd exposes a terminal. Browsed sites
   receive browser requests and submitted data. Configured Tailscale access
@@ -250,7 +277,7 @@ provider, website, or telemetry service is unreachable. Validate the deployed
 network controls independently.
 
 Source: [Portal Copilot sign-in](app/cetirun-portal/internal/handler/copilot_login.go),
-[Gateway provisioning](app/cetirun-operator/internal/controller/ai_gateway.go),
+[AI Gateway provisioning](app/cetirun-operator/internal/controller/ai_gateway.go),
 [Graph client](app/cetirun-operator/internal/azure/graphclient.go),
 [base image recipe](app/cetirun-chart/Dockerfile.base),
 [desktop recipe](app/cetirun-chart/Dockerfile.desktop),
@@ -263,26 +290,34 @@ and [egress settings](infra/istio/values.yaml).
 The supplied ingress configuration uses an authentication cookie named
 `_cetirun_oauth2`, with secure transport, SameSite=Lax, and an eight-hour
 expiry. The portal stores the theme preference under `cetirun-theme` in
-localStorage. Third-party agent interfaces and visited sites can use their own
-cookies and browser storage. The portal's theme setting is not an inventory of
-all browser state.
+localStorage. Portal Chat keeps the conversations of an owner with a Custom
+Agent in the IndexedDB database `cetirun-portal-chat` of the browser.
+Third-party agent interfaces and visited sites can use their own cookies and
+browser storage. The portal's theme setting is not an inventory of all browser
+state.
 
 The desktop starts Chrome with
-`--user-data-dir=/home/vibe/.config/google-chrome/openclaw` on workspace
-storage. It disables Chrome sync in that invocation, but it does not promise to
+`--user-data-dir=/home/vibe/.config/google-chrome/openclaw` on the HOME
+volume. It disables Chrome sync in that invocation, but it does not promise to
 disable all Chrome service traffic. Browser profiles can keep website login
 state, history, and other personal data. `desktop.logging=false`, the default,
 suppresses x11vnc/websockify process output. Chrome stderr still goes to the
 container's stderr. If you disable this diagnostic output, you do not erase the
 profile or stop website requests.
 
-Agent persistence is enabled by default. For StatefulSet volume claims, the
-chart sets `persistence.retainPolicy` to `Retain` by default. This is not a
-guarantee that data survives namespace deletion or storage-provider cleanup.
-Also, the deletion of a CetiRun instance is not a complete erasure of data from
-cloud logs, backups, retained volumes, browser devices, or external providers.
-Effective retention depends on the PVC/PV lifecycle, reclaim policy, storage
-backend, backup policies, and downstream services.
+Agent persistence is enabled by default. When you delete an Agent, the
+operator revokes its AI Gateway key and its Broker records. Then it uninstalls
+the release and deletes the namespace with the HOME volume claim. With the AKS
+`default` StorageClass, whose reclaim policy is usually `Delete`, this also
+deletes the disk. The disk holds the files and the memory notes of the Agent.
+`persistence.retainPolicy: Retain`, the chart default, keeps the claim only
+when the StatefulSet is deleted or scaled to zero, for example during
+suspension. It does not protect HOME when the namespace is deleted.
+
+The deletion of an Agent does not erase the other copies of its data. Copies
+can stay in cloud logs, the AI Gateway database, backups, kept volumes, browser
+devices, and external providers. Effective retention depends on the PVC/PV lifecycle,
+reclaim policy, storage backend, backup policies, and downstream services.
 
 The cluster template sets the retention of each Azure Data Explorer database
 of the ADX-Mon collection: 90 days for logs, 30 days for metrics, and 14 days
@@ -297,24 +332,29 @@ Source: [OAuth2 Proxy configuration](infra/istio/templates/ingress/oauth2-proxy-
 [instance deletion](app/cetirun-operator/internal/controller/agent_controller.go),
 and [Azure Data Explorer retention](infra/cluster/modules/adx.bicep).
 
-## Deployment operator checklist
+## Checklist for platform administrators
 
 - Tell users which models, tools, channels, and monitoring systems receive their
   data. Also tell them if conversation content is collected in logs.
-- Examine `logger.enabled`, agent logging, `desktop.logging`,
-  `egress.accessLog.enabled`, the AI Gateway's `requestLog` and `metrics`, the
+- Check `logger.enabled`, agent logging, `desktop.logging`,
+  `egress.accessLog.enabled`, the AI Gateway's `requestLog`, `metrics`,
+  `spendLogs.storePrompts`, `spendLogs.retention`, and `content.enabled`, the
   `cetirun-observability` chart, and metrics scraping separately. If you
   disable only the session logger, this does not disable the other paths.
-- Restrict access to the portal, Kubernetes Secrets, workspace volumes, desktop
+- Check `memoryContext.enabled`, the connections that the Portal offers, and
+  `cetiadmin.enabled`. Tell users that Agents keep memory notes, and that a
+  reply in a group chat can quote them.
+- Restrict access to the portal, Kubernetes Secrets, HOME volumes, desktop
   and terminal endpoints, operational logs, and the Azure Data Explorer
-  databases of the logs and metrics. Evaluate administrators and automation
-  identities as data-access roles.
+  databases of the logs and metrics. Evaluate administrator roles and
+  automation identities as data-access roles.
 - Set retention, backup, export, and deletion procedures for each storage
-  location. Handle provider-side data separately from local instance deletion.
+  location. Handle provider-side data separately from the deletion of an Agent.
 - Before use, examine added skills, tools, images, and provider settings. Do not
   put secrets in prompts or public issue reports. Logs and tool output can
   contain sensitive values, even when a particular handler does not log them.
 
-Ask your deployment operator about the recipients, access controls, retention,
-and deletion process of the actual deployment. This repository-level disclosure
-cannot determine those choices for a hosted service.
+Ask the platform administrators of your deployment about the recipients,
+access controls, retention, and deletion process of the actual deployment. This
+repository-level disclosure cannot determine those choices for a hosted
+service.

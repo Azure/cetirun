@@ -29,7 +29,7 @@ body:
     id: version
     attributes:
       label: Versions and environment
-      description: Include the CetiRun commit, chart or image version, OpenClaw or Hermes version, and relevant tool versions. Do not include account identifiers or private resource names.
+      description: Include the CetiRun commit, chart or image version, the version of OpenClaw, Hermes, or the Custom Agent image, and relevant tool versions. Do not include account identifiers or private resource names.
     validations:
       required: true
 

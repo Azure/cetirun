@@ -1,8 +1,11 @@
-# AgentPolicy administration
+# Moved: AgentPolicy administration
 
-Read [AgentPolicy](../site/content/en/docs/reference/crds.md#agentpolicy) and
+This file keeps old links working. It is not a design document. The content is
+in [AgentPolicy](../site/content/en/docs/reference/crds.md#agentpolicy) and
 [AgentPolicy administration](../site/content/en/docs/reference/portal-api.md#agentpolicy-administration)
-in the website documentation.
+on the documentation site. For a preview with working links, run
+`make -C site serve` from the repository root and open
+`http://localhost:1313/cetirun/docs/reference/crds/`.
 
 ## API
 

@@ -1,10 +1,18 @@
-# Agent Harness contract
+# Moved: Agent Harness contract
 
-Read [Agent Harness](../site/content/en/docs/reference/agent-harness.md) in the website documentation.
+This file keeps old links working. The Agent Harness contract is on the
+[Agent Harness](../site/content/en/docs/reference/agent-harness.md) page of the
+documentation site. For a preview with working links, run `make -C site serve`
+from the repository root and open
+`http://localhost:1313/cetirun/docs/reference/agent-harness/`.
 
 ## Configuration
 
 [Fields and defaults](../site/content/en/docs/reference/agent-harness.md#configuration).
+
+## Custom Agents
+
+[Custom Agents and approved images](../site/content/en/docs/reference/agent-harness.md#custom-runtime).
 
 ## Private registries
 
@@ -12,11 +20,15 @@ Read [Agent Harness](../site/content/en/docs/reference/agent-harness.md) in the 
 
 ## Image, storage and model access
 
-[BYO image contract](../site/content/en/docs/reference/agent-harness.md#image-storage-and-model-access).
+[Custom image contract](../site/content/en/docs/reference/agent-harness.md#image-storage-and-model-access).
 
 ## Chat
 
 [HTTP endpoints and history](../site/content/en/docs/reference/agent-harness.md#chat).
+
+## Custom Web UI
+
+[Browser application of a Custom Agent](../site/content/en/docs/reference/agent-harness.md#custom-web-ui).
 
 ## Lifecycle
 
