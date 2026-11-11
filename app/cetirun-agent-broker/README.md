@@ -300,6 +300,21 @@ to the same account. An explicit refresh `invalid_grant` marks sign-in as
 required, but transport failures do not. Old duplicate Connections keep their
 IDs, and `canonicalConnectionId` is projected for selection.
 
+A reconnect records its authorization ID in the encrypted Connection before
+returning a sign-in URL. The last successfully registered attempt is current.
+Only that attempt can replace credentials, including after a storage conflict;
+an older callback cannot overwrite a later sign-in. Starting or cancelling a
+reconnect leaves the existing credentials and bindings intact. Cancellation or
+failure does not revive an earlier attempt. Token refresh preserves the current
+authorization ID and does not invalidate a pending sign-in.
+
+When upgrading from a Broker without this check, pause new sign-ins and drain
+old callback handlers until all old Broker replicas and credential writers have
+been replaced. Old callbacks do not enforce this ordering, and old refresh
+writers can discard the new field. Existing credentials do not need to be
+removed, but unfinished reconnects without a matching current authorization ID
+must be started again. Do not copy an old transaction into that field to resume it.
+
 After one hour elapses from the transaction expiry, expired transactions are
 removed at startup, every five minutes, and on the owner's next sign-in.
 Cleanup scans paginated authorization Secrets in the Broker credential
