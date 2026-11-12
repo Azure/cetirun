@@ -89,3 +89,19 @@ func (r *AgentReconciler) holdReconciledBootstrap(ctx context.Context, agent *ap
 	_, holdErr := r.holdPolicyDependencyUnavailable(ctx, agent)
 	return prerequisiteResult(ctx, cause, agent.ResourceVersion != version, holdErr)
 }
+
+// cleanupWaitRequeue is the retry interval while a deletion waits for the Pods
+// of an Agent to terminate. Pods usually terminate within seconds, so it is
+// shorter than prerequisiteRequeue.
+const cleanupWaitRequeue = 5 * time.Second
+
+// cleanupWaitResult turns the Pod wait of a deletion into a periodic retry
+// without an error, so that it does not use the error rate limiter or log a
+// reconcile error. Every other error is returned as it is.
+func cleanupWaitResult(ctx context.Context, err error) (ctrl.Result, error) {
+	if !errors.Is(err, errSandboxCleanupWaitsForPods) {
+		return ctrl.Result{}, err
+	}
+	log.FromContext(ctx).V(1).Info("Agent deletion waits for its Pods to terminate", "requeueAfter", cleanupWaitRequeue)
+	return ctrl.Result{RequeueAfter: cleanupWaitRequeue}, nil
+}

@@ -306,7 +306,7 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 		return ctrl.Result{}, err
 	}
 	if err := r.checkSandboxBootstrapCleanup(ctx, agent); err != nil {
-		return ctrl.Result{}, err
+		return cleanupWaitResult(ctx, err)
 	}
 	if agentIdentityRequested(agent) || agent.Status.AgentIdentity != nil {
 		if err := r.deleteAgentIdentity(ctx, agent); err != nil {

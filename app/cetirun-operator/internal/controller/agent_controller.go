@@ -1335,12 +1335,16 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 		return ctrl.Result{}, nil
 	}
 
-	logger.Info("Deleting Agent", "alias", alias)
-	r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "InstanceDeleting",
-		"Starting cleanup for instance %s", alias)
-
-	if err := r.setPhase(ctx, instance, cetirunv1alpha1.PhaseDeleting); err != nil {
-		logger.Error(err, "failed to set phase Deleting")
+	if instance.Status.Phase != cetirunv1alpha1.PhaseDeleting {
+		// A deletion can take several passes, for example while the Pods of a
+		// Sandbox Agent terminate. Report it once, with the change to Deleting.
+		logger.Info("Deleting Agent", "alias", alias)
+		if err := r.setPhase(ctx, instance, cetirunv1alpha1.PhaseDeleting); err != nil {
+			logger.Error(err, "failed to set phase Deleting")
+		} else {
+			r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "InstanceDeleting",
+				"Starting cleanup for instance %s", alias)
+		}
 	}
 
 	ns := instanceNamespace(instance.Name)
@@ -1421,7 +1425,7 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 	} else {
 		if reconciledSandbox {
 			if err := r.checkSandboxBootstrapCleanup(ctx, instance); err != nil {
-				return ctrl.Result{}, err
+				return cleanupWaitResult(ctx, err)
 			}
 			if err := r.releaseSandboxBootstrapResources(ctx, instance, nsObj); err != nil {
 				return ctrl.Result{}, err

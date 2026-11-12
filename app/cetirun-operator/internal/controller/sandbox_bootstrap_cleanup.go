@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -34,6 +35,11 @@ func (r *AgentReconciler) sandboxBootstrapForCleanup(ctx context.Context, agent 
 	return object, receipt, err
 }
 
+// errSandboxCleanupWaitsForPods reports that a deletion waits for the Pods in
+// the namespace of the Agent to terminate. This is a normal wait, not a
+// failure: callers retry it with cleanupWaitResult.
+var errSandboxCleanupWaitsForPods = errors.New("Sandbox bootstrap cleanup waits for Pods to terminate")
+
 // This validates ownership, not writer fencing. The preparation cleanup gate
 // remains mandatory for any Agent that has progressed beyond bootstrap.
 func (r *AgentReconciler) checkSandboxBootstrapCleanup(ctx context.Context, agent *api.Agent) error {
@@ -60,7 +66,7 @@ func (r *AgentReconciler) checkSandboxBootstrapCleanup(ctx context.Context, agen
 		return err
 	}
 	if len(pods.Items) != 0 || pods.Continue != "" {
-		return fmt.Errorf("Sandbox bootstrap cleanup waits for Pods to terminate")
+		return errSandboxCleanupWaitsForPods
 	}
 	return ctx.Err()
 }
