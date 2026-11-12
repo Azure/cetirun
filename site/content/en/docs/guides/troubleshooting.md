@@ -64,6 +64,18 @@ approval of the image.
 If the phase is **Failed**, or if the Agent stays in one phase for more than
 10 minutes, send the rows to your administrator.
 
+## The Agent chart is unavailable
+
+If the **Status** tab shows **Agent chart unavailable**, the platform cannot
+download the chart of the Agent again. The Agent continues to run its
+installed version, and the platform tries again by itself. The message names
+the kind of failure and what to examine, for example the chart-pull
+credential. Send the message to your administrator.
+
+Wait until the warning goes away before you save a change in **Edit Agent** or
+select **Upgrade to Latest**. Otherwise the phase becomes **Failed** until the
+platform can download the chart.
+
 ## Agent UI, Terminal, or Desktop is unavailable
 
 These entries are unavailable until the phase is **Ready**. If the Agent is
@@ -165,5 +177,6 @@ Do not send keys, tokens, passwords, or the text of private conversations.
 Sources: [governance status]({{< repo "app/cetirun-portal/web/src/components/GovernanceNotice.tsx" >}}),
 [model section]({{< repo "app/cetirun-portal/web/src/components/AIGatewayBlock.tsx" >}}),
 [creation form]({{< repo "app/cetirun-portal/web/src/components/CreateForm.tsx" >}}),
+[chart warning]({{< repo "app/cetirun-portal/web/src/components/ChartUnavailableNotice.tsx" >}}),
 [sign-in error page]({{< repo "infra/istio/files/oauth2-error.html" >}}),
 and [runtime chart values]({{< repo "app/cetirun-chart/values.yaml" >}}).

@@ -94,6 +94,9 @@ The **Status** tab shows the progress and the health of the Agent.
   `False` shows which step fails and why.
 - **Pods** lists the workload of the Agent. Each Pod shows its phase, if it is
   ready, and the number of restarts.
+- **Agent chart unavailable** shows above **Conditions** when the platform
+  cannot download the chart of the Agent. Refer to
+  [The Agent chart is unavailable](../troubleshooting/#the-agent-chart-is-unavailable).
 
 Use the **Status** tab when the Agent does not become **Ready**. Refer to
 [Troubleshoot your Agent](../troubleshooting/).
@@ -101,4 +104,5 @@ Use the **Status** tab when the Agent does not become **Ready**. Refer to
 Sources: [header]({{< repo "app/cetirun-portal/web/src/components/Header.tsx" >}}),
 [Agent list]({{< repo "app/cetirun-portal/web/src/pages/InstanceListPage.tsx" >}}),
 [Agent page]({{< repo "app/cetirun-portal/web/src/pages/WorkspacePage.tsx" >}}),
-and [Overview tab]({{< repo "app/cetirun-portal/web/src/components/OverviewSection.tsx" >}}).
+[Overview tab]({{< repo "app/cetirun-portal/web/src/components/OverviewSection.tsx" >}}),
+and [Status tab]({{< repo "app/cetirun-portal/web/src/components/StatusTab.tsx" >}}).
