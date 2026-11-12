@@ -22,8 +22,33 @@ IMAGES = (
     "cetirun-terminal:validation",
     "cetirun-portal:validation",
     "cetirun-agent-broker:validation",
-    "cetirun-observability:validation",
 )
+
+
+def scan(image):
+    """Fail on a fixable high or critical CVE in a local image."""
+    run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            "/var/run/docker.sock:/var/run/docker.sock",
+            TRIVY,
+            "image",
+            "--scanners",
+            "vuln",
+            "--format",
+            "table",
+            "--exit-code",
+            "1",
+            "--severity",
+            "CRITICAL,HIGH",
+            "--ignore-unfixed",
+            image,
+        ],
+        Path.cwd(),
+    )
 
 
 def main(argv=None):
@@ -33,28 +58,7 @@ def main(argv=None):
     try:
         # Validate the local build before any scanner image/DB download.
         run(["docker", "image", "inspect", args.image], Path.cwd(), capture=True)
-        run(
-            [
-                "docker",
-                "run",
-                "--rm",
-                "-v",
-                "/var/run/docker.sock:/var/run/docker.sock",
-                TRIVY,
-                "image",
-                "--scanners",
-                "vuln",
-                "--format",
-                "table",
-                "--exit-code",
-                "1",
-                "--severity",
-                "CRITICAL,HIGH",
-                "--ignore-unfixed",
-                args.image,
-            ],
-            Path.cwd(),
-        )
+        scan(args.image)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1

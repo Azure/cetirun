@@ -96,6 +96,7 @@ file. Refer to [Infrastructure](../infrastructure/#cluster-parameter-file).
 | Session store of OAuth2 Proxy, on the `system` pool | 1 | 0.05 CPU, 64 MiB, and a 1 GiB disk |
 | ADX-Mon collector | 1 on each node | 0.05 CPU, 128 MiB. It keeps up to 2 GiB of unsent data on the disk of the node |
 | ADX-Mon ingestor | 1 | 0.1 CPU, 256 MiB, and a 16 GiB disk |
+| ADX-Mon alerter, only with an alert receiver | 1 | 0.01 CPU, 64 MiB |
 | Telemetry program and kube-state-metrics of the ADX-Mon collection | 1 each | 0.01 CPU, 64 MiB |
 
 The README of the AI Gateway chart gives measured values and a starting size.

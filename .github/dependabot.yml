@@ -18,7 +18,6 @@ updates:
       - "/app/cetirun-agent-broker"
       - "/app/cetirun-memory-context"
       - "/app/cetirun-chart"
-      - "/app/cetirun-observability"
       - "/app/cetirun-operator"
       - "/app/cetirun-portal"
     schedule:

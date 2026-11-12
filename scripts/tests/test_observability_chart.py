@@ -19,6 +19,9 @@ OFFLINE = {**os.environ, "KUBECONFIG": os.devnull, "HELM_REGISTRY_CONFIG": os.de
 BASE = ["--namespace", "cetirun-system", "--set-string", "clusterName=example",
         "--set-string", "adx.endpoint=https://example.westus.kusto.windows.net",
         "--set-string", "ingestor.clientId=66666666-6666-6666-6666-666666666666"]
+ALERTER = ["--set-string", "alerter.endpoint=https://alerts.example.com",
+           "--set-string", "alerter.clientId=77777777-7777-7777-7777-777777777777",
+           "--set-string", "alerter.destination=example-team"]
 
 
 @unittest.skipUnless(shutil.which("helm"), "requires Helm")
@@ -79,9 +82,19 @@ class ObservabilityChartTests(unittest.TestCase):
                      "kube_pod_container_info", "kube_pod_status_qos_class", "container_network_receive_bytes_total"):
             self.assertFalse(collected(name), name)
         self.assertFalse([pattern for pattern in scrape["keep-metrics"] if "network" in pattern])
-        self.assertEqual(config["add-labels"], {"cluster": "example"})
+        # Each metric names its node, which ADX-Mon lifts into the Host column: the
+        # kubelet and the collector report the same labels on every node.
+        self.assertEqual(config["add-labels"], {"cluster": "example", "host": "$(HOSTNAME)"})
+        self.assertIn({"name": "host", "column": "Host"}, config["lift-labels"])
         urls = [target["url"] for target in scrape["static-scrape-target"]]
-        self.assertIn("https://$(HOSTIP):10250/metrics/cadvisor", urls)
+        # The kubelet is addressed by the node's name, the only variable of every
+        # ADX-Mon release; --hostname sets it.
+        self.assertIn("https://$(HOSTNAME):10250/metrics/cadvisor", urls)
+        self.assertFalse([url for url in urls if "$(HOSTIP)" in url])
+        daemonset = self.find(self.render(), "DaemonSet", "cetirun-adx-mon-collector")
+        args = daemonset["spec"]["template"]["spec"]["containers"][0]["args"]
+        self.assertIn("--hostname=$(NODE_NAME)", args)
+        self.assertFalse([arg for arg in args if arg.startswith("--host-ip")])
 
     def test_roles_read_only_what_collection_needs(self):
         documents = self.render()
@@ -100,7 +113,8 @@ class ObservabilityChartTests(unittest.TestCase):
         self.assertEqual(rules["cetirun-telemetry"][1]["resources"], ["agents", "teams", "agentpolicies", "sandboxes"])
 
     def test_every_container_drops_privileges(self):
-        documents = self.render()
+        documents = self.render(*ALERTER)
+        self.find(documents, "Deployment", "cetirun-adx-mon-alerter")
         for doc in documents:
             if doc["kind"] not in ("Deployment", "StatefulSet", "DaemonSet"):
                 continue
@@ -121,10 +135,91 @@ class ObservabilityChartTests(unittest.TestCase):
         daemonset = self.find(self.render(), "DaemonSet", "cetirun-adx-mon-collector")
         spec = daemonset["spec"]["template"]["spec"]
         host_paths = {volume["name"]: volume["hostPath"]["path"] for volume in spec["volumes"] if "hostPath" in volume}
-        self.assertEqual(host_paths, {"log": "/var/log", "storage": "/var/lib/cetirun-adx-mon/collector"})
+        self.assertEqual(host_paths, {"log": "/var/log", "run-log": "/run/log", "machine-id": "/etc/machine-id",
+                                      "storage": "/var/lib/cetirun-adx-mon/collector"})
         mounts = {mount["name"]: mount for mount in spec["containers"][0]["volumeMounts"]}
-        self.assertIs(mounts["log"]["readOnly"], True)
+        for name in ("log", "run-log", "machine-id"):
+            self.assertIs(mounts[name]["readOnly"], True, name)
+        self.assertNotIn("readOnly", mounts["storage"])
         self.assertEqual(spec["tolerations"], [{"operator": "Exists"}])
+
+    def test_the_node_journal_of_the_kubelet_and_containerd_goes_to_the_logs_database(self):
+        config = self.collector_config(self.render())
+        targets = {target["table"]: target for target in config["host-log"][0]["journal-target"]}
+        self.assertEqual(set(targets), {"Kubelet", "Containerd"})
+        self.assertEqual(targets["Kubelet"]["matches"], ["_SYSTEMD_UNIT=kubelet.service"])
+        self.assertEqual(targets["Containerd"]["matches"], ["_SYSTEMD_UNIT=containerd.service"])
+        # Each line stays whole in Body.message. The klog parser would drop a kubelet
+        # line's severity; the keyvalue parser would turn a line that is not key=value,
+        # such as a stack trace, into empty keys.
+        for target in targets.values():
+            self.assertNotIn("parsers", target)
+            self.assertEqual(target["database"], "CetiRunLogs")
+            self.assertEqual(target["journal-fields"], ["_HOSTNAME"])
+        documents = self.render("--set", "logs.node.enabled=false")
+        self.assertNotIn("journal-target", self.collector_config(documents)["host-log"][0])
+        spec = self.find(documents, "DaemonSet", "cetirun-adx-mon-collector")["spec"]["template"]["spec"]
+        self.assertEqual({volume["name"] for volume in spec["volumes"]} & {"run-log", "machine-id"}, set())
+
+    def test_images_that_cetirun_does_not_build_stay_pinned(self):
+        documents = self.render("--set-string", "global.registry=registry.example.com/team", *ALERTER)
+        images = {doc["metadata"]["name"]: doc["spec"]["template"]["spec"]["containers"][0]["image"]
+                  for doc in documents if doc["kind"] in ("Deployment", "StatefulSet", "DaemonSet")}
+        values = yaml.safe_load((CHART / "values.yaml").read_text())
+        for name, component in (("cetirun-adx-mon-collector", "collector"), ("cetirun-adx-mon-ingestor", "ingestor"),
+                                ("cetirun-adx-mon-alerter", "alerter"), ("cetirun-kube-state-metrics", "kubeStateMetrics")):
+            image = values[component]["image"]
+            self.assertRegex(image["digest"], r"^sha256:[0-9a-f]{64}$", component)
+            self.assertEqual(images[name], f"{image['repository']}:{image['tag']}@{image['digest']}")
+        for component in ("collector", "ingestor", "alerter"):
+            self.assertTrue(values[component]["image"]["repository"].startswith("mcr.microsoft.com/aks/ai-runtime/adx-mon/"))
+        self.assertTrue(images["cetirun-telemetry"].startswith("registry.example.com/team/cetirun-operator:"))
+        self.assertNotIn("image", values)
+
+    def test_alerter_runs_only_with_an_endpoint_and_reads_logs_and_metrics_only(self):
+        self.assertFalse([doc for doc in self.render() if "alerter" in doc["metadata"]["name"]])
+        documents = self.render(*ALERTER)
+        account = self.find(documents, "ServiceAccount", "cetirun-adx-mon-alerter")
+        self.assertEqual(account["metadata"]["annotations"]["azure.workload.identity/client-id"],
+                         "77777777-7777-7777-7777-777777777777")
+        self.assertIs(account["automountServiceAccountToken"], False)
+        role = self.find(documents, "ClusterRole", "cetirun-adx-mon-alerter")
+        self.assertEqual(role["rules"], [
+            {"apiGroups": ["adx-mon.azure.com"], "resources": ["alertrules"], "verbs": ["get", "list"]},
+            {"apiGroups": ["adx-mon.azure.com"], "resources": ["alertrules/status"], "verbs": ["update"]},
+        ])
+        deployment = self.find(documents, "Deployment", "cetirun-adx-mon-alerter")
+        self.assertEqual((deployment["spec"]["replicas"], deployment["spec"]["strategy"]["type"]), (1, "Recreate"))
+        pod = deployment["spec"]["template"]
+        self.assertEqual(pod["metadata"]["labels"]["azure.workload.identity/use"], "true")
+        container = pod["spec"]["containers"][0]
+        endpoint = "https://example.westus.kusto.windows.net"
+        self.assertEqual(container["args"], ["--port=4023", f"--kusto-endpoint=CetiRunLogs={endpoint}",
+                                             f"--kusto-endpoint=CetiRunMetrics={endpoint}",
+                                             "--alerter-address=https://alerts.example.com", "--region=example"])
+        self.assertIn({"name": "AZURE_TOKEN_CREDENTIALS", "value": "WorkloadIdentityCredential"}, container["env"])
+        policy = self.find(documents, "NetworkPolicy", "cetirun-adx-mon-alerter")
+        self.assertEqual(policy["spec"]["ingress"], [{
+            "from": [{"podSelector": {"matchLabels": {"app.kubernetes.io/name": "cetirun-adx-mon-collector",
+                                                      "app.kubernetes.io/instance": "observability"}}}],
+            "ports": [{"protocol": "TCP", "port": 4023}],
+        }])
+
+    def test_collection_health_rule_is_a_hook_of_this_release(self):
+        rule = self.find(self.render(*ALERTER), "AlertRule", "cetirun-collection-health")
+        annotations = rule["metadata"]["annotations"]
+        self.assertEqual(annotations["helm.sh/hook"], "post-install,post-upgrade")
+        self.assertEqual(annotations["helm.sh/hook-delete-policy"], "before-hook-creation")
+        self.assertEqual((annotations["meta.helm.sh/release-name"], annotations["meta.helm.sh/release-namespace"]),
+                         ("observability", "cetirun-system"))
+        spec = rule["spec"]
+        self.assertEqual((spec["database"], spec["interval"], spec["destination"]), ("CetiRunMetrics", "5m", "example-team"))
+        query = spec["query"]
+        self.assertIn('| where Cluster == "example" and Status == "Failed"', query)
+        for column in ("Title =", "Severity = 3", "Summary =", "CorrelationId ="):
+            self.assertIn(column, query)
+        documents = self.render(*ALERTER, "--set", "alerter.rules.collectionHealth.enabled=false")
+        self.assertFalse([doc for doc in documents if doc["kind"] == "AlertRule"])
 
     def test_ingestor_writes_three_databases_with_its_workload_identity(self):
         documents = self.render()
@@ -145,8 +240,8 @@ class ObservabilityChartTests(unittest.TestCase):
     def test_crds_are_the_upstream_definitions(self):
         documents = self.render()
         names = sorted(doc["metadata"]["name"] for doc in documents if doc["kind"] == "CustomResourceDefinition")
-        self.assertEqual(names, ["functions.adx-mon.azure.com", "managementcommands.adx-mon.azure.com",
-                                 "summaryrules.adx-mon.azure.com"])
+        self.assertEqual(names, ["alertrules.adx-mon.azure.com", "functions.adx-mon.azure.com",
+                                 "managementcommands.adx-mon.azure.com", "summaryrules.adx-mon.azure.com"])
 
 
 if __name__ == "__main__":

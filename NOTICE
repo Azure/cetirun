@@ -179,13 +179,11 @@ copyright, attribution, and source-distribution obligations where applicable.
   the Prisma CLI and engines fetched at build time. It deliberately omits
   litellm-enterprise, which carries the BerriAI Enterprise License. The
   bundled PostgreSQL and Valkey run their own Azure Linux images from MCR.
-* app/cetirun-observability/Dockerfile builds the ADX-Mon collector and
-  ingestor (MIT, Copyright (c) Microsoft Corporation) from a checksum-pinned
-  upstream commit with the Go modules vendored in that source, and ships its
-  license as /licenses/adx-mon.LICENSE. The cetirun-observability chart also
-  runs kube-state-metrics (Apache-2.0) from its MCR image, pinned by digest,
-  and installs the ADX-Mon custom resource definitions from the same
-  upstream commit.
+* The cetirun-observability chart runs the ADX-Mon collector, ingestor and
+  alerter (MIT, Copyright (c) Microsoft Corporation) and kube-state-metrics
+  (Apache-2.0) from their MCR images, each pinned by digest. CetiRun does not
+  build these images. The chart installs the ADX-Mon custom resource
+  definitions of the ADX-Mon release that the images are built from.
 * The portal binary embeds a frontend bundle built from
   app/cetirun-portal/web/package-lock.json. Its generated JavaScript notice
   accompanies that bundle and includes installed production dependencies and

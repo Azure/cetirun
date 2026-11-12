@@ -8,12 +8,13 @@ The CetiRun components write their logs to standard output, and the Operator,
 the Sandbox admission server, and the AI Gateway serve Prometheus metrics. The
 `cetirun-observability` chart sends these logs and metrics to Azure Data
 Explorer (ADX). It also sends the output of the Agents, the Kubernetes events,
-and the metrics of the cluster. It runs [ADX-Mon](https://github.com/Azure/adx-mon),
-which CetiRun builds from pinned upstream source. It is CetiRun's collection of
-logs and metrics: `make deploy` installs it with the platform. In the platform
-chart, it is off by default.
+the node journal of the kubelet and containerd, and the metrics of the
+cluster. It runs [ADX-Mon](https://github.com/Azure/adx-mon) from its images on
+MCR, pinned by digest. It is CetiRun's collection of logs and metrics:
+`make deploy` installs it with the platform. In the platform chart, it is off
+by default.
 
-ADX-Mon is in active development upstream and has no stable release line.
+ADX-Mon is in active development upstream, and its releases are 0.x versions.
 Treat this collection as a preview.
 
 ## Signals of CetiRun
@@ -36,8 +37,9 @@ describes the labels and the values of the Sandbox metrics.
 
 | Workload | Kind | Purpose |
 |---|---|---|
-| `cetirun-adx-mon-collector` | DaemonSet, every node | Reads the container log files of the node, and scrapes the kubelet and the annotated platform Pods of the node |
+| `cetirun-adx-mon-collector` | DaemonSet, every node | Reads the container log files and the kubelet and containerd journal of the node, and scrapes the kubelet and the annotated platform Pods of the node |
 | `cetirun-adx-mon-ingestor` | StatefulSet with a volume | Receives the collectors' data over TLS and uploads it to ADX with its workload identity |
+| `cetirun-adx-mon-alerter` | Deployment, only with an alert receiver | Runs the query of each `AlertRule` and sends the result rows to the receiver |
 | `cetirun-telemetry` | Deployment | Writes the Agent inventory and the Kubernetes events as JSON lines |
 | `cetirun-kube-state-metrics` | Deployment | Reports the state of Pods, workloads, nodes and claims |
 
@@ -45,17 +47,20 @@ The collector reads the files that the container runtime writes on the node.
 Agents in Kata VM-isolated Pods write their output to the same files, so the
 collector needs no access to the Agent Pods. The collector runs as root,
 because the log files belong to root. It has no Linux capabilities and a
-read-only root file system. It mounts `/var/log` read-only. It also mounts the
-host directory `collector.hostPath` with write access, for its write-ahead log
-and its read positions.
+read-only root file system. It mounts `/var/log`, `/run/log`, and
+`/etc/machine-id` read-only; the last two are for the journal. It also mounts
+the host directory `collector.hostPath` with write access, for its write-ahead
+log and its read positions.
 
 The collector accepts no data from other Pods: it has no OTLP or Prometheus
 remote write receiver, and its listener binds the Pod's loopback address.
 
 The chart also installs the ADX-Mon custom resource definitions `Function`,
-`ManagementCommand`, and `SummaryRule`. The ingestor runs the Kusto commands of
-these objects with its own identity, and this identity can read the Agent
-logs. Allow only cluster administrators to create these objects.
+`ManagementCommand`, `SummaryRule`, and `AlertRule`. The ingestor runs the Kusto
+commands of the first three with its own identity, and this identity can read
+the Agent logs. The alerter runs the query of every `AlertRule`, in any
+namespace, with its own identity. Allow only cluster administrators to create
+these objects.
 
 ## Where the data goes
 
@@ -63,7 +68,7 @@ The chart uses three databases. Grant each one separately.
 
 | Database | Tables | Content |
 |---|---|---|
-| `CetiRunLogs` | `Platform`, `Gateway`, `Ingress`, `Telemetry` | Logs of the platform namespaces, the AI Gateway, the ingress gateway, and the telemetry program |
+| `CetiRunLogs` | `Platform`, `Gateway`, `Ingress`, `Telemetry`, `Kubelet`, `Containerd` | Logs of the platform namespaces, the AI Gateway, the ingress gateway, and the telemetry program; the node journal of the kubelet and containerd |
 | `CetiRunMetrics` | One table for each metric | Kubelet, kube-state-metrics, AI Gateway (LiteLLM), CetiRun operator and admission, ADX-Mon |
 | `CetiRunAgents` | `AgentLogs`, `CopilotProxy` | Output of every container of the Agent Pods, Custom terminals and GitHub Copilot proxies |
 
@@ -93,9 +98,27 @@ ADX-Mon also reads `adx-mon/` annotations on a Pod. An Agent's values cannot
 set Pod annotations that start with `adx-mon/`. The operator refuses them for
 built-in, Custom and Sandbox Agents.
 
+The `Kubelet` and `Containerd` tables have a row for each journal entry of the
+kubelet and of containerd, on every node. They show why a Pod does not start,
+for example an image that cannot be pulled or a Kata VM that fails to start.
+`Body.message` holds the line, and `Resource._HOSTNAME` names the node. A
+kubelet line keeps its klog header, whose first letter is the severity: `I`,
+`W`, `E` or `F`. For example, the errors of the last hour:
+
+```kusto
+Kubelet
+| where Timestamp > ago(1h) and tostring(Body.message) startswith "E"
+| project Timestamp, Node = tostring(Resource._HOSTNAME), Line = tostring(Body.message)
+```
+
+A containerd line has `key=value` fields, such as `level` and `msg`. The
+`parse-kv` operator of Kusto splits them. Set `logs.node.enabled` to `false`
+to leave both journals out.
+
 ## Attribution
 
-Every row has the columns `Cluster`, `Namespace`, `Pod` and `Container`. Each
+Every row has the columns `Cluster`, `Namespace`, `Pod` and `Container`. A
+metric row also has `Host`, the node whose collector scraped it. Each
 Agent has its own namespace, `cetirun-<agent>`. The owner and the Team of an
 Agent are not on its Pods. The telemetry program writes them from the Agent
 resources, with read-only access, whenever an Agent changes, and in a snapshot
@@ -145,22 +168,26 @@ GatewayRequests()
 
 - Platform or Gateway logs still arrive, and the metrics of the collector
   still arrive.
-- The collector dropped no log lines, and no backlog was refused.
+- The collector dropped no log lines, and no backlog was refused. ADX-Mon
+  v0.3.0 has no backlog limits, so it refuses no backlog.
 - The oldest unsent data is not older than 10 minutes. Older data gives
   `Warning`, and data older than 30 minutes gives `Failed`.
-- The ingestor reports healthy.
+- The ingestor reports healthy. ADX-Mon v0.3.0 reports only that the ingestor
+  runs. Later versions also report the reason when it is not healthy.
 - No container in `cetirun-system`, `cetirun-credentials`, or `cetirun-istio`
   restarted more than three times in an hour.
 
-It does not read the Agent logs database. To see only the problems:
+A counter that has not counted yet counts as zero, and a metric table that
+does not exist yet reads as empty. It does not read the Agent logs database.
+To see only the problems:
 
 ```kusto
 CollectionHealth() | where Status != "OK"
 ```
 
 A cluster that stops sending stays `Failed` until its newest row is a day
-old. After that, the cluster is not in the result. The cluster template
-creates no alert.
+old. After that, the cluster is not in the result. The chart's alerter can
+send an alert for each failed check. Refer to [Alerts](#alerts).
 
 ## Dashboard
 
@@ -189,7 +216,52 @@ databases. It does not read the Agent logs database.
 
 ## Alerts
 
-CetiRun installs no alert rules. The directory
+The chart runs the ADX-Mon alerter when you name a service that receives the
+alerts. With `make deploy`, add the `alerter` block to `observability`:
+
+```yaml
+observability:
+  # clusterName, adx and ingestorClientId, as in "Set it up with make deploy"
+  alerter:
+    endpoint: https://alerts.example.com
+    clientId: <alerter-client-id>
+    destination: example-team
+```
+
+The chart then creates the `AlertRule` `cetirun-collection-health`. Every 5
+minutes, it queries `CollectionHealth()` for this cluster. Each check with the
+status `Failed` becomes one alert. The alerter sends it again on each run while
+the check fails, with the same `CorrelationID`. It sends nothing when the check
+recovers: a receiver can resolve an alert that stops arriving.
+
+The alerter posts each alert as JSON to `<endpoint>/alerts`. It counts only
+`201 Created` as delivered. When you remove the `alerter` block, `make deploy`
+removes the alerter but keeps the `AlertRule`, because Helm does not delete the
+resources of its hooks. Delete the rule with
+`kubectl delete alertrule cetirun-collection-health --namespace <platform namespace>`.
+
+| Field | Content |
+| --- | --- |
+| `Destination` | `destination` of the `alerter` block |
+| `Title` | The cluster and the failed check |
+| `Severity` | `3` |
+| `Summary` | The detail of the check, and links that run the query in Azure Data Explorer |
+| `Description` | Where to see every check |
+| `Source` | The namespace and the name of the `AlertRule` |
+| `CorrelationID` | `<platform namespace>/cetirun-collection-health://cetirun-collection-health/<cluster>/<check>` |
+| `CustomFields` | `Cluster` and `Check` |
+
+When a query fails, the alerter sends an alert with the title
+`Alert <namespace>/<rule> has query errors on <Kusto endpoint>`. The alerter
+uses its own managed identity, with the `Viewer` role on the logs and metrics
+databases only. To alert on more, create `AlertRule` objects with a
+`database`, an `interval`, and a `query`. The alerter reads the rules of all
+namespaces every minute. The query must project `Title` and `Severity`, and
+can project `Summary`, `Description`, and `CorrelationId`. The alerter puts
+`<namespace>/<rule>://` in front of each correlation ID, and sends the other
+columns as custom fields.
+
+The directory
 [`app/cetirun-operator/observability`]({{< repo "app/cetirun-operator/observability/README.md" >}})
 has example Prometheus rules for the Sandbox status metrics of the Operator,
 with `promtool` tests. Adapt the rules as their README shows, then load them
@@ -241,9 +313,17 @@ Also watch these signals of the platform:
   Before you run them, replace `__LOGS_DATABASE__` in `cetirun-health.kql`
   and `cetirun-agents.kql` with the name of the logs database. Also set the
   ingestion batching policy of each database. The template sets 30 seconds.
+- For the alerter, a user-assigned managed identity with a federated
+  credential for
+  `system:serviceaccount:<platform namespace>:cetirun-adx-mon-alerter`, and
+  the `Viewer` role on the logs and metrics databases.
 - Outbound HTTPS from the platform namespace to the Kusto cluster, its
   `ingest-` endpoint, the Azure Storage endpoints of ADX ingestion, and Entra
-  ID.
+  ID. With the alerter, also to the alert receiver.
+- Pods can resolve the names of the nodes. The collector scrapes the kubelet of
+  its node at the node's name, port 10250. The Azure-provided DNS of the virtual
+  network resolves these names. A custom DNS server of the virtual network must
+  resolve them too.
 
 ## Set it up with make deploy
 
@@ -262,7 +342,8 @@ observability:
 ```
 
 The outputs `adxClusterUri` and `adxIngestorClientId` of the cluster template
-are its `adx.endpoint` and `ingestorClientId`.
+are its `adx.endpoint` and `ingestorClientId`. The optional `alerter` block
+turns the alerter on; refer to [Alerts](#alerts).
 
 `clusterName` names this CetiRun cluster in every row. Several CetiRun clusters
 can share one Kusto cluster. `make deploy` does not call Azure: it does not
@@ -295,6 +376,12 @@ set `ingestor.tls.secretName` to a Secret that you supply.
   files that the node already has. It reads back to the oldest file that the
   node keeps. It records its position in `collector.hostPath`, so a new collector
   Pod continues from there.
+- In the same way, it reads the kubelet and containerd journal from the oldest
+  entry that the node keeps. The first upload of each node can be large.
+- The ingestor of ADX-Mon v0.3.0 logs the error `Failed to run Runner shutdown`
+  once a minute: it looks for its Pod in the namespace `adx-mon`. This check
+  serves the ADX-Mon operator, which CetiRun does not run, so the error has no
+  effect.
 - ADX-Mon does not collect Kubernetes events itself. The telemetry program
   writes them; by default, warnings and events about CetiRun resources and
   namespaces.

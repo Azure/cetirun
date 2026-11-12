@@ -372,13 +372,13 @@ class DeploymentInputTests(DeploymentFixture, unittest.TestCase):
         ]
         deployment = self.deployment(config, "optional-image")
         artifacts = deployment.plan()["artifacts"]
-        self.assertEqual(len(artifacts["images"]), 13)
+        self.assertEqual(len(artifacts["images"]), 12)
         self.assertNotIn("cetirun-vscode", artifacts["images"])
         deployment.preflight()
         inspected = [command[-1] for command in deployment.commands if command[:4] == ["docker", "buildx", "imagetools", "inspect"]]
         excluded = f"{config['release']['registry']}/cetirun-vscode:{config['release']['version']}"
         self.assertNotIn(excluded, inspected)
-        self.assertEqual(sum(reference.endswith(":" + config["release"]["version"]) for reference in inspected), 13)
+        self.assertEqual(sum(reference.endswith(":" + config["release"]["version"]) for reference in inspected), 12)
         self.assertFalse(any(command[4:6] == ["get", "agents.cetirun.microsoft.com"] for command in deployment.commands))
 
     def test_optional_image_exclusion_rejects_referenced_image_before_tools(self):
@@ -709,7 +709,8 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
     def test_default_plan_covers_all_releases_and_supported_components(self):
         deployment = self.deployment()
         plan = deployment.plan()
-        self.assertEqual(len(plan["artifacts"]["images"]), 14)
+        self.assertEqual(len(plan["artifacts"]["images"]), 13)
+        self.assertNotIn("cetirun-observability", plan["artifacts"]["images"])
         self.assertEqual(len(plan["artifacts"]["charts"]), 9)
         self.assertEqual(set(plan["releases"]["istio"]["workloads"]), {"oauth2-proxy", "oauth2-proxy-sessions"})
         self.assertEqual(plan["releases"]["broker"]["namespace"], "cetirun-credentials")
@@ -1695,12 +1696,20 @@ OBSERVABILITY = {
     "adx": {"endpoint": "https://example.australiaeast.kusto.windows.net"},
     "ingestorClientId": "55555555-5555-5555-5555-555555555555",
 }
+# Synthetic alerter inputs: a public example domain and a synthetic client ID.
+ALERTER = {"endpoint": "https://alerts.example.com", "clientId": "66666666-6666-6666-6666-666666666666",
+           "destination": "example-team"}
 
 
 class ObservabilityTests(DeploymentFixture, unittest.TestCase):
     def observability_config(self):
         config = copy.deepcopy(self.config)
         config["observability"] = copy.deepcopy(OBSERVABILITY)
+        return config
+
+    def alerter_config(self):
+        config = self.observability_config()
+        config["observability"]["alerter"] = copy.deepcopy(ALERTER)
         return config
 
     def refused(self, config, message):
@@ -1760,6 +1769,76 @@ class ObservabilityTests(DeploymentFixture, unittest.TestCase):
                         DEPLOY.set_value(config, path, value)
                 self.refused(config, message)
 
+    def test_alerter_is_off_without_its_block(self):
+        _, values = self.configure(self.observability_config())
+        self.assertEqual(values["platform"]["cetirun-observability"]["alerter"]["endpoint"], "")
+
+    def test_alerter_block_sets_the_chart_values(self):
+        _, values = self.configure(self.alerter_config())
+        alerter = values["platform"]["cetirun-observability"]["alerter"]
+        self.assertEqual({field: alerter[field] for field in ALERTER}, ALERTER)
+
+    def test_invalid_alerter_inputs_are_refused_before_tools(self):
+        cases = [
+            ({"observability.alerter": None}, r"observability\.alerter must be a mapping"),
+            ({"observability.alerter.endpoint": DELETE}, r"observability\.alerter\.endpoint is required"),
+            ({"observability.alerter.endpoint": "alerts.example.com"}, "base URL of the service that receives the alerts"),
+            ({"observability.alerter.endpoint": "https://alerts.example.com/"}, "without a trailing slash"),
+            ({"observability.alerter.clientId": DELETE}, r"observability\.alerter\.clientId is required"),
+            ({"observability.alerter.clientId": "example-client"}, "client ID of the managed identity that the alerter uses"),
+            ({"observability.alerter.destination": 7}, r"observability\.alerter\.destination must be a string"),
+            ({"observability.alerter.rules": {}}, r"observability\.alerter\.rules is not supported"),
+            ({"platform.values.cetirun-observability.alerter.endpoint": "https://other.example.com"},
+             r"cetirun-observability\.alerter\.endpoint conflicts with the complete deployment inputs"),
+        ]
+        for changes, message in cases:
+            with self.subTest(changes=list(changes), message=message):
+                config = self.alerter_config()
+                for path, value in changes.items():
+                    if value is DELETE:
+                        parent, key = path.rsplit(".", 1)
+                        DEPLOY.get_value(config, parent).pop(key)
+                    else:
+                        DEPLOY.set_value(config, path, value)
+                self.refused(config, message)
+
+    @unittest.skipUnless(shutil.which("helm"), "requires existing Helm for real local chart rendering")
+    def test_alert_rule_is_read_only_once_its_definition_exists_and_must_name_this_release(self):
+        config = self.alerter_config()
+        deployment = self.deployment(config, "alerter")
+        rule = next(doc for doc in deployment.documents["platform"] if doc["kind"] == "AlertRule")
+        annotations = rule["metadata"]["annotations"]
+        # A hook, so that Helm creates it after its definition; it names its release itself.
+        self.assertEqual(annotations["helm.sh/hook"], "post-install,post-upgrade")
+        self.assertEqual((annotations["meta.helm.sh/release-name"], annotations["meta.helm.sh/release-namespace"]),
+                         (config["platform"]["release"], config["platform"]["namespace"]))
+        self.assertIn(("Deployment", "cetirun-adx-mon-alerter"),
+                      {(doc["kind"], doc["metadata"]["name"]) for doc in deployment.documents["platform"]})
+
+        def rule_reads(commands):
+            return [command for command in commands if command[0] == "kubectl" and "AlertRule" in command]
+
+        # The cluster cannot answer for an AlertRule before the definition exists.
+        deployment.execute()
+        self.assertEqual(rule_reads(deployment.commands), [])
+        self.assertIn(("customresourcedefinition", "", "alertrules.adx-mon.azure.com"), deployment.objects)
+
+        def again(name):
+            updated = self.deployment(config, name)
+            for field in ("objects", "keys", "installed", "live", "mesh"):
+                setattr(updated, field, copy.deepcopy(getattr(deployment, field)))
+            return updated
+
+        updated = again("alerter-again")
+        updated.execute()
+        self.assertTrue(rule_reads(updated.commands))
+        foreign = again("alerter-foreign")
+        key = ("alertrule", config["platform"]["namespace"], "cetirun-collection-health")
+        foreign.objects[key]["annotations"]["meta.helm.sh/release-name"] = "another-release"
+        with self.assertRaisesRegex(ValueError, "Refusing to adopt AlertRule"):
+            foreign.execute()
+        self.assertEqual(foreign.writes, [])
+
     @unittest.skipUnless(shutil.which("helm"), "requires existing Helm for real local chart rendering")
     def test_an_installation_without_it_gets_the_ingestor_secret_once(self):
         # An installation by an earlier make deploy, which did not require the collection.
@@ -1784,7 +1863,7 @@ class ObservabilityTests(DeploymentFixture, unittest.TestCase):
         self.assertEqual(updated.writes, [])
 
     @unittest.skipUnless(shutil.which("helm"), "requires existing Helm for real local chart rendering")
-    def test_render_uses_the_release_images_and_needs_no_external_reference(self):
+    def test_render_pins_the_adx_mon_images_and_needs_no_external_reference(self):
         deployment = self.deployment(self.observability_config(), "observability")
         documents = deployment.documents["platform"]
         workloads = {(doc["kind"], doc["metadata"]["name"]): doc for doc in documents
@@ -1795,8 +1874,14 @@ class ObservabilityTests(DeploymentFixture, unittest.TestCase):
             self.assertEqual(workloads[(kind, name)]["metadata"]["namespace"], "cetirun-system")
         images = {name: workloads[(kind, name)]["spec"]["template"]["spec"]["containers"][0]["image"]
                   for kind, name in workloads if name in ("cetirun-adx-mon-collector", "cetirun-adx-mon-ingestor", "cetirun-telemetry")}
-        self.assertEqual(images, {"cetirun-adx-mon-collector": "registry.example.com/cetirun-observability:0.1.1",
-                                  "cetirun-adx-mon-ingestor": "registry.example.com/cetirun-observability:0.1.1",
+        # The ADX-Mon images come as the chart pins them by digest; release.registry
+        # changes only the telemetry program, which is part of the operator image.
+        chart = DEPLOY.yaml_file(DEPLOY.OBSERVABILITY_VALUES)
+        pinned = {component: "{repository}:{tag}@{digest}".format(**chart[component]["image"])
+                  for component in ("collector", "ingestor")}
+        self.assertTrue(all("@sha256:" in image for image in pinned.values()))
+        self.assertEqual(images, {"cetirun-adx-mon-collector": pinned["collector"],
+                                  "cetirun-adx-mon-ingestor": pinned["ingestor"],
                                   "cetirun-telemetry": "registry.example.com/cetirun-operator:0.1.1"})
         # The ingestor's TLS Secret is part of the release, not an input.
         self.assertFalse([reference for reference in deployment.references() if "adx-mon" in reference[2]])

@@ -974,7 +974,8 @@ Agents' claims and volumes. Its ClusterRole already has these permissions.
 Source: [observability values]({{< repo "app/cetirun-observability/chart/values.yaml" >}}).
 The platform chart installs it with the `cetirun-observability` values, which
 are off by default. `make deploy` turns it on, and sets the first four rows
-from the required `observability` block of the environment file. For the
+from the required `observability` block of the environment file. It sets the
+`alerter` values from the optional `alerter` block of that block. For the
 procedure, see [Observability with ADX-Mon](../../operations/observability/).
 
 | Value | Purpose / default |
@@ -983,15 +984,22 @@ procedure, see [Observability with ADX-Mon](../../operations/observability/).
 | `adx.endpoint` | Necessary. The query URI of the Kusto cluster, `https://<name>.<region>.kusto.windows.net`, without a path. |
 | `adx.databases.logs`, `adx.databases.metrics`, `adx.databases.agentLogs` | `CetiRunLogs`, `CetiRunMetrics`, `CetiRunAgents`. |
 | `ingestor.clientId` | Necessary. The client ID of the managed identity that the ingestor uses through workload identity. |
-| `global.registry`, `global.version` | Empty. With a registry, the images are `<registry>/cetirun-observability` and, for the telemetry program, `<registry>/cetirun-operator`. The tag is `image.tag`, then `global.version`, then the `appVersion` of the chart. |
+| `collector.image`, `ingestor.image`, `alerter.image` | The ADX-Mon images on MCR, `mcr.microsoft.com/aks/ai-runtime/adx-mon/<program>`, pinned by tag and digest. CetiRun does not build them. For a mirror, set their `repository`, `tag`, and `digest`. |
+| `global.registry`, `global.version` | Empty. With a registry, the telemetry program's image is `<registry>/cetirun-operator`. Its tag is `telemetry.image.tag`, then `global.version`, then the `appVersion` of the chart. The other images stay as pinned. |
 | `logs.platformNamespaces` | `cetirun-credentials`, `cetirun-istio`, `aks-istio-system`. The release namespace is always included. |
 | `logs.ingressNamespace` | `aks-istio-ingress`. Empty leaves out the ingress gateway's access log. |
 | `logs.agents.enabled` | `true`. The output of every container of Agent Pods, Custom terminals and GitHub Copilot proxies, into the Agent logs database. |
+| `logs.node.enabled` | `true`. The journal of the kubelet and containerd on every node, into the `Kubelet` and `Containerd` tables of the logs database. |
 | `metrics.scrapeInterval`, `metrics.keep`, `metrics.drop` | `60` seconds; the regular expressions of the metric names that are kept, and of those that are dropped even when kept. Every other metric is dropped. |
 | `collector.maxDiskUsage`, `collector.hostPath` | `2147483648` bytes; `/var/lib/cetirun-adx-mon`. The write-ahead log and the log file positions on each node. |
 | `collector.tolerations` | Every taint, so that the collector runs on every node. |
 | `ingestor.storage.size`, `ingestor.maxDiskUsage` | `16Gi`; `12884901888` bytes. |
 | `ingestor.tls.secretName` | Empty. The chart creates a CA and a certificate for the transfer endpoint on the first installation and keeps them. |
+| `alerter.endpoint` | Empty: no alerter runs. The base URL of the alert receiver, without a trailing slash. The alerter posts each alert to `<endpoint>/alerts`. |
+| `alerter.clientId` | Necessary with an endpoint. The client ID of the alerter's managed identity, with the `Viewer` role on the logs and metrics databases. |
+| `alerter.destination` | Empty. The `Destination` field of every alert. |
+| `alerter.rules.collectionHealth.enabled`, `alerter.rules.collectionHealth.interval` | `true`; `5m`. The `AlertRule` that sends an alert for each failed check of `CollectionHealth()`. |
 | `kubeStateMetrics.enabled`, `kubeStateMetrics.objects` | `true`; Pods, nodes, Deployments, StatefulSets, DaemonSets, Jobs, claims and namespaces. The chart refuses other kinds. |
+| `kubeStateMetrics.image` | `mcr.microsoft.com/oss/v2/kubernetes/kube-state-metrics`, pinned by tag and digest. |
 | `telemetry.enabled`, `telemetry.events`, `telemetry.snapshotInterval` | `true`; `warnings-and-cetirun`, also `all` or `none`; `1h`. |
-| `crds.install` | `true`. The ADX-Mon definitions Function, ManagementCommand and SummaryRule. |
+| `crds.install` | `true`. The ADX-Mon definitions Function, ManagementCommand, SummaryRule, and AlertRule. |

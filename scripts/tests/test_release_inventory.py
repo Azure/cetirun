@@ -20,8 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/cetirun-release.py"
 IMAGES = {"cetirun-base", "openclaw-gateway", "hermes-gateway", "cetirun-desktop", "cetirun-operator",
           "cetirun-ai-gateway", "cetirun-agent-broker", "cetirun-connections-mcp", "cetirun-terminal",
-          "cetirun-portal", "cetirun-vscode", "cetirun-pi-agent", "cetirun-memory-context",
-          "cetirun-observability"}
+          "cetirun-portal", "cetirun-vscode", "cetirun-pi-agent", "cetirun-memory-context"}
 CHARTS = {"cetirun", "cetirun-istio", "cetirun-operator", "cetirun-portal", "cetirun-platform",
           "cetirun-ai-gateway", "cetirun-agent-broker", "cetirun-connections-mcp", "cetirun-observability"}
 DOCKER = r'''
@@ -145,6 +144,12 @@ class ReleaseInventoryTests(unittest.TestCase):
                 for key, image in (("openclaw", "openclaw-gateway"), ("hermes", "hermes-gateway"),
                                    ("desktop", "cetirun-desktop"), ("ttyd", "cetirun-terminal")):
                     self.assertEqual(values[key]["image"]["repository"], f"{registry}/{image}")
+            elif chart_name == "cetirun-observability":
+                # The telemetry program follows the release registry; the ADX-Mon images stay as the chart pins them.
+                self.assertEqual(values["telemetry"]["image"]["repository"], f"{registry}/cetirun-operator")
+                for component in ("collector", "ingestor", "alerter"):
+                    self.assertTrue(values[component]["image"]["repository"].startswith("mcr.microsoft.com/aks/ai-runtime/adx-mon/"))
+                    self.assertRegex(values[component]["image"]["digest"], r"^sha256:[0-9a-f]{64}$")
             elif chart_name != "cetirun-istio":
                 self.assertEqual(values["image"]["repository"], f"{registry}/{chart_name}")
             if chart_name == "cetirun-operator":
@@ -439,7 +444,7 @@ class ReleaseInventoryTests(unittest.TestCase):
         result = subprocess.run(["make", "build-images"], env=self.env, cwd=ROOT, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         builds = [command for command in self.commands() if command[:2] == ["buildx", "build"]]
-        self.assertEqual(len(builds), 14)
+        self.assertEqual(len(builds), 13)
         tags = {command[command.index("-t") + 1] if "-t" in command else command[command.index("--tag") + 1] for command in builds}
         self.assertEqual(tags, {self.image(name) for name in IMAGES})
         for command in builds:
@@ -489,7 +494,7 @@ class ReleaseInventoryTests(unittest.TestCase):
             "cetirun-portal", "cetirun-pi-agent",
         }
         builds = [command for command in self.commands() if command[:2] == ["buildx", "build"]]
-        self.assertEqual(len(builds), 14)
+        self.assertEqual(len(builds), 13)
         for image in attested:
             command = next(command for command in builds if self.image(image) in command)
             self.assertIn("--provenance=true", command)
@@ -570,7 +575,7 @@ class ReleaseInventoryTests(unittest.TestCase):
         self.assertNotIn("cetirun-vscode", {entry["name"] for entry in plan["images"]})
         self.run_release("build-images", "--exclude-image", "cetirun-vscode")
         builds = [command for command in self.commands() if command[:2] == ["buildx", "build"]]
-        self.assertEqual(len(builds), 13)
+        self.assertEqual(len(builds), 12)
         self.assertFalse(any(self.image("cetirun-vscode") in command for command in builds))
 
     def test_invalid_image_exclusions_fail_before_docker(self):
@@ -624,11 +629,11 @@ class ReleaseInventoryTests(unittest.TestCase):
             self.assertIn("--push", command)
             self.assertNotIn("--load", command)
 
-    def test_successful_publish_verifies_all_fourteen_images(self):
+    def test_successful_publish_verifies_all_thirteen_images(self):
         self.run_release("publish-images")
         commands = self.commands()
         builds = [command for command in commands if command[:2] == ["buildx", "build"]]
-        self.assertEqual(len(builds), 14)
+        self.assertEqual(len(builds), 13)
         last_build = max(index for index, command in enumerate(commands) if command[:2] == ["buildx", "build"])
         self.assertEqual(commands[last_build + 1], ["buildx", "imagetools", "inspect", self.image("cetirun-pi-agent")])
         for name in IMAGES:

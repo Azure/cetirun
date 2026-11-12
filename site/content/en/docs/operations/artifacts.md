@@ -44,7 +44,7 @@ make publish REGISTRY=registry.example.com VERSION=0.1.1 \
   GIT_SHA="$(git rev-parse HEAD)"
 ```
 
-The command builds and pushes the 14 images and 9 charts of
+The command builds and pushes the 13 images and 9 charts of
 [`scripts/release-artifacts.json`]({{< repo "scripts/release-artifacts.json" >}}).
 These include the operator, Portal, AI Gateway, Broker, OpenClaw, Hermes, and
 VS Code Server images, and the platform, Istio, and Agent (`helm/cetirun`)
@@ -66,7 +66,7 @@ python3 -B scripts/cetirun-release.py publish \
   --exclude-image cetirun-vscode
 ```
 
-This selection publishes 13 images and all 9 charts. The normal `make publish`
+This selection publishes 12 images and all 9 charts. The normal `make publish`
 path always selects the complete inventory. Use the same selection in the
 environment file:
 
@@ -260,8 +260,7 @@ registry is not necessary for the copy. Refer to
 An installation also pulls the images of other projects in this table. To pull
 them from a private registry, copy each image to that registry. Then set its
 `repository`, `tag`, and `digest` fields under the value in the table. Set a
-digest for each image, so that the reference does not change. The
-kube-state-metrics value requires a digest.
+digest for each image, so that the reference does not change.
 
 | Image | Default repository | Value |
 | --- | --- | --- |
@@ -270,7 +269,10 @@ kube-state-metrics value requires a digest.
 | Entra auth sidecar of the Broker | `mcr.microsoft.com/entra-sdk/auth-sidecar` | `broker.values.authSDK` |
 | AI Gateway PostgreSQL | `mcr.microsoft.com/azurelinux/base/postgres` | `platform.values.cetirun-ai-gateway.postgresql.bundled.image` |
 | AI Gateway Valkey | `mcr.microsoft.com/azurelinux/base/valkey` | `platform.values.cetirun-ai-gateway.redis.bundled.image` |
-| kube-state-metrics of the [ADX-Mon collection](../observability/) | `mcr.microsoft.com/oss/kubernetes/kube-state-metrics` | `platform.values.cetirun-observability.kubeStateMetrics.image` |
+| ADX-Mon collector of the [ADX-Mon collection](../observability/) | `mcr.microsoft.com/aks/ai-runtime/adx-mon/collector` | `platform.values.cetirun-observability.collector.image` |
+| ADX-Mon ingestor | `mcr.microsoft.com/aks/ai-runtime/adx-mon/ingestor` | `platform.values.cetirun-observability.ingestor.image` |
+| ADX-Mon alerter, with an alert receiver | `mcr.microsoft.com/aks/ai-runtime/adx-mon/alerter` | `platform.values.cetirun-observability.alerter.image` |
+| kube-state-metrics of the ADX-Mon collection | `mcr.microsoft.com/oss/v2/kubernetes/kube-state-metrics` | `platform.values.cetirun-observability.kubeStateMetrics.image` |
 | cert-manager, with `publicTLS` install mode | `quay.io/jetstack/cert-manager-*` | None |
 
 `global.registry` does not change these images. The cert-manager images always
@@ -295,4 +297,5 @@ These components connect to services outside the cluster:
 | The Key Vault of `identity.keyVaultKeyUrl` | The Broker, to encrypt connection records | `identity.keyVaultKeyUrl` |
 | `github.com`, `api.github.com`, and `*.githubcopilot.com` | GitHub Copilot sign-in and models | No setting |
 | The Kusto cluster | The ADX-Mon collection. With `content.enabled`, also the AI Gateway, at the query endpoint and at its `ingest-` endpoint | `observability.adx.endpoint`, and `platform.values.cetirun-ai-gateway.content.adx.endpoint` for the AI Gateway |
+| The alert receiver | The ADX-Mon alerter, at `<endpoint>/alerts` | `observability.alerter.endpoint` |
 | Let's Encrypt and two public DNS resolvers | `publicTLS` | No setting. Refer to [Public DNS and TLS](../public-ingress/#prerequisites) |

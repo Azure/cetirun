@@ -13,6 +13,7 @@ ADX-Mon collection by default.
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -331,6 +332,19 @@ class ManagedPrometheusStandInTests(unittest.TestCase):
         self.assertEqual([(version["name"], version["served"], version["storage"]) for version in spec["versions"]], [("v1", True, True)])
         # Helm only maps the earlier object and deletes it, so the stand-in validates nothing.
         self.assertIs(spec["versions"][0]["schema"]["openAPIV3Schema"]["x-kubernetes-preserve-unknown-fields"], True)
+
+
+class CollectionHealthTests(unittest.TestCase):
+    def test_a_metric_table_that_does_not_exist_reads_as_empty(self):
+        # ADX-Mon creates the table of a metric with its first value, and some metrics exist only in
+        # some versions: v0.3.0 has no ingestor health status and no table backlog counters. A missing
+        # table must not fail the whole function, so each one is read in a fuzzy union with an empty table.
+        text = (ROOT / "infra/cluster/modules/adx/cetirun-health.kql").read_text()
+        tables = set(re.findall(r"\b((?:Adxmon|Kube)[A-Z]\w*)\b", text))
+        self.assertLessEqual({"AdxmonIngestorHealthStatus", "AdxmonIngestorHealthCheck", "AdxmonCollectorLogsDropped"}, tables)
+        for table in tables:
+            self.assertEqual(len(re.findall(rf"\b{table}\b", text)),
+                             len(re.findall(rf"union isfuzzy=true none, {table}\b", text)), table)
 
 
 if __name__ == "__main__":

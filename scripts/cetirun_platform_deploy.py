@@ -114,15 +114,16 @@ SKILL_MARKETPLACE_FIELDS = {
 SKILL_MARKETPLACE_SECRET_KEYS = {"none": (), "token": ("token",), "ssh": ("ssh-privatekey", "known_hosts")}
 # The ADX-Mon collection of logs, events and metrics into Azure Data Explorer,
 # CetiRun's only observability path. The top-level observability block of the
-# environment file is required. make deploy does not call Azure: the Kusto
-# cluster, its databases and the ingestor's identity exist before the
-# deployment.
+# environment file is required; its alerter block is optional. make deploy does
+# not call Azure: the Kusto cluster, its databases and the identities exist
+# before the deployment.
 OBSERVABILITY = "cetirun-observability"
 OBSERVABILITY_INGESTOR = "cetirun-adx-mon-ingestor"
 OBSERVABILITY_FIELDS = {
-    "observability": ("clusterName", "adx", "ingestorClientId"),
+    "observability": ("clusterName", "adx", "ingestorClientId", "alerter"),
     "observability.adx": ("endpoint", "databases"),
     "observability.adx.databases": ("logs", "metrics", "agentLogs"),
+    "observability.alerter": ("endpoint", "clientId", "destination"),
 }
 GUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 SCP_URL = re.compile(r"[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^/\s]\S*")
@@ -309,7 +310,9 @@ def observability(config):
     block = mapping(config["observability"], "observability")
     adx = mapping(block.get("adx", {}), "observability.adx")
     databases = mapping(adx.get("databases", {}), "observability.adx.databases")
-    for name, section in (("observability", block), ("observability.adx", adx), ("observability.adx.databases", databases)):
+    alerter = mapping(block.get("alerter", {}), "observability.alerter")
+    for name, section in (("observability", block), ("observability.adx", adx), ("observability.adx.databases", databases),
+                          ("observability.alerter", alerter)):
         unknown = sorted(map(str, set(section) - set(OBSERVABILITY_FIELDS[name])))
         if unknown:
             raise ValueError(f"{name}.{unknown[0]} is not supported; set other chart values under platform.values.{OBSERVABILITY}")
@@ -331,9 +334,23 @@ def observability(config):
             raise ValueError(f"observability.adx.databases.{field} must be a database name of letters and digits")
     if len(set(names.values())) != len(names):
         raise ValueError("observability.adx.databases must name three databases: Agent logs need readers of their own")
-    return {switch: True, f"{OBSERVABILITY}.clusterName": cluster, f"{OBSERVABILITY}.adx.endpoint": endpoint,
-            f"{OBSERVABILITY}.ingestor.clientId": client,
-            **{f"{OBSERVABILITY}.adx.databases.{field}": name for field, name in names.items()}}
+    values = {switch: True, f"{OBSERVABILITY}.clusterName": cluster, f"{OBSERVABILITY}.adx.endpoint": endpoint,
+              f"{OBSERVABILITY}.ingestor.clientId": client,
+              **{f"{OBSERVABILITY}.adx.databases.{field}": name for field, name in names.items()}}
+    if "alerter" in block:
+        receiver = required(config, "observability.alerter.endpoint")
+        if not re.fullmatch(r"https?://[^/?#\s]+(?:/[^?#\s]*)?", receiver) or receiver.endswith("/"):
+            raise ValueError("observability.alerter.endpoint must be the base URL of the service that receives the alerts, "
+                             "such as https://alerts.example.com, without a trailing slash")
+        alerter_client = required(config, "observability.alerter.clientId")
+        if not re.fullmatch(GUID, alerter_client):
+            raise ValueError("observability.alerter.clientId must be the client ID of the managed identity that the alerter uses")
+        destination = alerter.get("destination", "")
+        if not isinstance(destination, str):
+            raise ValueError("observability.alerter.destination must be a string")
+        values.update({f"{OBSERVABILITY}.alerter.endpoint": receiver, f"{OBSERVABILITY}.alerter.clientId": alerter_client,
+                       f"{OBSERVABILITY}.alerter.destination": destination})
+    return values
 
 
 def resource_name(value, *, label=False, limit=253):
@@ -1746,10 +1763,17 @@ class Deployment:
                         self.existing_releases.add(name)
                 else:
                     self.existing_releases.add(name)
+            # A resource of a kind that this release defines cannot exist before
+            # its definition does, and its API cannot be read until then.
+            defined = {(doc["spec"]["group"], doc["spec"]["names"]["kind"]): doc["metadata"]["name"]
+                       for doc in self.documents[name] if doc["kind"] == "CustomResourceDefinition"}
             for doc in self.documents[name]:
                 if self.is_public_tls(doc):
                     continue  # Fully qualified API reads and owner/spec checks belong to the TLS phase.
                 kind, metadata = doc["kind"], doc["metadata"]
+                definition = defined.get((doc["apiVersion"].rpartition("/")[0], kind))
+                if definition and not self.resource("CustomResourceDefinition", definition):
+                    continue
                 namespace = "" if kind in CLUSTER_KINDS else metadata.get("namespace", section["namespace"])
                 qualified = "gateways.networking.istio.io" if kind == "Gateway" else kind
                 current = self.resource(qualified, metadata["name"], namespace)

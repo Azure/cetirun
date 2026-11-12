@@ -1,14 +1,10 @@
 # Default values for cetirun-observability: ADX-Mon collection of CetiRun
 # logs, Kubernetes events and metrics into Azure Data Explorer.
-
-# -- Image of the ADX-Mon collector and ingestor, which CetiRun builds from
-# pinned upstream source.
-image:
-  repository: mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-observability
-  # -- Empty uses global.version, then the chart appVersion.
-  tag: ""
-  digest: ""
-  pullPolicy: IfNotPresent
+#
+# The ADX-Mon collector, ingestor and alerter run the images that are published
+# on MCR under aks/ai-runtime/adx-mon, pinned by digest. CetiRun does not build
+# them, and global.registry does not change them: a registry that mirrors them
+# needs each repository set here.
 
 imagePullSecrets: []
 
@@ -45,6 +41,12 @@ logs:
     # -- Collect the logs of every Agent Pod, Custom terminal and GitHub
     # Copilot proxy into the Agent logs database. Agent logs can hold
     # conversation content.
+    enabled: true
+  node:
+    # -- Collect the journal of the kubelet and of containerd on every node,
+    # Kata nodes included, into the Kubelet and Containerd tables of the logs
+    # database. They show why a Pod does not start, for example an image that
+    # cannot be pulled or a Kata VM that fails to start.
     enabled: true
 
 metrics:
@@ -91,6 +93,11 @@ metrics:
     - ^adxmon_table_backlog_(bytes|segments|would_reject|throttled|throttled_seconds|limit_bytes|limit_segments|enforced)$
 
 collector:
+  image:
+    repository: mcr.microsoft.com/aks/ai-runtime/adx-mon/collector
+    tag: v0.3.0
+    digest: sha256:dfb5424e5fe45d493b046f0e6a49dfa17874b864d04d1761d67d0fdfdd08e2e0
+    pullPolicy: IfNotPresent
   # -- Host directory of the collector's write-ahead log and log file
   # cursors. It outlives the Pod, so a new Pod continues where the previous
   # one stopped instead of reading every log file again.
@@ -114,6 +121,11 @@ collector:
       memory: 1Gi
 
 ingestor:
+  image:
+    repository: mcr.microsoft.com/aks/ai-runtime/adx-mon/ingestor
+    tag: v0.3.0
+    digest: sha256:6882ef6e63c6f98734a16ce7054a0a0c4b7dcc0861ea8b993e65a85df5933048
+    pullPolicy: IfNotPresent
   replicas: 1
   serviceAccount:
     name: cetirun-adx-mon-ingestor
@@ -148,14 +160,56 @@ ingestor:
       cpu: "2"
       memory: 2Gi
 
+alerter:
+  image:
+    repository: mcr.microsoft.com/aks/ai-runtime/adx-mon/alerter
+    tag: v0.3.0
+    digest: sha256:bde70dd68052184ed3d645b565e5dd2a9ac1a5b8978bac70ebafecee11ee435e
+    pullPolicy: IfNotPresent
+  # -- Base URL of the service that receives the alerts. The alerter posts each
+  # alert as JSON to <endpoint>/alerts and counts only 201 Created as
+  # delivered. Empty: no alerter runs.
+  endpoint: ""
+  # -- Destination field of every alert, which the receiving service can use
+  # to route it.
+  destination: ""
+  serviceAccount:
+    name: cetirun-adx-mon-alerter
+  # -- Client ID of the Azure managed identity that the alerter uses through
+  # workload identity. It needs the Viewer role on the logs and metrics
+  # databases, and no role on the others. Required with an endpoint.
+  clientId: ""
+  rules:
+    collectionHealth:
+      # -- Alert for each check of CollectionHealth() whose status is Failed
+      # for this cluster: logs or metrics stop arriving, the collector drops
+      # log lines, a full table backlog refuses data, the oldest unsent data
+      # is older than 30 minutes, or the ingestor is unhealthy. The alert is
+      # sent again on each run while the check fails, with the same
+      # CorrelationId.
+      enabled: true
+      # -- How often the query runs, as a Go duration such as 5m.
+      interval: 5m
+  nodeSelector: {}
+  tolerations: []
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
 kubeStateMetrics:
   # -- Run kube-state-metrics for the state of Pods, Deployments,
   # StatefulSets, DaemonSets, Jobs, nodes and volume claims.
   enabled: true
+  # -- The image on MCR that is rebuilt for security fixes; each rebuild has a
+  # new tag suffix.
   image:
-    repository: mcr.microsoft.com/oss/kubernetes/kube-state-metrics
-    tag: v2.14.0
-    digest: sha256:0a050f9ca8dc6f9495755478916e8a1103332a0592bad98f7326e9a64d8758c9
+    repository: mcr.microsoft.com/oss/v2/kubernetes/kube-state-metrics
+    tag: v2.20.0-12
+    digest: sha256:abc4a74fde8a54f4fc6a4214073345fc958c50ed5c8cf801e01fddd86c146416
     pullPolicy: IfNotPresent
   # -- The kinds of objects it reads and reports, its --resources flag. It
   # never reads Secrets or ConfigMaps.
@@ -199,8 +253,11 @@ telemetry:
 
 crds:
   # -- Install the ADX-Mon custom resource definitions: Function,
-  # ManagementCommand and SummaryRule. The chart creates none of these
-  # resources. The ingestor runs their Kusto commands with its identity, so
-  # only cluster administrators may create them. Without the definitions the
-  # ingestor logs a failed list every few minutes.
+  # ManagementCommand, SummaryRule and AlertRule, of the ADX-Mon version of the
+  # images. The chart creates no Function, ManagementCommand or SummaryRule:
+  # the ingestor runs their Kusto commands with its identity, so only cluster
+  # administrators may create them. With an alerter, the chart creates its
+  # AlertRule; the alerter runs the queries of every AlertRule with its own
+  # identity. Without the definitions the ingestor logs a failed list every
+  # few minutes.
   install: true

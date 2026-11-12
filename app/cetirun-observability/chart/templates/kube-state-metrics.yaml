@@ -102,7 +102,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: kube-state-metrics
-          image: {{ printf "%s:%s@%s" $ksm.image.repository $ksm.image.tag $ksm.image.digest | quote }}
+          image: {{ include "cetirun-observability.externalImage" $ksm.image | quote }}
           imagePullPolicy: {{ $ksm.image.pullPolicy }}
           args:
             - --resources={{ join "," $objects }}

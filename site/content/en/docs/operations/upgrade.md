@@ -146,6 +146,13 @@ Some changes need a specific order:
   by IP address or peer UID still need the current backend addresses and
   labels until you migrate them. Upgrade all readers and follow the
   coordinated configuration change before you use the new registration.
+- **The PodMonitor of managed Prometheus:** a platform that an earlier version
+  installed can hold this PodMonitor of the AI Gateway. After the cluster
+  template turns managed Prometheus off, `make deploy` stops before it changes
+  the cluster. Create a stand-in definition, run `make deploy`, and delete the
+  definition, as
+  [Identity, images, and collection](../infrastructure/#identity-images-and-collection)
+  shows.
 
 ## If an upgrade fails
 
