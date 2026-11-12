@@ -49,6 +49,7 @@ def lookup_api(secrets, session_secrets=None):
     for version, kinds in {
         "v1": {"secrets": "Secret", "configmaps": "ConfigMap", "services": "Service", "serviceaccounts": "ServiceAccount", "persistentvolumeclaims": "PersistentVolumeClaim"},
         "apps/v1": {"deployments": "Deployment"},
+        "policy/v1": {"poddisruptionbudgets": "PodDisruptionBudget"},
         "networking.k8s.io/v1": {"networkpolicies": "NetworkPolicy"},
         "networking.istio.io/v1alpha3": {"envoyfilters": "EnvoyFilter"},
         "networking.istio.io/v1beta1": {
@@ -124,9 +125,9 @@ def lookup_api(secrets, session_secrets=None):
 
 @unittest.skipUnless(shutil.which("helm"), "requires Helm 3 or 4")
 class IstioChartConfigTests(unittest.TestCase):
-    def render(self, values=None, *, error=None, upgrade=False, kubeconfig=None):
+    def render(self, values=None, *, error=None, upgrade=False, kubeconfig=None, chart=CHART):
         command = [
-            "helm", "template", "cetirun-istio", str(CHART),
+            "helm", "template", "cetirun-istio", str(chart),
             "--namespace", "cetirun-istio", "--values", "-",
         ]
         if upgrade:
@@ -292,6 +293,104 @@ func main() {
                 self.assertIn("--skip-jwt-bearer-tokens=false", args)
                 for other in {"request", "auth", "standard"} - {field}:
                     self.assertIn(f"--{other}-logging=true", args)
+
+    def test_proxy_budget_requires_multiple_replicas_and_selects_only_proxy(self):
+        for replicas in (0, 1, 2, 3):
+            with self.subTest(replicas=replicas):
+                objects = self.render({"oauth2Proxy": {"replicas": replicas}})
+                key = ("PodDisruptionBudget", "oauth2-proxy")
+                self.assertEqual(key in objects, replicas > 1)
+                if replicas <= 1:
+                    continue
+                budget = objects[key]
+                self.assertEqual(budget["apiVersion"], "policy/v1")
+                self.assertEqual(budget["metadata"]["namespace"], "cetirun-istio")
+                self.assertEqual(budget["spec"], {
+                    "maxUnavailable": 1,
+                    "selector": {"matchLabels": {"app": "oauth2-proxy"}},
+                })
+                self.assertIs(type(budget["spec"]["maxUnavailable"]), int)
+                selector = budget["spec"]["selector"]["matchLabels"]
+                for name in ("oauth2-proxy", "oauth2-proxy-sessions"):
+                    labels = objects[("Deployment", name)]["spec"]["template"]["metadata"]["labels"]
+                    matches = all(labels.get(key) == value for key, value in selector.items())
+                    self.assertEqual(matches, name == "oauth2-proxy")
+
+    def test_proxy_spread_counts_each_revision_without_blocking_single_node(self):
+        objects = self.render()
+        pod = objects[("Deployment", "oauth2-proxy")]["spec"]["template"]["spec"]
+        self.assertEqual(pod["topologySpreadConstraints"], [{
+            "maxSkew": 1, "topologyKey": "kubernetes.io/hostname",
+            "whenUnsatisfiable": "ScheduleAnyway", "matchLabelKeys": ["pod-template-hash"],
+            "labelSelector": {"matchLabels": {"app": "oauth2-proxy"}},
+        }])
+        self.assertEqual(pod["nodeSelector"], {"agentpool": "system"})
+        self.assertEqual(pod["tolerations"], [{"key": "CriticalAddonsOnly", "operator": "Exists"}])
+
+    def test_proxy_spread_can_be_replaced_without_changing_node_constraints(self):
+        spread = [{
+            "maxSkew": 1, "topologyKey": "topology.kubernetes.io/zone",
+            "whenUnsatisfiable": "DoNotSchedule", "matchLabelKeys": ["pod-template-hash"],
+            "labelSelector": {"matchLabels": {"app": "oauth2-proxy"}},
+        }]
+        selector = {"agentpool": "auth"}
+        tolerations = [{"key": "auth", "operator": "Exists", "effect": "NoSchedule"}]
+        objects = self.render({"oauth2Proxy": {
+            "topologySpreadConstraints": spread, "nodeSelector": selector, "tolerations": tolerations,
+        }})
+        pod = objects[("Deployment", "oauth2-proxy")]["spec"]["template"]["spec"]
+        self.assertEqual(pod["topologySpreadConstraints"], spread)
+        self.assertEqual(pod["nodeSelector"], selector)
+        self.assertEqual(pod["tolerations"], tolerations)
+        self.assertIn(("PodDisruptionBudget", "oauth2-proxy"), objects)
+
+    def test_availability_controls_are_independent_in_all_session_modes(self):
+        for session in ({}, {"type": "cookie"}, {"type": "redis", "redis": {
+            "connectionURL": "rediss://sessions.example.com:6379/0",
+        }}):
+            for disable_budget, disable_spread in ((True, False), (False, True), (True, True)):
+                with self.subTest(session=session, budget=disable_budget, spread=disable_spread):
+                    baseline = self.render({"oauth2Proxy": {"sessionStore": session}})
+                    settings = {"sessionStore": session}
+                    if disable_budget:
+                        settings["podDisruptionBudget"] = {"enabled": False}
+                        del baseline[("PodDisruptionBudget", "oauth2-proxy")]
+                    if disable_spread:
+                        settings["topologySpreadConstraints"] = []
+                        del baseline[("Deployment", "oauth2-proxy")]["spec"]["template"]["spec"]["topologySpreadConstraints"]
+                    self.assertEqual(self.render({"oauth2Proxy": settings}), baseline)
+
+    def test_invalid_availability_options_are_rejected(self):
+        for value in ("false", False, 1, []):
+            with self.subTest(budget=value):
+                self.render({"oauth2Proxy": {"podDisruptionBudget": value}}, error="podDisruptionBudget must be an object")
+        for value in ("false", 1, [], {}):
+            with self.subTest(enabled=value):
+                self.render({"oauth2Proxy": {"podDisruptionBudget": {"enabled": value}}}, error="enabled must be a boolean")
+        for value in ("disabled", False, 1, {}):
+            with self.subTest(spread=value):
+                self.render({"oauth2Proxy": {"topologySpreadConstraints": value}}, error="topologySpreadConstraints must be a list")
+
+    def test_missing_availability_values_keep_defaults_with_reused_old_values(self):
+        default = self.render()
+        disabled = {"oauth2Proxy": {
+            "podDisruptionBudget": {"enabled": False}, "topologySpreadConstraints": [],
+        }}
+        with tempfile.TemporaryDirectory(prefix="cetirun-istio-old-values-") as temporary:
+            chart = Path(temporary) / "istio"
+            shutil.copytree(CHART, chart)
+            values_path = chart / "values.yaml"
+            values = yaml.safe_load(values_path.read_text(encoding="utf-8"))
+            # --reuse-values uses the old chart defaults, which lack these keys.
+            # Remove them at the source so Helm cannot merge new defaults back.
+            del values["oauth2Proxy"]["podDisruptionBudget"]
+            del values["oauth2Proxy"]["topologySpreadConstraints"]
+            values_path.write_text(yaml.safe_dump(values), encoding="utf-8")
+            self.assertEqual(self.render(chart=chart, upgrade=True), default)
+            self.assertEqual(self.render({"oauth2Proxy": {
+                "podDisruptionBudget": {},
+            }}, chart=chart, upgrade=True), default)
+            self.assertEqual(self.render(disabled, chart=chart, upgrade=True), self.render(disabled))
 
     def test_invalid_new_options_are_rejected(self):
         for value in ("false", 1, [], {}):

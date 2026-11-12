@@ -361,6 +361,42 @@ lookup, or it generates one at the first installation. Offline `helm template`
 cannot find that Secret and can generate a different cookie key. Do not use an
 offline rendered Secret to update a live release.
 
+### Authentication availability during node maintenance
+
+OAuth2 Proxy has two replicas by default. When
+`oauth2Proxy.podDisruptionBudget.enabled` is `true` and
+`oauth2Proxy.replicas` is greater than one, the chart creates a
+PodDisruptionBudget with `maxUnavailable: 1`. A node drain that uses the
+Kubernetes eviction API must respect this budget. If one Proxy is unavailable,
+the drain must wait before it can evict another. The chart creates no budget
+for zero or one replica. Set `enabled: false` to disable the budget explicitly.
+
+The default `oauth2Proxy.topologySpreadConstraints` prefers different nodes
+with `maxSkew: 1`, `topologyKey: kubernetes.io/hostname`, and
+`whenUnsatisfiable: ScheduleAnyway`. The selector matches `app: oauth2-proxy`;
+`matchLabelKeys: [pod-template-hash]` counts each rollout revision separately.
+Old Pods therefore do not hide an imbalance in the new revision. The scheduler
+still respects `nodeSelector` and `tolerations`. With the defaults, eligible
+nodes must have the `agentpool: system` label.
+
+This preference permits installation on a single node. It does not guarantee
+that replicas use separate nodes. Supply a complete replacement constraint
+list to change the placement policy, or set `topologySpreadConstraints: []`
+to disable it. Strict placement can leave Pods pending when too few eligible
+nodes or insufficient capacity are available.
+
+Older values that omit these options use the new defaults, including upgrades
+with `--reuse-values`. Adding the spread constraint changes the Proxy Pod
+template and causes one rolling update. It does not change the bundled session
+store's Pod template, credentials, or persistent volume.
+
+A PDB controls voluntary evictions. It does not prevent node failures, direct
+Pod deletion, or Deployment rollouts. Proxy replicas also share a session
+store: its availability limits login and authorization availability. The
+ingress continues to deny requests when external authorization fails. These
+Proxy protections alone do not make the default authentication service highly
+available.
+
 ### OAuth session storage
 
 The default `oauth2Proxy.sessionStore.type: redis` mode stores encrypted login
@@ -386,6 +422,13 @@ password Secret on uninstall. Remove retained objects only when their sessions
 are no longer needed. Persistence reduces session loss after a restart. A single
 replica is not highly available, and AOF flushes once per second.
 
+The bundled store has no PDB. A budget that requires its only replica to stay
+available would block a normal node drain without adding failover. A drain or
+node failure can interrupt session access until the replacement Pod and its
+volume are ready. OAuth2 Proxy can also fail to start while the store is down.
+For production that must tolerate a node outage, use a separately managed,
+highly available Redis-compatible session service.
+
 Set `persistence.enabled: false` to use temporary storage. A Valkey restart then
 requires users to sign in again. A storage outage prevents session lookup and
 can also require a new sign-in after recovery. Keep backups and storage access
@@ -399,17 +442,33 @@ oauth2Proxy:
   sessionStore:
     type: redis
     redis:
-      connectionURL: redis://oauth-session.example.svc.cluster.local:6379/0
+      connectionURL: rediss://oauth-session.example.com:6379/0
       existingSecret: oauth-session-credentials
       passwordKey: redis-password
 ```
 
 For an external service, configure availability, persistence, network access,
-and encryption separately. Use `rediss://` for a TLS Redis endpoint. Keep
-credentials out of `connectionURL` and Helm values. OAuth2 Proxy reads the
-password from the referenced Secret. To use a pre-created password with the
-bundled server, set `existingSecret` without setting `connectionURL`. This also
-keeps offline GitOps renders from generating a different password each time.
+and encryption separately. Replace the synthetic hostname with a private DNS
+endpoint that has a trusted TLS certificate. Use `rediss://` for a TLS Redis
+endpoint. Keep credentials out of `connectionURL` and Helm values. OAuth2 Proxy reads the
+password from the referenced Secret in the release namespace.
+
+External means managed outside this chart; the service can run in the same
+cluster or be a managed service reached through a private network. It must
+provide replication, automatic failover, and a stable endpoint compatible with
+OAuth2 Proxy's ordinary Redis connection. This chart does not configure Redis
+Cluster or Sentinel discovery. A different address alone does not establish
+high availability. Confirm the endpoint, authentication, TLS trust, network
+access, and failover behavior before serving users.
+
+Switching from the bundled store does not copy its sessions to the external
+service. Plan a maintenance window and a new sign-in for users. Keep the cookie
+Secret unchanged. The retained bundled PVC and generated password Secret stay
+until they are deliberately removed; protect them as credential-bearing data.
+
+To use a pre-created password with the bundled server, set `existingSecret`
+without setting `connectionURL`. This also keeps offline GitOps renders from
+generating a different password each time.
 
 After you rotate the referenced Secret for the Redis password, reconcile the
 Istio Helm release. The chart hashes the live Secret data into both Pod
