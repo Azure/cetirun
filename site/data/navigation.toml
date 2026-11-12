@@ -29,6 +29,8 @@
     pages = [
       "/docs/getting-started",
       "/docs/getting-started/first-instance",
+      "/docs/guides/portal",
+      "/docs/guides/agent-types",
     ]
   [[modules.groups]]
     title = "Using Agents"
@@ -39,11 +41,20 @@
       "/docs/guides/models",
       "/docs/guides/custom-chat",
       "/docs/guides/lifecycle",
+      "/docs/guides/memory",
+      "/docs/guides/skills",
+      "/docs/guides/data",
     ]
   [[modules.groups]]
     title = "Integrations"
     pages = [
       "/docs/guides/tailscale",
+    ]
+  [[modules.groups]]
+    title = "Troubleshooting"
+    pages = [
+      "/docs/guides/troubleshooting",
+      "/docs/guides/faq",
     ]
 
 [[modules]]
@@ -88,6 +99,8 @@
       "/docs/operations/backup-restore",
       "/docs/operations/certificates",
       "/docs/operations/uninstall",
+      "/docs/operations/agent-lifecycle",
+      "/docs/operations/portal-chat",
     ]
   [[modules.groups]]
     title = "Troubleshooting"

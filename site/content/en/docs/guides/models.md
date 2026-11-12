@@ -4,12 +4,38 @@ description: "Select shared models or GitHub Copilot through the AI Gateway."
 weight: 10
 ---
 
-Configure model access through the AI Gateway. The platform does not configure
-direct provider credentials for Agents.
+Your Agent gets its models from the platform's AI Gateway. The models come
+from two sources: the models that your administrators share, and the models of
+your own GitHub Copilot subscription. The platform does not configure model
+provider keys of your own for the Agent.
 
 Platform administrators configure the AI Gateway and decide which models each
 Agent can use. Refer to [AI Gateway](../../operations/ai-gateway/) and
 [Model access](../../operations/models/).
+
+## Select and switch models
+
+The **Models** section on the **Overview** tab of your Agent lists the models
+that the Agent can use. The default model shows `(default)` after its name.
+New conversations start with the default model.
+
+- **Change the model of one conversation.** In **Agent UI**, select another
+  model of the list. The Hermes and OpenClaw configurations contain all the
+  models of the list. This change does not restart the Agent.
+- **Change the default model.** In the **Models** section, select the model in
+  **Default model**, and select **Save**. The Agent restarts. **Default model**
+  shows only when the Agent has two or more models.
+- **Use GitHub Copilot models.** Sign in to GitHub Copilot in the **Models**
+  section. Your Copilot models show in the list after the platform prepares
+  them. Refer to
+  [Sign in to GitHub Copilot](../../getting-started/first-instance/#sign-in-to-github-copilot).
+- **Select a model for a Custom Agent.** Select the model in Chat, or in the
+  configuration of the image. The portal does not set a default model for a
+  Custom Agent.
+
+If you change the default model in the Hermes Webapp or the Hermes CLI, the
+platform resets it at the next start. To keep another default model, use
+**Default model** in the portal.
 
 ## Models through the AI Gateway
 
@@ -34,8 +60,10 @@ The create form offers both sources, and both are on by default. Every new
 Agent must have a model to use: shared models when at least one is offered, or
 GitHub Copilot when the deployment offers it. GitHub Copilot stays on when
 shared models are off or when no shared model is offered. Shared models stay on
-without GitHub Copilot. With neither source, the portal creates no Agent and
-asks for a shared model.
+without GitHub Copilot. With neither source, the portal creates no Agent. The
+form then says "No models are available for new agents under the selected
+Team's Policy and deployment settings. Ask an administrator to check model
+access."
 
 The portal reads the sources from the catalog that the operator publishes. As a
 result, it also waits until the catalog exists. The catalog lists the agent
@@ -43,11 +71,11 @@ types that the selected runtime chart routes through the Gateway. The portal
 creates an Agent only after it reads a compatible chart. A Team stays optional.
 When a Team is selected, its Agent Policy further restricts the model sources.
 
-To add Copilot models, open the instance. Then select **Sign in with GitHub**.
-The portal runs the GitHub device-code sign-in, stores the token for the
-instance's proxy, and records the account's chat models. The models appear
-after the proxy starts, usually within a few minutes. Then the instance
-restarts to get them.
+To add Copilot models, sign in to GitHub Copilot in the **Models** section of
+the Agent. Refer to
+[Sign in to GitHub Copilot](../../getting-started/first-instance/#sign-in-to-github-copilot).
+The portal stores the token for the Agent's proxy and records the account's
+chat models.
 
 GitHub keeps at most ten of these tokens for each GitHub account. Each sign-in
 makes a new token. When an account has ten, the next sign-in revokes the
@@ -176,11 +204,8 @@ the operator publishes access, select a model from the Gateway catalog. If the
 Gateway or catalog is unavailable, resolve that condition before you create an
 Agent or select a new model.
 
-A change to an OpenClaw or Hermes default model updates the custom resource,
-causes reconciliation, and can restart the Agent. Expect a brief interruption.
-To use the Gateway default again, clear the per-instance selection. The Portal
-offers only models in the Gateway catalog that the selected optional Team
-Policy allows.
+The Portal offers only the models in the Gateway catalog that the Agent
+Policy of the selected Team allows.
 
 ## When discovery fails
 

@@ -191,7 +191,7 @@ func TestAgentExamples(t *testing.T) {
 
 func TestWebsiteAgentExamples(t *testing.T) {
 	for _, path := range []string{
-		"getting-started/first-instance.md",
+		"operations/agent-lifecycle.md",
 	} {
 		t.Run(path, func(t *testing.T) {
 			raw, err := os.ReadFile(filepath.Join("../../../../site/content/en/docs", path))

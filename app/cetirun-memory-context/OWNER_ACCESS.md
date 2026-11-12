@@ -13,11 +13,26 @@ All allowed sessions use the same Agent-private store, not separate stores per
 sender or channel. Replies in a group or channel can disclose recalled material
 to its participants. The controls below narrow access when that is not wanted.
 
+## Limit Memory in a CetiRun Agent
+
+The owner of a CetiRun Agent adds `owner_access` to `~/.hermes/config.yaml`
+or `~/.openclaw/openclaw.json` in the portal's **Terminal**, and then selects
+**Restart Agent**. The platform merges its generated configuration into these
+files at each start and keeps `owner_access`. OpenClaw removes the
+`cetirun-memory-context` entry when the deployment disables Memory. For the
+steps, refer to [Use memory](../../site/content/en/docs/guides/memory.md).
+
+In a CetiRun Agent, the restriction variables of the next section cannot be
+set for the processes that the platform starts. The Operator and the agent
+chart reject `CETIRUN_MEMORY_*` names in `extraEnv`, and Hermes removes
+`CETIRUN_*` entries from `~/.hermes/.env` at startup.
+
 ## Restrict reads and writes
 
-Set these variables on the OpenClaw or Hermes process, including the gateway
-when it handles messages. Unset, `false` or `0` leaves the capability enabled;
-`true` or `1` restricts it. Invalid values stop plugin registration.
+Set these variables on an OpenClaw or Hermes process that you start yourself,
+including the gateway when it handles messages. Unset, `false` or `0` leaves
+the capability enabled; `true` or `1` restricts it. Invalid values stop plugin
+registration.
 
 ```bash
 CETIRUN_MEMORY_NO_CAPTURE=true hermes
@@ -42,8 +57,9 @@ Changing startup controls requires restarting or reloading the affected plugin.
 ## Restrict platforms, senders or conversations
 
 Configure `owner_access` in the host's Memory plugin settings, or supply the
-same object as JSON in `CETIRUN_MEMORY_OWNER_ACCESS`. This Hermes profile allows
-local CLI/TUI sessions and one Discord sender in one direct-message conversation:
+same object as JSON in `CETIRUN_MEMORY_OWNER_ACCESS`. This Hermes profile
+allows local CLI/TUI sessions and one Discord sender in one direct-message
+conversation:
 
 ```yaml
 plugins:
@@ -141,13 +157,18 @@ preference capture. Sending recalled material
 through messaging tools still requires confirmation; native child creation
 inherits access when `subagents` is enabled.
 
-Rebuild the helper and install a new immutable asset directory together.
+## Update the helper and assets
+
+This section is for platform maintainers. Rebuild the helper and install a new
+immutable asset directory together.
 OpenClaw's `ownerAuthorizedChild` native binding is rejected by older helpers
 that accept it only for Hermes. Update all asset/binary/context/skill paths
 and reload the plugin. Never set that field in model tool arguments or bypass
 a refusal with shell access.
 
-## Verification
+## Test the access rules
+
+This section is for contributors to the Memory component.
 
 ```bash
 make -C app/cetirun-memory-context test

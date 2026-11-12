@@ -23,10 +23,10 @@ or preference, or a recommendation you gave.
 1. Call `status` once. Memory reads, writes and bounded learning are enabled by default, with both
    installed learning profiles. Status and generation say nothing about whether a remembered fact is
    true. Respect the current request's `noCapture` and `noMemory` restrictions. The native adapter
-   decides which sessions may use Memory. Hermes permits all host-admitted channels by default,
-   including groups/channels and qualified native descendants. `owner_access` and environment controls
-   can narrow that access; only the adapter can establish a grant. An authorized child inherits its
-   parent's memory project scope and restrictions.
+   decides which sessions may use Memory. By default, it permits all host-admitted channels, including
+   groups/channels and qualified native descendants. `owner_access` and environment controls can narrow
+   that access; only the adapter can establish a grant. An authorized child inherits its parent's memory
+   project scope and restrictions.
    A denied tool call is not permission to read or save private memory by other means.
 2. Call `query` to read stored note bodies. Use a known note's exact title as one `queryTerms` entry,
    or the distinctive words of the question: names, places, products, titles, numbers, activities.
@@ -65,7 +65,9 @@ stored, how often it loads or how often it was useful does not make it more reli
 change, check the current authorized source.
 
 The owner can type `/memory off`, `/memory no-capture` or `/memory on` to restrict or restore memory for
-the conversation, within the adapter's configured limits. `/memory on` cannot lift a startup restriction
+the conversation, within the adapter's configured limits. Hermes takes `/memory` as its own command for
+native memory write approval, so these commands never reach the Hermes adapter. Do not suggest them to a
+Hermes owner; point to `owner_access` instead. `/memory on` cannot lift a startup restriction
 or a restriction inherited by a child. On resume the adapter restores the most restrictive setting from native history until
 the owner opts back in. These controls do not delete native history. An HTTP client can send
 `X-CetiRun-Memory-Mode: off` or `no-capture` on supported endpoints.

@@ -13,7 +13,14 @@ deployment settings.
 
 - [Choose a model](models/)
 - [Chat with a Custom Agent](custom-chat/) — chat without a native Web UI and keep history in your browser
-- [Manage lifecycle](lifecycle/) — examine readiness, update, suspend, and delete instances
+- [Manage your Agent](lifecycle/) — edit, restart, suspend, resume, upgrade, and delete your Agent
+- [Tour the portal](portal/) — the header, the Agent list, the sidebar, and the Overview and Status tabs
+- [Choose an Agent type](agent-types/) — Hermes, OpenClaw, and Custom
+- [Use memory](memory/) — what the Agent remembers, and how to pause, limit, and delete notes
+- [Use skills](skills/) — platform skills, Team skills, and your own skills
+- [Protect your data](data/) — what each action keeps, copies of your files, and privacy
+- [Troubleshoot your Agent](troubleshooting/) — common problems and the default limits
+- [Frequently asked questions](faq/)
 
 ## Integrations
 

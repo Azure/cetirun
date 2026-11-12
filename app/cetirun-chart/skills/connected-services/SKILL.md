@@ -16,7 +16,9 @@ then `services_list` to discover its enabled services, origins and base paths.
 Reuse the resulting `connection_id` and service for the task. If several accounts
 fit and the intended executor is unclear, clarify the account before proceeding.
 Each Agent needs an explicit connection binding; use `connections_start_link`
-to obtain the owner's management URL when a connection is missing.
+to obtain the owner's management URL when a connection is missing. The URL
+opens the Portal home page; tell the owner to open this Agent and select
+**Identities** → **Add identity**.
 
 Read only the reference relevant to the selected service:
 
@@ -72,7 +74,9 @@ inventory or an accepted asynchronous write as a completed operation.
   again will fix it; do not enter a sign-in loop.
   Provider HTTP 401/403: review the provider's consent or resource permissions.
 - `invalid_request`: correct the path, query, headers or JSON shape.
-- `dependency_unavailable`: report the failure without choosing another token path.
+- `dependency_unavailable`, or platform `unauthenticated` or `authorization_changed`:
+  report the failure and its `correlation_id` without choosing another token path.
+  These codes do not mean that the owner must reconnect.
 - Platform `throttled`: credential acquisition was rate-limited; report it and
   retry only as the task warrants. This does not require reauthorization.
 - Provider 429: report throttling and `Retry-After`; retry only as the task warrants.
