@@ -561,6 +561,14 @@ func (r *AgentPolicyReconciler) Reconcile(ctx context.Context, request ctrl.Requ
 	condition.LastTransitionTime = metav1.NewTime(now)
 	apimeta.SetStatusCondition(&object.Status.Conditions, condition)
 	object.Status.ObservedGeneration = object.Generation
+	if condition.Status == metav1.ConditionTrue || policyAcceptedBefore(before) {
+		// Keep the acceptance of this generation when a transient or
+		// registration-only failure replaces the condition. This also
+		// records an acceptance that only the replaced condition shows, for
+		// example one from an operator without this field. The history never
+		// permits execution, and it is never cleared or lowered.
+		object.Status.AcceptedGeneration = object.Generation
+	}
 	if !reflect.DeepEqual(before.Status, object.Status) {
 		if err := r.Status().Patch(ctx, object, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 			return ctrl.Result{}, errors.Join(observeErr, fmt.Errorf("update AgentPolicy configuration status: %w", err))
@@ -714,9 +722,15 @@ func (r *AgentPolicyReconciler) assess(ctx context.Context, reader client.Reader
 // platform registration. Agents treat it as an unavailable dependency.
 const policyRegistrationIncompatibleReason = "RegistrationIncompatible"
 
-// policyAcceptedBefore reports whether the current generation was accepted, or
-// was already refused only because of the registration.
+// policyAcceptedBefore reports whether the current generation was accepted
+// before. Status.AcceptedGeneration keeps that acceptance across transient and
+// registration-only failures. The Accepted condition still counts for a policy
+// that an operator without that field accepted, or already refused only
+// because of the registration. This history never permits execution.
 func policyAcceptedBefore(policy *api.AgentPolicy) bool {
+	if policy.Generation > 0 && policy.Status.AcceptedGeneration == policy.Generation {
+		return true
+	}
 	accepted := apimeta.FindStatusCondition(policy.Status.Conditions, api.ConditionAgentPolicyAccepted)
 	if accepted == nil || accepted.ObservedGeneration != policy.Generation || policy.Status.ObservedGeneration != policy.Generation {
 		return false
