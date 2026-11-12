@@ -220,3 +220,11 @@ observability:
   #   endpoint: https://alerts.example.com
   #   clientId: 77777777-7777-7777-7777-777777777777
   #   destination: example-team
+  # Optional: the AI Gateway writes the request and the response of each call to
+  # a database of their own in the same Kusto cluster, and the spend log in
+  # PostgreSQL keeps none. The cluster template creates both with adxContent: the
+  # identity has the Ingestor and Viewer roles on that database only and a
+  # federated credential for system:serviceaccount:<platform.namespace>:cetirun-ai-gateway.
+  # content:
+  #   clientId: 88888888-8888-8888-8888-888888888888
+  #   database: CetiRunContent

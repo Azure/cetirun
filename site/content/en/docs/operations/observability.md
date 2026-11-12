@@ -78,7 +78,8 @@ readers and a shorter retention than the other databases.
 
 When its value `content.enabled` is `true`, the AI Gateway writes the prompt and
 the response of each call to a separate database, by default `CetiRunContent`.
-It uses its own identity, and ADX-Mon has no access to this database. Refer to
+It uses its own identity, and ADX-Mon has no access to this database. With
+`make deploy`, the `content` block of `observability` sets it. Refer to
 [Content in Azure Data Explorer]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#content-in-azure-data-explorer).
 
 The routes of the chart select a Pod by its labels and namespace. The routes of
@@ -344,6 +345,23 @@ observability:
 The outputs `adxClusterUri` and `adxIngestorClientId` of the cluster template
 are its `adx.endpoint` and `ingestorClientId`. The optional `alerter` block
 turns the alerter on; refer to [Alerts](#alerts).
+
+The optional `content` block sends the prompts and responses of the AI Gateway
+to a database of their own. The spend log in PostgreSQL then keeps none:
+
+```yaml
+observability:
+  # clusterName, adx and ingestorClientId, as above
+  content:
+    clientId: <content-client-id>
+    database: CetiRunContent    # The default
+```
+
+It sets the Gateway's `content` values with the `clusterName` and the Kusto
+cluster above. With `adxContent`, the cluster template creates the database
+and the identity; its outputs `adxContentDatabase` and `adxContentClientId` are
+`database` and `clientId`. Without the block, the spend log keeps prompts and
+responses for seven days.
 
 `clusterName` names this CetiRun cluster in every row. Several CetiRun clusters
 can share one Kusto cluster. `make deploy` does not call Azure: it does not
