@@ -325,7 +325,11 @@ func planModelRouters(team *api.Team, view aiGatewaySharedRouterView, mergedName
 		}
 		switch classifier {
 		case api.ModelRouterClassifierLLM:
-			config["classifier_llm_config"] = map[string]any{"model": router.Classifier.Model}
+			// A chat model can need more than LiteLLM's three-second default.
+			// Failed classifications, including during the timeout circuit's
+			// cooldown, go to the medium tier rather than the heuristic scorer.
+			config["classifier_llm_config"] = map[string]any{"model": router.Classifier.Model, "timeout_ms": 10000}
+			config["classifier_fallback"] = "default_model"
 		case api.ModelRouterClassifierJev:
 			// The decision model, and nothing else: without a licence, LiteLLM
 			// allows only one router per Gateway whose jev classifier sets its

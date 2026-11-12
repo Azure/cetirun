@@ -1214,9 +1214,8 @@ accepts only that format. Each pair must have two different strings that are
 not blank. The chart refuses all
 other values. As a result, the proxy does not refuse to start because of them.
 
-**The agent keeps its conversation and its limits.** If a router does not set
-them, the chart changes three router defaults of LiteLLM 1.105.1. For a router
-with `classifier_type: jev`, the chart also changes a fourth default:
+**The agent keeps its conversation and its limits.** The chart changes the
+following LiteLLM defaults unless a router sets its own values:
 
 - `context_compaction: false`. Without this setting, LiteLLM rewrites the
   conversation history near the input limit of the selected model, with more
@@ -1231,8 +1230,11 @@ with `classifier_type: jev`, the chart also changes a fourth default:
   setting, LiteLLM moves it to the lowest tier that has a model with a
   sufficiently large declared window. For this, set `max_input_tokens` in the
   `model_info` of each model.
-- `classifier_fallback: default_model`, with `classifier_type: jev`. The
-  decision model cannot always classify a request, for example when it is
+- `classifier_llm_config.timeout_ms: 10000`, with `classifier_type: llm`. A
+  chat model has ten seconds to classify instead of LiteLLM's three. A slower
+  response can then complete before a timeout opens the classifier circuit.
+- `classifier_fallback: default_model`, with `classifier_type: llm` or `jev`.
+  The classifier cannot always classify a request, for example when it is
   unavailable. Without this setting, the heuristic scorer of LiteLLM then
   classifies the request. In our tests, this scorer put 15 of 40 English
   prompts and 11 of 40 Chinese prompts on the expected tier. With this
@@ -1245,7 +1247,8 @@ with `classifier_type: jev`, the chart also changes a fourth default:
   header `x-litellm-complexity-router-cause` and the `routing_cause` of the
   request log show `default_model_fallback`, with no tier. A router that sets
   `classifier_fallback` keeps its own value. A router with its own
-  `tier_definitions` uses its `fallback_tier`, and gets no default.
+  `tier_definitions` uses its `fallback_tier`; the chart does not add
+  `classifier_fallback` to it.
 
 **A router is granted only with its models.** A router sends requests to a set
 of models. With `operatorIntegration`, the CetiRun operator puts the router on
@@ -1585,19 +1588,28 @@ Keep the instructions of LiteLLM for the classifier. A router that sets
 LiteLLM limits these prompts. For more information, see "One router per
 licensed capability" above.
 
-A model classifier can fail, or not answer in its `timeout_ms` (3000 by
-default). In these cases, a router with an `llm` classifier classifies the
-request with `heuristic` instead. A router with a `jev` classifier sends the
-request to its default model, as `classifier_fallback: default_model` above
-describes. Neither router reports an error. After a timeout, the router skips
-the classifier for 30 seconds.
+A model classifier can fail, or not answer in its `timeout_ms`. The chart
+gives an `llm` classifier 10000 milliseconds and keeps LiteLLM's default of
+3000 milliseconds for `jev`. In either case, a failed classification sends
+the request to the router's default model, as `classifier_fallback` above
+describes. After a timeout, the router skips the classifier for 30 seconds.
+Requests during this period also go to the default model.
+
+For a different `llm` timeout, set `classifier_llm_config.timeout_ms`. To use
+the heuristic scorer on a classification failure, set
+`classifier_fallback: heuristic`. The chart keeps both explicit settings.
+Routers with their own `tier_definitions` keep their `fallback_tier` instead.
+Team routers use the ten-second `llm` timeout and send failed classifications
+to their medium-tier model. An Operator upgrade replaces their existing `llm`
+registrations once, with the same model names and access groups.
 
 `routing_cause` in the request log and the response header
 `x-litellm-complexity-router-cause` show which classifier decided. For a model
 classifier, they show `llm_classifier` or `jev_classifier`. For the local
-scorer, they show `heuristic_scorer` or `reasoning_override`. After a failed
-`jev` classification, they show `default_model_fallback`. Sometimes the model
-of the selected tier has no healthy deployment. Then the router sends the
+scorer, they show `heuristic_scorer` or `reasoning_override`. With the default
+fallback for `llm` and `jev`, a failed or skipped classification shows
+`default_model_fallback`. Sometimes the model of the selected tier has no
+healthy deployment. Then the router sends the
 request to another model of its tiers, or to its default model, and they show
 `health_failover` or `health_default_fallback`.
 

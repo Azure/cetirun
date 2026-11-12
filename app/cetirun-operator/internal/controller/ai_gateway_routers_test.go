@@ -177,9 +177,11 @@ func TestPlanModelRoutersBuildsTheRegistration(t *testing.T) {
 		!slices.Equal(llm.copilot, []string{"copilot/fast-1", "copilot/deep-1"}) || !slices.Equal(llm.shared, []string{testSmallModel, testSharedModelOne}) {
 		t.Fatalf("llm router = %+v, config %v", llm, llmConfig)
 	}
-	// An llm classifier that fails falls back to LiteLLM's heuristic scorer, as before.
-	if _, ok := llmConfig["classifier_fallback"]; ok {
-		t.Fatalf("an llm router sets no classifier_fallback: %v", llmConfig)
+	// A slow classifier gets ten seconds; a failed or skipped classification
+	// goes to the medium tier rather than the heuristic scorer.
+	if llmConfig["classifier_llm_config"].(map[string]any)["timeout_ms"] != 10000 ||
+		llmConfig["classifier_fallback"] != "default_model" || llm.request.DefaultModel != testSmallModel {
+		t.Fatalf("llm classifier defaults = %v, default model %q", llmConfig, llm.request.DefaultModel)
 	}
 
 	// The ID follows the configuration; the model name does not.
@@ -202,13 +204,12 @@ func TestPlanModelRoutersKeepsTheRegistrationIDsOfExistingRouters(t *testing.T) 
 	team := routerTeam(testRouter(testRouterName, testSmallModel, testSharedModelOne, testSharedModelOne),
 		api.TeamModelRouter{Name: "auto-llm", Classifier: api.TeamModelRouterClassifier{Type: api.ModelRouterClassifierLLM, Model: testSmallModel},
 			Tiers: api.TeamModelRouterTiers{Simple: testSmallModel, Medium: testSharedModelOne, Complex: testSharedModelOne, Reasoning: testSharedModelOne}})
-	// The IDs since the reminder marker of OpenClaw's tool-result images was
-	// added. main 9ce1379a computed cetirun-router-6b7afde237469b29-f7804b5a
-	// and cetirun-router-696bf59da340065e-b6d8b211, which the upgrade replaces
-	// once.
+	// The heuristic ID stays as it was after adding OpenClaw's tool-result
+	// reminder marker. The llm ID now includes the ten-second timeout and
+	// default-model fallback; its earlier suffix was 457b9bb8.
 	want := map[string]string{
 		testRouterName: "cetirun-router-6b7afde237469b29-3015dc06",
-		"auto-llm":     "cetirun-router-696bf59da340065e-457b9bb8",
+		"auto-llm":     "cetirun-router-696bf59da340065e-ff0f908d",
 	}
 	plans := planModelRouters(team, view, nil)
 	if len(plans) != len(want) {
@@ -401,6 +402,54 @@ func TestTeamModelRoutersRegisterReplaceAndRemove(t *testing.T) {
 	}
 	if current.Status.ModelRouters != nil || apimeta.FindStatusCondition(current.Status.Conditions, api.ConditionTeamModelRoutersReady) != nil {
 		t.Fatalf("status = %+v", current.Status)
+	}
+}
+
+// Updating the llm classifier defaults replaces an existing registration once,
+// under the same name and access group. Later passes leave it in place.
+func TestTeamLLMRouterReplacesOldDefaults(t *testing.T) {
+	const name = "auto-llm"
+	const oldID = "cetirun-router-696bf59da340065e-457b9bb8"
+	team := routerTeam(api.TeamModelRouter{Name: name,
+		Classifier: api.TeamModelRouterClassifier{Type: api.ModelRouterClassifierLLM, Model: testSmallModel},
+		Tiers:      api.TeamModelRouterTiers{Simple: testSmallModel, Medium: testSharedModelOne, Complex: testSharedModelOne, Reasoning: testSharedModelOne}})
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace())
+	addSmallSharedModel(gateway)
+	allowTestPolicyModels(t, kube, testSmallModel, name)
+	gatewayName := modelRouterGatewayName(testAIGatewayTeam, name)
+	gateway.models[oldID] = aigateway.ModelRequest{
+		ID: oldID, ModelName: gatewayName, AccessGroups: []string{gatewayName},
+	}
+
+	current := reconcileRouters(t, r, kube, testAIGatewayTeam)
+	requests := routerRequests(gateway)
+	if len(requests) != 1 || requests[0].ID == oldID || requests[0].ModelName != gatewayName ||
+		!slices.Equal(requests[0].AccessGroups, []string{gatewayName}) || !slices.Equal(gateway.deletedModels, []string{oldID}) {
+		t.Fatalf("requests %+v, deleted %v", requests, gateway.deletedModels)
+	}
+	if _, exists := gateway.models[oldID]; exists {
+		t.Fatal("the old llm registration must be removed")
+	}
+	if status := current.Status.ModelRouters; len(status) != 1 || !status[0].Ready || status[0].GatewayModel != gatewayName {
+		t.Fatalf("router status = %+v", status)
+	}
+	ctx := context.Background()
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	status := routerStatuses(agent)[name]
+	if !status.Granted || status.Model != gatewayName || status.Alias != name ||
+		status.ContextWindow != 400000 || status.MaxTokens != 16384 || !slices.Contains(lastKeyModels(gateway), gatewayName) {
+		t.Fatalf("Agent router = %+v, key models %v", status, lastKeyModels(gateway))
+	}
+	revision := r.aiGatewayRevision(agent)
+	reconcileRouters(t, r, kube, testAIGatewayTeam)
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(routerRequests(gateway)) != 1 || len(gateway.deletedModels) != 1 || r.aiGatewayRevision(agent) != revision {
+		t.Fatal("a steady pass must keep the registration and Agent configuration")
 	}
 }
 
