@@ -20,10 +20,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 OPENCLAW = ROOT / "app/cetirun-chart/agents/openclaw"
 INSTALLER = OPENCLAW / "compat/apply-gateway-budget.mjs"
-BILLING_CHUNK = "dist/user-copy-DfLWtdTx.mjs"
-BYPASS_CHUNK = "dist/usage-state-Bm5iXGhR.mjs"
+# OpenClaw's chunk of user-facing text, and its chunk of key usage state.
+TEXT_CHUNK = "dist/user-copy-DfLWtdTx.mjs"
+COOLDOWN_CHUNK = "dist/usage-state-Bm5iXGhR.mjs"
 
-BILLING = textwrap.dedent("""\
+TEXT_SOURCE = textwrap.dedent("""\
     /** Format billing copy with optional provider/model and credential context. */
     function formatBillingErrorMessage(provider, model, authMode) {
     \tconst providerName = provider?.trim();
@@ -31,7 +32,7 @@ BILLING = textwrap.dedent("""\
     }
     const BILLING_ERROR_USER_MESSAGE = formatBillingErrorMessage();
     """)
-BYPASS = textwrap.dedent("""\
+COOLDOWN_SOURCE = textwrap.dedent("""\
     function isAuthCooldownBypassedForProvider(provider) {
     \tconst normalized = normalizeProviderId(provider ?? "");
     \treturn normalized === "openrouter" || normalized === "kilocode";
@@ -48,7 +49,7 @@ import vm from "node:vm";
 import { pathToFileURL } from "node:url";
 const installer = await import(pathToFileURL(process.argv[2]).href);
 const [cases, root] = [JSON.parse(process.argv[3]), process.argv[4]];
-const edits = { billing: installer.FILES[%(billing)s].edit, bypass: installer.FILES[%(bypass)s].edit };
+const edits = { text: installer.FILES[%(text)s].edit, cooldown: installer.FILES[%(cooldown)s].edit };
 const outcome = (run) => { try { return { value: run() }; } catch (error) { return { error: error.message }; } };
 const results = {};
 for (const [name, { source, kind }] of Object.entries(cases)) {
@@ -62,7 +63,7 @@ for (const [name, { source, kind }] of Object.entries(cases)) {
     const context = { normalizeProviderId: (value) => String(value).trim().toLowerCase() };
     vm.runInNewContext(patched.value, context);
     const changed = context[edit.name];
-    result.calls = kind === "billing"
+    result.calls = kind === "text"
       ? Object.fromEntries([["cetirun", "cetirun"], ["CetiRun", " CetiRun "], ["none", undefined], ["openai", "openai"]]
           .map(([label, provider]) => [label, changed(provider, "gpt-6", "api-key")]))
       : Object.fromEntries(["cetirun", "openrouter", "kilocode", "openai"].map((provider) => [provider, changed(provider)]));
@@ -75,7 +76,7 @@ console.log(JSON.stringify({
   unsupported: outcome(() => installer.apply(root)).error ?? null,
   results,
 }));
-""" % {"billing": json.dumps(BILLING_CHUNK), "bypass": json.dumps(BYPASS_CHUNK)}
+""" % {"text": json.dumps(TEXT_CHUNK), "cooldown": json.dumps(COOLDOWN_CHUNK)}
 
 
 @unittest.skipUnless(shutil.which("node"), "requires Node for the OpenClaw image's patch")
@@ -83,29 +84,29 @@ class OpenClawGatewayBudgetPatchTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cases = {
-            "billing": {"source": BILLING, "kind": "billing"},
-            "bypass": {"source": BYPASS, "kind": "bypass"},
-            "changed billing": {"source": BILLING.replace("authMode)", "auth)"), "kind": "billing"},
-            "repeated bypass": {"source": BYPASS * 2, "kind": "bypass"},
+            "text": {"source": TEXT_SOURCE, "kind": "text"},
+            "cooldown": {"source": COOLDOWN_SOURCE, "kind": "cooldown"},
+            "changed text": {"source": TEXT_SOURCE.replace("authMode)", "auth)"), "kind": "text"},
+            "repeated cooldown": {"source": COOLDOWN_SOURCE * 2, "kind": "cooldown"},
         }
         with tempfile.TemporaryDirectory() as directory:
             # A package whose chunks are at the pinned paths, but not the published ones.
             package = Path(directory) / "openclaw"
-            for name, source in ((BILLING_CHUNK, BILLING), (BYPASS_CHUNK, BYPASS)):
+            for name, source in ((TEXT_CHUNK, TEXT_SOURCE), (COOLDOWN_CHUNK, COOLDOWN_SOURCE)):
                 (package / name).parent.mkdir(parents=True, exist_ok=True)
                 (package / name).write_text(source, encoding="utf-8", newline="\n")
             runner = Path(directory) / "runner.mjs"
             runner.write_text(RUNNER, encoding="utf-8")
             result = subprocess.run(["node", str(runner), str(INSTALLER), json.dumps(cases), str(package)],
                                     capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
-            cls.left = {name: (package / name).read_text(encoding="utf-8") for name in (BILLING_CHUNK, BYPASS_CHUNK)}
+            cls.left = {name: (package / name).read_text(encoding="utf-8") for name in (TEXT_CHUNK, COOLDOWN_CHUNK)}
         if result.returncode != 0:
             raise AssertionError(f"{result.stdout}\n{result.stderr}")
         cls.report = json.loads(result.stdout)
 
     def test_the_gateway_and_an_unnamed_provider_get_the_cetirun_text(self):
         copy = self.report["copy"]
-        result = self.report["results"]["billing"]
+        result = self.report["results"]["text"]
         self.assertIs(result["verified"], True)
         calls = result["calls"]
         self.assertEqual([calls["cetirun"], calls["CetiRun"], calls["none"]], [copy, copy, copy])
@@ -113,12 +114,12 @@ class OpenClawGatewayBudgetPatchTests(unittest.TestCase):
         self.assertEqual(calls["openai"], "published openai")
 
     def test_the_gateway_key_keeps_no_cooldown_and_other_providers_keep_theirs(self):
-        result = self.report["results"]["bypass"]
+        result = self.report["results"]["cooldown"]
         self.assertIs(result["verified"], True)
         self.assertEqual(result["calls"], {"cetirun": True, "openrouter": True, "kilocode": True, "openai": False})
 
     def test_the_patch_applies_once_and_is_recognized_when_it_runs_again(self):
-        for name in ("billing", "bypass"):
+        for name in ("text", "cooldown"):
             with self.subTest(chunk=name):
                 result = self.report["results"][name]
                 self.assertIsNone(result["patched"])
@@ -128,21 +129,21 @@ class OpenClawGatewayBudgetPatchTests(unittest.TestCase):
                 self.assertIn("was not changed", result["unpatched"])
 
     def test_a_changed_openclaw_source_fails_the_build(self):
-        for name in ("changed billing", "repeated bypass"):
+        for name in ("changed text", "repeated cooldown"):
             with self.subTest(chunk=name):
                 self.assertIn("OpenClaw changed where CetiRun patches", self.report["results"][name]["patched"])
         # Chunks at the pinned paths with other contents are refused and left as they are.
         self.assertEqual(self.report["unsupported"],
-                         f"Unsupported OpenClaw source {BILLING_CHUNK}; review the pinned integration")
-        self.assertEqual(self.left, {BILLING_CHUNK: BILLING, BYPASS_CHUNK: BYPASS})
+                         f"Unsupported OpenClaw source {TEXT_CHUNK}; review the pinned integration")
+        self.assertEqual(self.left, {TEXT_CHUNK: TEXT_SOURCE, COOLDOWN_CHUNK: COOLDOWN_SOURCE})
 
     def test_only_the_two_published_chunks_are_changed(self):
         # OpenClaw's worker bundles in dist/worker stay as published.
         self.assertEqual(self.report["files"], {
-            BILLING_CHUNK: {"sha256": "1b85f5fcfff49bdcb428f0b6fa21e786261ddc88f37a930b84ee5d391865a644",
-                            "edit": "formatBillingErrorMessage"},
-            BYPASS_CHUNK: {"sha256": "4abd9dab006d0b708e69e869ab8e56d92312cd074ac8ef7fc04b33999be9c60a",
-                           "edit": "isAuthCooldownBypassedForProvider"},
+            TEXT_CHUNK: {"sha256": "1b85f5fcfff49bdcb428f0b6fa21e786261ddc88f37a930b84ee5d391865a644",
+                         "edit": "formatBillingErrorMessage"},
+            COOLDOWN_CHUNK: {"sha256": "4abd9dab006d0b708e69e869ab8e56d92312cd074ac8ef7fc04b33999be9c60a",
+                             "edit": "isAuthCooldownBypassedForProvider"},
         })
 
     def test_the_text_names_the_budget_and_does_not_read_as_a_temporary_limit(self):
