@@ -50,9 +50,9 @@ The operator gives the CetiAdmin ServiceAccount these Kubernetes permissions:
 
 | Scope | Permissions |
 | --- | --- |
-| Namespace of each standard Agent | Read all Secrets (`get`, `list`, `watch`). Run `kubectl exec` in the Agent Pods. Delete Pods to restart them. Create and change Secrets and ConfigMaps. Change Services, StatefulSets, and Deployments. Expand PVCs. Read Pod logs and the diagnostic resources. |
+| Namespace of each standard Agent | Read all Secrets (`get`, `list`, `watch`). Run `kubectl exec` in the Agent Pods. Delete Pods to restart them. Create and change Secrets and ConfigMaps. Change Services, StatefulSets, and Deployments. Write Events. Expand PVCs. Read Pod logs and the diagnostic resources. |
 | Namespace of each Sandbox Agent | Read Pod logs and the diagnostic resources. Write Events. Expand PVCs. No Secret access and no `kubectl exec`. |
-| Namespaces in `cetiadmin.platformReadNamespaces` | Read the diagnostic resources. |
+| Namespaces in `cetiadmin.platformReadNamespaces` | Read Pod logs and the diagnostic resources. |
 | Cluster | Read the cluster-scoped diagnostic resources. Create, update, and patch Agent resources. |
 
 The diagnostic resources are an explicit list of resource types, with `get`,

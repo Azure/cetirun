@@ -27,7 +27,7 @@ component.
 | Agent activity | Prompts, responses, files, tool arguments/results, session history, and user/team context | Agent process and HOME storage. Configured model, tool, and channel services. The AI Gateway's database, or its Azure Data Explorer content database when `content.enabled` is on, for seven days by default. Possibly container logs. |
 | Authentication material | The OpenClaw gateway token, the Hermes API key, the AI Gateway virtual key, provider credentials, OAuth device-flow state, and optional Tailscale credentials | Kubernetes Secrets, mounted configuration, agent home files, process memory, and the services that authenticate them |
 | Browser and terminal | Commands/output, visited pages, downloads, screenshots, browsing history, and browser login state | Agent processes and HOME storage. Websites or services that the browser/tools contact. Terminal/desktop streams that go to the user. |
-| CetiAdmin | The operations Agent, enabled by default. It can read the Secrets and, through `kubectl exec`, the HOME files of each standard Agent, which does not run in a Sandbox. It can also read the Pod logs and diagnostic resources of the Agents that it manages. Refer to [CetiAdmin](site/content/en/docs/operations/cetiadmin.md). | The CetiAdmin Agent and its HOME. Its model context, the configured model provider, and the AI Gateway's database, for seven days by default. |
+| CetiAdmin | The operations Agent, enabled by default. It can read the Secrets and, through `kubectl exec`, the HOME files of each standard Agent, which does not run in a Sandbox. It can also read the Pod logs and diagnostic resources of the Agents that it manages, and of each namespace in `cetiadmin.platformReadNamespaces`. When this list contains the platform namespace, CetiAdmin can read the logs of the AI Gateway, the Portal, and the operator. Refer to [CetiAdmin](site/content/en/docs/operations/cetiadmin.md). | The CetiAdmin Agent and its HOME. Its model context, the configured model provider, and the AI Gateway's database, for seven days by default. The container log of its session logger, which the ADX-Mon collection can copy. The Slack channel of the monitor, when `cetiadmin.monitor.deliver` is `slack`. |
 | Agent memory | Facts and lessons that the Agent keeps from its sessions. All sessions that the agent admits can read and write them, also channel and group chats. A reply in a group can quote them. | The `$HOME/.cetirun/memory` directory on the HOME volume. The AI Gateway receives the model calls that use the notes. |
 | Connections | The external accounts that an owner connects to an Agent, for example GitHub, Google, or Azure, and the encrypted tokens of these accounts | The Agent Identity Broker, in Kubernetes Secrets of the Broker namespace and of the Agent namespace. Connections MCP and the connected services, for each call that the Agent makes. |
 | Portal Chat history | The conversations of an owner with a Custom Agent in Portal Chat | The IndexedDB database `cetirun-portal-chat` in the owner's browser. The Custom Agent. |
@@ -193,13 +193,15 @@ helper examines them to find if they disable that collection.
 
 Some CetiRun containers that keep credentials in their environment also
 disable the collection for themselves with `AZMON_COLLECT_ENV=False`. They are
-the AI Gateway with its bundled PostgreSQL and Valkey, each Agent's GitHub
-Copilot proxy, and OAuth2 Proxy with its Valkey session store. Two other
-containers keep credentials in their environment but do not set the variable.
-The credentials of the Agent runtime container include the Gateway key and the
-native authentication keys of the Agent. The Broker keeps the OAuth client
-secrets of its GitHub and Google providers when you configure them. A cluster
-that runs the add-on without the cluster-wide settings collects these values.
+the AI Gateway with its bundled PostgreSQL and Valkey, the GitHub Copilot proxy
+of each OpenClaw and Hermes Agent, and OAuth2 Proxy with its Valkey session
+store. Three other containers keep credentials in their environment but do not
+set the variable. The credentials of the Agent runtime container include the
+Gateway key and the native authentication keys of the Agent. The GitHub
+Copilot proxy of a Custom Agent keeps its key from the Secret
+`ai-gateway-copilot-proxy`. The Broker keeps the OAuth client secrets of its
+GitHub and Google providers when you configure them. A cluster that runs the
+add-on without the cluster-wide settings collects these values.
 
 The Istio chart sets `egress.accessLog.enabled` to `true` by default. Its Envoy
 filters write traffic metadata to stdout. The filters apply to each proxy in the

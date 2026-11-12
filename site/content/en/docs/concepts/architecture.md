@@ -219,9 +219,12 @@ A Sandbox Agent uses the isolation type of its Sandbox.
 `execRestriction.enabled` is `true` by default and renders
 `admissionregistration.k8s.io/v1` ValidatingAdmissionPolicy resources. The
 cluster must support and enforce that API. This policy targets `pods/exec`, not
-the separate browser terminal. It does not cover `pods/attach`,
-`pods/portforward`, or ephemeral containers. Kubernetes RBAC alone controls
-these operations. Refer to
+the separate browser terminal.
+
+The policy does not cover `pods/attach`, `pods/portforward`, or ephemeral
+containers. For a standard Agent, Kubernetes RBAC alone controls these
+operations. For a Sandbox Agent, Sandbox admission refuses them and
+`pods/exec`, except the exec of the Custom terminal. Refer to
 [Kubernetes exec restriction](../../security/#kubernetes-exec-restriction).
 
 Namespaces, NetworkPolicy, Istio policy, and the RuntimeClass are separate

@@ -19,7 +19,7 @@ is created for such a Team with `kubectl` is held and never starts.
 > Agent Policy applies only to the Agents of a Team that has one. Put in an
 > Agent Policy only the access that every Portal user can have.
 
-A standard Agent has no Team, or a Team without an Agent Policy. It can use
+A standard Agent does not select a policy-bound Team or a Sandbox. It can use
 every shared model. When the deployment offers GitHub Copilot, the Agent can
 also use it. A standard Agent has no request limits. Its Gateway key starts with the operator's
 `aiGateway.defaultBudget`, 10000 USD a month by default. To change this budget,

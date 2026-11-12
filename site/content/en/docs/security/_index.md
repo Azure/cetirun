@@ -244,14 +244,16 @@ The policy denies `CONNECT` requests to `pods/exec` across the release
 namespace. The chart template has no fixed exception. When CetiAdmin is
 enabled, the operator adds an exception for the CetiAdmin service account to
 the policy of each standard Agent. Refer to
-[Exec exception](../operations/cetiadmin/#exec-exception). For a Custom Agent
-with the platform terminal, the policy applies the prepared exec rule of the
+[Exec exception](../operations/cetiadmin/#exec-exception). For the Custom
+terminal of a Custom Agent, the policy applies the prepared exec rule of the
 terminal.
 
-The policy covers only `pods/exec`. Kubernetes RBAC alone controls other Pod
-operations, for example `pods/attach`, `pods/portforward`, and ephemeral
-containers. These operations use the Kubernetes API directly, not the ingress
-gateway. Give these permissions in Agent namespaces only to trusted
+The policy covers only `pods/exec`. For a standard Agent, Kubernetes RBAC alone
+controls other Pod operations, for example `pods/attach`, `pods/portforward`,
+and ephemeral containers. In the namespace of a Sandbox Agent, Sandbox
+admission refuses these operations and `pods/exec`, except the exec of the
+Custom terminal. These operations use the Kubernetes API directly, not the
+ingress gateway. Give these permissions in Agent namespaces only to trusted
 administrators.
 
 This policy applies to the Kubernetes exec API, not to every route to command
