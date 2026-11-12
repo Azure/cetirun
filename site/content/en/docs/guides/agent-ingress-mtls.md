@@ -1,238 +1,216 @@
 ---
 title: "Managed Agent ingress mTLS"
-description: "Opt-in TLS for common-executor Kata and container managed or approved Custom HTTP workloads."
+description: "Encrypt the hop from the shared ingress gateway to an Agent Pod with per-Agent certificates."
 weight: 45
 ---
 
-`AgentPolicy.spec.network.ingress.requireMTLS: true` enables an explicitly
-registered Envoy endpoint **inside the Agent Pod**. The managed Istio Gateway
-authenticates that endpoint and presents its approved client certificate.
-OpenClaw API/Control UI, Hermes API/Webapp, the optional ttyd terminal and
-registered noVNC desktop then receive traffic over loopback only. No plaintext
-network hop follows an external Team gateway.
+Ingress mTLS encrypts and authenticates the connection from the shared Istio
+ingress gateway to the Pod of an Agent. Without it, the ingress gateway sends
+the traffic to the Agent over plaintext HTTP inside the cluster. Use ingress mTLS
+when your rules require encryption on each network hop.
 
-This is not browser client-certificate authentication. Shared browser HTTPS,
-OIDC, ownership authorization, and native application authentication stay in
-place. It does not inspect outbound HTTPS or block traffic by FQDN. Cilium
-is still the workload-external network boundary. The in-Pod TLS helper is not a
-replacement for that boundary or independent runtime-enforcement evidence.
+With ingress mTLS, an Envoy endpoint **inside the Agent Pod** terminates TLS.
+The ingress gateway authenticates that endpoint, and it presents the approved
+client certificate of the Agent. These applications of the Agent then receive
+traffic only on loopback:
 
-Shared-only, Copilot-only and mixed model selections keep the same Gateway
-routing. Only the Agent Service targets the managed TLS ports. The separately
-owned, private Copilot companion Service keeps its own selector and port.
+- the OpenClaw API and Control UI
+- the Hermes API and Webapp
+- the optional ttyd terminal
+- the registered noVNC desktop
+
+Ingress mTLS has these costs:
+
+- Each Agent needs two certificates that you issue. CetiRun does not issue or
+  renew them.
+- A certificate rotation stops the Agent and starts it again.
+- Only an admission administrator can enable it, with `kubectl`. The Portal
+  shows the setting, but you cannot change it there.
+
+Ingress mTLS is not browser client-certificate authentication. Browser HTTPS,
+OIDC, ownership authorization, and the authentication of the application stay
+in place. Ingress mTLS does not examine outbound HTTPS, and it does not block
+traffic by FQDN. Cilium is still the network boundary outside the workload.
+The TLS helper in the Pod does not replace that boundary, and it is not
+evidence of runtime enforcement.
+
+Shared-only, Copilot-only, and mixed model selections keep the same AI Gateway
+routing. Only the Agent Service targets the TLS ports. The private Copilot
+companion Service keeps its own selector and port.
 
 ## Prerequisites and supported surfaces
 
-- Use the common executor, a Kata or container Sandbox, and OpenClaw, Hermes,
-  or an approved Custom HTTP harness that follows the contract below.
-  Retained single-start lifetimes do not support this opt-in.
-- Before you enable it, upgrade the Operator, the independent admission
-  process, and the runtime chart. An older chart without the protected
-  `ingressMTLS` schema field fails closed. It does not silently render
-  plaintext.
+- Use a Sandbox Agent with Sandbox execution enabled, in a Kata or Container
+  Sandbox. Its agent type must be OpenClaw, Hermes, or an approved Custom
+  Agent with an HTTP interface that follows the contract below. Sandbox Agents
+  that an earlier version of Sandbox execution started do not support ingress
+  mTLS.
+- Before you enable it, upgrade the operator, the admission process, and the
+  agent chart together. An older chart without the protected `ingressMTLS`
+  schema field fails closed. It does not render plaintext.
 - Register `Capabilities.mutualTLS: true` and a digest-pinned endpoint image
-  under `platforms.kata.ingressMTLS` or `platforms.container.ingressMTLS`.
-  Use the key that matches the selected runtime in the protected platform
-  ConfigMap. A capability flag alone is insufficient.
-- Use one explicitly pinned shared Gateway and its protected Pod selector that
-  already exists in `topology.ingress`. Continue to list the approved
-  **application** ports there. The compiler substitutes TLS listener ports and
-  denies the plaintext application ports. This denial also applies against
+  under `platforms.kata.ingressMTLS` or `platforms.container.ingressMTLS` in
+  the platform registration. Use the key that matches the isolation type of
+  the Sandbox. A capability flag alone is not sufficient.
+- Use the pinned `Gateway` resource of the ingress gateway, which is the
+  operator's `istioGateway`, and its protected Pod selector in
+  `topology.ingress`. Continue to list the
+  approved **application** ports there. The compiler substitutes the TLS
+  listener ports and denies the plaintext application ports, also against
   additive network allows.
-- To keep the enabled desktop default, register `"desktop": true` and
+- To keep the enabled desktop default, register `"desktop": true` and the
   application port 6080. The registration must match the rendered desktop
-  selection. noVNC is not silently left as a plaintext route.
-- For this opt-in, disable Tailscale, arbitrary sidecars/initializers, and
-  extra mounted volumes. Unsupported surfaces cause a render failure. They are
-  not silently left outside TLS. Logger and ordinary platform-owned
-  initialization are still supported.
-- Keep ingress mode `authenticated`. `disabled` plus `requireMTLS: true` is
-  invalid. `requireMTLS: false` keeps the ordinary render and routing path.
+  selection. noVNC is never left as a plaintext route.
+- Disable Tailscale, arbitrary sidecars and initializers, and extra mounted
+  volumes. Unsupported surfaces cause a render failure. They are never left
+  outside TLS. The logger and the ordinary initialization of the platform are
+  still supported.
+- Keep the ingress mode `authenticated`. `disabled` together with
+  `requireMTLS: true` is not valid. `requireMTLS: false` keeps the ordinary
+  render and routing path.
 
-The endpoint listens on TCP 15443 (primary API/UI), 15444 (Hermes Webapp),
-15445 (enabled terminal), and 15446 (registered noVNC desktop). Its admin
-interface is loopback-only on 15440 and is never a Service or Cilium ingress
-grant. The application primary port is the approved Agent port. The Webapp
-stays on loopback 9120, and the terminal stays on loopback 7681. The
-managed desktop fixes noVNC to loopback port 6080, VNC to loopback port 5900
-and Chrome CDP to loopback port 18800. Only noVNC gets an external TLS route.
+The endpoint listens on these TCP ports:
 
-The local readiness probe of the desktop examines HTTP assets, the RFB listener
-and CDP availability without Gateway client credentials. A custom terminal port
-or an unexpected Service port is rejected.
+| Port | Use |
+| --- | --- |
+| 15443 | The primary API and UI |
+| 15444 | The Hermes Webapp |
+| 15445 | The enabled terminal |
+| 15446 | The registered noVNC desktop |
+| 15440 | The admin interface, on loopback only. It is never a Service or a Cilium ingress grant |
 
-The optional `desktop` registration field is omitted/false for older
+The primary application port is the approved Agent port. The Webapp stays on
+loopback port 9120, and the terminal stays on loopback port 7681. The managed
+desktop uses loopback port 6080 for noVNC, 5900 for VNC, and 18800 for Chrome
+CDP. Only noVNC gets an external TLS route.
+
+The local readiness probe of the desktop examines the HTTP assets, the RFB
+listener, and CDP without the client credentials of the ingress gateway. A custom terminal port
+or an unexpected Service port is refused.
+
+The optional `desktop` registration field is empty or false for earlier
 approvals. It never grants desktop ingress implicitly. Before you add it,
-upgrade strict registration readers. Explicit desktop-disabled mTLS
-configurations that already exist stay valid. Ordinary non-mTLS desktop
-behavior is unchanged.
+upgrade the strict readers of the registration. mTLS configurations with an
+explicitly disabled desktop stay valid. The ordinary desktop behavior without
+mTLS does not change.
 
-The helper has the selected Sandbox's helper requests and limits, an
+The helper uses the helper requests and limits of the Sandbox, an
 unprivileged identity, dropped capabilities, and a read-only root filesystem.
-Its resources are counted with the other resources of the Pod. It receives
-neither HOME nor application/model credentials. Istio injection stays
-disabled.
+Its resources count with the other resources of the Pod. It receives neither
+HOME nor application or model credentials. Istio injection stays disabled.
 
-## OpenClaw Control UI Portal sign-in
+## Enable ingress mTLS for an Agent
 
-With the registered mTLS endpoint above, a common-executor OpenClaw Sandbox
-can opt in to Portal sign-in:
+Do these steps as an admission administrator. In the commands, `<agent>` is
+the name of the Agent. The `Gateway` resource of the ingress gateway is
+`aks-istio-ingress/cetirun-gateway`, the default `istioGateway` of the
+operator.
 
-```yaml
-spec:
-  helm:
-    values:
-      openclaw:
-        portalSignIn:
-          enabled: true
-```
+1. In `platform.json`, set `mutualTLS: true` in the registration of the
+   isolation type, `kata` or `container`. Add `ingressMTLS` to the platform of
+   the same isolation type, with the endpoint image and no bindings yet:
 
-The owner opens the Control UI from the Portal without pasting the gateway
-token or running `openclaw devices approve`. The shared ingress still strips
-client-supplied identity headers before sign-in and checks ownership before
-forwarding `x-auth-request-email`. The in-Pod Envoy verifies the approved
-per-Agent Gateway client certificate. OpenClaw listens on loopback and trusts
-exactly `127.0.0.1`, not the registered Pod network.
+   ```json
+   "ingressMTLS": {
+     "image": "docker.io/envoyproxy/envoy:v1.36.3@sha256:d68fc27a15a17ae3b13df8c8631523a2fe1192b39ec867dffe870b666c55c2dd",
+     "bindings": []
+   }
+   ```
 
-The Operator validates the rendered proxy list, authentication settings, and
-gateway credential environment. The doctor initializer still receives no
-gateway credentials. The existing gateway Secret key is unchanged. The Terminal CLI
-receives it as `OPENCLAW_GATEWAY_PASSWORD` instead of `OPENCLAW_GATEWAY_TOKEN`;
-OpenClaw does not accept a token in trusted-proxy mode. HOME initialization
-replaces saved gateway authentication on every start. With Portal sign-in,
-rendering and HOME initialization remove both `gateway.auth.token` and
-`gateway.remote.token`. OpenClaw can use the remote token even when
-`gateway.mode` is `local`. Other remote settings are kept.
-Turning the opt-in off restores the token environment and removes the managed
-trusted-proxy configuration on the next start.
+   Then replace the ConfigMap, as
+   [The platform registration](../../operations/policy-teams/#the-platform-registration)
+   shows.
+2. Select an Agent Policy for the mTLS Agents, and set `requireMTLS` on it:
 
-This setting defaults to false. Upgrade the Operator and runtime chart
-together before enabling it. An older chart that cannot render the requested
-mTLS sign-in contract is rejected rather than silently leaving token mode.
-Ordinary Sandbox ingress, whether registered by exact Pod IPs or by a Pod
-selector and trusted CIDRs, does not enable Portal sign-in. Retained
-single-start Sandbox lifetimes also keep token authentication and device
-approval. Native `gateway.auth` preferences cannot bypass this mTLS gate.
-Tailscale remains unsupported for the mTLS Sandbox. Legacy Agents retain
-their existing Istio-sidecar opt-in and token behavior with Tailscale.
+   ```bash
+   kubectl patch agentpolicy <policy> --type merge \
+     -p '{"spec":{"network":{"ingress":{"requireMTLS":true}}}}'
+   ```
 
-## Custom HTTP and terminal
+   > **Warning:** `requireMTLS` applies to every Agent of the Policy. An Agent
+   > of the Policy without a certificate approval does not run. Use a Policy
+   > that has no other Agents.
+3. Create the Agent in a Team of this Policy. Give it explicit
+   `spec.agent.image`, `spec.agent.port`, and `spec.helm.version` values. The
+   Agent waits for its certificate approval. During this wait, the bootstrap
+   can create the namespace and the HOME of the Agent.
+4. Read the UID of the Agent, and calculate the DNS name of its server
+   certificate. The Service of an Agent is `openclaw-<agent>-cetirun` for
+   every agent type, at most 63 characters. Its namespace is
+   `cetirun-<agent>`:
 
-A Custom registration uses `"harness": "custom"`, the exact declared
-application port, `"desktop": false`, and the actual terminal selection. The
-image must honor `CETIRUN_BIND_HOST=127.0.0.1`. CetiRun does not replace its
-ENTRYPOINT/CMD. The platform's static probe examines the unchanged `/healthz`
-contract. It also examines current public certificate validity and the active
-Envoy leaf.
+   ```bash
+   AGENT=<agent>
+   AGENT_UID=$(kubectl get agent "$AGENT" -o jsonpath='{.metadata.uid}')
+   SERVICE=$(printf 'openclaw-%s-cetirun' "$AGENT" | cut -c1-63 | sed 's/-*$//')
+   HASH=$(printf '%s' "$AGENT_UID" | sha256sum | cut -c1-32)
+   echo "agent-${HASH}.${SERVICE}.cetirun-${AGENT}.svc.cluster.local"
+   ```
 
-TLS probes pass an explicit `--mtls-server-name`. Older probe binaries reject
-that option. They do not silently report HTTP-only readiness. Upgrade the
-terminal/probe image together with the Operator, admission and runtime Chart.
-The updated Pi image implements the loopback contract.
+5. Issue the server certificate and the client certificate, as
+   [Externally provisioned certificates](#externally-provisioned-certificates)
+   shows. Create the server Secret in the namespace of the Agent. Create the
+   client Secret in the namespace of the `Gateway` resource.
+6. Read the UID and the resource version of both Secrets and of the `Gateway`
+   resource:
 
-The application Service keeps its declared port but targets Envoy on 15443.
-The optional separate terminal keeps port 7681 and targets its own Envoy on
-port 15445. Its process listens only on loopback. Each helper receives only the
-approved TLS/config mounts and Sandbox helper resources. The terminal does not
-receive HOME, Entra/Connections proofs or model credentials. Its DNS/Kubernetes
-API egress and CONNECT authorization, which already exist, stay separate.
+   ```bash
+   kubectl get secret <server-secret> -n "cetirun-$AGENT" -o jsonpath='{.metadata.uid} {.metadata.resourceVersion}{"\n"}'
+   kubectl get secret <client-secret> -n aks-istio-ingress -o jsonpath='{.metadata.uid} {.metadata.resourceVersion}{"\n"}'
+   kubectl get gateways.networking.istio.io cetirun-gateway -n aks-istio-ingress -o jsonpath='{.metadata.uid} {.metadata.resourceVersion}{"\n"}'
+   ```
 
-Headless images have no application HTTP endpoint and cannot request this
-opt-in. No HTTP port is synthesized. Custom desktop is still not supported.
+7. Add a binding for the Agent to `ingressMTLS.bindings` in `platform.json`.
+   The binding has the UID, the namespace, and the port of the Agent. It also
+   has the agent type (`harness`), the client URI, and the pins of step 6.
+   Refer to the fragment in
+   [Externally provisioned certificates](#externally-provisioned-certificates).
+   Then replace the ConfigMap again.
+8. Make sure that the Agent becomes ready. Open its UI through the Portal.
+   Before you treat the setup as complete, examine the TLS handshake through
+   the ingress gateway.
 
-For private Portal Chat, approve one more client for each Portal namespace.
-Add `chatClients` to the Custom binding. Web UI-only bindings leave it empty:
-
-```json
-{
-  "chatClients": [{
-    "secret": {
-      "namespace": "portal-system",
-      "name": "custom-chat-client",
-      "uid": "example-chat-secret-uid",
-      "resourceVersion": "100"
-    },
-    "uri": "spiffe://example.com/portal/example-agent-uid",
-    "podLabels": {"app": "cetirun-portal"}
-  }]
-}
-```
-
-This is a synthetic fragment, not a credential or deployment command. The
-namespace/labels must exactly match the Operator's configured Chat callers.
-The URI must end with the actual immutable Agent UID. The Secret contains a
-distinct client certificate/key and a CA that trusts the exact server identity
-of the Agent. The client trust of the Agent server Secret must cover both
-approved client identities. Never copy the Gateway client key into the Portal.
-
-The Portal must use the Istio sidecar that it already has and its configured
-SDS credential authorization. Istio 1.30 examines if the Portal ServiceAccount
-has the namespace-wide `list` permission on Secrets. Permission to `get` an
-individual Secret is not sufficient. Give that authority explicitly in a Portal
-credential namespace that is correctly isolated. The CetiRun chart does not
-grant it.
-
-A per-Agent, workload-selected DestinationRule in the Portal namespace
-originates mTLS for its private Chat route, which already exists. It is
-exported only locally. The Portal process neither reads the key nor changes
-its HTTP protocol. A mesh or credentials that are not available cannot cause a
-fallback to reachable plaintext. The compiler restricts Cilium to the TLS
-listener for that route.
-
-Chat readiness examines that TLS listener, not the loopback port of the
-application. The original HTTP Service port and the private route do not
-change. The Portal compares its current DestinationRule, which it owns, with
-the approved execution expectation. For this comparison, it uses the
-namespace-local `get` permission. It does not read certificate Secrets. If an
-approval, a caller selector, a TLS control, or a Service target port is absent
-or changed, Chat stays unavailable.
-
-These other Secret sources use the namespace-scoped source-read grants and
-journal that already exist. The protected execution expectation, which already
-exists, carries a typed Custom TLS plan. With this plan, no unrelated
-cross-namespace control resource can be installed or adopted. Before you
-enable it, upgrade all strict expectation readers. The stop/change/resume
-rules below also apply to Portal credentials, selectors and approvals. No new
-CA issuer or hot-rotation control plane is introduced.
+A registration has at most 128 bindings. These steps are not verified on a
+cluster.
 
 ## Externally provisioned certificates
 
 CetiRun does **not** create a CA, install an issuer, issue certificates, or
-renew them. An administrator supplies two distinct, per-Agent Secrets:
+renew them. A platform administrator supplies two distinct Secrets for each
+Agent:
 
-| Secret | Namespace | Required keys |
+| Secret | Namespace | Necessary keys |
 | --- | --- | --- |
-| Agent server | The Agent namespace | `tls.crt`, `tls.key`, `ca.crt` that trusts Gateway clients |
-| Gateway client | The shared Gateway namespace | `tls.crt`, `tls.key`, `ca.crt` that trusts Agent servers |
+| Agent server | The namespace of the Agent | `tls.crt`, `tls.key`, and a `ca.crt` that trusts the ingress gateway clients |
+| Ingress gateway client | The namespace of the `Gateway` resource | `tls.crt`, `tls.key`, and a `ca.crt` that trusts the Agent servers |
 
-The server Secret must also be distinct from application, model and image-pull
-credentials. It does not authorize `extraEnv`, `envFrom`, initializer access or
-more mount aliases.
+The server Secret must also be distinct from the application, model, and
+image-pull credentials. It does not authorize `extraEnv`, `envFrom`, access by
+initializers, or more mount aliases.
 
-For the client credential, use the Secret format that Istio Gateway SDS
-supports. The Gateway's TLS Secret for browsers is a different credential, and
-it does not change. No private CA key belongs in either Secret.
+For the client credential, use the Secret format that Istio supports for the
+SDS of the ingress gateway. The browser TLS Secret of the ingress gateway is a
+different credential, and it does not change. No private CA key belongs in either
+Secret.
 
-The server certificate must have server-auth usage and the exact DNS SAN:
+The server certificate must have server-auth usage and this exact DNS SAN:
 
 ```text
 agent-<first 32 lowercase hex characters of SHA256(Agent UID)>.<Agent Service FQDN>
 ```
 
-For example, the Service FQDN is
-`openclaw-example-cetirun.cetirun-example.svc.cluster.local` when that is the
-Agent's actual Service name. Use the actual controller-resolved Service name,
-not a guessed harness prefix.
+For example, for the Agent `example`, the Service FQDN is
+`openclaw-example-cetirun.cetirun-example.svc.cluster.local`.
 
 The client certificate must have client-auth usage and the exact configured
-SPIFFE URI SAN. Its path must end in `/<Agent UID>`. This makes sure that a
-recreated Agent cannot inherit an old name-scoped identity. No wildcard SAN
-authorization is supported. Both sides verify the configured CA. The Gateway
+SPIFFE URI SAN. Its path must end in `/<Agent UID>`. As a result, a recreated
+Agent cannot inherit an old identity that was bound to its name. Wildcard SANs
+are not supported. Both sides verify the configured CA. The ingress gateway
 also verifies the exact server SAN and SNI.
 
 The example that follows is a **synthetic registration fragment**, not a
-deployable credential configuration. In the authorized environment, replace
-every identity/version with the values of the approved live object:
+deployable credential configuration. In your environment, replace each
+identity and version with the values of the approved live object:
 
 ```json
 {
@@ -269,138 +247,261 @@ every identity/version with the values of the approved live object:
 
 This fragment is the value of `platforms.kata.ingressMTLS`, or
 `platforms.container.ingressMTLS` for ordinary containers. Hermes uses
-`"harness": "hermes"` and its approved primary port (normally 8642).
-The image above is a public, digest-pinned Envoy 1.36.3 multi-platform index.
-A digest pin is not target runtime/image qualification.
+`"harness": "hermes"` and its approved primary port, normally 8642. The image
+above is a public, digest-pinned Envoy 1.36.3 multi-platform index. A digest
+pin does not qualify the image for the target runtime.
 
-During a pending certificate approval, the bootstrap that already exists can
-create the Agent namespace and the HOME that is kept. For a new Agent that
-waits for its first approval, supply its normal explicit image, port and
-chart-version pins. This makes sure that the prerequisite bootstrap does not
-depend on the runtime to run first.
+No TLS workload is authorized until both Secrets and the `Gateway` resource
+match their registered UID and resourceVersion pins. The operator reads only the Secret
+metadata for these approvals, not the certificate or key contents. Only Envoy
+mounts the key. The application receives only the public certificate and the
+trust bundle for its readiness checks.
 
-No TLS workload is authorized until both Secrets and the Gateway match their
-registered UID/resourceVersion pins. The operator reads Secret metadata for
-these approvals, not certificate or key contents. The key is mounted only by
-Envoy. The application receives only the public certificate and trust bundle
-for readiness checks.
+Hermes validates the authority of its API and Webapp listeners before each
+supervised start of the Hermes gateway process, with and without mTLS. Platform values supply the
+API binding. The read-only `HERMES_MANAGED_DIR` overlay supplies the
+`enabled`, `host`, `port`, and full HTTPS `public_url` of the Webapp. In mTLS
+mode, both listeners bind only to loopback. The launcher uses the upstream
+configuration loaders to refuse competing profile or configuration sources.
 
-Hermes validates API and Webapp listener authority before every supervised
-gateway start, in both ordinary and mTLS modes. Platform values supply the API
-binding and the read-only `HERMES_MANAGED_DIR` overlay supplies Webapp's
-`enabled`, `host`, `port` and full HTTPS `public_url`. In mTLS mode both
-listeners bind only to loopback. The launcher uses the upstream effective
-configuration loaders to reject competing profile or configuration sources.
+The launcher removes platform-reserved assignments in the HOME environment and
+API listener aliases, and it keeps unrelated configuration. These problems
+stop the startup: an overlay that is not valid, a missing independent signing
+key, a wrong runtime identity, or a missing Webapp bundle. The Hermes gateway
+process does not select a backup port or an older UI. The same persistent
+process serves the Webapp and the API. There is no separate Dashboard process.
 
-Platform-reserved assignments in the HOME environment and API listener aliases
-are removed while unrelated configuration is retained. An invalid overlay,
-missing independent signing key, wrong runtime identity or missing Webapp
-bundle stops startup. The gateway does not select a backup port or an older UI.
-The Webapp is served by the same persistent gateway process as the API;
-there is no separate Dashboard process.
+The usual Sandbox controls also cover the mTLS resources. These controls are
+the execution expectation, the source-read grants, the coordinated source
+reservation, and the final-Pod admission. The mTLS resources are the helper,
+the Secret references, the ConfigMap, the Cilium policy, the Service targets,
+and the Istio DestinationRule of each Service. The read grant for the client
+Secret of the ingress gateway is limited to its name, and the grant journal
+records it.
 
-The execution expectation, source-read grants, coordinated source reservation,
-and final-Pod admission already exist. They cover the helper, Secret
-references, ConfigMap, Cilium policy, Service targets, and per-Service Istio
-DestinationRule. The added Gateway Secret read grant is name-scoped. It is
-recorded in the grant journal that already exists. No second controller,
-execution receipt, or journal is introduced.
+## OpenClaw Control UI Portal sign-in
+
+With the registered mTLS endpoint above, an OpenClaw Sandbox Agent can use
+Portal sign-in:
+
+```yaml
+spec:
+  helm:
+    values:
+      openclaw:
+        portalSignIn:
+          enabled: true
+```
+
+The owner opens the Control UI from the Portal without pasting the OpenClaw
+gateway token or running `openclaw devices approve`. Before sign-in, the
+ingress gateway still removes the identity headers that a client sends. It
+also checks ownership before it forwards `x-auth-request-email`. The Envoy
+endpoint in the Pod verifies the approved client certificate of the ingress
+gateway for the Agent. OpenClaw listens on loopback and trusts exactly
+`127.0.0.1`, not the registered Pod network.
+
+The operator validates the rendered proxy list, the authentication settings,
+and the OpenClaw gateway credential environment. The doctor initializer
+receives no gateway credentials. The key of the OpenClaw gateway Secret does
+not change. The Terminal CLI receives it as `OPENCLAW_GATEWAY_PASSWORD`
+instead of `OPENCLAW_GATEWAY_TOKEN`, because OpenClaw does not accept a token
+in trusted-proxy mode.
+
+At each start, HOME initialization replaces the saved gateway authentication.
+With Portal sign-in, rendering and HOME initialization remove both
+`gateway.auth.token` and `gateway.remote.token`. OpenClaw can use the remote
+token even when `gateway.mode` is `local`. Other remote settings stay. If you
+disable Portal sign-in, the next start restores the token environment and
+removes the managed trusted-proxy configuration.
+
+Portal sign-in is false by default. Upgrade the operator and the agent chart
+together before you enable it. The operator refuses an older chart that cannot
+render the requested mTLS sign-in contract. The chart does not stay in token
+mode without a message.
+
+Sandbox ingress without mTLS does not enable Portal sign-in, with Pod IPs or
+with a Pod selector and trusted CIDRs. Sandbox Agents that an earlier version
+of Sandbox execution started also keep token authentication and device
+approval. Native `gateway.auth` preferences cannot bypass this mTLS gate.
+Tailscale stays unsupported for an mTLS Sandbox Agent. Standard Agents keep
+their Istio-sidecar opt-in and token behavior with Tailscale.
+
+## Custom HTTP and terminal
+
+A Custom registration uses `"harness": "custom"`, the exact declared
+application port, `"desktop": false`, and the actual terminal selection. The
+image must honor `CETIRUN_BIND_HOST=127.0.0.1`. CetiRun does not replace its
+ENTRYPOINT or CMD. The static probe of the platform examines the unchanged
+`/healthz` contract. It also examines the validity of the current public
+certificate and the active Envoy leaf certificate.
+
+TLS probes pass an explicit `--mtls-server-name`. Older probe binaries refuse
+that option. They do not report HTTP-only readiness. Upgrade the terminal and
+probe image together with the operator, the admission process, and the agent
+chart. The updated Pi image implements the loopback contract.
+
+The application Service keeps its declared port, but it targets Envoy on port
+15443. The optional separate terminal keeps port 7681 and targets its own
+Envoy on port 15445. Its process listens only on loopback. Each helper
+receives only the approved TLS and configuration mounts and the helper
+resources of the Sandbox. The terminal does not receive HOME, Entra or
+Connections proofs, or model credentials. Its DNS and Kubernetes API egress
+and its CONNECT authorization stay separate.
+
+Headless images have no application HTTP endpoint, and they cannot request
+ingress mTLS. The platform does not create an HTTP port for them. Custom
+desktop is not supported.
+
+For private Portal Chat, approve one more client for each Portal namespace.
+Add `chatClients` to the Custom binding. Bindings for only a Web UI leave it
+empty:
+
+```json
+{
+  "chatClients": [{
+    "secret": {
+      "namespace": "portal-system",
+      "name": "custom-chat-client",
+      "uid": "example-chat-secret-uid",
+      "resourceVersion": "100"
+    },
+    "uri": "spiffe://example.com/portal/example-agent-uid",
+    "podLabels": {"app": "cetirun-portal"}
+  }]
+}
+```
+
+This is a synthetic fragment, not a credential or deployment command. The
+namespace and the labels must exactly match the Chat callers that the operator
+is configured with. The URI must end with the actual immutable Agent UID. The
+Secret contains a distinct client certificate and key, and a CA that trusts
+the exact server identity of the Agent. The client trust of the Agent server
+Secret must cover both approved client identities. Never copy the client key
+of the ingress gateway into the Portal.
+
+The Portal must use its Istio sidecar and its configured SDS credential
+authorization. Istio 1.30 examines if the Portal ServiceAccount has the
+namespace-wide `list` permission on Secrets. Permission to `get` one Secret is
+not sufficient. Give that permission explicitly, in a Portal credential
+namespace that is correctly isolated. The CetiRun chart does not grant it.
+
+A DestinationRule for each Agent in the Portal namespace selects the Portal
+workload and originates mTLS for the private Chat route. It is exported only
+locally. The Portal process does not read the key, and it does not change its
+HTTP protocol. A mesh or credentials that are not available cannot cause a
+fallback to reachable plaintext. The compiler limits Cilium to the TLS
+listener for that route.
+
+Chat readiness examines that TLS listener, not the loopback port of the
+application. The original HTTP Service port and the private route do not
+change. The Portal compares its current DestinationRule, which it owns, with
+the approved execution expectation. For this comparison, it uses the `get`
+permission of its namespace. It does not read certificate Secrets. If an
+approval, a caller selector, a TLS control, or a Service target port is
+absent or changed, Chat stays unavailable.
+
+The other Secret sources use the namespace-scoped source-read grants and the
+grant journal. The protected execution expectation carries a typed Custom TLS
+plan. With this plan, no unrelated control resource in another namespace can
+be installed or adopted. Before you enable it, upgrade all strict readers of
+the expectation. The stop, change, and resume rules below also apply to Portal
+credentials, selectors, and approvals.
 
 ## Rotation, loss and cleanup
 
-For leaf rotation, CA changes, Gateway changes, or revocation, use the
-**stop/change/resume** workflow that already exists:
+For a leaf rotation, a CA change, a change to the `Gateway` resource, or a
+revocation, use the **stop/change/resume** workflow. A CA or `Gateway` change
+affects every Agent that uses it. Do each step for all affected Agents
+together:
 
-1. Stop/suspend the affected Agent. Then make sure that the shutdown is
-   acknowledged. The acknowledged shutdown includes the HOME/writer checks
-   that already exist and the release of its source reservation.
-2. Provision the replacement certificate material externally.
-3. Update the approved Secret UID/resourceVersion pins and Gateway pin through
-   the configuration process that the administrator already has.
-4. Resume the Agent. Before you treat access as restored, examine the
-   replacement Pod, readiness, route, and actual TLS handshake.
+1. Suspend the affected Agents. Then make sure that each shutdown is
+   acknowledged. The acknowledged shutdown includes the HOME and writer checks
+   and the release of the source reservation of the Agent.
+2. Provision the replacement certificates outside CetiRun.
+3. In one edit of the platform registration, update the pins of the Secrets
+   and of the `Gateway` resource. Then replace the ConfigMap one time, as
+   [The platform registration](../../operations/policy-teams/#the-platform-registration)
+   shows.
+4. Resume the Agents. For each Agent, examine the replacement Pod, its
+   readiness, its route, and the actual TLS handshake. Then treat access as
+   restored.
 
 When a Custom Agent is suspended, its application and its separate terminal
-stop. The approved terminal selection does not change. The suspension does not
-authorize terminal access. The shutdown must still be acknowledged.
+stop. The approved terminal selection does not change. The suspension does
+not authorize terminal access. The shutdown must still be acknowledged.
 
-This implementation does not promise restart-free rotation. Unapproved Secret
-changes, replacement, deletion, or unavailable pinned Gateway inputs stop the
-workload and withdraw its route. They are not adopted by name. Secret metadata
-events enqueue affected Agents. Active mTLS Agents also reconcile every five
-seconds. These are control-plane reconciliation bounds, not instantaneous
-dataplane revocation guarantees.
+> **Warning:** A change to a pinned Secret or to the pinned `Gateway` resource
+> stops the mTLS Agents that use it, and it removes their route. For example,
+> an update of the `Gateway` resource changes its resourceVersion. Then update
+> the pins of every affected Agent, as the steps above show.
 
-Read-only Helm configuration/history failures do not mark workload submission.
-If TLS prerequisites later become unavailable before the first apply, the
-pending checkpoint that already exists can be cancelled safely. This allows
-normal retry, suspension and deletion. If reads of the same Secret are
-restored, the Secret keeps its approval. A recreated Secret must get a new
-UID/version approval. For a genuinely submitted or uncertain apply, shutdown
-evidence is still necessary, even when no StatefulSet is now visible.
+CetiRun does not adopt a replaced Secret by its name. A recreated Secret must
+get a new UID and version approval. Secret metadata events put the affected
+Agents in the reconcile queue. Active mTLS Agents also
+reconcile every five seconds. These are the bounds of control-plane
+reconciliation. They do not guarantee instantaneous revocation in the data
+plane.
 
-Each final apply first claims the expectation's resource version with an
-`apply-attempt` identifier. First attempts stay pending through every
-authority read. They change to submitted only by a conditional write
-immediately before manifest delivery. A failed read or lost claim
-acknowledgement is still recoverable. Claims that compete invalidate stale
-writers. Lost submission acknowledgements and attempts that were submitted
-before are never rolled back.
+The platform ConfigMap is a shared, versioned source. An update to its
+certificate approvals can affect other Agents that use the same registration.
+Coordinate all affected source reservations. Per-Agent certificates and
+network selectors isolate the identity of each Agent. They do not give each
+Agent its own rollout authority, or permission to ignore drift of the shared
+source.
 
-The platform ConfigMap is still a shared, versioned source. An update to its
-certificate approvals can invalidate other Agents that use that same
-authority. Coordinate all affected source reservations. Per-Agent certificates
-and network selectors give identity isolation. They do not give independent
-rollout authority or permission to ignore shared-source drift.
+Mounted material that is absent or not valid prevents startup or readiness.
+The public certificate probe examines the validity and the active Envoy
+certificate. An expired certificate cannot keep an endpoint ready.
 
-Mounted material that does not exist or is not valid prevents startup or
-readiness. The public certificate probe examines validity and the active Envoy
-certificate. Expiry cannot produce a ready endpoint indefinitely.
+TLS session resumption is disabled. Authenticated downstream and upstream
+connections last at most five minutes. To revoke the open connections
+immediately, a shutdown is still necessary. The removal of a CA alone does not
+close them.
 
-TLS session resumption is disabled. Authenticated downstream/upstream
-connections are capped at five minutes. A shutdown is still necessary to
-immediately revoke the connections that exist. The removal of a CA alone is
-not an instantaneous disconnect.
+Cleanup uses the usual ownership and journal rules. The retention policy of
+HOME does not change. Cleanup does not delete or change the client Secret of
+the ingress gateway that you supplied. The platform administrator retires it.
+The deletion of the namespace of an Agent removes its namespaced resources.
+Never give the client key of the ingress gateway to the Agent application.
 
-Cleanup uses the ownership and journal rules that already exist. HOME stays
-governed by the retention policy that it already has. Cleanup does not delete
-or change the externally supplied Gateway client Secret. Its administrator
-owns retirement. Agent namespace deletion removes its namespaced resources.
-Never distribute the Gateway client key to the Agent application.
+## Troubleshooting
 
-## Validation boundary
+The Agent reports these messages in its status conditions:
 
-Offline tests exercise the compiler, the common render path, source pins,
-final-Pod validation, rotation/holds and cleanup for both harnesses and both
-HOME modes. Real localhost Envoy tests generate ephemeral certificates and
-cover valid peers, absent/wrong/expired client certificates, wrong server
-CA/SAN, plaintext, certificate loss/readiness, replacement and old-authority
-retirement.
+| Message | Cause | Action |
+| --- | --- | --- |
+| `mTLS has no current per-Agent certificate approval` | The registration has no binding for the UID and the namespace of the Agent | Add the binding. Refer to [Enable ingress mTLS for an Agent](#enable-ingress-mtls-for-an-agent) |
+| `mTLS requires current common-executor certificate registration` | The platform of the isolation type has no `ingressMTLS` registration, or Sandbox execution does not run the Agent | Register `ingressMTLS`, and enable Sandbox execution |
+| `mTLS approval differs from this Agent's actual harness, port or shared Gateway` | The agent type (`harness`), the `port`, or the `gateway` of the binding does not match the Agent, or the Agent has no `spec.agent.port` | Correct the binding or the Agent |
+| `mTLS endpoint credentials must be distinct from application and model Secrets` | The server Secret is also an application or model Secret of the Agent | Use a separate Secret |
+| `mTLS approved Secret is unavailable` | The operator cannot read a pinned Secret | Create the Secret, or correct its name and namespace in the binding |
+| `mTLS Secret UID/version approval changed` | A pinned Secret was changed or replaced | Update its UID and resourceVersion in the binding |
+| `mTLS shared Gateway is unavailable` or `mTLS Gateway identity changed` | The pinned `Gateway` resource is absent, or it was changed | Update the pin of the `Gateway` resource in the binding |
+| `mTLS must retain the shared browser HTTPS Gateway` | The `Gateway` resource has no HTTPS server on port 443 for the domain of the installation | Restore the HTTPS server of the `Gateway` resource |
+| `mTLS Gateway selector differs from the protected Cilium ingress peers` | The namespace or the selector of the `Gateway` resource is different from the `topology.ingress` peers | Correct `topology.ingress` |
 
-Optional network-disabled, read-only cached image tests exercise OpenClaw's
-native API/Control UI and ttyd, and Hermes' API/Webapp and ttyd behind the
-generated endpoint. The Hermes test covers fresh HOME, stale listener overrides
-in a HOME that is kept, and reintroduced overrides before a supervised process
-restart. The cached desktop test exercises actual websockify/noVNC HTTP and
-WebSocket traffic through the TLS endpoint. This includes an RFB banner and
-backend-loss readiness. Its RFB and CDP backends are synthetic. The test does
-not run or qualify the graphical X/Chrome stack.
+## Validation
 
-These are not a live Istio/Kata/Cilium deployment or general image
-qualification. Before production opt-in, separately validate these items on
+Offline tests use synthetic certificates and Envoy on localhost. They are not
+a test of a live Istio, Kata, or Cilium deployment, and they do not qualify an
+image. Before you rely on ingress mTLS in production, validate these items on
 the exact target versions:
 
-- SDS selection for the Gateway
-- All routed native API/UI/WebSocket/terminal paths
-- OIDC/owner controls
-- Direct Pod-IP and Service bypass attempts from allowed and disallowed peers
+- SDS selection for the ingress gateway
+- All routed native API, UI, WebSocket, and terminal paths
+- OIDC and owner controls
+- Bypass attempts to the Pod IP and the Service, from allowed and disallowed
+  peers
 - Both registered address families
 - Source loss
 - Certificate expiry
 - Coordinated rotation
-- Active-connection termination
+- The end of active connections
 - Readiness
 - Cleanup
 
-Do not treat synthetic controller observations as dataplane or
-physical-fencing evidence.
+Do not treat synthetic controller observations as evidence of the data plane
+or of physical fencing. For the test coverage and the apply protocol, refer to
+the operator README's
+[Managed ingress mTLS internals]({{< repo "app/cetirun-operator/README.md" >}}#managed-ingress-mtls-internals).

@@ -1,31 +1,36 @@
 ---
-title: "Set up Microsoft Entra Agent Identity"
+title: "Prepare Microsoft Entra Agent Identity"
 description: "Prepare the Entra blueprint, workload federation, and optional delegated access that are necessary for CetiRun Agent Identity."
 weight: 35
 ---
 
 This guide prepares the Microsoft Entra resources that let CetiRun provision a
-separate **Agent Identity** for each Agent. It is for the platform and Entra
-administrators who operate the cluster. It is not for an Agent owner who
-assigns Azure RBAC after an identity exists. Start with [Agent Identity
-environment setup](../agent-identity/) for the shared Key Vault, TLS, Broker,
-MCP, network, and Portal prerequisites. Those prerequisites apply here also.
+separate **Agent Identity** for each Agent. This guide is for the platform and
+Entra administrators who operate the cluster. It is not for an Agent owner who
+assigns Azure RBAC after an identity exists. Start with
+[Prepare Agent connections](../agent-identity/) for the shared Key Vault, TLS,
+Broker, MCP, network, and Portal prerequisites. Those prerequisites apply here
+also.
 
-An Agent Identity is a Microsoft Entra `agentIdentity` service principal
-created from one deployment-owned **Agent Identity Blueprint**. CetiRun records
-the client ID and object ID of this identity in Agent status. Then it uses that
-identity for the selected access mode. The deployment does not accept a
-user-supplied principal, client ID, or arbitrary Graph endpoint.
+An Agent Identity is an `agentIdentity` service principal in Microsoft Entra
+Agent ID. The operator creates it from one **Agent Identity Blueprint**. The Blueprint is an
+Entra application that the deployment owns. It is the template and the parent
+of all the Agent Identities of the deployment.
 
-## What `make deploy` requires
+CetiRun records the client ID and object ID of each identity in Agent status.
+Then it uses that identity for the selected access mode. The deployment does
+not accept a user-supplied principal, client ID, or arbitrary Graph endpoint.
+
+## Entra resources that `make deploy` requires
 
 [`make deploy`](../../getting-started/platform/#platform-chart) always enables
-Agent Identity. It enables the Operator lifecycle
-(`cetirun-operator.agentIdentity.enabled`) and the Portal identity UI. It also
-installs the Broker with Microsoft delegated access and the Auth SDK. If the
-environment file sets other values for these settings, `make deploy` stops.
-Independent Azure access stays enabled, unless the environment file sets
-`broker.values.identityModes.azureAgent.enabled: false`.
+Agent Identity: the Operator lifecycle
+(`cetirun-operator.agentIdentity.enabled`), the Portal identity UI, and the
+Broker with Microsoft delegated access. Independent Azure access stays
+enabled, unless the environment file sets
+`broker.values.identityModes.azureAgent.enabled: false`. For the IDs that the
+environment file must have, refer to
+[What `make deploy` requires](../agent-identity/#what-make-deploy-requires).
 
 As a result, these resources are not optional for an installation with
 `make deploy`:
@@ -112,7 +117,7 @@ them with `az rest`, which adds the Microsoft Graph token of the Azure CLI. Run
 the examples in one Bash session, because later examples use the variables and
 functions of earlier ones. The examples also use jq and Python 3. Make sure
 that the Azure CLI uses the deployment tenant, as
-[Agent Identity setup](../agent-identity/#1-prepare-access-and-record-the-coordinates)
+[Prepare Agent connections](../agent-identity/#1-prepare-access-and-record-the-coordinates)
 shows.
 
 This **connected, mutating** example sends
@@ -248,15 +253,18 @@ run, decide on one of these approaches:
   Agents request an identity. The Operator creates an identity only for an Agent
   whose `spec.agentIdentity.enabled` is true. The Portal sets this field when
   the owner selects Agent Identity. It also sets the field when the Agent Policy
-  of the Team makes an identity necessary. Tell owners not to select it, and do
-  not make it necessary in an Agent Policy.
+  of the Team makes an identity necessary. Set **Agent Identity** to
+  **Disabled** in every Agent Policy. Then the Portal and the Operator refuse
+  identity requests for the Agents of the Teams of these Policies. This setting
+  does not apply to Agents without a Team, or of a Team without a policy. Tell
+  their owners not to select Agent Identity.
 - Install with the component charts instead of `make deploy`, and keep
   `agentIdentity.enabled` and `cleanupEnabled` false. Refer to
   [Use the component chart directly]({{< repo "app/cetirun-platform/README.md" >}}#use-the-component-chart-directly).
 
 If Microsoft Graph refuses a lifecycle call, the `AgentIdentityReady` condition
-of the Agent stays false. If the Operator cannot delete an identity, it keeps
-the finalizer of the Agent. Then the deletion of the Agent does not complete.
+of the Agent stays false. Refer to
+[Troubleshoot Agent Identity](#troubleshoot-agent-identity).
 
 For each Agent, CetiRun sends the equivalent of:
 
@@ -351,8 +359,9 @@ unrelated identity only to enable Agent Identity.
 empty. The chart puts this value only in the Workload Identity annotation of
 the Operator ServiceAccount. The Operator authenticates only as the Blueprint.
 Set the value to the Blueprint client ID, unless another Operator integration
-must use a different identity. Then the annotation is the same as without the
-value, and no other identity or FIC is necessary.
+must use a different identity. With the Blueprint client ID, the annotation
+is the same as when the value is empty. Then no other identity or FIC is
+necessary.
 
 Do not replace these ServiceAccounts, namespaces, or names unless you change
 every applicable FIC subject and render the charts together. After a create or
@@ -597,8 +606,11 @@ origin that is already configured for Portal sign-in.
 
 With `make deploy`, do not use the overlays of this section. `make deploy` sets
 their identity values from `domain` and the `identity` section of the
-environment file. Put other Broker values, for example `armScopes` and
-`graphScopes`, under `broker.values`.
+environment file. Put other Broker values under `broker.values`, at the path
+of the Broker chart. For example, the scopes are
+`broker.values.agentIdentity.armScopes` and
+`broker.values.agentIdentity.graphScopes`. The Broker chart has no values
+schema. It ignores a value at a wrong path, and it does not show an error.
 
 Merge each overlay with the values that already exist for the environment. Do
 not use these partial files as complete chart values. They expect that the
@@ -722,6 +734,44 @@ Finally, remove the Blueprint's FICs and Blueprint as the Entra team's
 retention policy says. If you delete a Blueprint or FIC first, this strands the
 Operator's cleanup path.
 
+`make deploy` does not accept an environment file that disables the Operator
+lifecycle or the Broker's Microsoft delegated access. With `make deploy`, you
+can do the steps until all tracked Agent Identities are deleted. Keep the
+lifecycle, the Microsoft delegated access, the consents, and the FICs after
+that. To disable them, the installation must use the component charts instead
+of `make deploy`. Refer to
+[Use the component chart directly]({{< repo "app/cetirun-platform/README.md" >}}#use-the-component-chart-directly).
+
+## Troubleshoot Agent Identity
+
+The Operator reports the state of the identity of each Agent in
+`status.agentIdentity`. The `AgentIdentityReady` condition is `True` only when
+the identity is ready:
+
+```bash
+kubectl get agent <agent> -o jsonpath='{.status.agentIdentity}{"\n"}'
+```
+
+`status.agentIdentity.phase` is one of `Disabled`, `Provisioning`, `Ready`,
+`Degraded`, `Failed`, or `Deleting`. For `Degraded` and `Failed`, the reason
+tells the cause:
+
+| Reason | Cause | Action |
+| --- | --- | --- |
+| `DeploymentDisabled` | The Operator lifecycle (`agentIdentity.enabled`) is disabled | Enable the lifecycle, or disable Agent Identity on the Agent |
+| `OwnerBindingMissing`, `OwnerTenantMismatch` | The Agent has no valid Portal owner binding, or the owner is not in the deployment tenant | Create the Agent through the Portal, with an owner of the deployment tenant |
+| `CredentialUnavailable` | The Operator cannot get a token as the Blueprint | Examine `blueprintClientId`, the `cetirun-operator` FIC of the Blueprint, and AKS Workload Identity. Allow time for a new FIC to propagate |
+| `DirectoryLookupFailed` | Microsoft Graph refused or failed a read of the identity | Examine the lifecycle permissions. Refer to [Current lifecycle permission preflight](#current-lifecycle-permission-preflight) |
+| `CreateFailed` | Microsoft Graph refused the create request | Examine the create permission, the sponsor, the tenant policy, and the limit of the Blueprint |
+| `CreateOutcomeUnknown` | The Operator does not know if the create request succeeded | Wait. Before the Operator tries again, it looks for the identity by the Agent UID suffix |
+| `AdoptionAmbiguous` | More than one identity has the display name of the Agent | Examine the identities with the display name `cetirun-agent-<agent UID>` |
+| `BlueprintMismatch`, `BindingMismatch`, `BindingIncomplete`, `DirectoryResponseInvalid` | The identity in the directory does not match the record of the Agent | Review the identity and the Agent status. The Operator fails closed and does not select another identity |
+| `BindingPersistenceFailed` | The Operator could not save the created identity in the Agent status | The Operator tries again |
+
+If the Operator cannot delete an identity, it keeps the finalizer of the
+Agent. Then the deletion of the Agent does not complete until the deletion of
+the identity succeeds.
+
 ## Microsoft references and limits
 
 - [Create an agent identity blueprint](https://learn.microsoft.com/en-us/entra/agent-id/create-blueprint) documents Blueprint creation, bootstrap permissions, FICs, and how to expose a scope.
@@ -731,6 +781,13 @@ Operator's cleanup path.
 - [Create federatedIdentityCredential](https://learn.microsoft.com/en-us/graph/api/application-post-federatedidentitycredentials?view=graph-rest-1.0) and [AKS Workload Identity](https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview) document application federation and Kubernetes trust.
 - [Agent Identity on-behalf-of OAuth flow](https://learn.microsoft.com/en-us/entra/agent-id/agent-on-behalf-of-oauth-flow) and [configure inheritable permissions for Agent Identity Blueprints](https://learn.microsoft.com/en-us/entra/agent-id/configure-inheritable-permissions-blueprints) document the Agent ID delegated flow, parent consent, and scope inheritance.
 - [On-behalf-of flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-on-behalf-of-flow), [permissions and consent](https://learn.microsoft.com/en-us/entra/identity-platform/permissions-consent-overview), and [expose a web API](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-configure-app-expose-web-apis) describe the delegated protocol, consent controls, and scope metadata.
+- [Service limits and restrictions](https://learn.microsoft.com/en-us/entra/identity/users/directory-service-limits-restrictions) gives the limits of Agent Identities. In a tenant, a Blueprint of a platform that Microsoft does not own, such as CetiRun, has at most 250 Agent Identities.
+
+Each Agent with Agent Identity uses one identity of the Blueprint. CetiRun
+does not count them. Plan the number of these Agents for each Blueprint. When
+the Blueprint reaches its limit, Microsoft Graph refuses new identities, and
+the new Agents do not get a ready identity. For how deleted identities count,
+refer to the Microsoft limits.
 
 Microsoft's public API reference confirms the create/read/update/delete
 `agentIdentity` operations. But no chart render can prove that a particular

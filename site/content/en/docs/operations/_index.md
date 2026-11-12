@@ -40,6 +40,10 @@ and side effects.
 - [Entra Agent Identity setup](entra-agent-identity/) — Blueprint, federation and Azure/Microsoft authorization
 - [Identity provider setup](identity-providers/) — GitHub App, GitHub OAuth and Google OAuth
 - [CetiAdmin](cetiadmin/) — the operations Agent that the operator installs by default, its access, and how to disable it
+- [AI Gateway](ai-gateway/) — shared models, prices, Copilot proxies, credentials, logs, and model troubleshooting
+- [Model access](models/) — which models each Agent gets, and its default model
+- [Budgets and spend](budgets/) — Gateway budgets, request limits, and spend
+- [Portal administration](portal-administration/) — the Admin pages of the Portal and their limits
 - [Upgrade CetiRun](upgrade/) — upgrade the platform and the Agents, and the limits of a rollback
 - [Make and restore backups](backup-restore/) — the data and Secrets that need a backup
 - [Certificates and credentials](certificates/) — the source, renewal, and checks of each credential

@@ -241,16 +241,21 @@ loads it as an external skill directory. A Custom image loads the skills of
 
 ### Skill sources of an Agent
 
-The Skill Marketplace is one of two sources of Team skills. Each Agent uses
-only one of them:
+Each Agent receives its Team skills from one source:
 
 | Agent | Source of the Team skills |
 | --- | --- |
 | An OpenClaw, Hermes, or Custom Sandbox Agent of a Team with an Agent Policy | The Skill Marketplace. The Agent receives only the skills that its Team selects, from the release that is current when the Agent starts. |
+| A Sandbox Agent of a Team with an Agent Policy, when the operator uses a published skills catalog instead of the Skill Marketplace | The Blob container that the catalog approves for the name and UID of the Team. The catalog is the ConfigMap that `sandboxSources.skillsCatalogConfigMapName` names. The operator does not publish this content. Refer to the operator README's [published Blob NFS skills catalog]({{< repo "app/cetirun-operator/README.md" >}}#published-blob-nfs-skills-catalog-separate-opt-in). |
 | An Agent of a Team without an Agent Policy, or an Agent without a Team | The shared skills container: `sharedSkills` of `make deploy`, or the container that the `skillStorage` of the Team names. The Agent receives all the skills in the container. |
 
-A Skill Marketplace Agent does not mount the shared skills container. The
-other Agents do not receive marketplace skills.
+A Sandbox Agent does not mount the container that the `skillStorage` of its
+Team names. A Skill Marketplace Agent does not mount the shared skills
+container. The other Agents do not receive marketplace skills.
+
+When the Skill Marketplace is off, a Team with an Agent Policy cannot select
+skills. Its Sandbox Agents do not start, and their status names the skills.
+Refer to [Disable the Skill Marketplace](#turn-off-the-skill-marketplace).
 
 `make deploy` requires the `sharedSkills` container, but it does not add skills
 to it. If no Agent uses the container, the container stays empty.
@@ -263,7 +268,15 @@ these locations:
   change them.
 - `/opt/cetirun-memory/skills`: the platform skills, such as
   `cetirun-memory`.
-- The skills that are part of OpenClaw or Hermes.
+- `$HOME/.openclaw/skills` for OpenClaw, or `$HOME/.hermes/skills` for Hermes:
+  the skills that OpenClaw or Hermes loads from HOME. The image also puts the CetiRun skill
+  `connected-services` here.
+
+When an Agent starts, its HOME initializer synchronizes `connected-services`
+from the image into HOME. After an image upgrade, the next start updates the
+copy. If the owner or the Agent
+changed the copy, the initializer keeps the changed copy, and it no longer
+updates it. Custom images do not include `connected-services`.
 
 A Custom Agent of the Skill Marketplace finds the Team skills and the
 platform skills together in `$HOME/.agents/skills`, read-only. The image
@@ -483,7 +496,7 @@ run `make deploy` again. Then:
   Team. Each running Agent stops and starts again one time, and then copies
   the release of its Team from the new container.
 
-### Turn off the Skill Marketplace
+### Disable the Skill Marketplace {#turn-off-the-skill-marketplace}
 
 Remove the `skillMarketplace` block from the environment file, and run
 `make deploy`. Then:
