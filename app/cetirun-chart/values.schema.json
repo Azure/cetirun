@@ -1398,7 +1398,7 @@
                 "enabled": {
                     "type": "boolean",
                     "description": "Enable the session logger sidecar container",
-                    "default": true
+                    "default": false
                 },
                 "resources": {
                     "type": "object",

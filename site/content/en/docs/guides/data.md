@@ -57,10 +57,10 @@ it in your home directory. In the Sandbox of a policy-bound Team,
   can keep this content in Azure Data Explorer instead. Then the console shows
   it to administrators, and people with read access to that database can read
   it.
-- **Logs.** By default, the session logger copies the Hermes gateway log to
-  the container logs. Agents can also write text to these logs. The platform
-  logs can collect this text, and it can include parts of your conversations.
-  People with access to these logs can read it.
+- **Logs.** Agents can write text to the container logs. If an administrator
+  enables the session logger, it also copies the Hermes gateway log there. The
+  platform logs can collect this text, and it can include parts of your
+  conversations. People with access to these logs can read it.
 - **Files.** Administrators of the cluster can read the files of your Agent.
 - **Other users.** Other users cannot open your Agent in the portal. The
   portal checks that you own the Agent.

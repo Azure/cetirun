@@ -18,7 +18,7 @@ and limits of its containers:
 | --- | --- | --- |
 | Agent | 4 CPU, 8 GiB | 8 CPU, 16 GiB |
 | Desktop, on by default | 0.5 CPU, 1 GiB | 2 CPU, 4 GiB |
-| Session logger, on by default | 0.01 CPU, 64 MiB | 0.1 CPU, 128 MiB |
+| Session logger, off by default | 0.01 CPU, 64 MiB | 0.1 CPU, 128 MiB |
 
 The Pod requests about 4.5 CPU and 9 GiB, plus the Istio sidecar. The runtime
 chart sets no resources for the sidecar, so AKS managed Istio applies its
