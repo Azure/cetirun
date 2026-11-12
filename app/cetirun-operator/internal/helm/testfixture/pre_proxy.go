@@ -529,7 +529,7 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 			// The DNS Pod labels and the current egress defaults came later.
 			{`                "dnsPodLabels": {
                     "type": "object",
-                    "description": "Labels of the DNS Pods in dnsNamespace that receive DNS traffic (TCP/UDP 53). Set a default key to null to remove it. Without labels, every Pod in dnsNamespace receives it.",
+                    "description": "Labels of the DNS Pods in dnsNamespace that receive DNS traffic (TCP/UDP 53). Labels with an empty value are ignored, so set a default key to \"\" to drop it. Without labels, every Pod in dnsNamespace receives it.",
                     "additionalProperties": {
                         "type": "string"
                     },

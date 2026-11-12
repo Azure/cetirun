@@ -648,8 +648,9 @@ networkPolicy:
   # -- Namespace where kube-dns runs (egress DNS)
   dnsNamespace: kube-system
   # -- Labels of the DNS Pods in dnsNamespace. Only these Pods get DNS
-  # traffic (TCP/UDP 53). Helm merges maps, so set k8s-app to null to replace
-  # the default label. Without labels, every Pod in dnsNamespace gets it.
+  # traffic (TCP/UDP 53). Labels with an empty value are ignored. Helm merges
+  # maps, so to drop the default label, set k8s-app to "" rather than null.
+  # Without labels, every Pod in dnsNamespace gets DNS traffic.
   dnsPodLabels:
     k8s-app: kube-dns
   # -- Namespace hosting the deployment-level Agent Identity Broker.

@@ -79,24 +79,47 @@ func dnsPeers(policy map[string]any) []any {
 	return peers
 }
 
+func dnsPods(labels map[string]any) map[string]any {
+	peer := map[string]any{"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": "kube-system"}}}
+	if labels != nil {
+		peer["podSelector"] = map[string]any{"matchLabels": labels}
+	}
+	return peer
+}
+
 func TestCustomDNSEgressFollowsChartValues(t *testing.T) {
-	namespace := map[string]any{"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": "kube-system"}}}
-	coreDNS := map[string]any{"namespaceSelector": namespace["namespaceSelector"], "podSelector": map[string]any{"matchLabels": map[string]any{"k8s-app": "kube-dns"}}}
 	for _, test := range []struct {
-		name         string
-		withoutValue bool
-		peer         map[string]any
+		name     string
+		oldChart bool
+		labels   map[string]any
+		peer     map[string]any
 	}{
-		{"current chart", false, coreDNS},
-		// A pinned chart from before dnsPodLabels renders the namespace-wide rule.
-		{"chart without dnsPodLabels", true, namespace},
+		{"current chart", false, nil, dnsPods(map[string]any{"k8s-app": "kube-dns"})},
+		{"default label dropped", false, map[string]any{"k8s-app": "", "app": "coredns"}, dnsPods(map[string]any{"app": "coredns"})},
+		{"no labels", false, map[string]any{"k8s-app": ""}, dnsPods(nil)},
+		// A pinned chart from before dnsPodLabels renders the namespace-wide
+		// rule, also when the platform values set the labels.
+		{"chart without dnsPodLabels", true, nil, dnsPods(nil)},
+		{"chart without dnsPodLabels, labels set", true, map[string]any{"app": "coredns"}, dnsPods(nil)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ch := testChart(t)
-			if test.withoutValue {
+			if test.oldChart {
+				// Like that chart: no default, and a template that ignores the value.
 				delete(object(ch.Values["networkPolicy"]), "dnsPodLabels")
+				for _, file := range ch.Templates {
+					if file.Name == "templates/_helpers.tpl" {
+						if !strings.Contains(string(file.Data), "{{- with $labels }}") {
+							t.Fatal("test mutation did not match")
+						}
+						file.Data = []byte(strings.Replace(string(file.Data), "{{- with $labels }}", "{{- with dict }}", 1))
+					}
+				}
 			}
 			input := terminalInput(8080)
+			if test.labels != nil {
+				input["networkPolicy"] = map[string]any{"dnsPodLabels": test.labels}
+			}
 			b := input["customBindings"].(runtimebindings.Custom)
 			b.Copilot = customCopilotInput()["customBindings"].(runtimebindings.Custom).Copilot
 			input["customBindings"] = b
@@ -117,6 +140,43 @@ func TestCustomDNSEgressFollowsChartValues(t *testing.T) {
 				t.Fatalf("expected the Agent, terminal and Copilot proxy policies, got %d", policies)
 			}
 		})
+	}
+}
+
+// The operator coalesces the values of a native Agent, and the Helm action
+// coalesces them again. A null does not survive both passes; an empty value does.
+func TestNativeDNSEgressDropsEmptyLabels(t *testing.T) {
+	for _, test := range []struct {
+		labels map[string]any
+		peer   map[string]any
+	}{
+		{map[string]any{"k8s-app": "", "app": "coredns"}, dnsPods(map[string]any{"app": "coredns"})},
+		{map[string]any{"k8s-app": ""}, dnsPods(nil)},
+	} {
+		for _, typ := range []string{"hermes", "openclaw"} {
+			input := sampleInput(typ, "openai", false)
+			object(input["networkPolicy"])["dnsPodLabels"] = test.labels
+			p, err := PrepareChart(testChart(t), input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			policy := platformRender(t, p, chartutil.DefaultCapabilities)["NetworkPolicy"]
+			if peers := dnsPeers(policy); !reflect.DeepEqual(peers, []any{test.peer}) {
+				t.Fatalf("%s with %v: DNS destinations = %v", typ, test.labels, peers)
+			}
+		}
+	}
+}
+
+func TestDNSPodLabelsRefuseNull(t *testing.T) {
+	for name, input := range map[string]map[string]any{
+		"hermes": sampleInput("hermes", "openai", false),
+		"custom": customInput(nil),
+	} {
+		ensureObject(input, "networkPolicy")["dnsPodLabels"] = map[string]any{"k8s-app": nil, "app": "coredns"}
+		if _, err := PrepareChart(testChart(t), input); err == nil || !strings.Contains(err.Error(), `set it to ""`) {
+			t.Fatalf("%s with a null DNS Pod label: %v", name, err)
+		}
 	}
 }
 
@@ -239,7 +299,7 @@ func TestCustomSharedControlTamperingIsRejected(t *testing.T) {
 		{"deny-exec-policy.yaml", "expression: \"false\"", "expression: \"true\""},
 		{"poddisruptionbudget.yaml", "minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}", "minAvailable: 0"},
 		{"networkpolicy.yaml", "169.254.169.254/32", "169.254.169.253/32"},
-		{"_helpers.tpl", "{{- with .Values.networkPolicy.dnsPodLabels }}", "{{- with dict }}"},
+		{"_helpers.tpl", "{{- with $labels }}", "{{- with dict }}"},
 		{"_platform.tpl", "allowPrivilegeEscalation: false", "allowPrivilegeEscalation: true"},
 	} {
 		t.Run(test.file, func(t *testing.T) {

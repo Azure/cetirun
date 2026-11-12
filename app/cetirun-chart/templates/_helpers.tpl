@@ -639,14 +639,22 @@ Dispatcher: network policy ingress ports
 
 {{/*
 Egress rule for name resolution: TCP/UDP 53 to the DNS Pods in dnsNamespace.
+Labels with an empty value are ignored. A null cannot drop a default label of
+an operator-managed release, because Helm coalesces the values again.
 The operator builds the same rule for Custom Agents from these values.
 */}}
 {{- define "cetirun.networkPolicy.dnsEgress" -}}
+{{- $labels := dict -}}
+{{- range $key, $value := .Values.networkPolicy.dnsPodLabels -}}
+{{- if $value -}}
+{{- $_ := set $labels $key $value -}}
+{{- end -}}
+{{- end -}}
 - to:
     - namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: {{ .Values.networkPolicy.dnsNamespace }}
-      {{- with .Values.networkPolicy.dnsPodLabels }}
+      {{- with $labels }}
       podSelector:
         matchLabels:
           {{- toYaml . | nindent 10 }}

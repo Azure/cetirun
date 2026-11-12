@@ -375,7 +375,7 @@ Sources: [OpenClaw helpers]({{< repo "app/cetirun-chart/templates/agents/opencla
 | `networkPolicy.istioNamespace` | `istio-system`. The operator sets `aks-istio-system`. |
 | `networkPolicy.istioIngressNamespace` | Uses the Istio namespace as a fallback. The operator sets `aks-istio-ingress`. |
 | `networkPolicy.dnsNamespace` | `kube-system` |
-| `networkPolicy.dnsPodLabels` | `k8s-app: kube-dns`. Only the Pods in `dnsNamespace` that have these labels get DNS traffic. Helm merges maps, so set `k8s-app` to `null` to replace the label. |
+| `networkPolicy.dnsPodLabels` | `k8s-app: kube-dns`. Only the Pods in `dnsNamespace` that have these labels get DNS traffic. The chart ignores labels with an empty value, and without labels every Pod in `dnsNamespace` gets DNS traffic. Helm merges maps, so to drop the default label, set `k8s-app` to `""`. The operator refuses a `null` label: Helm merges the values again after the operator does, which would restore the default. |
 | `networkPolicy.blockedCIDRs` | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, `169.254.0.0/16` (includes Azure IMDS), and `168.63.129.16/32` |
 | `networkPolicy.allowedInternalCIDRs` | `[]`. Each entry allows one internal CIDR on the listed ports. |
 | `sidecarScope.enabled` | `true`. It limits the scope of service discovery. |
@@ -400,11 +400,25 @@ Each `allowedInternalCIDRs` entry is a separate allow rule, so it opens its
 CIDR on the listed ports even inside `blockedCIDRs`. Add an entry only for an
 internal destination that you approve.
 
-With `make deploy`, set `allowedInternalCIDRs` and `blockedCIDRs` in the
-environment file under
-`platform.values.cetirun-operator.cetirun.helmValues.networkPolicy`. Both are
-lists, so a value that you set replaces the full default list. When you change
-`blockedCIDRs`, keep the default ranges in it.
+With `make deploy`, set `dnsPodLabels`, `allowedInternalCIDRs`, and
+`blockedCIDRs` in the environment file under
+`platform.values.cetirun-operator.cetirun.helmValues.networkPolicy`. The two
+CIDR values are lists, so a value that you set replaces the full default list.
+When you change `blockedCIDRs`, keep the default ranges in it.
+
+A node-local DNS cache receives the DNS queries of the Agent in place of the
+CoreDNS Pods. If the cache runs as Pods in `dnsNamespace`, for example behind a
+Cilium Local Redirect Policy, set `k8s-app` to `""` in `dnsPodLabels`.
+
+If the cache listens on a link-local node address, add an
+`allowedInternalCIDRs` entry for it with UDP and TCP port 53, because
+`blockedCIDRs` contains `169.254.0.0/16`. With Azure CNI Powered by Cilium, an
+`ipBlock` cannot select node addresses. There, add a Cilium policy that allows
+UDP and TCP port 53 to the `host` entity. For an example, see
+[Is AKS Local DNS supported with Azure CNI Powered by Cilium?](https://learn.microsoft.com/azure/aks/azure-cni-powered-by-cilium#is-aks-local-dns-supported-with-azure-cni-powered-by-cilium).
+
+The operator does not reuse the values of an Agent release. A release that you
+upgrade with `--reuse-values` keeps the network defaults of its older chart.
 
 `execRestriction` renders `admissionregistration.k8s.io/v1` policy and binding
 resources. It does not examine the availability of the cluster API.

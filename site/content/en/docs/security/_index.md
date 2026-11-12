@@ -332,13 +332,13 @@ of the agent chart. By default, it allows this traffic:
 | Direction | Allowed traffic |
 | --- | --- |
 | Inbound | From the ingress gateway namespace (`aks-istio-ingress` with the operator) to the Agent ports, the desktop on 6080, and the terminal on 7681 |
-| Outbound | DNS. istiod on 15012. The AI Gateway on 4000. Connections MCP on 8443, when connections are on. The ranges in `networkPolicy.allowedInternalCIDRs`, which by default has one entry: a private address on TCP port 80. All other IPv4 addresses except `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, and `169.254.169.254/32` |
+| Outbound | DNS to the `k8s-app: kube-dns` Pods in `kube-system` (`networkPolicy.dnsPodLabels`). istiod on 15012. The AI Gateway on 4000. Connections MCP on 8443, when connections are on. The ranges in `networkPolicy.allowedInternalCIDRs`, which is empty by default. All other IPv4 addresses except `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, `169.254.0.0/16`, and `168.63.129.16/32` (`networkPolicy.blockedCIDRs`) |
 
 The rules cover IPv4 only, so the policy denies IPv6 traffic. The outbound
-rule has no port restrictions. The isolation between Agents depends on Pod and
-Service address ranges inside the blocked private ranges, and the
-infrastructure template uses such ranges. Review `allowedInternalCIDRs` for
-each deployment.
+rule has no port restrictions. The isolation between Agents depends on Pod,
+Service, and node address ranges inside the blocked ranges, and the
+infrastructure template uses such ranges. Add an `allowedInternalCIDRs` entry
+only for an internal destination that you approve.
 
 The Sandbox Agents of policy-bound Teams use compiled Cilium policies instead.
 These policies also allow public internet addresses by default. Refer to

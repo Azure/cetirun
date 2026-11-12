@@ -350,17 +350,20 @@ func sameJSON(a, b any) bool {
 	return leftErr == nil && rightErr == nil && string(left) == string(right)
 }
 
-// dnsEgress is the chart's DNS rule. Like the chart, it reads dnsPodLabels, so
-// a pinned chart that predates the value keeps its namespace-wide rule.
+// dnsEgress is the chart's DNS rule. Like the chart, it ignores dnsPodLabels
+// entries with an empty value and selects the whole namespace without labels.
 func dnsEgress(network map[string]any) networkv1.NetworkPolicyEgressRule {
 	peer := networkv1.NetworkPolicyPeer{NamespaceSelector: &metav1.LabelSelector{
 		MatchLabels: map[string]string{"kubernetes.io/metadata.name": text(network["dnsNamespace"])},
 	}}
-	if labels := object(network["dnsPodLabels"]); len(labels) != 0 {
-		peer.PodSelector = &metav1.LabelSelector{MatchLabels: map[string]string{}}
-		for key, value := range labels {
-			peer.PodSelector.MatchLabels[key] = text(value)
+	labels := map[string]string{}
+	for key, value := range object(network["dnsPodLabels"]) {
+		if label := text(value); label != "" {
+			labels[key] = label
 		}
+	}
+	if len(labels) != 0 {
+		peer.PodSelector = &metav1.LabelSelector{MatchLabels: labels}
 	}
 	return networkv1.NetworkPolicyEgressRule{To: []networkv1.NetworkPolicyPeer{peer}, Ports: []networkv1.NetworkPolicyPort{
 		{Protocol: ptr.To(corev1.ProtocolUDP), Port: ptr.To(intstr.FromInt32(53))},

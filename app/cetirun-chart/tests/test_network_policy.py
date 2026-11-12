@@ -52,9 +52,9 @@ class NetworkPolicyDefaultsTests(unittest.TestCase):
         public = [rule for rule in egress if is_public(rule)]
         self.assertEqual([rule["to"][0]["ipBlock"]["except"] for rule in public], [BLOCKED])
 
-    def test_dns_pod_labels_replace_the_default_label(self):
-        for labels, peer in (({"k8s-app": None, "app": "coredns"}, {**namespace("kube-system"), "podSelector": {"matchLabels": {"app": "coredns"}}}),
-                             ({"k8s-app": None}, namespace("kube-system"))):
+    def test_empty_dns_pod_label_drops_the_default_label(self):
+        for labels, peer in (({"k8s-app": "", "app": "coredns"}, {**namespace("kube-system"), "podSelector": {"matchLabels": {"app": "coredns"}}}),
+                             ({"k8s-app": ""}, namespace("kube-system"))):
             with self.subTest(labels=labels):
                 values = ordinary_values()
                 values["networkPolicy"] = {"dnsPodLabels": labels}

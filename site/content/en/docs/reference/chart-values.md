@@ -267,11 +267,11 @@ Source: [app/cetirun-chart/values.yaml]({{< repo "app/cetirun-chart/values.yaml"
 | `sidecarScope` |  | Istio Sidecar scope configuration Restricts Envoy service discovery so each user namespace only sees its own services plus explicitly listed shared namespaces. Without this, any pod can query localhost:15000/clusters and enumerate every other user namespace, backend services, and infrastructure topology. |
 | `sidecarScope.enabled` | `true` | Enable Istio Sidecar resource for discovery scoping |
 | `sidecarScope.additionalEgressHosts` | `[]` | Additional namespace/host entries beyond the auto-included ones (own namespace, istioNamespace, istioIngressNamespace). Format: "namespace/hostname" or "namespace/*" |
-| `networkPolicy` |  | Network Policy configuration Default deny-all with explicit allows for Istio ingress, DNS, and external egress (RFC 1918 + IMDS always blocked). |
+| `networkPolicy` |  | Network Policy configuration Default deny-all. Inside the cluster, the Agent reaches only the DNS Pods, istiod, the platform services it uses (such as the AI Gateway) and the entries of allowedInternalCIDRs. Other egress can go to IPv4 addresses outside blockedCIDRs. |
 | `networkPolicy.enabled` | `true` | Enable NetworkPolicy |
 | `networkPolicy.istioNamespace` | `"istio-system"` | Namespace where istiod runs; also used as the default ingress gateway namespace unless istioIngressNamespace is set. Used for istiod mTLS egress (port 15012) and as the default ingress source. Typical istiod namespaces: AKS managed Istio: aks-istio-system; upstream Istio: istio-system. |
 | `networkPolicy.dnsNamespace` | `"kube-system"` | Namespace where kube-dns runs (egress DNS) |
-| `networkPolicy.dnsPodLabels` |  | Labels of the DNS Pods in dnsNamespace. Only these Pods get DNS traffic (TCP/UDP 53). Helm merges maps, so set k8s-app to null to replace the default label. Without labels, every Pod in dnsNamespace gets it. |
+| `networkPolicy.dnsPodLabels` |  | Labels of the DNS Pods in dnsNamespace. Only these Pods get DNS traffic (TCP/UDP 53). Labels with an empty value are ignored. Helm merges maps, so to drop the default label, set k8s-app to "" rather than null. Without labels, every Pod in dnsNamespace gets DNS traffic. |
 | `networkPolicy.dnsPodLabels.k8s-app` | `"kube-dns"` |  |
 | `networkPolicy.agentIdentityBrokerNamespace` | `"cetirun-credentials"` | Namespace hosting the deployment-level Agent Identity Broker. |
 | `networkPolicy.gatewayNamespace` | `"cetirun-system"` | Namespace of the platform AI Gateway, used when aiGateway.enabled. |
