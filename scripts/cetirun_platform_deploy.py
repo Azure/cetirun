@@ -1665,7 +1665,7 @@ class Deployment:
                 listed = ", ".join(f"{kind} {object_name} ({api})" for api, kind, object_name in missing[:5])
                 hint = ("; turning Azure Monitor managed Prometheus off removes azmonitoring.coreos.com, and the "
                         "infrastructure documentation shows how to continue"
-                        if any(api.startswith("azmonitoring.coreos.com/") for api, _, _ in missing) else "")
+                        if any(api.partition("/")[0] == "azmonitoring.coreos.com" for api, _, _ in missing) else "")
                 raise ValueError(f"Helm cannot upgrade {section['namespace']}/{section['release']}: the installed release holds "
                                  f"{listed}, which this cluster no longer serves{hint}")
 
