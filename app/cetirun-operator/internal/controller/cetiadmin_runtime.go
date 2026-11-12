@@ -13,6 +13,14 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/cetiadmin"
 )
 
+// cetiAdminBlockedCIDRs is the runtime chart's default blockedCIDRs, which its
+// CetiAdmin check requires. A pinned chart that predates the link-local block
+// requires the IMDS /32 instead.
+var cetiAdminBlockedCIDRs = []string{
+	"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16", "168.63.129.16/32",
+	"169.254.169.254/32",
+}
+
 func applyCetiAdminNetwork(values map[string]any, access cetiadmin.KubernetesAccess) error {
 	server, err := url.Parse(access.APIServer)
 	if err != nil {
@@ -61,7 +69,7 @@ func applyCetiAdminNetwork(values map[string]any, access cetiadmin.KubernetesAcc
 	if err != nil {
 		return err
 	}
-	for _, cidr := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.169.254/32"} {
+	for _, cidr := range cetiAdminBlockedCIDRs {
 		if !slices.Contains(blocked, cidr) {
 			blocked = append(blocked, cidr)
 		}
