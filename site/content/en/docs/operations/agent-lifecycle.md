@@ -227,11 +227,14 @@ containers, and HOME binding separately from application probes.
 
 For GitHub Copilot, also inspect `status.aiGateway.copilot.phase` and `reason`.
 Successful owner authorization, a Ready Copilot proxy, registered model routes,
-and successful inference are different stages. `ProxyStarting` means that route
-registration waits for the proxy. Before you wait for a proxy container to
-start, make sure that the proxy Deployment exists. Do not repeat owner
-authorization to repair a missing workload. Overall Agent `Ready` does not prove
-that these model-provider stages are complete.
+and successful inference are different stages. `ProxyStarting` means that the
+proxy is not ready, including an outage after routes were registered. Existing
+routes and credentials are retained. Check the proxy Deployment and its Pod
+events for scheduling, image-pull, or startup failures. Readiness checks do not
+recreate a deleted Deployment; an administrator must restore it from the Agent's
+current Helm release. Do not repeat owner authorization to repair the workload.
+`SignInCompleting` instead means that the Portal is still completing a sign-in.
+Overall Agent `Ready` does not prove that these model-provider stages are complete.
 
 ## Suspend and resume an Agent
 

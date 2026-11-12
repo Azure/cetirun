@@ -193,6 +193,9 @@ readiness. If its Deployment is missing, cannot be read, or has no ready replica
 the status returns to `Starting` with reason `ProxyStarting`. Registered routes,
 model lists, login Secrets, and the Agent's Virtual Key are retained. The status
 returns to `Ready` when the proxy recovers, without re-registering those routes.
+Readiness checks do not recreate a deleted Deployment. If it is missing, an
+administrator must restore the proxy from the Agent's current Helm release;
+repeating the Copilot sign-in does not restore the workload.
 This status does not prove that GitHub accepts the token or that a model request
 succeeds. Proxy readiness changes do not block approved shared models or restart
 the Agent workload.

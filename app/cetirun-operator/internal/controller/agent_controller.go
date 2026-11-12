@@ -870,7 +870,8 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			// ingress, while retaining the identity error for a separate retry.
 			agentIdentityRequeueAfter = 30 * time.Second
 		}
-		if agentIdentityRequested(instance) && instance.Status.AgentIdentity != nil && instance.Status.AgentIdentity.Phase == cetirunv1alpha1.AgentIdentityPhaseReady {
+		if agentIdentityRequested(instance) && instance.Status.AgentIdentity != nil && instance.Status.AgentIdentity.Phase == cetirunv1alpha1.AgentIdentityPhaseReady &&
+			agentIdentityVerificationDue(instance, time.Now()) {
 			now := metav1.Now()
 			instance.Status.AgentIdentity.LastVerifiedTime = &now
 		}
@@ -1152,9 +1153,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 
 	// Preserve the heartbeat between periodic passes; its own status event must
-	// not schedule an endless series of otherwise unchanged Sandbox reconciles.
+	// not schedule an endless series of otherwise unchanged reconciles.
 	reconciledAt := metav1.Now()
-	if reconciledSandbox && alreadyDeployed && startPhase == instance.Status.Phase &&
+	if alreadyDeployed && (!reconciledSandbox || startPhase == instance.Status.Phase) &&
 		(startPhase == cetirunv1alpha1.PhaseReady || startPhase == cetirunv1alpha1.PhaseSuspended) &&
 		instance.Status.LastReconcileTime != nil {
 		elapsed := reconciledAt.Sub(instance.Status.LastReconcileTime.Time)

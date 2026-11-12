@@ -90,6 +90,7 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
   if (!gateway?.routed) return null;
 
   const copilot = gateway.copilot;
+  const proxyStarting = copilotPhase === "Starting" && copilot?.reason === "ProxyStarting";
   const pending = login.login?.state === "pending";
   const dialogOpen = login.login !== null && login.login.state !== "none";
   const phase = copilotPhase ? COPILOT_PHASES[copilotPhase] : undefined;
@@ -116,11 +117,16 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
     }
   };
 
-  const emptyHint = copilot && copilotPhase !== "Ready"
+  let emptyHint = copilot && copilotPhase !== "Ready"
     ? "Sign in to GitHub Copilot to add your Copilot models."
     : gateway.sharedModels
       ? "No shared models are available yet."
       : "No models are available yet.";
+  if (copilotPhase === "Starting") {
+    emptyHint = proxyStarting
+      ? "Copilot models are waiting for the proxy to become ready."
+      : "Copilot sign-in is being completed.";
+  }
 
   return (
     <div
@@ -220,7 +226,9 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
             {phase && <Badge appearance="filled" color={phase.color}>{phase.label}</Badge>}
           </div>
           {copilotPhase === "Starting" && (
-            <Spinner size="tiny" label="The agent's Copilot proxy is starting with your sign-in..." labelPosition="after" />
+            <Spinner size="tiny" label={proxyStarting
+              ? "The Copilot proxy is not ready. Check its workload; signing in again will not restore it."
+              : "Completing your GitHub Copilot sign-in..."} labelPosition="after" />
           )}
           {copilotPhase === "Degraded" && copilot.reason && (
             <Text size={200} style={{ color: tokens.colorStatusDangerForeground1 }}>

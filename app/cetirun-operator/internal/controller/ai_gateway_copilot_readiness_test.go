@@ -11,8 +11,10 @@ import (
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/azure"
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
@@ -123,71 +125,140 @@ func TestCopilotRegisteredProxyReadiness(t *testing.T) {
 }
 
 func TestCopilotProxyReadinessThroughSteadyReconcile(t *testing.T) {
-	f := newDeployedAgent(t)
-	ctx := context.Background()
-	f.r.AIGateway.CopilotProxyImage = testProxyImage
-	agent := f.agent(t)
-	agent.Spec.ModelAccess = modelAccess(true, true)
-	agent.Generation++
-	if err := f.r.Update(ctx, agent); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.r.Reconcile(ctx, f.req); err != nil {
-		t.Fatal(err)
-	}
-	agent = f.agent(t)
-	signIn(t, f.r.Client, agent, testCopilotModels)
-	if err := f.r.Update(ctx, agent); err != nil {
-		t.Fatal(err)
-	}
-	proxy := readyProxy(1)
-	proxy.Labels = map[string]string{"app.kubernetes.io/component": "copilot-proxy"}
-	if err := f.r.Create(ctx, proxy); err != nil {
-		t.Fatal(err)
-	}
-	for range 3 {
-		if _, err := f.r.Reconcile(ctx, f.req); err != nil {
-			t.Fatal(err)
-		}
-	}
-	before := f.agent(t)
-	if before.Status.Phase != api.PhaseReady || before.Status.AIGateway.Copilot.Phase != api.AIGatewayCopilotPhaseReady ||
-		aiGatewayVerificationDue(before, true, time.Now()) {
-		t.Fatalf("fixture is not at steady state: %+v", before.Status)
-	}
-	installs := f.chart.installs
-	if err := f.r.Get(ctx, client.ObjectKeyFromObject(readyProxy(1)), proxy); err != nil {
-		t.Fatal(err)
-	}
-	for _, ready := range []int32{0, 0, 1} {
-		proxy.Status.ReadyReplicas = ready
-		if err := f.r.Status().Update(ctx, proxy); err != nil {
-			t.Fatal(err)
-		}
-		requests := f.r.enqueueCopilotProxy(ctx, proxy)
-		if len(requests) != 1 || requests[0] != f.req {
-			t.Fatalf("Helm-managed proxy event did not enqueue its Agent: %+v", requests)
-		}
-		result, err := f.r.Reconcile(ctx, requests[0])
-		if err != nil {
-			t.Fatal(err)
-		}
-		current := f.agent(t)
-		want := api.AIGatewayCopilotPhaseReady
-		if ready == 0 {
-			want = api.AIGatewayCopilotPhaseStarting
-			if result.RequeueAfter > 30*time.Second {
-				t.Fatalf("unready proxy used the steady-state delay: %+v", result)
+	for _, scenario := range []string{"without identity", "with identity"} {
+		t.Run(scenario, func(t *testing.T) {
+			identity := scenario == "with identity"
+			f := newDeployedAgent(t)
+			ctx := context.Background()
+			f.r.AIGateway.CopilotProxyImage = testProxyImage
+			agent := f.agent(t)
+			if identity {
+				agent.Spec.AgentIdentity = &api.AgentIdentitySpec{Enabled: true}
+				if agent.Annotations == nil {
+					agent.Annotations = map[string]string{}
+				}
+				agent.Annotations[api.AnnotationOwnerTenantID] = testAgentIdentityTenantID
+				agent.Annotations[api.AnnotationOwnerObjectID] = testAgentIdentityOwnerObject
+				f.r.AgentIdentityEnabled = true
+				f.r.AgentIdentityTenantID = testAgentIdentityTenantID
+				f.r.AgentIdentityBlueprintClientID = testAgentIdentityBlueprintID
+				principal := &azure.ServicePrincipal{ID: testAgentIdentityObjectID, AppID: testAgentIdentityClientID,
+					DisplayName: f.r.agentIdentityDisplayName(agent), AgentIdentityBlueprintID: testAgentIdentityBlueprintID}
+				directory := &fakeAgentIdentityDirectory{byObject: principal, createResult: principal}
+				f.r.agentIdentityGraphClientFactory = func() (agentIdentityDirectoryClient, error) { return directory, nil }
 			}
-		}
-		if current.Status.AIGateway.Copilot.Phase != want {
-			t.Fatalf("ready replicas %d: phase %s, want %s", ready, current.Status.AIGateway.Copilot.Phase, want)
-		}
-		if f.chart.installs != installs || current.Status.Phase != api.PhaseReady ||
-			current.Status.AIGateway.KeyID != before.Status.AIGateway.KeyID ||
-			!reflect.DeepEqual(current.Status.AIGateway.Models, before.Status.AIGateway.Models) {
-			t.Fatal("proxy readiness changed the Agent workload, key or models")
-		}
+			agent.Spec.ModelAccess = modelAccess(true, true)
+			agent.Generation++
+			if err := f.r.Update(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			for range 3 {
+				if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+					t.Fatal(err)
+				}
+			}
+			agent = f.agent(t)
+			signIn(t, f.r.Client, agent, testCopilotModels)
+			if err := f.r.Update(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			proxy := readyProxy(1)
+			proxy.Labels = map[string]string{"app.kubernetes.io/component": "copilot-proxy"}
+			if err := f.r.Create(ctx, proxy); err != nil {
+				t.Fatal(err)
+			}
+			for range 3 {
+				if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := f.agent(t)
+			if before.Status.Phase != api.PhaseReady || before.Status.AIGateway.Copilot.Phase != api.AIGatewayCopilotPhaseReady ||
+				aiGatewayVerificationDue(before, true, time.Now()) {
+				t.Fatalf("fixture is not at steady state: %+v", before.Status)
+			}
+			before.Status.LastReconcileTime = &metav1.Time{Time: time.Now().Add(-time.Minute).Truncate(time.Second)}
+			if identity {
+				before.Status.AgentIdentity.LastVerifiedTime = before.Status.LastReconcileTime.DeepCopy()
+			}
+			if err := f.r.Status().Update(ctx, before); err != nil {
+				t.Fatal(err)
+			}
+			statusWrites := 0
+			f.r.Client = interceptor.NewClient(f.r.Client.(client.WithWatch), interceptor.Funcs{
+				SubResourcePatch: func(ctx context.Context, c client.Client, subresource string, object client.Object, patch client.Patch, options ...client.SubResourcePatchOption) error {
+					if _, ok := object.(*api.Agent); ok && subresource == "status" {
+						statusWrites++
+					}
+					return c.SubResource(subresource).Patch(ctx, object, patch, options...)
+				},
+			})
+			installs := f.chart.installs
+			if err := f.r.Get(ctx, client.ObjectKeyFromObject(readyProxy(1)), proxy); err != nil {
+				t.Fatal(err)
+			}
+			for pass, ready := range []int32{0, 0, 0, 1} {
+				statusWrites = 0
+				proxy.Status.ReadyReplicas = ready
+				if err := f.r.Status().Update(ctx, proxy); err != nil {
+					t.Fatal(err)
+				}
+				requests := f.r.enqueueCopilotProxy(ctx, proxy)
+				if len(requests) != 1 || requests[0] != f.req {
+					t.Fatalf("Helm-managed proxy event did not enqueue its Agent: %+v", requests)
+				}
+				result, err := f.r.Reconcile(ctx, requests[0])
+				if err != nil {
+					t.Fatal(err)
+				}
+				current := f.agent(t)
+				want := api.AIGatewayCopilotPhaseReady
+				if ready == 0 {
+					want = api.AIGatewayCopilotPhaseStarting
+					if result.RequeueAfter != 15*time.Second {
+						t.Fatalf("unready proxy used the steady-state delay: %+v", result)
+					}
+				}
+				if current.Status.AIGateway.Copilot.Phase != want {
+					t.Fatalf("ready replicas %d: phase %s, want %s", ready, current.Status.AIGateway.Copilot.Phase, want)
+				}
+				if !current.Status.LastReconcileTime.Equal(before.Status.LastReconcileTime) {
+					t.Fatal("proxy polling advanced the recent heartbeat, causing another status watch event")
+				}
+				if identity && !current.Status.AgentIdentity.LastVerifiedTime.Equal(before.Status.AgentIdentity.LastVerifiedTime) {
+					t.Fatal("proxy polling advanced a fresh identity verification timestamp")
+				}
+				if (pass == 1 || pass == 2) && statusWrites != 0 {
+					t.Fatalf("unchanged proxy outage issued %d Agent status patches", statusWrites)
+				}
+				if (pass == 0 || pass == 3) && statusWrites == 0 {
+					t.Fatal("proxy readiness transition did not persist its status")
+				}
+				if f.chart.installs != installs || current.Status.Phase != api.PhaseReady ||
+					current.Status.AIGateway.KeyID != before.Status.AIGateway.KeyID ||
+					!reflect.DeepEqual(current.Status.AIGateway.Models, before.Status.AIGateway.Models) {
+					t.Fatal("proxy readiness changed the Agent workload, key or models")
+				}
+			}
+			before = f.agent(t)
+			before.Status.LastReconcileTime = &metav1.Time{Time: time.Now().Add(-11 * time.Minute)}
+			if identity {
+				before.Status.AgentIdentity.LastVerifiedTime = before.Status.LastReconcileTime.DeepCopy()
+			}
+			if err := f.r.Status().Update(ctx, before); err != nil {
+				t.Fatal(err)
+			}
+			f.verificationDue(t)
+			if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+				t.Fatal(err)
+			}
+			if !f.agent(t).Status.LastReconcileTime.After(before.Status.LastReconcileTime.Time) {
+				t.Fatal("periodic verification did not advance an expired heartbeat")
+			}
+			if identity && !f.agent(t).Status.AgentIdentity.LastVerifiedTime.After(before.Status.AgentIdentity.LastVerifiedTime.Time) {
+				t.Fatal("periodic verification did not advance an expired identity verification timestamp")
+			}
+		})
 	}
 }
 

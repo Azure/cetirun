@@ -540,10 +540,11 @@ spec:
                       phase:
                         description: |-
                           Phase is SignInRequired until the owner signs in to GitHub Copilot
-                          through the Portal, Starting while a required proxy has no observed ready
-                          replica, Ready when the account's models are registered and any required
-                          proxy is ready, and Degraded when registration fails. A proxy outage keeps
-                          registered routes and credentials; it does not block shared models.
+                          through the Portal, Starting while sign-in completes (SignInCompleting)
+                          or a required proxy has no observed ready replica (ProxyStarting), Ready
+                          when the account's models are registered and any required proxy is ready,
+                          and Degraded when registration fails. A proxy outage keeps registered
+                          routes and credentials; it does not block shared models.
                         enum:
                         - SignInRequired
                         - Starting
