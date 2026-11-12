@@ -278,7 +278,7 @@ kubectl logs -n cetirun-system -c gateway --since=15m --tail=-1 \
 | Field | Meaning |
 | --- | --- |
 | `model` | The name of the router, or `cetirun-router-<hash>` for a Team's router. The Team's `status.modelRouters[].gatewayModel` shows this name |
-| `routing_cause` | What made the decision. `llm_classifier` or `jev_classifier` is for a model classifier. `heuristic_scorer` or `reasoning_override` is for the local scorer. On a router with an `llm` classifier, these two values mean that the classifier failed. `default_model_fallback` means that a `jev` classification failed. The request then went to the router's default model, and the line has no `routing_tier`. `health_failover` and `health_default_fallback` mean that the model of the tier had no healthy deployment. The request then went to another model of the router's tiers, or to the router's default model |
+| `routing_cause` | What made the decision. `llm_classifier` or `jev_classifier` is for a model classifier. `heuristic_scorer` or `reasoning_override` is for the local scorer, including an explicit heuristic fallback. With the default fallback for `llm` and `jev`, `default_model_fallback` means that classification failed or was skipped. The request then went to the router's default model, and the line has no `routing_tier`. `health_failover` and `health_default_fallback` mean that the model of the tier had no healthy deployment. The request then went to another model of the router's tiers, or to the router's default model |
 | `routing_tier` | The tier that the router selected |
 | `provider_model` | The deployment that answered, such as `azure/my-gpt-deployment` |
 | `spend` | What the request cost |
@@ -343,12 +343,18 @@ model. For `jev`, select a decision model that the Gateway offers, such as
         complex: o3
 ```
 
-If an `llm` classifier fails or does not answer within three seconds, the
-router classifies that request with `heuristic` instead. If a `jev` classifier
-fails, the router sends the request to its default model. For a Team router,
-this is the model of the medium tier. Neither case reports an error. After a
-timeout, the router skips the classifier for 30 seconds. `routing_cause` shows
-each case.
+An `llm` classifier has ten seconds to answer. A `jev` classifier keeps its
+three-second default. If classification fails, the router sends the request
+to its default model. For a Team router, this is the model of the medium tier.
+
+After a timeout, the router skips the classifier for 30 seconds. Requests
+during this period also go to the default model. `routing_cause` shows
+`default_model_fallback` in both cases.
+
+A Gateway router can set `classifier_llm_config.timeout_ms` and
+`classifier_fallback` to use different values. A router with its own
+`tier_definitions` uses its `fallback_tier`. These settings are described in
+[Choosing a classifier]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#choosing-a-classifier).
 
 A `jev` classifier sends the Agent's whole system prompt and its latest
 messages to the decision model. Microsoft-Decision-1 takes at most 32,768

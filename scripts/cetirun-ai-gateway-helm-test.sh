@@ -456,11 +456,6 @@ router_values "${router_dir}/jev-own.yaml" "${jev_router_config}
 jev_own="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/jev-own.yaml")"
 assert_contains "classifier_fallback: heuristic" "a jev router's own fallback is kept" "${jev_own}"
 assert_absent "classifier_fallback: default_model" "and not replaced" "${jev_own}"
-router_values "${router_dir}/llm.yaml" "${default_router_config}
-        classifier_type: llm
-        classifier_llm_config: {model: lint-model}"
-assert_absent "classifier_fallback" "an llm router keeps LiteLLM's fallback" \
-  "$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/llm.yaml")"
 router_values "${router_dir}/jev-tiers.yaml" "tiers: {LIGHT: lint-model, HEAVY: big-model}
         classifier_type: jev
         jev_classifier_config: {deployment_name: lint-model}
@@ -468,6 +463,52 @@ router_values "${router_dir}/jev-tiers.yaml" "tiers: {LIGHT: lint-model, HEAVY: 
         fallback_tier: HEAVY"
 assert_absent "classifier_fallback" "a jev router with its own tiers keeps its fallback_tier" \
   "$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/jev-tiers.yaml")"
+
+# One slow llm classification used to open the classifier's circuit for 30
+# seconds and send those requests to the heuristic scorer. Give it ten
+# seconds and send failed or skipped classifications to the default model.
+echo "==> an llm classifier has ten seconds and falls back to the default model"
+llm_router_config="${default_router_config}
+        classifier_type: llm
+        classifier_llm_config: {model: lint-model, max_tokens: 32}"
+router_values "${router_dir}/llm.yaml" "${llm_router_config}"
+for integration in true false; do
+  llm="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/llm.yaml" --set "operatorIntegration=${integration}")"
+  assert_contains "timeout_ms: 10000$" "the llm timeout defaults to ten seconds (operatorIntegration=${integration})" "${llm}"
+  assert_contains "classifier_fallback: default_model$" "an llm router falls back to its default model (operatorIntegration=${integration})" "${llm}"
+  assert_contains "max_tokens: 32$" "other classifier settings stay" "${llm}"
+done
+assert_absent "classifier_llm_config" "a heuristic router gets no llm settings" "${routed}"
+assert_absent "timeout_ms" "a jev router keeps its own timeout default" "${jev_own}"
+
+# Each override is independent: setting one must not disable the other default.
+for timeout in 2500 0; do
+  llm_timeout="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/llm.yaml" \
+    --set "models[2].litellm_params.complexity_router_config.classifier_llm_config.timeout_ms=${timeout}")"
+  assert_contains "timeout_ms: ${timeout}$" "an explicit llm timeout is kept, including zero" "${llm_timeout}"
+  assert_contains "classifier_fallback: default_model$" "a timeout override keeps the default fallback" "${llm_timeout}"
+done
+llm_fallback="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/llm.yaml" \
+  --set 'models[2].litellm_params.complexity_router_config.classifier_fallback=heuristic')"
+assert_contains "classifier_fallback: heuristic$" "an explicit llm fallback is kept" "${llm_fallback}"
+assert_contains "timeout_ms: 10000$" "a fallback override keeps the default timeout" "${llm_fallback}"
+
+router_values "${router_dir}/llm-tiers.yaml" "tiers: {LIGHT: lint-model, HEAVY: big-model}
+        classifier_type: llm
+        classifier_llm_config: {model: lint-model}
+        tier_definitions: [{name: LIGHT, description: short asks}, {name: HEAVY, description: long work}]
+        fallback_tier: HEAVY"
+llm_tiers="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/llm-tiers.yaml")"
+assert_absent "classifier_fallback" "custom llm tiers keep their fallback_tier" "${llm_tiers}"
+assert_contains "fallback_tier: HEAVY$" "the custom fallback tier stays" "${llm_tiers}"
+assert_contains "timeout_ms: 10000$" "custom llm tiers still get the default timeout" "${llm_tiers}"
+
+router_values "${router_dir}/hybrid.yaml" "${default_router_config}
+        classifier_type: hybrid
+        classifier_llm_config: {model: lint-model}"
+hybrid="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/hybrid.yaml")"
+assert_absent "classifier_fallback" "other classifier types keep their fallback defaults" "${hybrid}"
+assert_absent "timeout_ms" "other classifier types keep their timeout defaults" "${hybrid}"
 
 # OpenClaw sends its own context as the last user message, between markers. A
 # router classifies the newest message a person wrote, so without the markers
