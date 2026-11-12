@@ -777,11 +777,13 @@ address and key, through the separate Copilot proxy that
 [Custom runtime](#custom-runtime) describes.
 
 The platform does not write a model list or a default model for a Custom
-image. The image gets the models from `GET $OPENAI_BASE_URL/models`. For the
-context window and the output limit of a model, the image can use
-`GET $OPENAI_BASE_URL/models/<model>`. Its answer has `max_input_tokens` and
-`max_output_tokens` when the Gateway knows them. A router, such as `auto`, has
-no such values. For the model configuration of the built-in runtimes, refer to
+image. The image gets the models from `GET $OPENAI_BASE_URL/models`.
+
+The Operator also sets `CETIRUN_GATEWAY_MODEL_LIMITS` for a Custom image. This
+JSON value has the context window and the output limit of each model that the
+Agent can use. A router has the smallest limits of the models that it can
+select. A model without known limits is not in the value. For the model
+configuration of the built-in runtimes, refer to
 [Choose a model](../../guides/models/).
 
 ## Chat
