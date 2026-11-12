@@ -330,7 +330,7 @@ of the agent chart. By default, it allows this traffic:
 | Direction | Allowed traffic |
 | --- | --- |
 | Inbound | From the ingress gateway namespace (`aks-istio-ingress` with the operator) to the Agent ports, the desktop on 6080, and the terminal on 7681 |
-| Outbound | DNS. istiod on 15012. The AI Gateway on 4000. Connections MCP on 8443, when connections are on. The ranges in `networkPolicy.allowedInternalCIDRs`. All other IPv4 addresses except `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, and `169.254.169.254/32` |
+| Outbound | DNS. istiod on 15012. The AI Gateway on 4000. Connections MCP on 8443, when connections are on. The ranges in `networkPolicy.allowedInternalCIDRs`, which by default has one entry: a private address on TCP port 80. All other IPv4 addresses except `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, and `169.254.169.254/32` |
 
 The rules cover IPv4 only, so the policy denies IPv6 traffic. The outbound
 rule has no port restrictions. The isolation between Agents depends on Pod and
