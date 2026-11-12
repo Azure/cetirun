@@ -111,7 +111,11 @@ provider's gAAAA... content to 11 characters. Every following turn then sent
 that back, the deployment refused it, and OpenClaw retried without its
 reasoning. The guard replaces LiteLLM's two functions that write and read the
 mark: it writes ctrnenc<hex of the deployment ID>x<content>, and reads both
-forms, so items marked before the change still route.
+forms, so items marked before the change still route. LiteLLM 1.108.3 calls
+them by public names and keeps the private names of 1.105.6 as aliases, so
+each name is replaced: with the private names alone, LiteLLM wrote its own form
+again, and sent an item in the Gateway's form to the provider with the mark
+(400 invalid_encrypted_content).
 
 A request whose encrypted reasoning a deployment could not read (400
 invalid_encrypted_content) does not go on to the model's fallbacks: their
@@ -151,7 +155,9 @@ user chose or to auto; with a reasoning model each failed, out of the user's
 sight. LiteLLM's own rule decides, read from LiteLLM, and each change is logged.
 """
 
+import base64
 import importlib
+import inspect
 import json
 import re
 import sys
@@ -232,6 +238,11 @@ MARKED_CONTENT = "litellm_enc:"
 # characters an opaque token may hold.
 GATEWAY_MARK = "ctrnenc"
 GATEWAY_MARK_FORM = re.compile(r"ctrnenc((?:[0-9a-f]{2})+)x(.+)", re.DOTALL)
+# LiteLLM's functions that write and read the mark in encrypted_content
+# (ResponsesAPIRequestUtils): the names LiteLLM 1.108.3 calls them by, then the
+# names LiteLLM 1.105.6 calls them by, which 1.108.3 keeps as aliases.
+MARK_WRITERS = ("wrap_encrypted_content_with_model_id", "_wrap_encrypted_content_with_model_id")
+MARK_READERS = ("unwrap_encrypted_content_with_model_id", "_unwrap_encrypted_content_with_model_id")
 # A client's shortened copy of a long value: kept start, ellipsis, kept end.
 SHORTENED = "\u2026"
 # LiteLLM's callback for encrypted content affinity, found by name so the
@@ -312,12 +323,21 @@ def read_marked_content(content, legacy=None):
 
 
 def install_mark_form():
-    """Make LiteLLM write the Gateway's form of the mark and read both forms."""
+    """Make LiteLLM write the Gateway's form of the mark and read both forms.
+
+    Each name that ResponsesAPIRequestUtils has for the two functions is replaced: LiteLLM 1.108.3 calls
+    them by the public names and keeps the private names as aliases, and LiteLLM 1.105.6 has only the
+    private names.
+    """
     try:
         from litellm.responses.utils import ResponsesAPIRequestUtils
     except Exception:  # noqa: BLE001
         return False
-    current = ResponsesAPIRequestUtils.__dict__.get("_unwrap_encrypted_content_with_model_id")
+    writers = [name for name in MARK_WRITERS if name in ResponsesAPIRequestUtils.__dict__]
+    readers = [name for name in MARK_READERS if name in ResponsesAPIRequestUtils.__dict__]
+    if not writers or not readers:
+        return False
+    current = ResponsesAPIRequestUtils.__dict__[readers[0]]
     legacy = getattr(current, "__func__", current)
     if getattr(legacy, "cetirun_mark_form", False):
         return True
@@ -326,8 +346,10 @@ def install_mark_form():
         return read_marked_content(wrapped_content, legacy)
 
     unwrap.cetirun_mark_form = True
-    ResponsesAPIRequestUtils._wrap_encrypted_content_with_model_id = staticmethod(mark_encrypted_content)
-    ResponsesAPIRequestUtils._unwrap_encrypted_content_with_model_id = staticmethod(unwrap)
+    for name in writers:
+        setattr(ResponsesAPIRequestUtils, name, staticmethod(mark_encrypted_content))
+    for name in readers:
+        setattr(ResponsesAPIRequestUtils, name, staticmethod(unwrap))
     return True
 
 
@@ -370,6 +392,7 @@ def install_failover_past_affinity():
                              parent_otel_span=parent_otel_span)
 
     async_filter_deployments.cetirun_failover = True
+    async_filter_deployments.cetirun_original = current
     DeploymentAffinityCheck.async_filter_deployments = async_filter_deployments
     return True
 
@@ -391,11 +414,13 @@ def install_router_alias_listing():
     """List a Team's router that a key reaches under an alias only under the alias.
 
     The CetiRun operator gives an Agent's key an alias for each Team router the Agent may use: the router's
-    name for its internal name, cetirun-router-<hash>. LiteLLM 1.105.6 lists a key alias next to its
-    target in GET /v1/models, so the router was listed twice, once under a name that means nothing to the
-    Agent's owner. LiteLLM's alias_listing_entries, which adds the aliases' rows, is replaced by one that
-    then leaves the internal name out. The proxy module imports the function by name, so it is replaced
-    there too when the proxy is already loaded. A lookup of the internal name still answers.
+    name for its internal name, cetirun-router-<hash>. LiteLLM lists a key alias next to its target in
+    GET /v1/models, so the router was listed twice, once under a name that means nothing to the Agent's
+    owner. LiteLLM's alias_listing_entries, which adds the aliases' rows, is replaced by one that then
+    leaves the internal name out. The replacement passes on every argument it gets: LiteLLM 1.108.3 added
+    a third one, and a replacement that took only the two of LiteLLM 1.105.6 failed every GET /v1/models
+    with 500. The proxy module imports the function by name, so it is replaced there too when the proxy
+    is already loaded. A lookup of the internal name still answers.
     """
     try:
         listing = importlib.import_module(LISTING_MODULE)
@@ -407,10 +432,11 @@ def install_router_alias_listing():
     if not getattr(current, "cetirun_router_aliases", False):
         original = current
 
-        def alias_listing_entries(entries, aliases):
-            return without_aliased_routers(original(entries, aliases))
+        def alias_listing_entries(entries, aliases, *args, **kwargs):
+            return without_aliased_routers(original(entries, aliases, *args, **kwargs))
 
         alias_listing_entries.cetirun_router_aliases = True
+        alias_listing_entries.cetirun_original = original
         listing.alias_listing_entries = alias_listing_entries
         current = alias_listing_entries
     proxy = sys.modules.get(PROXY_SERVER_MODULE)
@@ -452,8 +478,88 @@ def install_savings_provider_lookup():
         return identity(model=model.removeprefix(f"{provider}/"), provider=provider)
 
     _resolve_model.cetirun_declared_provider = True
+    _resolve_model.cetirun_original = original
     savings._resolve_model = _resolve_model
     return True
+
+
+# A deployment ID and provider content to call the replaced functions with.
+EXERCISE_MODEL = "cetirun-exercise"
+EXERCISE_CONTENT = "gAAAAexercise"
+
+
+def exercise_mark_form():
+    """Whether LiteLLM's own functions that mark the items of a response and unmark the items of a request
+    write the Gateway's form of the mark and read both forms."""
+    from litellm.responses.utils import ResponsesAPIRequestUtils
+
+    response = {"output": [{"type": "reasoning", "encrypted_content": EXERCISE_CONTENT}]}
+    ResponsesAPIRequestUtils._update_encrypted_content_item_ids_in_response(response, EXERCISE_MODEL)
+    marked = response["output"][0]["encrypted_content"]
+    metadata = base64.b64encode(f"model_id:{EXERCISE_MODEL}".encode("utf-8")).decode("ascii")
+    request = [{"type": "reasoning", "encrypted_content": content}
+               for content in (marked, f"{MARKED_CONTENT}{metadata};{EXERCISE_CONTENT}")]
+    ResponsesAPIRequestUtils._restore_encrypted_content_item_ids_in_input(request)
+    return (marked == mark_encrypted_content(EXERCISE_CONTENT, EXERCISE_MODEL)
+            and [item["encrypted_content"] for item in request] == [EXERCISE_CONTENT, EXERCISE_CONTENT])
+
+
+def exercise_failover_past_affinity():
+    """Whether LiteLLM's deployment-affinity filter takes the parameters of its replacement, which the
+    router calls by name and the replacement passes on."""
+    from litellm.router_utils.pre_call_checks.deployment_affinity_check import DeploymentAffinityCheck
+
+    replacement = DeploymentAffinityCheck.__dict__.get("async_filter_deployments")
+    original = getattr(replacement, "cetirun_original", None)
+    return original is not None and (
+        list(inspect.signature(original).parameters) == list(inspect.signature(replacement).parameters))
+
+
+def exercise_router_alias_listing():
+    """Whether LiteLLM's listing, called as GET /v1/models calls it in LiteLLM 1.108.3
+    (proxy_server.model_list), lists a Team's router under the key's alias only."""
+    listing = importlib.import_module(LISTING_MODULE)
+    proxy = sys.modules.get(PROXY_SERVER_MODULE)
+    if proxy is not None and getattr(proxy, "alias_listing_entries", None) is not listing.alias_listing_entries:
+        return False
+    internal = f"{TEAM_ROUTER_PREFIX}{'0' * 16}"
+    entries = ((internal, internal), (EXERCISE_MODEL, EXERCISE_MODEL))
+    aliases = listing.caller_alias_maps({"router": internal}, None, None, None)
+    listed = listing.alias_listing_entries(entries, aliases, frozenset((internal, EXERCISE_MODEL)))
+    return set(listed) == {(EXERCISE_MODEL, EXERCISE_MODEL), ("router", internal)}
+
+
+def exercise_savings_provider_lookup():
+    """Whether the savings module's lookup names a provider that signs in from the model name, and
+    LiteLLM's own lookup takes the arguments the replacement passes on."""
+    savings = importlib.import_module(SAVINGS_MODULE)
+    original = getattr(savings._resolve_model, "cetirun_original", None)
+    if original is None:
+        return False
+    inspect.signature(original).bind(EXERCISE_MODEL, None)
+    identity = savings._resolve_model(f"github_copilot/{EXERCISE_MODEL}", None)
+    return (identity.model, identity.provider) == (EXERCISE_MODEL, "github_copilot")
+
+
+def exercise_patches():
+    """Each replaced LiteLLM function, called the way LiteLLM calls it: True for a replacement that works,
+    False or the error otherwise. The image build requires True for each, so a LiteLLM upgrade that calls
+    such a function by another name or with other arguments fails the build. Without this check, LiteLLM
+    1.108.3 failed every GET /v1/models with 500 and wrote LiteLLM's form of the mark again.
+    """
+    exercises = {
+        "mark_form": exercise_mark_form,
+        "failover_past_affinity": exercise_failover_past_affinity,
+        "router_alias_listing": exercise_router_alias_listing,
+        "savings_provider_lookup": exercise_savings_provider_lookup,
+    }
+    results = {}
+    for name, exercise in exercises.items():
+        try:
+            results[name] = bool(exercise())
+        except Exception as error:  # noqa: BLE001
+            results[name] = f"{type(error).__name__}: {error}"
+    return results
 
 
 def azure_openai(deployment):
@@ -1386,7 +1492,8 @@ handler = Guard()
 # so LiteLLM writes the Gateway's form of the mark from the first request, the
 # proxy imports the replaced listing function, and litellm_settings in the
 # configuration can still turn the router's details in errors on again. The
-# image build checks that each replacement took.
+# image build checks that each replacement took, and calls each one the way
+# LiteLLM calls the function it replaces (exercise_patches).
 PATCHED = {
     "mark_form": install_mark_form(),
     "failover_past_affinity": install_failover_past_affinity(),
