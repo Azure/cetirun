@@ -1163,7 +1163,7 @@ explicit `ACCEPT_VSCODE_SERVER_LICENSE_TERMS=false` stops a build that includes
 VS Code Server. To publish the other artifacts without it, run
 `scripts/cetirun-release.py publish --exclude-image cetirun-vscode`. For the
 complete command, refer to
-[Install CetiRun](site/content/en/docs/getting-started/platform.md).
+[Publish images and charts](site/content/en/docs/operations/artifacts.md#publish-the-images-and-charts).
 
 MCR is a public pull endpoint, not a push destination. Local builds use its
 default only for image tags and chart packaging. Local builds can hide official

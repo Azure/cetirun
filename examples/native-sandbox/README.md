@@ -21,7 +21,8 @@ order:
 | [Ordinary-container backend](#ordinary-container-backend) | Administrator | One time, only for the `container` backend |
 | [Prepare one authorized target](#prepare-one-authorized-target) | Administrator | One time for each target |
 | [Helper memory](#helper-memory), [Default startup window](#default-startup-window), and [HOME access mode](#home-access-mode) | Administrator | When you configure the Sandbox |
-| [Kubernetes API access](#kubernetes-api-access), [Scoped internal egress](#scoped-internal-egress), [Governed SCTP egress](#governed-sctp-egress), [Rollout-stable DNS and AI Gateway](#rollout-stable-dns-and-ai-gateway), and [Rollout-stable managed ingress](#rollout-stable-managed-ingress) | Administrator | Only for the optional feature in the heading |
+| [Kubernetes API access](#kubernetes-api-access), [Scoped internal egress](#scoped-internal-egress), [Governed SCTP egress](#governed-sctp-egress), and [Rollout-stable managed ingress](#rollout-stable-managed-ingress) | Administrator | Only for the optional feature in the heading |
+| [Rollout-stable DNS and AI Gateway](#rollout-stable-dns-and-ai-gateway) | Agent owner and administrator | Each run, because Sandbox Pods resolve only full DNS names. The selectors are optional. |
 | [Create, connect and use](#create-connect-and-use) | Agent owner and administrator | Each run |
 | [Delete and verify cleanup](#delete-and-verify-cleanup) | Agent owner and administrator | Each run |
 
