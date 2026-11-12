@@ -56,15 +56,18 @@ class GeneratedTablesTests(unittest.TestCase):
             "<!-- generated: example -->\n\n"
             "| Value | Default | Description |\n| --- | --- | --- |\n"
             "| `kept` | `1` | Edited text. |\n"
+            "| `emptied` | `5` |  |\n"
             "| `removed` | `2` | Old text. |\n\n"
             "<!-- /generated: example -->\n"
         )
         rows = [
             tables.Row("kept", ["`3`"], "Source text."),
+            tables.Row("emptied", ["`6`"], "Changed source text."),
             tables.Row("added", ["`4`"], "Source text of a new row."),
         ]
         updated = tables.update(page, [table(rows)])
         self.assertIn("| `kept` | `3` | Edited text. |", updated)
+        self.assertIn("| `emptied` | `6` | Changed source text. |", updated)
         self.assertIn("| `added` | `4` | Source text of a new row. |", updated)
         self.assertNotIn("removed", updated)
 

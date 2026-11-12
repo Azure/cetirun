@@ -54,7 +54,7 @@ For the gate names, use `python3 scripts/ci/validate.py --help`.
 | `scripts/check-license-headers.py --root PATH` | Examines the in-scope first-party headers. It accepts a Git worktree or a source export |
 | `scripts/add-license-headers.py --root PATH --dry-run` | Shows a preview of the mechanical header additions. To write the headers, an explicit `--confirm-first-party` is necessary |
 | `scripts/ci/install_tools.py --bin-dir PATH TOOL...` | Downloads the selected checksum-pinned CI tools into a task-local directory. Linux amd64/arm64 only |
-| `site/scripts/reference_tables.py [--write]` | Checks that the generated field and value tables of the Reference pages match the CRDs and the `values.yaml` files of the charts. `--write` updates the tables and keeps each Description cell that a writer edited. `make -C site test` runs the same check |
+| `site/scripts/reference_tables.py [--write]` | Checks that the generated field and value tables of the Reference pages match the CRDs and the `values.yaml` files of the charts. `--write` updates the tables. It keeps each Description cell that is not empty, also when the source description changes. `make -C site test` runs the same check |
 | `scripts/ci/scan_image.py --image IMAGE` | Scans the already-built local `cetirun-operator:validation` or `cetirun-portal:validation` image. Docker downloads the pinned Trivy image and the vulnerability database |
 
 The header checker has explicit generated/upstream exclusions. A successful

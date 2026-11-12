@@ -11,8 +11,9 @@ sources. Each table sits between two HTML comments in a Markdown page:
     ...
     <!-- /generated: ID -->
 
-The script owns every column except Description. A Description cell that a
-writer edits stays as it is. A new row starts with the description of its
+The script owns every column except Description. It keeps each Description
+cell that is not empty, also when the source description changes later. A new
+row, or a row with an empty Description cell, gets the description of its
 source: the CRD field description, or the ``# --`` comment of a chart value,
 as helm-docs reads it.
 
