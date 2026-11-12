@@ -185,6 +185,14 @@ metrics, and 14 days for Agent logs. Successful collection still depends on
 the deployed collectors, permissions, and settings. Source configuration alone
 does not prove that a live cluster collects data.
 
+With the cluster template parameter `adxAuditLogs`, the AKS API server sends
+its audit events through an Event Hub, which keeps each message for one day,
+into the database `CetiRunAudit`. These are all requests except `get` and
+`list`. An event names the user, the source address, the user agent, and the
+object of a request. For many kinds, such as Deployments, role bindings, and
+webhook configurations, it also holds the request and the response. For
+Secrets and ConfigMaps, it holds neither.
+
 A cluster that runs Container Insights anyway collects container stdout and
 stderr into a Log Analytics workspace. By default, Container Insights also
 copies the environment variables of every container into its
@@ -228,7 +236,8 @@ Source: [cluster defaults](infra/cluster/main.bicep),
 [Envoy access-log fields](infra/istio/templates/egress/accesslog.yaml),
 [operator metrics configuration](app/cetirun-operator/cmd/main.go),
 [ADX-Mon collection](app/cetirun-observability/chart/templates/_helpers.tpl),
-and [Azure Data Explorer databases and retention](infra/cluster/modules/adx.bicep).
+[Azure Data Explorer databases and retention](infra/cluster/modules/adx.bicep),
+and [Kubernetes audit events](infra/cluster/modules/aks-audit.bicep).
 
 ## Network and third-party boundaries
 

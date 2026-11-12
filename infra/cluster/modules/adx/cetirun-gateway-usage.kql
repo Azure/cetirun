@@ -1,0 +1,33 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+//
+// Daily AI Gateway usage, kept longer than the request log: a materialized
+// view of the Gateway table in the CetiRun logs database, one row per day,
+// cluster, Agent, owner, Team, model and call origin. Kusto keeps it up to date
+// as rows arrive. __RETENTION_DAYS__ is its retention in days; the ADX module
+// of the cluster template replaces it and runs this script after
+// cetirun-logs.kql, which creates the Gateway table. The view counts a row
+// that ADX-Mon delivers twice twice, as GatewayRequests() does.
+.create ifnotexists materialized-view with (backfill = true, folder = "CetiRun", docString = "Daily AI Gateway calls, tokens and spend per cluster, Agent, owner, Team, model and call origin. CallOrigin is health_check for LiteLLM's own probes.") GatewayDailyUsage on table Gateway {
+    Gateway
+    | where Container == "gateway" and tostring(Body['log_type']) == "cetirun.ai_gateway.request"
+    | extend Metadata = Body['key_metadata']
+    | summarize
+        Calls = count(),
+        FailedCalls = countif(tostring(Body['status']) == "failure"),
+        PromptTokens = sum(tolong(Body['prompt_tokens'])),
+        CompletionTokens = sum(tolong(Body['completion_tokens'])),
+        CachedTokens = sum(tolong(Body['cached_tokens'])),
+        ReasoningTokens = sum(tolong(Body['reasoning_tokens'])),
+        Spend = sum(toreal(Body['spend']))
+        by Day = bin(Timestamp, 1d), Cluster,
+        Agent = tostring(Metadata['cetirun_agent']),
+        Owner = tostring(Metadata['cetirun_user']),
+        Team = tostring(Metadata['cetirun_team']),
+        Model = tostring(Body['model']),
+        CallOrigin = tostring(Body['call_origin'])
+}
+
+.alter materialized-view GatewayDailyUsage policy retention '{"SoftDeletePeriod": "__RETENTION_DAYS__.00:00:00", "Recoverability": "Enabled"}'
+
+.alter materialized-view GatewayDailyUsage policy caching hot = 31d

@@ -7,7 +7,8 @@ The settings are created on a cluster that has none; settings a cluster
 already has are checked and never replaced, since replacing them would drop
 the cluster's own collection settings. The compiled template turns Container
 Insights and managed Prometheus off, and creates Azure Data Explorer for the
-ADX-Mon collection by default.
+ADX-Mon collection by default. Its Kusto scripts create every table that a
+query reads, and the audit events and the alerter identity are optional.
 """
 
 import json
@@ -292,6 +293,12 @@ class CompiledVersionTests(unittest.TestCase):
             self.assertEqual(list(temp.iterdir()), [params], "Compilation must not leave generated files")
 
 
+def template_resources(node):
+    """The resources of a compiled template, which lists them or maps them by symbolic name."""
+    items = node.get("resources", [])
+    return list(items.values() if isinstance(items, dict) else items)
+
+
 @unittest.skipUnless(shutil.which("bicep"), "Bicep CLI is required for compilation regression tests")
 class CompiledMonitoringTests(unittest.TestCase):
     def test_azure_monitor_is_off_and_azure_data_explorer_is_the_default(self):
@@ -311,12 +318,161 @@ class CompiledMonitoringTests(unittest.TestCase):
         everything = list(resources(template))
         monitoring = [resource["type"] for resource in everything if resource["type"].split("/")[0].lower()
                       in ("microsoft.operationalinsights", "microsoft.monitor", "microsoft.insights")]
-        self.assertEqual(monitoring, [], "No workspace or data collection rule")
-        clusters = [resource for resource in everything if resource["type"] == "Microsoft.ContainerService/managedClusters"]
+        # The only one is the diagnostic setting of the audit events, in a module that runs only with adxAuditLogs.
+        self.assertEqual(monitoring, ["Microsoft.Insights/diagnosticSettings"], "No workspace or data collection rule")
+        audit = next(resource for resource in template_resources(template)
+                     if resource["type"] == "Microsoft.Resources/deployments" and resource["name"] == "deploy-aks-audit")
+        self.assertIn("parameters('adxAuditLogs')", audit["condition"])
+        self.assertEqual([item["type"] for item in resources(audit["properties"]["template"])
+                          if item["type"].startswith("Microsoft.Insights/")], ["Microsoft.Insights/diagnosticSettings"])
+        self.assertIs(template["parameters"]["adxAuditLogs"]["defaultValue"], False)
+        clusters = [resource for resource in everything if resource["type"] == "Microsoft.ContainerService/managedClusters"
+                    and not resource.get("existing")]
         self.assertEqual(len(clusters), 1)
         # Off explicitly, so that a deployment over a cluster from an earlier template turns them off.
         self.assertIs(clusters[0]["properties"]["addonProfiles"]["omsagent"]["enabled"], False)
         self.assertIs(clusters[0]["properties"]["azureMonitorProfile"]["metrics"]["enabled"], False)
+
+
+ADX_SCRIPTS = ROOT / "infra" / "cluster" / "modules" / "adx"
+LOG_COLUMNS = ("Timestamp:datetime, ObservedTimestamp:datetime, TraceId:string, SpanId:string, SeverityText:string, "
+               "SeverityNumber:int, Body:dynamic, Resource:dynamic, Attributes:dynamic, Cluster:string, Container:string, "
+               "Namespace:string, Pod:string")
+METRIC_COLUMNS = ("Timestamp:datetime, SeriesId:long, Labels:dynamic, Value:real, Container:string, Namespace:string, "
+                  "Pod:string, Cluster:string, Host:string")
+# A metric table: its metric name in PascalCase, from a component that CetiRun collects.
+METRIC_TABLE = r"\b((?:Adxmon|Kube|Litellm|Cetirun)[A-Z]\w*)\b"
+LOG_TABLE = r"\b(Platform|Gateway|Ingress|Telemetry|Kubelet|Containerd)\b"
+
+
+def kusto_commands(name):
+    """The management commands of a script as the ADX module runs it: without its comment lines."""
+    text = "\n".join(line for line in (ADX_SCRIPTS / name).read_text().splitlines() if not line.startswith("//"))
+    return [block.strip() for block in re.split(r"\n\s*\n", text) if block.strip()]
+
+
+def created_tables(name):
+    tables = {}
+    for command in kusto_commands(name):
+        if command.startswith(".create-merge tables"):
+            tables.update(re.findall(r"^\s+(\w+) \((.*)\),?$", command, re.M))
+    return tables
+
+
+class AdxScriptTests(unittest.TestCase):
+    def test_each_command_is_one_block(self):
+        # A blank line ends a command: the module joins the scripts with one.
+        for path in ADX_SCRIPTS.glob("*.kql"):
+            for command in kusto_commands(path.name):
+                self.assertTrue(command.startswith("."), f"{path.name}: {command[:60]}")
+
+    def test_every_table_that_a_query_reads_exists_before_its_rows(self):
+        logs, metrics = created_tables("cetirun-logs.kql"), created_tables("cetirun-metrics.kql")
+        agents = created_tables("cetirun-agents.kql")
+        self.assertEqual(set(logs), {"Platform", "Gateway", "Ingress", "Telemetry", "Kubelet", "Containerd"})
+        self.assertEqual(set(agents), {"AgentLogs", "CopilotProxy"})
+        # The columns that the ADX-Mon ingestor gives a log table and a metric table.
+        self.assertEqual(set([*logs.values(), *agents.values()]), {LOG_COLUMNS})
+        self.assertEqual(set(metrics.values()), {METRIC_COLUMNS})
+        health = (ADX_SCRIPTS / "cetirun-health.kql").read_text()
+        dashboard = json.loads((ROOT / "app/cetirun-observability/dashboards/cetirun.json").read_text())
+        databases = {source["id"]: source["database"] for source in dashboard["dataSources"]}
+        texts = {"CetiRunLogs": [], "CetiRunMetrics": [health]}
+        for query in dashboard["queries"]:
+            texts[databases[query["dataSource"]["dataSourceId"]]].append(query["text"])
+        # A metric table that does not exist yet fails the whole query, CollectionHealth() included.
+        read = {table for text in texts["CetiRunMetrics"] for table in re.findall(METRIC_TABLE, text)}
+        self.assertIn("AdxmonCollectorLogsDropped", read)
+        self.assertLessEqual(read, set(metrics))
+        # The log tables that the functions, the health check and the dashboard read.
+        log_reads = set(re.findall(r'database\("__LOGS_DATABASE__"\)\.(\w+)', health))
+        log_reads |= set(re.findall(r"^ {4}(\w+)$", (ADX_SCRIPTS / "cetirun-logs.kql").read_text(), re.M))
+        log_reads |= {table for text in texts["CetiRunLogs"] for table in re.findall(LOG_TABLE, text)}
+        self.assertEqual(log_reads - set(logs), set())
+        self.assertIn("AgentLogs", re.findall(r"^ {4}(\w+)$", (ADX_SCRIPTS / "cetirun-agents.kql").read_text(), re.M))
+
+    def test_lifted_columns_follow_the_chart(self):
+        # The collector lifts labels and resources into columns in the order of their names.
+        helpers = (ROOT / "app/cetirun-observability/chart/templates/_helpers.tpl").read_text()
+
+        def lifted(key):
+            block = re.search(rf"^{key} = \[\n(.*?)^\]", helpers, re.M | re.S)[1]
+            pairs = re.findall(r'\{ name = "(\w+)", column = "(\w+)" \}', block)
+            return ", ".join(f"{column}:string" for _, column in sorted(pairs, key=lambda pair: pair[0].lower()))
+
+        self.assertTrue(METRIC_COLUMNS.endswith("Value:real, " + lifted("lift-labels")))
+        self.assertTrue(LOG_COLUMNS.endswith("Attributes:dynamic, " + lifted("lift-resources")))
+
+    def test_gateway_daily_usage_reads_only_its_table_and_follows_it(self):
+        create, retention, caching = kusto_commands("cetirun-gateway-usage.kql")
+        self.assertTrue(create.startswith(".create ifnotexists materialized-view with (backfill = true"))
+        self.assertIn(" GatewayDailyUsage on table Gateway {", create)
+        # A materialized view reads its source table only.
+        self.assertEqual(re.findall(r"^ {4}(\w+)$", create, re.M), ["Gateway"])
+        self.assertIn("__RETENTION_DAYS__.00:00:00", retention)
+        self.assertTrue(caching.startswith(".alter materialized-view GatewayDailyUsage policy caching"))
+        module = (ROOT / "infra/cluster/modules/adx.bicep").read_text()
+        line = next(text for text in module.splitlines() if text.startswith("var logsFunctions"))
+        # After the script that creates the Gateway table, with the retention of the template.
+        self.assertLess(line.index("adx/cetirun-logs.kql"), line.index("adx/cetirun-gateway-usage.kql"))
+        self.assertIn("'__RETENTION_DAYS__', string(gatewayUsageRetentionDays)", line)
+
+    def test_audit_messages_land_whole_and_expand_into_events(self):
+        table, mapping, function = kusto_commands("cetirun-audit.kql")
+        self.assertEqual(table, ".create-merge table KubeAuditLogs (Records:dynamic)")
+        self.assertIn('KubeAuditLogs ingestion json mapping "KubeAuditLogsMapping"', mapping)
+        self.assertEqual(json.loads(re.search(r"'(\[.*\])'", mapping)[1]),
+                         [{"column": "Records", "path": "$.records", "datatype": "dynamic"}])
+        self.assertIn("AuditEvents()", function)
+        self.assertIn("mv-expand Record = Records", function)
+        connection = (ROOT / "infra/cluster/modules/adx-audit-connection.bicep").read_text()
+        # A message is {"records": [...]}: MULTIJSON takes the whole message as one row.
+        for setting in ("dataFormat: 'MULTIJSON'", "tableName: 'KubeAuditLogs'", "mappingRuleName: 'KubeAuditLogsMapping'",
+                        "managedIdentityResourceId: cluster.id"):
+            self.assertIn(setting, connection)
+
+
+@unittest.skipUnless(shutil.which("bicep"), "Bicep CLI is required for compilation regression tests")
+class CompiledObservabilityTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        compiled = subprocess.run(["bicep", "build", str(ROOT / "infra/cluster/main.bicep"), "--stdout", "--no-restore"],
+                                  capture_output=True, text=True, check=True)
+        cls.template = json.loads(compiled.stdout)
+
+    def module(self, name):
+        return next(resource for resource in template_resources(self.template)
+                    if resource["type"] == "Microsoft.Resources/deployments" and resource["name"] == name)
+
+    def test_audit_logs_and_the_alerter_are_off_by_default(self):
+        parameters = self.template["parameters"]
+        self.assertIs(parameters["adxAuditLogs"]["defaultValue"], False)
+        self.assertIs(parameters["adxAlerter"]["defaultValue"], False)
+        self.assertEqual(parameters["adxGatewayUsageRetentionDays"]["defaultValue"], 400)
+        for name in ("deploy-aks-audit", "deploy-adx-audit-connection"):
+            self.assertIn("parameters('adxAuditLogs')", self.module(name)["condition"])
+        self.assertIn("parameters('adxAlerter')", self.module("deploy-adx-alerter-identity")["condition"])
+
+    def test_the_alerter_identity_belongs_to_the_alerter_service_account(self):
+        parameters = self.module("deploy-adx-alerter-identity")["properties"]["parameters"]
+        self.assertEqual(parameters["serviceAccountName"]["value"], "cetirun-adx-mon-alerter")
+        self.assertEqual(parameters["namespace"]["value"], "[parameters('observabilityNamespace')]")
+
+    def test_audit_events_go_to_one_hub_that_only_the_kusto_cluster_reads(self):
+        resources = {resource["type"]: resource for resource in
+                     template_resources(self.module("deploy-aks-audit")["properties"]["template"])
+                     if not resource.get("existing")}
+        setting = resources["Microsoft.Insights/diagnosticSettings"]["properties"]
+        # kube-audit-admin: every request except get and list.
+        self.assertEqual(setting["logs"], [{"category": "kube-audit-admin", "enabled": True}])
+        self.assertIn("RootManageSharedAccessKey", setting["eventHubAuthorizationRuleId"])
+        self.assertEqual(resources["Microsoft.EventHub/namespaces"]["sku"]["name"], "Standard")
+        role = resources["Microsoft.Authorization/roleAssignments"]
+        audit = self.module("deploy-aks-audit")["properties"]["template"]
+        # Azure Event Hubs Data Receiver, on the namespace.
+        self.assertEqual(audit["variables"]["receiverRoleId"], "a638d3c7-ab3a-418d-83e6-5f17a39d4fde")
+        self.assertIn("variables('receiverRoleId')", role["properties"]["roleDefinitionId"])
+        self.assertIn("Microsoft.EventHub/namespaces", role["scope"])
 
 
 class ManagedPrometheusStandInTests(unittest.TestCase):

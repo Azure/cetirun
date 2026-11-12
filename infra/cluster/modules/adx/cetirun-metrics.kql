@@ -6,6 +6,22 @@
 // CountCardinality every minute and stores its result in
 // AdxmonIngestorTableCardinalityCount; the body is upstream's
 // (build/k8s/cardinality-function.yaml).
+//
+// The metric tables that CollectionHealth(), the dashboard and the alert rule
+// read, with the columns that the ADX-Mon ingestor gives them. A counter with
+// labels has no table until it first counts, and a missing table makes the
+// whole query fail. The ingestor creates the other metric tables.
+.create-merge tables
+    AdxmonCollectorHealthCheck (Timestamp:datetime, SeriesId:long, Labels:dynamic, Value:real, Container:string, Namespace:string, Pod:string, Cluster:string, Host:string),
+    AdxmonCollectorLogsDropped (Timestamp:datetime, SeriesId:long, Labels:dynamic, Value:real, Container:string, Namespace:string, Pod:string, Cluster:string, Host:string),
+    AdxmonCollectorWalSegmentsMaxAgeSeconds (Timestamp:datetime, SeriesId:long, Labels:dynamic, Value:real, Container:string, Namespace:string, Pod:string, Cluster:string, Host:string),
+    AdxmonIngestorHealthCheck (Timestamp:datetime, SeriesId:long, Labels:dynamic, Value:real, Container:string, Namespace:string, Pod:string, Cluster:string, Host:string),
+    AdxmonIngestorHealthStatus (Timestamp:datetime, SeriesId:long, Labels:dynamic, Value:real, Container:string, Namespace:string, Pod:string, Cluster:string, Host:string),
+    AdxmonIngestorWalSegmentsMaxAgeSeconds (Timestamp:datetime, SeriesId:long, Labels:dynamic, Value:real, Container:string, Namespace:string, Pod:string, Cluster:string, Host:string),
+    AdxmonTableBacklogRejectedBytes (Timestamp:datetime, SeriesId:long, Labels:dynamic, Value:real, Container:string, Namespace:string, Pod:string, Cluster:string, Host:string),
+    AdxmonTableBacklogRejectedRecords (Timestamp:datetime, SeriesId:long, Labels:dynamic, Value:real, Container:string, Namespace:string, Pod:string, Cluster:string, Host:string),
+    KubePodContainerStatusRestartsTotal (Timestamp:datetime, SeriesId:long, Labels:dynamic, Value:real, Container:string, Namespace:string, Pod:string, Cluster:string, Host:string)
+
 .create-or-alter function with (folder = "ADX-Mon", docstring = "Distinct series of each metric table in the last hour, for the ingestor's cardinality metric.", skipvalidation = "true") CountCardinality() {
     union withsource=table *
     | where Timestamp >= ago(1h) and Timestamp < ago(5m)
