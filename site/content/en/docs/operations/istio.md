@@ -366,10 +366,14 @@ offline rendered Secret to update a live release.
 OAuth2 Proxy has two replicas by default. When
 `oauth2Proxy.podDisruptionBudget.enabled` is `true` and
 `oauth2Proxy.replicas` is greater than one, the chart creates a
-PodDisruptionBudget with `maxUnavailable: 1`. A node drain that uses the
+PodDisruptionBudget (PDB) with `maxUnavailable: 1`. A node drain that uses the
 Kubernetes eviction API must respect this budget. If one Proxy is unavailable,
-the drain must wait before it can evict another. The chart creates no budget
-for zero or one replica. Set `enabled: false` to disable the budget explicitly.
+the drain must wait before it can evict another Ready Proxy. The budget uses
+`unhealthyPodEvictionPolicy: AlwaysAllow`, so running Pods that are not Ready
+can still be evicted when the budget is exhausted. This prevents a session-store
+outage that makes both Proxies unhealthy from blocking a drain. The chart
+creates no budget for zero or one replica. Set `enabled: false` to disable the
+budget explicitly; other keys under `podDisruptionBudget` are not supported.
 
 The default `oauth2Proxy.topologySpreadConstraints` prefers different nodes
 with `maxSkew: 1`, `topologyKey: kubernetes.io/hostname`, and
@@ -380,15 +384,38 @@ still respects `nodeSelector` and `tolerations`. With the defaults, eligible
 nodes must have the `agentpool: system` label.
 
 This preference permits installation on a single node. It does not guarantee
-that replicas use separate nodes. Supply a complete replacement constraint
-list to change the placement policy, or set `topologySpreadConstraints: []`
-to disable it. Strict placement can leave Pods pending when too few eligible
-nodes or insufficient capacity are available.
+that replicas use separate nodes. If both Ready replicas use the only eligible
+node, a manual drain evicts one and then waits: its replacement cannot run on
+the cordoned node. Provide spare eligible capacity before draining that node.
 
-Older values that omit these options use the new defaults, including upgrades
-with `--reuse-values`. Adding the spread constraint changes the Proxy Pod
+Explicit spread constraints replace the scheduler's default spreading,
+including any preference for different zones. Supply a complete replacement
+constraint list to change the placement policy or include a zone constraint.
+Set `topologySpreadConstraints: []` in a values file, or use
+`--set-json 'oauth2Proxy.topologySpreadConstraints=[]'`, to remove the chart's
+placement constraint. Helm's plain `--set` treats `[]` as a string and is not
+supported for this value. Strict placement can leave Pods pending when too few
+eligible nodes or insufficient capacity are available.
+
+Omitted or `null` values for `podDisruptionBudget` and
+`topologySpreadConstraints` use the new defaults, including upgrades with
+`--reuse-values`. Use `enabled: false` and an empty list for explicit disabling.
+Adding the spread constraint changes the Proxy Pod
 template and causes one rolling update. It does not change the bundled session
 store's Pod template, credentials, or persistent volume.
+
+With `make deploy` and `istio.mode: external`, upgrade the external Istio release
+first, or set `istio.values.oauth2Proxy.podDisruptionBudget.enabled: false` in
+the environment file until it has the budget. Preflight requires every rendered
+non-Secret Istio object to exist, including this PDB, and stops before writing
+if one is missing. Keep `istio.values.oauth2Proxy.replicas` consistent with the
+external release, because that value determines whether a budget is required.
+
+Before upgrading, check for administrator-managed budgets that already select
+`app: oauth2-proxy`. An existing `oauth2-proxy` PDB with another owner blocks
+installation; a differently named PDB with an overlapping selector blocks
+evictions. Keep the existing budget and disable the chart's PDB, or coordinate
+its removal as part of the upgrade so only one budget selects the Proxy Pods.
 
 A PDB controls voluntary evictions. It does not prevent node failures, direct
 Pod deletion, or Deployment rollouts. Proxy replicas also share a session
@@ -426,6 +453,13 @@ The bundled store has no PDB. A budget that requires its only replica to stay
 available would block a normal node drain without adding failover. A drain or
 node failure can interrupt session access until the replacement Pod and its
 volume are ready. OAuth2 Proxy can also fail to start while the store is down.
+If the StorageClass provisions a zonal LRS disk, the replacement needs an
+eligible system node in that disk's zone. Session access stays down if that
+zone has no eligible capacity. For multi-zone clusters, consider a supported
+ZRS StorageClass through `oauth2Proxy.sessionStore.redis.bundled.persistence.storageClass`
+when provisioning the store. Changing the value does not migrate an existing
+PVC or disk; plan that storage migration separately. ZRS does not add a second
+Valkey replica or automatic service failover.
 For production that must tolerate a node outage, use a separately managed,
 highly available Redis-compatible session service.
 

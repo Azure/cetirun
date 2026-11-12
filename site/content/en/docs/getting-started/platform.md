@@ -552,13 +552,22 @@ is kept on uninstall. Portal and Operator manage its per-Agent credentials at
 runtime.
 
 With `istio.mode: external`, `make deploy` does not install or upgrade the
-CetiRun Istio release. The release must already exist. Its Gateway, EnvoyFilter,
+CetiRun Istio release. The release and every rendered non-Secret Istio object
+must already exist with the expected Helm ownership. Its Gateway, EnvoyFilter,
 AuthorizationPolicy, and other routing objects must be equal to the objects
 that `make deploy` renders. If they are not equal, the run stops. A release that
 `infra/istio/deploy.sh` installs is not equal, even with
 `PORTAL_AUTH_NAMESPACE=cetirun-system`, because the helper does not enable
 Portal mTLS. Refer to
 [portal ownership endpoint](../../operations/istio/#portal-ownership-endpoint).
+
+When upgrading from a chart without the OAuth2 Proxy PodDisruptionBudget,
+upgrade the external release first, or set
+`istio.values.oauth2Proxy.podDisruptionBudget.enabled: false` in the environment
+file. Otherwise the missing budget stops preflight before any write. Keep the
+configured replica count consistent with the external release. Refer to
+[authentication availability](../../operations/istio/#authentication-availability-during-node-maintenance)
+for the budget, placement, and upgrade constraints.
 
 ## 8. Verify the deployment
 

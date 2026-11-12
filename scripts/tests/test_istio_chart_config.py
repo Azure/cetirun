@@ -125,7 +125,7 @@ def lookup_api(secrets, session_secrets=None):
 
 @unittest.skipUnless(shutil.which("helm"), "requires Helm 3 or 4")
 class IstioChartConfigTests(unittest.TestCase):
-    def render(self, values=None, *, error=None, upgrade=False, kubeconfig=None, chart=CHART):
+    def render(self, values=None, *, error=None, upgrade=False, kubeconfig=None, chart=CHART, helm_args=()):
         command = [
             "helm", "template", "cetirun-istio", str(chart),
             "--namespace", "cetirun-istio", "--values", "-",
@@ -140,6 +140,7 @@ class IstioChartConfigTests(unittest.TestCase):
         else:
             # Keep renders deterministic without generating a session password.
             command.extend(["--set-string", "oauth2Proxy.sessionStore.redis.existingSecret=synthetic-sessions"])
+        command.extend(helm_args)
         result = subprocess.run(
             command, input=json.dumps({**BASE_VALUES, **(values or {})}),
             text=True, capture_output=True, env=OFFLINE, timeout=30, check=False,
@@ -307,6 +308,7 @@ func main() {
                 self.assertEqual(budget["metadata"]["namespace"], "cetirun-istio")
                 self.assertEqual(budget["spec"], {
                     "maxUnavailable": 1,
+                    "unhealthyPodEvictionPolicy": "AlwaysAllow",
                     "selector": {"matchLabels": {"app": "oauth2-proxy"}},
                 })
                 self.assertIs(type(budget["spec"]["maxUnavailable"]), int)
@@ -367,15 +369,25 @@ func main() {
         for value in ("false", 1, [], {}):
             with self.subTest(enabled=value):
                 self.render({"oauth2Proxy": {"podDisruptionBudget": {"enabled": value}}}, error="enabled must be a boolean")
+        for key in ("maxUnavailable", "minAvailable", "unhealthyPodEvictionPolicy"):
+            with self.subTest(unsupported=key):
+                self.render({"oauth2Proxy": {"podDisruptionBudget": {key: 1}}}, error=f"podDisruptionBudget.{key} is not supported")
         for value in ("disabled", False, 1, {}):
             with self.subTest(spread=value):
                 self.render({"oauth2Proxy": {"topologySpreadConstraints": value}}, error="topologySpreadConstraints must be a list")
+        for value in ("", False, 1, None, []):
+            with self.subTest(constraint=value):
+                self.render({"oauth2Proxy": {"topologySpreadConstraints": [value]}}, error="topologySpreadConstraints[0] must be an object")
 
     def test_missing_availability_values_keep_defaults_with_reused_old_values(self):
         default = self.render()
         disabled = {"oauth2Proxy": {
             "podDisruptionBudget": {"enabled": False}, "topologySpreadConstraints": [],
         }}
+        null_values = {"oauth2Proxy": {
+            "podDisruptionBudget": None, "topologySpreadConstraints": None,
+        }}
+        self.assertEqual(self.render(null_values), default)
         with tempfile.TemporaryDirectory(prefix="cetirun-istio-old-values-") as temporary:
             chart = Path(temporary) / "istio"
             shutil.copytree(CHART, chart)
@@ -387,10 +399,26 @@ func main() {
             del values["oauth2Proxy"]["topologySpreadConstraints"]
             values_path.write_text(yaml.safe_dump(values), encoding="utf-8")
             self.assertEqual(self.render(chart=chart, upgrade=True), default)
+            self.assertEqual(self.render(null_values, chart=chart, upgrade=True), default)
             self.assertEqual(self.render({"oauth2Proxy": {
                 "podDisruptionBudget": {},
             }}, chart=chart, upgrade=True), default)
             self.assertEqual(self.render(disabled, chart=chart, upgrade=True), self.render(disabled))
+
+    def test_availability_cli_lists_and_null_defaults(self):
+        disabled = self.render({"oauth2Proxy": {"topologySpreadConstraints": []}})
+        self.assertEqual(self.render(helm_args=(
+            "--set-json", "oauth2Proxy.topologySpreadConstraints=[]",
+        )), disabled)
+        for value, error in (
+            ("[]", "topologySpreadConstraints must be a list"),
+            ("{}", "topologySpreadConstraints[0] must be an object"),
+        ):
+            with self.subTest(value=value):
+                self.render(helm_args=("--set", f"oauth2Proxy.topologySpreadConstraints={value}"), error=error)
+        self.assertEqual(self.render(helm_args=(
+            "--set", "oauth2Proxy.podDisruptionBudget=null,oauth2Proxy.topologySpreadConstraints=null",
+        )), self.render())
 
     def test_invalid_new_options_are_rejected(self):
         for value in ("false", 1, [], {}):

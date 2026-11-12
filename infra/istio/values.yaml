@@ -130,9 +130,13 @@ oauth2Proxy:
   podDisruptionBudget:
     # Allow at most one unavailable Proxy during voluntary evictions. The chart
     # creates no budget when replicas is 0 or 1. This does not protect Valkey.
+    # Unhealthy Pods can be evicted even when the budget is exhausted.
+    # Only enabled is configurable; a null podDisruptionBudget keeps the default.
     enabled: true
-  # Prefer different nodes without blocking single-node installations. Use []
-  # to disable, or supply a complete replacement list for stricter placement.
+  # Prefer different nodes without blocking single-node installations. This
+  # replaces the scheduler's default spreading, including any zone preference.
+  # Use [] in a values file or --set-json oauth2Proxy.topologySpreadConstraints=[]
+  # to disable, or supply a complete replacement list. Null keeps the default.
   topologySpreadConstraints:
     - maxSkew: 1
       topologyKey: kubernetes.io/hostname
