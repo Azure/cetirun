@@ -421,9 +421,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_member_declared_sizes_fail_before_any_member_payload_is_read(self):
         limit = max(map(len, PAYLOADS.values()))
-        entry = tarfile.TarInfo(MEMBERS["kubectl"])
-        entry.size = limit + 1
-        self.data = archive_bytes({**PAYLOADS, entry.name: entry}.items())
+        self.data = archive_bytes({**PAYLOADS, MEMBERS["kubectl"]: b"x" * (limit + 1)}.items())
         with (
             patch.object(install_tools, "MAX_MEMBER_BYTES", limit),
             patch.object(tarfile.TarFile, "extractfile") as extract,
