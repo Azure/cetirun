@@ -335,7 +335,7 @@ does not use can be absent or `False`.
 
 | Condition | Meaning |
 | --- | --- |
-| `Ready` | The Agent is ready for use. `Ready` can be `True` while `IngressReady` is `False`. `Suspended` skips the Pod readiness checks, so examine the replicas and the Pod termination separately. |
+| `Ready` | The Agent is ready for use. `Ready` can be `True` while `IngressReady` is `False`. `Suspended` skips the Pod readiness checks, so examine the replicas and the Pod termination separately. `False` with `PodsTerminating` means that the deletion of a Sandbox Agent waits for the Pods of the Agent to terminate. |
 | `AgentConfigReady` | The operator resolved the Agent configuration. Reason `AgentConfigResolved` means that the built-in configuration is prepared, not that the runtime is ready. `False` with `AgentConfigInvalid` reports a rejected profile, image, port, or Helm value, or a failed chart download for a new Agent or a spec change. For a failed download, the operator log records the error of the registry. `AgentRuntimeNotImplemented` reports a setting that cannot be provisioned, for example a non-default built-in username. `AgentChartUnavailable` reports a temporary chart download failure of an installed Agent. |
 | `BuiltInPrerequisitesReady` | The last full reconciliation of a built-in Agent completed its prerequisites. Only a later successful reconciliation clears a failure. |
 | `RegistryCredentialsReady` | The operator copied the registry credentials of `agent.registrySecretRef`. It does not prove that the registry accepted them or that the image was pulled. |

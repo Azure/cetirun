@@ -1425,7 +1425,7 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 	} else {
 		if reconciledSandbox {
 			if err := r.checkSandboxBootstrapCleanup(ctx, instance); err != nil {
-				return cleanupWaitResult(ctx, err)
+				return r.cleanupWaitResult(ctx, instance, err)
 			}
 			if err := r.releaseSandboxBootstrapResources(ctx, instance, nsObj); err != nil {
 				return ctrl.Result{}, err

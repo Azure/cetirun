@@ -283,6 +283,11 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 		conditions = append(conditions, cetirunv1alpha1.ConditionAgentConfigReady)
 	}
 	for _, kind := range conditions {
+		if kind == cetirunv1alpha1.ConditionReady && cleanupWaitRecorded(agent) {
+			// Keep the Pod wait that an earlier pass recorded. Otherwise each
+			// pass writes Ready twice while the Pods terminate.
+			continue
+		}
 		apimeta.SetStatusCondition(&agent.Status.Conditions, metav1.Condition{
 			Type: kind, Status: metav1.ConditionFalse, ObservedGeneration: agent.Generation,
 			Reason: "InstanceDeleting", Message: "Sandbox-held Agent cleanup requested",
@@ -306,7 +311,7 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 		return ctrl.Result{}, err
 	}
 	if err := r.checkSandboxBootstrapCleanup(ctx, agent); err != nil {
-		return cleanupWaitResult(ctx, err)
+		return r.cleanupWaitResult(ctx, agent, err)
 	}
 	if agentIdentityRequested(agent) || agent.Status.AgentIdentity != nil {
 		if err := r.deleteAgentIdentity(ctx, agent); err != nil {

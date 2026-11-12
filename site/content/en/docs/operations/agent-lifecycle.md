@@ -616,7 +616,9 @@ under the same authorized scope.
 > recovery procedure is necessary.
 
 Before you authorize deletion, examine the reclaim policy of the storage
-backend. Do not remove finalizers only to hide a blocked cleanup.
+backend. Do not remove finalizers only to hide a blocked cleanup. `Ready` with
+the reason `PodsTerminating` shows that the deletion of a Sandbox Agent waits
+for its Pods to terminate.
 
 Sources: [instance controller]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}}),
 [value builder]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}}),
