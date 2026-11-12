@@ -103,10 +103,16 @@ For the other parts of the Agent page, refer to
 
 ### Open a Hermes Agent
 
-1. Select **Agent UI**. The Hermes Webapp asks you to sign in.
-2. For the username, enter `cetirun`.
-3. For the password, copy **Hermes API / Webapp Key (user: cetirun)** from
-   the **Overview** tab. To copy it, select the copy button next to the key.
+Select **Agent UI**. The Portal reads the current Agent key, signs you in to
+Hermes, and opens the Webapp in the same tab. The button shows
+**Opening Agent UI...** while the sign-in completes. If it fails, the Portal
+shows the reason below the button. Follow that message and try again.
+
+Automatic sign-in uses the Webapp on the Portal address. If you open the
+Webapp directly and it asks you to sign in, use the username `cetirun`.
+For the password, copy **Hermes API / Webapp Key (user: cetirun)** from the
+**Overview** tab. If a Webapp session expires, you can also return to the
+Portal and select **Agent UI** again.
 
 The key stays the same after a restart, and after you suspend and resume the
 Agent. The **Username** line on the **Overview** tab shows the Linux user in

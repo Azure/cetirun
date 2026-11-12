@@ -1,12 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WorkspacePage } from "./WorkspacePage";
 import type { Instance } from "../types/instance";
+import { signInToHermes } from "../api/hermes";
+
+vi.mock("../api/hermes", () => ({ signInToHermes: vi.fn() }));
 
 const mockInstance: Instance = {
   uid: "test-agent-uid",
@@ -85,6 +88,7 @@ describe("WorkspacePage", () => {
     mockViewerError = null;
     mockHasInstance = true;
     mockChatError = undefined;
+    vi.mocked(signInToHermes).mockReset();
   });
   it("shows a session expiry from a background Agent refetch", () => {
     mockInstanceError = new Error("Session expired, please refresh the page");
@@ -245,14 +249,17 @@ describe("WorkspacePage", () => {
     );
   });
 
-  it("links Hermes instances to their native Webapp", () => {
+  it("signs Hermes instances into their native Webapp from Agent UI", async () => {
     mockInstance.agent.type = "hermes";
-    renderAt("/instances/testuser/overview");
-    expect(screen.getByRole("link", { name: "Agent UI" })).toHaveAttribute(
-      "href",
-      "https://example.com/ui/testuser/",
-    );
-    mockInstance.agent.type = "openclaw";
+    vi.mocked(signInToHermes).mockRejectedValue(new Error("Synthetic sign-in failure"));
+    try {
+      renderAt("/instances/testuser/overview");
+      fireEvent.click(screen.getByRole("button", { name: "Agent UI" }));
+      expect(signInToHermes).toHaveBeenCalledWith(mockInstance, expect.any(AbortSignal));
+      expect(await screen.findByRole("alert")).toHaveTextContent("Synthetic sign-in failure");
+    } finally {
+      mockInstance.agent.type = "openclaw";
+    }
   });
 
   it("keeps Custom desktop access without inventing a native UI or terminal", () => {

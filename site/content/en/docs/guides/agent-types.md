@@ -13,7 +13,7 @@ your Team allow.
 | | Hermes | OpenClaw | Custom |
 | --- | --- | --- | --- |
 | **What it is** | The Hermes agent. This is the default agent type. | The OpenClaw agent. | Your own agent image, which an administrator approves. |
-| **Agent UI** | Hermes Webapp. You sign in with the username `cetirun` and the Hermes key. | OpenClaw Control UI. You enter the gateway token and pair each browser one time. | A Web UI, Portal Chat, or no interface. This depends on the image. |
+| **Agent UI** | Hermes Webapp. **Agent UI** in the Portal signs you in automatically. A direct Webapp login uses `cetirun` and the Hermes key. | OpenClaw Control UI. You enter the gateway token and pair each browser one time. | A Web UI, Portal Chat, or no interface. This depends on the image. |
 | **Message channels and scheduled jobs** | Yes. Hermes connects to message channels, such as Discord, and runs scheduled jobs. | Yes. OpenClaw connects to message channels, and runs scheduled jobs and heartbeats. | Depends on the image. |
 | **Coding agents through ACP** | The platform does not configure them. | Yes. OpenClaw can give tasks to other coding agents. | Depends on the image. |
 | **Models** | From the AI Gateway. | From the AI Gateway. | From the AI Gateway. The image selects the model. |
@@ -22,8 +22,8 @@ your Team allow.
 
 ## Recommendations
 
-- Select **Hermes** if you want a web application that you sign in to with a key.
-  Hermes is the default type.
+- Select **Hermes** for the Hermes Webapp with automatic sign-in from the
+  Portal. Hermes is the default type.
 - Select **OpenClaw** if you want the OpenClaw Control UI, or if you want to
   give coding tasks to other coding agents.
 - Select **Custom** only when your administrator gives you an approved image.
