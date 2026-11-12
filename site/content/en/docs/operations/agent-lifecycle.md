@@ -222,6 +222,12 @@ longer Agent startup-probe window does not repair a failed policy validation or
 a missing configuration. Examine scheduling, image pulls, init containers, and
 HOME binding separately from application probes.
 
+If `PolicyResolved` is `False`, the operator holds a Sandbox Agent. Then
+`Ready` and `SandboxReady` have the reason `SandboxHeld`, and their message ends
+with the message of `PolicyResolved`. This applies when Sandbox execution is
+on. A suspended Agent and a retained single-start lifetime can have other
+reasons.
+
 For GitHub Copilot, also inspect `status.aiGateway.copilot.phase` and `reason`.
 Successful owner authorization, a Ready Copilot proxy, registered model routes,
 and successful inference are different stages. `ProxyStarting` means that route

@@ -341,7 +341,7 @@ does not use can be absent or `False`.
 | `RegistryCredentialsReady` | The operator copied the registry credentials of `agent.registrySecretRef`. It does not prove that the registry accepted them or that the image was pulled. |
 | `PolicyResolved` | The Team, the requests of the Agent, the Sandbox, and the effective AgentPolicy are resolved. `False` with `PolicyDenied` means that the policy does not allow a request, for example a skill. `DependencyUnavailable` means that a dependency cannot be read. |
 | `PolicyApplied` | Every enforcement revision that the policy needs matches the evidence of its component. `EnforcementPending` means that the Sandbox, Gateway, or credential enforcement is not complete. |
-| `SandboxReady` | The Sandbox workload of a policy-bound Agent is ready, and its Kubernetes configuration matches. It does not supply physical failover fencing. |
+| `SandboxReady` | The Sandbox workload of a policy-bound Agent is ready, and its Kubernetes configuration matches. It does not supply physical failover fencing. `SandboxHeld` means that the common executor holds the workload. If `PolicyResolved` is `False`, the message of `SandboxReady` and `Ready` ends with the `PolicyResolved` message. For other reasons, such as `PolicyConflict` or `UnsupportedControl`, the message can end with a fixed explanation from the operator code. This explanation contains no values from the policy or the registration. |
 | `AIGatewayReady` | The AI Gateway virtual key of the Agent is ready. `NoModelEntitlement` means that the effective policy grants no model source. |
 | `AgentIdentityReady` | The Entra Agent Identity of the Agent is ready. |
 | `HelmDeployed` | The Helm release of the Agent is applied. |
@@ -661,7 +661,10 @@ prerequisites of the Sandbox, not for an Agent. Its reason is
 `PrerequisitesReady` when the registered runtime and storage match. Other
 reasons are `InvalidConfiguration`, `UnsupportedControl`, `RuntimeUnavailable`,
 `UnapprovedStorage`, `ReferenceMissing`, `ReferenceChanged`, `UnapprovedGrant`,
-`PolicyConflict`, `PrerequisitesUnavailable`, and `Terminating`.
+`PolicyConflict`, `PrerequisitesUnavailable`, and `Terminating`. If the
+operator knows a fixed reason, the message names it, for example an ingress
+mTLS registration without a digest-pinned image. The message contains only
+text from the operator code, without values from the registration.
 
 ## AgentPolicy
 
@@ -791,7 +794,10 @@ of the policy. Reason `PolicyAccepted` means that the platform supports the
 controls of the policy and its requested role approvals. It does not assess
 Sandbox compatibility, HOME access, or per-Agent enforcement. Other reasons are
 `InvalidConfiguration`, `UnsupportedControl`, `UnapprovedGrant`,
-`PolicyConflict`, `PrerequisitesUnavailable`, and `Terminating`.
+`PolicyConflict`, `PrerequisitesUnavailable`, and `Terminating`. If the
+operator knows a fixed reason, the message names it, for example a rule budget
+that the policy exceeds. The message contains only text from the operator
+code, without values from the policy or the registration.
 
 ### Identity and network controls
 
