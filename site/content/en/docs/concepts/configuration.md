@@ -82,12 +82,13 @@ file, but the controller can merge them internally. Refer to the
 [CRD reference](../../reference/crds/).
 
 `spec.model` selects an allowed AI Gateway model. Refer to
-[model selection](../../guides/models/). The operator selects the default
+[Choose a model](../../guides/models/). The operator selects the default
 model of an Agent in this order:
 
 1. `spec.model`, or the Team router that `spec.model` names.
 2. The operator value `aiGateway.defaultModel`.
-3. The first model that the Agent can use.
+3. The first model that the Agent can use, in the order that
+   [Model access](../../operations/models/#default-model) describes.
 
 The operator value `cetirun.defaultModel` does not decide the default model,
 because the AI Gateway projection replaces `secrets.model`.
