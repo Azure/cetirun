@@ -305,7 +305,9 @@ CetiRun does not use Container Insights or Azure Monitor managed Prometheus.
 The cluster template turns both off, also on a cluster that an earlier
 template created with them. [Infrastructure](../infrastructure/#identity-images-and-collection)
 lists the workspaces and data collection rules of an earlier template, which a
-deployment does not delete.
+deployment does not delete. It also shows how to upgrade a platform whose
+installed release still holds the AI Gateway's PodMonitor of managed
+Prometheus.
 
 On Kata node pools with the node image `AKSAzureLinux-V3katagen2-202610.30.1`
 or later, Container Insights and managed Prometheus collect nothing from those

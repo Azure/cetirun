@@ -350,6 +350,31 @@ that its parameters turned off. A parameter file that still sets
 `logAnalyticsWorkspaceId` does not compile with this template, so the helper
 stops before any Azure call. Remove these parameters from the file.
 
+A platform that an earlier version installed can hold the AI Gateway's
+PodMonitor of managed Prometheus. This PodMonitor uses the API
+`azmonitoring.coreos.com/v1`, which goes away when the template turns managed
+Prometheus off. Before Helm upgrades a release, it builds the objects of the
+installed release, so each upgrade of such a platform fails. `make deploy`
+stops before it changes the cluster, and it names the release and the
+PodMonitor.
+
+To continue, create a stand-in definition of the API, run `make deploy`, and
+then delete the definition. The upgrade removes the PodMonitor from the
+release, so later upgrades need no stand-in. **Connected, mutating:**
+
+```bash
+kubectl create -f infra/cluster/managed-prometheus-podmonitor-crd.yaml
+kubectl wait --for=condition=Established \
+  customresourcedefinition/podmonitors.azmonitoring.coreos.com
+make deploy DEPLOY_CONFIG=/absolute/path/environment.yaml
+kubectl delete -f infra/cluster/managed-prometheus-podmonitor-crd.yaml
+```
+
+If the create command fails because the definition exists, stop. In this
+case, the cluster serves the API, and the definition belongs to another tool.
+A standalone AI Gateway release that an earlier chart installed with this
+PodMonitor needs the same steps around its `helm upgrade`.
+
 If you turn Container Insights on yourself, examine its collection, its access
 roles, and its costs first. By default, the add-on copies the environment
 variables of every container into the `ContainerInventory` table one time each

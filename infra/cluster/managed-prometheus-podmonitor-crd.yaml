@@ -1,0 +1,40 @@
+# A stand-in for the PodMonitor API of Azure Monitor managed Prometheus
+# (azmonitoring.coreos.com/v1). Platform releases of earlier versions hold the
+# AI Gateway's PodMonitor of this API. After managed Prometheus is turned off,
+# as the cluster template does, the cluster no longer serves the API. Helm then
+# cannot build the installed release, so it cannot upgrade it, and make deploy
+# stops before it changes the cluster.
+#
+# Create this definition only while the cluster does not serve the API, run the
+# upgrade, which removes the PodMonitor from the release, and delete it again:
+#
+#   kubectl create -f infra/cluster/managed-prometheus-podmonitor-crd.yaml
+#   kubectl wait --for=condition=Established \
+#     customresourcedefinition/podmonitors.azmonitoring.coreos.com
+#   make deploy DEPLOY_CONFIG=/absolute/path/environment.yaml
+#   kubectl delete -f infra/cluster/managed-prometheus-podmonitor-crd.yaml
+#
+# If the create command fails because the definition exists, stop: the cluster
+# serves the API, and the delete command would remove a definition that
+# another tool owns. No controller watches this definition, and nothing
+# creates objects of it.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: podmonitors.azmonitoring.coreos.com
+spec:
+  group: azmonitoring.coreos.com
+  scope: Namespaced
+  names:
+    kind: PodMonitor
+    listKind: PodMonitorList
+    plural: podmonitors
+    singular: podmonitor
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true

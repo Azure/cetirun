@@ -50,6 +50,9 @@ class SyntheticCluster(DEPLOY.Deployment):
         self.objects, self.keys, self.installed = {}, {}, set()
         self.live = {}
         self.fail = ""
+        # Objects that an installed release holds besides what the chart renders now, and the API versions and kinds
+        # that the cluster no longer serves.
+        self.release_extras, self.unserved, self.unserved_kinds = {}, set(), set()
         self.mesh = {"metadata": {"name": config["istio"]["meshConfigMap"], "uid": "mesh-uid", "resourceVersion": "1"},
                      "data": {"mesh": yaml.safe_dump({"extensionProviders": [DEPLOY.MESH._oauth2_proxy_provider(self.oauth_service())], "trustDomain": "example.local"})}}
         # Deployments of the managed Istio that exists before the deployment.
@@ -102,6 +105,11 @@ class SyntheticCluster(DEPLOY.Deployment):
                 name = next(name for name in DEPLOY.CHARTS if self.config[name]["release"] == args[2])
                 previous = next((values for component, values, _ in reversed(self.applied) if component == name), {})
                 return json.dumps(previous)
+            if args[0] == "history":
+                return json.dumps([{"revision": 1, "status": "deployed"}] if args[1] in self.installed else [])
+            if args[:2] == ["get", "manifest"]:
+                name = next(name for name in DEPLOY.CHARTS if self.config[name]["release"] == args[2])
+                return yaml.safe_dump_all(self.documents[name] + self.release_extras.get(name, []))
             if args[:2] == ["upgrade", "--install"]:
                 self.writes.append(command)
                 release = args[2]
@@ -144,6 +152,14 @@ class SyntheticCluster(DEPLOY.Deployment):
             return json.dumps({key: {"major": "1", "minor": "37"} for key in ("clientVersion", "serverVersion")})
         if args[:2] == ["rollout", "status"]:
             return "successfully rolled out\n"
+        if args == ["api-versions"]:
+            return "\n".join(sorted({api for api, _ in self.served_kinds()} - self.unserved)) + "\n"
+        if args[:2] == ["get", "--raw"]:
+            api = args[2].removeprefix("/apis/").removeprefix("/api/")
+            if api in self.unserved:
+                raise ValueError("Synthetic NotFound")
+            return json.dumps({"resources": [{"name": kind.lower() + "s", "kind": kind}
+                                             for served_api, kind in sorted(self.served_kinds()) if served_api == api]})
         if args[:2] == ["get", "pods"]:
             return "controller broker auth-sdk connections-mcp portal istio-proxy\n"
         if args[:2] == ["get", "agents.cetirun.microsoft.com"]:
@@ -237,6 +253,12 @@ class SyntheticCluster(DEPLOY.Deployment):
     def assert_offline(env):
         if not env or env.get("KUBECONFIG") != "/dev/null" or env.get("HELM_REGISTRY_CONFIG") != "/dev/null":
             raise AssertionError("Render can use real cluster or registry configuration")
+
+    def served_kinds(self):
+        """API versions and kinds that the cluster serves: those of every chart, the bootstrap and the release extras."""
+        documents = [doc for docs in self.documents.values() for doc in docs] + list(self.bootstrap_documents or [])
+        documents += [doc for docs in self.release_extras.values() for doc in docs]
+        return {(doc["apiVersion"], doc["kind"]) for doc in documents} - self.unserved_kinds
 
 
 class DeploymentFixture:
@@ -815,6 +837,74 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "refusing regeneration"):
             deployment.execute()
         self.assertEqual(deployment.writes, [])
+
+    def test_installed_release_with_an_api_the_cluster_no_longer_serves_stops_before_writes(self):
+        # Earlier platform releases hold the AI Gateway's PodMonitor of managed Prometheus. Turning managed
+        # Prometheus off removes its API, and Helm then fails to build the installed release before any upgrade.
+        deployment = self.deployment()
+        deployment.execute()
+        monitor = {"apiVersion": "azmonitoring.coreos.com/v1", "kind": "PodMonitor",
+                   "metadata": {"name": "cetirun-ai-gateway"}, "spec": {"podMetricsEndpoints": [{"port": "metrics"}]}}
+        deployment.release_extras["platform"] = [monitor]
+        secret_values = {value for doc in deployment.documents["platform"] if doc["kind"] == "Secret"
+                         for value in (doc.get("data") or {}).values() if len(str(value)) >= 8}
+        for case, unserved, unserved_kinds in (
+                ("API version removed", {"azmonitoring.coreos.com/v1"}, set()),
+                ("kind removed from a served API version", set(), {("azmonitoring.coreos.com/v1", "PodMonitor")})):
+            with self.subTest(case=case):
+                deployment.writes.clear()
+                if unserved_kinds:
+                    # Another kind keeps the API version served.
+                    deployment.release_extras["istio"] = [dict(monitor, kind="ServiceMonitor")]
+                deployment.unserved, deployment.unserved_kinds = set(unserved), set(unserved_kinds)
+                with self.assertRaisesRegex(ValueError, r"Helm cannot upgrade cetirun-system/cetirun-platform: the installed "
+                                            r"release holds PodMonitor cetirun-ai-gateway \(azmonitoring\.coreos\.com/v1\), which "
+                                            r"this cluster no longer serves; turning Azure Monitor managed Prometheus off") as raised:
+                    deployment.execute()
+                self.assertEqual(deployment.writes, [])
+                self.assertFalse([value for value in secret_values if str(value) in str(raised.exception)])
+                deployment.release_extras.pop("istio", None)
+        # Once the cluster serves the API again, for example through a stand-in definition, the upgrade proceeds
+        # and the new release no longer holds the PodMonitor.
+        deployment.unserved, deployment.unserved_kinds = set(), set()
+        deployment.execute()
+        self.assertEqual([name for name, _, _ in deployment.applied[-3:]], ["istio", "broker", "platform"])
+
+    def test_other_releases_are_named_without_the_managed_prometheus_hint(self):
+        deployment = self.deployment()
+        deployment.execute()
+        deployment.writes.clear()
+        deployment.release_extras["broker"] = [{"apiVersion": "example.invalid/v1", "kind": "Widget", "metadata": {"name": "old"}}]
+        deployment.unserved = {"example.invalid/v1"}
+        with self.assertRaises(ValueError) as raised:
+            deployment.execute()
+        self.assertEqual(str(raised.exception), "Helm cannot upgrade cetirun-credentials/cetirun-agent-broker: the installed "
+                                                "release holds Widget old (example.invalid/v1), which this cluster no longer serves")
+        self.assertEqual(deployment.writes, [])
+
+    def test_first_installation_reads_no_installed_release(self):
+        deployment = self.deployment()
+        deployment.execute()
+        reads = [command for command in deployment.commands
+                 if command[3:5] in (["history", "cetirun-platform"], ["get", "manifest"]) or "api-versions" in command]
+        self.assertEqual(reads, [])
+        deployment.commands.clear()
+        deployment.execute()
+        helm = [command[3] for command in deployment.commands if command[0] == "helm" and command[3] in ("history", "get")]
+        self.assertEqual(helm.count("history"), 3)
+        # The flags of the new Helm reads exist in the Helm that runs these tests.
+        for command in [command for command in deployment.commands if command[3:5] in (["history", "cetirun-platform"], ["get", "manifest"])]:
+            result = subprocess.run([*command, "--help"], capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_external_istio_release_is_not_checked_for_served_apis(self):
+        # make deploy does not upgrade an external Istio release, so Helm never builds its objects.
+        deployment = self.external_deployment("external-unserved-api")
+        deployment.release_extras["istio"] = [{"apiVersion": "example.invalid/v1", "kind": "Widget", "metadata": {"name": "old"}}]
+        deployment.unserved = {"example.invalid/v1"}
+        deployment.execute()
+        self.assertFalse([command for command in deployment.commands if command[3:5] == ["history", "cetirun-istio"]])
+        self.assertNotIn("istio", [name for name, _, _ in deployment.applied])
 
     def test_cookie_upgrade_can_add_sessions_without_regenerating_existing_secrets(self):
         config = copy.deepcopy(self.config)
