@@ -1317,6 +1317,134 @@ class GuardTest(unittest.TestCase):
         self.filtered(request, [terra], "gpt-5.6-terra")
         self.assertEqual(request["temperature"], 0)
 
+    # ----- reasoning parameters for models that do not reason -----
+
+    def with_supported_params(self, reasoning=(), unknown=(), failing=()):
+        """LiteLLM's get_supported_openai_params, as 1.108.3 states it, for (model, provider, base_model).
+
+        A model or base_model in reasoning supports reasoning_effort; a model in
+        unknown gives None; a model in failing raises. Records each call.
+        """
+        calls = []
+
+        def get_supported_openai_params(model, custom_llm_provider=None, request_type="chat_completion",
+                                        base_model=None):
+            calls.append((model, custom_llm_provider, base_model))
+            if model in failing:
+                raise ValueError("lookup failed")
+            if model in unknown:
+                return None
+            params = ["max_tokens", "temperature", "top_p"]
+            if model in reasoning or base_model in reasoning:
+                params.append("reasoning_effort")
+            return params
+
+        names = ("litellm.litellm_core_utils", "litellm.litellm_core_utils.get_supported_openai_params")
+        stubs = {name: types.ModuleType(name) for name in names}
+        stubs[names[-1]].get_supported_openai_params = get_supported_openai_params
+        saved = {name: sys.modules.get(name) for name in stubs}
+        sys.modules.update(stubs)
+
+        def restore():
+            for name, previous in saved.items():
+                if previous is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = previous
+
+        self.addCleanup(restore)
+        return calls
+
+    def test_a_router_tier_that_does_not_reason_gets_no_reasoning_effort(self):
+        # Issue #498: a router sent a request with reasoning_effort to a tier
+        # without reasoning, and LiteLLM answered 400 UnsupportedParamsError.
+        calls = self.with_supported_params(reasoning=("gpt-5.6-terra",))
+        mini = self.model_deployment("gpt-4.1-mini", "azure/gpt-4.1-mini")
+        for bucket in ("metadata", "litellm_metadata"):
+            with self.subTest(bucket=bucket):
+                request = self.routed(bucket=bucket, reasoning_effort="high", max_tokens=16)
+                with self.assertLogs(LOGGER, level="WARNING") as logs:
+                    kept = self.filtered(request, [mini], "gpt-4.1-mini")
+                self.assertEqual(kept, [mini])
+                self.assertNotIn("reasoning_effort", request)
+                self.assertEqual(request["max_tokens"], 16)
+                self.assertIn("removed reasoning_effort", logs.output[0])
+                self.assertIn("the router auto sent to gpt-4.1-mini", logs.output[0])
+        self.assertIn(("gpt-4.1-mini", "azure", None), calls)
+
+    def test_the_responses_form_goes_too(self):
+        self.with_supported_params()
+        mini = self.model_deployment("gpt-4.1-mini", "azure/gpt-4.1-mini")
+        request = self.routed(bucket="litellm_metadata", reasoning={"effort": "medium", "summary": "auto"},
+                              input=[{"role": "user", "content": "hi"}])
+        with self.assertLogs(LOGGER, level="WARNING"):
+            self.filtered(request, [mini], "gpt-4.1-mini")
+        self.assertNotIn("reasoning", request)
+        self.assertEqual(request["input"], [{"role": "user", "content": "hi"}])
+
+    def test_a_model_asked_for_by_name_that_does_not_reason_gets_no_reasoning_effort(self):
+        self.with_supported_params()
+        mini = self.model_deployment("gpt-4.1-mini", "azure/gpt-4.1-mini")
+        request = {"metadata": {"user_api_key_auth": Key(["cetirun-shared"])}, "reasoning_effort": "low"}
+        with self.assertLogs(LOGGER, level="WARNING") as logs:
+            self.filtered(request, [mini], "gpt-4.1-mini")
+        self.assertNotIn("reasoning_effort", request)
+        self.assertIn("for gpt-4.1-mini", logs.output[0])
+
+    def test_reasoning_stays_where_litellm_knows_it_is_taken_or_cannot_tell(self):
+        calls = self.with_supported_params(reasoning=("gpt-5",), unknown=("mystery",), failing=("broken",))
+        for deployment in (
+                # Named after no model; LiteLLM goes by base_model, from either place.
+                self.model_deployment("enterprise", "azure/enterprise", base_model="azure/gpt-5"),
+                {"model_name": "enterprise", "litellm_params": {"model": "azure/enterprise", "base_model": "gpt-5"},
+                 "model_info": {"id": "d-e", "access_groups": ["cetirun-shared"]}},
+                # Copilot routes and providers that sign in are not looked up.
+                self.model_deployment("gpt-4.1-mini", "litellm_proxy/gpt-4.1-mini"),
+                self.model_deployment("gpt-4.1-mini", "github_copilot/gpt-4.1-mini"),
+                # LiteLLM does not know the model, or the lookup fails.
+                self.model_deployment("mystery", "azure/mystery"),
+                self.model_deployment("broken", "azure/broken")):
+            with self.subTest(deployment=deployment["litellm_params"]):
+                request = self.routed(reasoning_effort="high", reasoning={"effort": "high"})
+                self.filtered(request, [deployment], deployment["model_name"])
+                self.assertEqual(request["reasoning_effort"], "high")
+                self.assertEqual(request["reasoning"], {"effort": "high"})
+        self.assertIn(("enterprise", "azure", "gpt-5"), calls)
+        self.assertFalse([call for call in calls if call[1] in ("litellm_proxy", "github_copilot")])
+
+    def test_one_deployment_that_reasons_keeps_the_effort(self):
+        # The deployment that reasons may serve the request.
+        self.with_supported_params(reasoning=("gpt-5",))
+        deployments = [self.model_deployment("mixed", "azure/gpt-4.1-mini"), self.model_deployment("mixed", "azure/gpt-5")]
+        request = self.routed(reasoning_effort="high")
+        self.filtered(request, deployments, "mixed")
+        self.assertEqual(request["reasoning_effort"], "high")
+        deployments = [self.model_deployment("mixed", "azure/gpt-4.1-mini"),
+                       self.model_deployment("mixed", "litellm_proxy/gpt-4.1-mini")]
+        request = self.routed(reasoning_effort="high")
+        self.filtered(request, deployments, "mixed")
+        self.assertEqual(request["reasoning_effort"], "high")
+
+    def test_an_effort_of_none_goes_from_a_model_that_does_not_reason(self):
+        self.with_azure_gpt5_rule()
+        self.with_supported_params()
+        mini = self.model_deployment("gpt-4.1-mini", "azure/gpt-4.1-mini")
+        for effort in ("none", {"effort": "none"}):
+            with self.subTest(effort=effort):
+                request = self.routed(reasoning_effort=effort, temperature=0)
+                with self.assertLogs(LOGGER, level="WARNING") as logs:
+                    self.filtered(request, [mini], "gpt-4.1-mini")
+                self.assertNotIn("reasoning_effort", request)
+                self.assertEqual(request["temperature"], 0)
+                self.assertEqual(len(logs.output), 1)
+
+    def test_without_reasoning_parameters_nothing_is_looked_up(self):
+        calls = self.with_supported_params()
+        mini = self.model_deployment("gpt-4.1-mini", "azure/gpt-4.1-mini")
+        request = self.routed(max_tokens=16)
+        self.filtered(request, [mini], "gpt-4.1-mini")
+        self.assertEqual(calls, [])
+
     # ----- encrypted reasoning without the Gateway's mark -----
 
     def responses_request(self, *items):

@@ -54,7 +54,7 @@ data migration. Retention does not protect against a schema downgrade.
 | `gatewayTokenSecretRef` | Necessary native Secret name for Hermes and OpenClaw. Not allowed for Custom |
 | `agent` | Necessary Harness configuration object |
 | `agent.type` | `hermes` (default), `openclaw`, or `custom`. It cannot be changed |
-| `agent.image` | Necessary for Custom. After it is set, it cannot be cleared. Built-in defaults are pinned from the selected chart |
+| `agent.image` | Necessary for Custom. Use the exact `<repository>@sha256:<digest>` reference from the Operator's `customRuntime.approvedImages`; a tag reference is never approved. After it is set, it cannot be cleared. Built-in defaults are pinned from the selected chart |
 | `agent.registrySecretRef.name` | Optional reference to a Portal-managed source Secret. The reference has no namespace, key, or inline credentials |
 | `agent.username` | The default is `vibe`. Non-root image username that cannot be changed |
 | `agent.port` | HTTP port, 1–65535. Necessary for a Custom Web UI, and optional in other cases. For Custom, an omitted port means that the Agent is headless |
@@ -89,11 +89,19 @@ For minimal YAML, see [first instance](../../getting-started/first-instance/).
 The operator resolves Hermes and OpenClaw images and ports through the Harness
 interface. The `vibe` username is necessary for their profiles. Custom uses a
 separate runtime path that supports non-default usernames. Without a binding
-provider, it reports `CustomBindingsPending`. The Operator chart enables the
-`customRuntime` Kubernetes provider by default, but administrators must still
-approve image digests and their numeric UID/GID. Its empty default approval
+provider, a non-Sandbox Custom Agent reports `CustomRuntimeDisabled`. The Operator
+chart enables the `customRuntime` Kubernetes provider by default, but
+administrators must still approve image digests. Numeric `imageUsers` entries are required for FQDN
+capture, not every Custom Agent. Its empty default approval
 list authorizes no images. Portal Custom self-service is enabled by default
 and can be restricted through `features.allowedAgentTypes`.
+The Portal requires a published image approval before creation or an image
+change, including administrator updates. For non-Sandbox Custom Agents, the
+Operator reports `CustomImageNotApproved` if a directly submitted Agent is not
+approved or its approval was withdrawn; it retries after the configuration
+changes. Other unavailable binding prerequisites report `CustomBindingsPending`.
+For policy-governed Sandbox Custom Agents, a disabled provider or unapproved
+image instead reports `PolicyResolved=False` with reason `PolicyDenied`.
 
 Private images use `agent.registrySecretRef.name` to refer to a Portal-managed
 source Secret. Before the operator copies the Secret to the runtime namespace
@@ -143,7 +151,7 @@ check does not prove that an override will reconcile successfully.
 | `plannedMigration` | Controller-owned source and storage identity and acknowledgment checkpoint. The phases are `Protecting`, `Stopping`, `SourceTerminated`, `Detached`, `Starting`, and `Completed`. It is not a physical-fencing receipt, and it does not give permission to edit status |
 | `observedOperatorHash` | Fingerprint of the applied configuration, for use by the reconciliation cache. It includes the content hash of the gateway Secret and the resource version of the referenced team |
 | `lastReconcileTime` | Timestamp that a full Ready or suspension pass writes. It can also be written when the ingress removal for a suspension fails |
-| `aiGateway` | AI Gateway state. It shows the phase and reason, the key alias and ID (never the key), access groups, and models. It also shows native USD budget, spend, and reset observations, the block state, and the applied policy and pricing revisions. For GitHub Copilot, it shows the Gateway name of each registered model (`copilot.routes`), and `vision` when the model accepts images. It also shows the models that are excluded because they have no price (`copilot.unpriced`) or because a shared model has their name (`copilot.skipped`). With an Agent Policy, it also shows the models that are the same models as shared models that the Policy does not allow (`copilot.notAllowed`). `modelRouters` lists the smart-routing models of the Team. For an instance with an Agent Policy, it also lists the routers that are configured in the Gateway and that the Policy lists. Each entry has `granted`. If the router is granted, the entry has its `model` name in the Gateway. For a Team router, this is its internal name. For a Gateway router, this is its own name. The entry of a granted Team router also has `alias`, the router's name, when the key reaches the router under that name. A Hermes instance sends that name. Other instances send the internal name. Each granted entry also has its configured limits, and `vision` when the instance sends images to the router. If the router is not granted, the `reason` tells why |
+| `aiGateway` | AI Gateway state. It shows the phase and reason, the key alias and ID (never the key), access groups, and models. It also shows native USD budget, spend, and reset observations, the block state, and the applied policy and pricing revisions. For GitHub Copilot, it shows the Gateway name of each registered model (`copilot.routes`), `vision` when the model accepts images, and `reasoning` when the instance can set a reasoning effort for the model. It also shows the models that are excluded because they have no price (`copilot.unpriced`) or because a shared model has their name (`copilot.skipped`). With an Agent Policy, it also shows the models that are the same models as shared models that the Policy does not allow (`copilot.notAllowed`). `modelRouters` lists the smart-routing models of the Team. For an instance with an Agent Policy, it also lists the routers that are configured in the Gateway and that the Policy lists. Each entry has `granted`. If the router is granted, the entry has its `model` name in the Gateway. For a Team router, this is its internal name. For a Gateway router, this is its own name. The entry of a granted Team router also has `alias`, the router's name, when the key reaches the router under that name. A Hermes instance sends that name. Other instances send the internal name. Each granted entry also has its configured limits, `vision` when the instance sends images to the router, and `reasoning` when the instance can set a reasoning effort for the router. If the router is not granted, the `reason` tells why |
 | `registryCredentials` | Receipt that identifies the UID and resourceVersion of the synchronized source Secret and the UID of the local pull Secret. It is not credential data or proof of a successful image pull |
 | `sandbox` | Last binding that was found correct: `teamUID`, `sandboxUID`, `agentPolicyUID`, and `appliedRevision`. Omitted before enforcement succeeds |
 | `policy` | Resolved effective policy, and the desired Sandbox, Gateway, and credential revisions |
@@ -220,6 +228,7 @@ termination. The chart allows zero or one replica and limits any enabled HPA to
 | `modelRouters[].ready` / `message` | Shows if the router is registered with its current configuration. If it is not, it shows why |
 | `modelRouters[].sharedModels` | The shared models that the router's tiers send requests to, as registered. A GitHub Copilot tier that joins a shared model is included, and the classifier is not. An Agent with an AgentPolicy gets the router only when the policy allows each of these models |
 | `modelRouters[].copilotModels` | The `copilot/<model>` tiers that are registered under the ID of the Copilot model. An Agent must have GitHub Copilot and that model |
+| `modelRouters[].nonReasoningModels` | For a ready router, the tier models, as the tiers name them, that do not reason. A shared model is listed when not every deployment of its name reports `supports_reasoning`. A `copilot/<model>` tier is listed when the Gateway's price table has an entry for its model, and the entry does not report `supports_reasoning` or the model is not a Claude or GPT model. A tier that joins a shared model is also listed when that shared model does not reason. OpenClaw instances offer no reasoning levels for the router. This is a hint only: the router is registered and granted as usual |
 | `conditions[type=ModelRoutersReady]` | `True` when every router is registered. `False` names each router that is not registered. `Unknown` when the Gateway cannot be reached |
 
 Each Team has a single `agentPolicyRef`. Agents do not select a policy class.

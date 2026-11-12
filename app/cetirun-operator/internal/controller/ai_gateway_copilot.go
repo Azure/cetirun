@@ -135,6 +135,18 @@ func copilotBaseModel(id string, priced map[string]bool) (string, bool) {
 // the models GitHub Copilot serves, in the order they are tried.
 var copilotModelVendors = []string{"openai", "anthropic", "gemini", "xai", "mistral", "deepseek"}
 
+// copilotRouteReasons reports whether an Agent can set a reasoning effort for
+// its Copilot route of the model id, billed as the price-table entry base:
+// the entry says that the model reasons, and the Agent's Copilot proxy passes
+// the effort on. The proxy is LiteLLM's github_copilot provider, which takes
+// reasoning_effort only for Claude and GPT models. For the others, such as
+// Gemini and Grok, it refuses the request with a 400 (UnsupportedParamsError),
+// although the price table says that they reason (LiteLLM 1.108.3).
+func copilotRouteReasons(id, base string, table aigateway.PriceTable) bool {
+	lower := strings.ToLower(id)
+	return table.Reasoning[base] && (strings.HasPrefix(lower, "claude") || strings.HasPrefix(lower, "gpt-"))
+}
+
 // aiGatewayPriceCache holds what the operator reads of the Gateway's price
 // table for an hour.
 type aiGatewayPriceCache struct {
@@ -168,6 +180,9 @@ type copilotRegistration struct {
 	// vision reports that the price table entry the route is billed as says
 	// the model accepts images, as the Gateway then reports for the route.
 	vision bool
+	// reasoning reports that the Agent can set a reasoning effort for the
+	// route (copilotRouteReasons).
+	reasoning bool
 }
 
 // copilotRegistrationID names a route by the Agent UID, the model and a
@@ -411,12 +426,15 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 				continue
 			}
 			id := copilotRegistrationID(instance, model.ID, copilotRevision(append([]string{format, proxyURL, proxyKey, base}, copilotPlacementRevision(placement)...)...))
-			desired[id] = copilotRegistration{model: model, placement: placement, vision: table.Vision[base], request: aigateway.ModelRequest{
-				ID: id, ModelName: placement.name, Model: "litellm_proxy/" + model.ID,
-				APIBase: proxyURL, APIKey: proxyKey, AccessGroups: []string{copilot.AccessGroup}, BaseModel: base,
-				Routing: placement.routing, NoCooldown: !placement.shared, ProbeWithoutRetries: true,
-				NoBackgroundHealthCheck: !r.AIGateway.CopilotHealthChecks,
-			}}
+			desired[id] = copilotRegistration{
+				model: model, placement: placement, vision: table.Vision[base], reasoning: copilotRouteReasons(model.ID, base, table),
+				request: aigateway.ModelRequest{
+					ID: id, ModelName: placement.name, Model: "litellm_proxy/" + model.ID,
+					APIBase: proxyURL, APIKey: proxyKey, AccessGroups: []string{copilot.AccessGroup}, BaseModel: base,
+					Routing: placement.routing, NoCooldown: !placement.shared, ProbeWithoutRetries: true,
+					NoBackgroundHealthCheck: !r.AIGateway.CopilotHealthChecks,
+				},
+			}
 		}
 	}
 
@@ -469,7 +487,7 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 		names = append(names, registration.request.ModelName)
 		routes = append(routes, cetirunv1alpha1.AIGatewayCopilotRoute{
 			Model: registration.model.ID, Name: registration.request.ModelName, Shared: registration.placement.shared,
-			Vision: registration.vision,
+			Vision: registration.vision, Reasoning: registration.reasoning,
 		})
 	}
 	for _, id := range ids {
@@ -675,6 +693,9 @@ type aiGatewayModelEntry struct {
 	// Vision reports that every model the Agent's requests for the entry
 	// may reach accepts images, so the Agent can send them with a request.
 	Vision bool
+	// Reasoning reports that every model the Agent's requests for the entry
+	// may reach reasons, so the Agent can set a reasoning effort.
+	Reasoning bool
 }
 
 // aiGatewayCopilotRouteVision reports, by the Gateway name each of the
@@ -688,6 +709,19 @@ func aiGatewayCopilotRouteVision(routes []cetirunv1alpha1.AIGatewayCopilotRoute)
 		}
 	}
 	return vision
+}
+
+// aiGatewayCopilotRouteReasoning reports, by the Gateway name each of the
+// Agent's registered Copilot routes is registered under, whether every route
+// of that name reasons.
+func aiGatewayCopilotRouteReasoning(routes []cetirunv1alpha1.AIGatewayCopilotRoute) map[string]bool {
+	reasoning := map[string]bool{}
+	for _, route := range routes {
+		if reasons, seen := reasoning[route.Name]; !seen || reasons {
+			reasoning[route.Name] = route.Reasoning
+		}
+	}
+	return reasoning
 }
 
 // aiGatewayRouterVisionFolds are the routers configured in the Gateway, among
@@ -710,6 +744,34 @@ func (r *AgentReconciler) aiGatewayRouterVisionFolds(shared []aiGatewayCatalogMo
 		}
 		for _, used := range router.Models {
 			if accepts, ok := routeVision[used.Name]; ok && !accepts && used.Use != aigateway.RouterClassifier {
+				folds[model.Name] = false
+				break
+			}
+		}
+	}
+	return folds
+}
+
+// aiGatewayRouterReasoningFolds are the routers configured in the Gateway,
+// among the given shared models, that reason (fillRouterReasoning) but not
+// for this Agent: a request the Agent sends through one may reach its own
+// Copilot route registered under the name of a model the router sends
+// requests to answer, and such a route does not reason. The configuration
+// hash covers the result (aiGatewayRevision).
+func (r *AgentReconciler) aiGatewayRouterReasoningFolds(shared []aiGatewayCatalogModel, routes []cetirunv1alpha1.AIGatewayCopilotRoute) map[string]bool {
+	routeReasoning := aiGatewayCopilotRouteReasoning(routes)
+	if len(routeReasoning) == 0 {
+		return nil
+	}
+	gatewayRouters := r.aiGatewayCatalog.sharedRouters().routers
+	folds := map[string]bool{}
+	for _, model := range shared {
+		router, isRouter := gatewayRouters[model.Name]
+		if !isRouter || !model.Reasoning {
+			continue
+		}
+		for _, used := range router.Models {
+			if reasons, ok := routeReasoning[used.Name]; ok && !reasons && used.Use != aigateway.RouterClassifier {
 				folds[model.Name] = false
 				break
 			}
@@ -820,16 +882,20 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 		if known {
 			folds := r.aiGatewayRouterLimitFolds(instance, models, routes)
 			visionFolds := r.aiGatewayRouterVisionFolds(models, routes)
+			reasoningFolds := r.aiGatewayRouterReasoningFolds(models, routes)
 			for _, model := range models {
 				entry := aiGatewayModelEntry{
 					ID: model.Name, Name: model.Name, ContextWindow: model.ContextWindow, MaxTokens: model.MaxOutputTokens,
-					Vision: model.Vision,
+					Vision: model.Vision, Reasoning: model.Reasoning,
 				}
 				if fold, ok := folds[model.Name]; ok {
 					entry.ContextWindow, entry.MaxTokens = fold[0], fold[1]
 				}
 				if accepts, ok := visionFolds[model.Name]; ok {
 					entry.Vision = accepts
+				}
+				if reasons, ok := reasoningFolds[model.Name]; ok {
+					entry.Reasoning = reasons
 				}
 				sharedEntries = append(sharedEntries, entry)
 			}
@@ -865,11 +931,13 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 				}
 				// The Agent's requests for the name may reach this route too.
 				entry.Vision = entry.Vision && route.Vision
+				entry.Reasoning = entry.Reasoning && route.Reasoning
 				merged = append(merged, route.Name)
 				continue
 			}
 			if i := slices.IndexFunc(copilotEntries, func(entry aiGatewayModelEntry) bool { return entry.ID == route.Name }); i >= 0 {
 				copilotEntries[i].Vision = copilotEntries[i].Vision && route.Vision
+				copilotEntries[i].Reasoning = copilotEntries[i].Reasoning && route.Reasoning
 				continue
 			}
 			if len(copilotEntries) == aiGatewayMaxCopilotModels {
@@ -879,7 +947,7 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 			// name: the Agent cannot tell which backend serves it.
 			copilotEntries = append(copilotEntries, aiGatewayModelEntry{
 				ID: route.Name, Name: route.Name, ContextWindow: model.ContextWindow, MaxTokens: model.MaxOutputTokens,
-				Vision: route.Vision,
+				Vision: route.Vision, Reasoning: route.Reasoning,
 			})
 		}
 	}

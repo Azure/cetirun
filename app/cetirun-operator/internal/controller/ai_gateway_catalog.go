@@ -57,6 +57,9 @@ type aiGatewayCatalog struct {
 	fetchedAt time.Time
 	sharedSet []aiGatewayCatalogModel
 	ids       map[string]bool
+	// customLimits is an immutable deployment-level budget snapshot. It is
+	// never published or used to grant access to a model.
+	customLimits *customGatewayLimitView
 	// groups lists the deployment IDs of each access group.
 	groups map[string][]string
 	// modelGroups lists the trusted model groups for each shared model
@@ -85,6 +88,10 @@ type aiGatewayCatalog struct {
 	// a Team router's jev classifier may name one. They are among nonChat,
 	// and the published catalog lists them apart from the shared models.
 	decision map[string]bool
+	// reasoningMixed are the shared routers that send requests both to
+	// models that reason and to models that do not (fillRouterReasoning),
+	// sorted, for a log line when they change.
+	reasoningMixed []string
 	// allowsUnpriced is the Gateway's setting from the last listing. The
 	// zero value is the Gateway's default, which refuses requests for
 	// models without a price.
@@ -104,8 +111,8 @@ type aiGatewayCatalog struct {
 // nothing to keep.
 func (c *aiGatewayCatalog) changedBy(deployments []aigateway.Deployment, blockUnpriced bool) bool {
 	c.mu.RLock()
-	scratch := aiGatewayCatalog{known: c.known, sharedSet: c.sharedSet, fingerprint: c.fingerprint, routerFingerprint: c.routerFingerprint,
-		nonChat: c.nonChat, decision: c.decision}
+	scratch := aiGatewayCatalog{known: c.known, sharedSet: c.sharedSet, customLimits: c.customLimits,
+		fingerprint: c.fingerprint, routerFingerprint: c.routerFingerprint, nonChat: c.nonChat, decision: c.decision}
 	c.mu.RUnlock()
 	if !scratch.known {
 		return false
@@ -148,6 +155,7 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	}
 	trusted := trustedManagedModelGroups(deployments)
 	byName := map[string]aiGatewayCatalogModel{}
+	customLimits := newCustomGatewayLimitView(deployments)
 	modelGroups := map[string][]string{}
 	merge := newCopilotMergeView()
 	chat := map[string]bool{}
@@ -157,6 +165,9 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	// vision is false for a name once one of its shared deployments does not
 	// accept images.
 	vision := map[string]bool{}
+	// reasoning is false for a name once one of its shared deployments does
+	// not reason.
+	reasoning := map[string]bool{}
 	for _, deployment := range deployments {
 		ids[deployment.ID] = true
 		for _, group := range deployment.AccessGroups {
@@ -206,6 +217,11 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 		if accepts, seen := vision[deployment.ModelName]; !seen || accepts {
 			vision[deployment.ModelName] = deployment.Vision
 		}
+		// The same for a reasoning effort: a deployment that does not reason
+		// can refuse it.
+		if reasons, seen := reasoning[deployment.ModelName]; !seen || reasons {
+			reasoning[deployment.ModelName] = deployment.Reasoning
+		}
 		if policyBoundShared {
 			modelGroups[deployment.ModelName] = append(modelGroups[deployment.ModelName], managedGroups...)
 		}
@@ -218,10 +234,12 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	})
 	for name, model := range byName {
 		model.Vision = vision[name]
+		model.Reasoning = reasoning[name]
 		byName[name] = model
 	}
 	fillRouterLimits(byName, routers)
 	fillRouterVision(byName, routers)
+	reasoningMixed := fillRouterReasoning(byName, routers)
 	shared := make([]aiGatewayCatalogModel, 0, len(byName))
 	nonChat := map[string]bool{}
 	for name, model := range byName {
@@ -242,9 +260,12 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	changed := !(c.known || c.seeded) || !slices.EqualFunc(c.sharedSet, shared, sameCatalogModel) || c.fingerprint != fingerprint ||
-		c.routerFingerprint != routerFingerprint || !maps.Equal(c.nonChat, nonChat) || !maps.Equal(c.decision, decision)
+		c.routerFingerprint != routerFingerprint || !sameCustomGatewayLimits(c.customLimits, customLimits) ||
+		!maps.Equal(c.nonChat, nonChat) || !maps.Equal(c.decision, decision)
 	c.known, c.seeded, c.fetchedAt, c.sharedSet, c.ids, c.groups, c.modelGroups, c.fingerprint = true, false, now, shared, ids, groups, modelGroups, fingerprint
+	c.customLimits = customLimits
 	c.routers, c.routerFingerprint, c.nonChat, c.decision = routers, routerFingerprint, nonChat, decision
+	c.reasoningMixed = reasoningMixed
 	c.allowsUnpriced = !blockUnpriced
 	c.copilotMerge = merge
 	return changed, skipped, unpriced
@@ -383,7 +404,7 @@ func (c *aiGatewayCatalog) seed(shared []aiGatewayCatalogModel, decision []strin
 	for i, model := range shared {
 		// Router models are published for the Portal; the listing supplies them here.
 		c.sharedSet[i] = aiGatewayCatalogModel{Name: model.Name, ContextWindow: model.ContextWindow, MaxOutputTokens: model.MaxOutputTokens,
-			Vision: model.Vision}
+			Vision: model.Vision, Reasoning: model.Reasoning}
 	}
 	// A decision model is a shared model no Agent is configured with. Seeded
 	// as one, it stays out of the Agents' models, a catalog published again
@@ -410,8 +431,9 @@ func (c *aiGatewayCatalog) seed(shared []aiGatewayCatalogModel, decision []strin
 const aiGatewayModelNameLimit = 256
 
 // aiGatewaySharedModelUsable reports whether a shared model name can be given
-// to Agents: the agent chart rejects names with the provider prefix Agents
-// use and names over its length limit, and the Gateway chart reserves the
+// to Agents: the agent chart rejects names with the provider prefixes Agents
+// use (openai/, and cetirun/ for OpenClaw) and names over its length limit,
+// and the Gateway chart reserves the
 // cetirun- and copilot/ prefixes in any letter case, copilot/ for the key
 // aliases of the Agents' own Copilot models. The console does not check them.
 func aiGatewaySharedModelUsable(name string) bool {
@@ -419,8 +441,8 @@ func aiGatewaySharedModelUsable(name string) bool {
 		return false
 	}
 	lower := strings.ToLower(name)
-	return !strings.HasPrefix(name, "openai/") && !strings.HasPrefix(lower, "cetirun-") &&
-		!strings.HasPrefix(lower, aiGatewayCopilotModelPrefix)
+	return !strings.HasPrefix(name, "openai/") && !strings.HasPrefix(name, "cetirun/") &&
+		!strings.HasPrefix(lower, "cetirun-") && !strings.HasPrefix(lower, aiGatewayCopilotModelPrefix)
 }
 
 // fillRouterLimits gives each shared router that states no limit of its own
@@ -496,6 +518,47 @@ func fillRouterVision(models map[string]aiGatewayCatalogModel, routers map[strin
 		model.Vision = vision && answers
 		models[name] = model
 	}
+}
+
+// fillRouterReasoning decides whether each shared router reasons, by the
+// rule fillRouterVision applies to images: only when every model it sends
+// requests to answer reasons. The router does not look at a request's
+// reasoning effort when it picks a model, and an Agent sets one effort for the
+// router as a whole, so a model that does not reason would get an effort it
+// cannot use. It returns the routers whose models are known and partly
+// reason, sorted: an Agent sets no reasoning effort for them, although some of
+// their models reason.
+func fillRouterReasoning(models map[string]aiGatewayCatalogModel, routers map[string]aigateway.Router) []string {
+	// The models' own values, before any router's is decided.
+	reasons := make(map[string]bool, len(models))
+	for name, model := range models {
+		_, isRouter := routers[name]
+		reasons[name] = model.Reasoning && !isRouter
+	}
+	var mixed []string
+	for name, router := range routers {
+		model, ok := models[name]
+		if !ok {
+			continue
+		}
+		all, some := router.Unverifiable == "", false
+		answers := false
+		for _, used := range router.Models {
+			if used.Use == aigateway.RouterClassifier {
+				continue
+			}
+			answers = true
+			all = all && reasons[used.Name]
+			some = some || reasons[used.Name]
+		}
+		model.Reasoning = all && answers
+		models[name] = model
+		if router.Unverifiable == "" && some && !model.Reasoning {
+			mixed = append(mixed, name)
+		}
+	}
+	slices.Sort(mixed)
+	return mixed
 }
 
 func smallerPositive(current, next int64) int64 {
@@ -684,6 +747,7 @@ func (r *AgentReconciler) refreshAIGatewayCatalogWithin(ctx context.Context, cli
 	if r.holdAIGatewayCatalog(ctx, deployments, blockUnpriced, time.Now()) {
 		return false
 	}
+	mixed := catalog.reasoningMixedRouters()
 	changed, skipped, unpriced := catalog.update(deployments, blockUnpriced, time.Now())
 	if len(skipped) > 0 {
 		log.FromContext(ctx).Info("shared models with names Agents cannot use are left out", "models", skipped)
@@ -691,6 +755,7 @@ func (r *AgentReconciler) refreshAIGatewayCatalogWithin(ctx context.Context, cli
 	if len(unpriced) > 0 {
 		log.FromContext(ctx).Info("shared models without a price are left out while the AI Gateway blocks unpriced models", "models", unpriced)
 	}
+	logReasoningMixedRouters(ctx, mixed, catalog.reasoningMixedRouters())
 	return changed
 }
 
@@ -716,6 +781,7 @@ func (r *AgentReconciler) refreshAIGatewayCatalogForGrant(ctx context.Context, c
 		// listing adopted, which was live; the hold is bounded.
 		return nil
 	}
+	mixed := catalog.reasoningMixedRouters()
 	changed, skipped, unpriced := catalog.update(deployments, blockUnpriced, time.Now())
 	if len(skipped) > 0 {
 		log.FromContext(ctx).Info("shared models with names Agents cannot use are left out", "models", skipped)
@@ -723,10 +789,31 @@ func (r *AgentReconciler) refreshAIGatewayCatalogForGrant(ctx context.Context, c
 	if len(unpriced) > 0 {
 		log.FromContext(ctx).Info("shared models without a price are left out while the AI Gateway blocks unpriced models", "models", unpriced)
 	}
+	logReasoningMixedRouters(ctx, mixed, catalog.reasoningMixedRouters())
 	if changed {
 		r.notifyAIGatewayCatalogChanged(ctx)
 	}
 	return nil
+}
+
+// reasoningMixedRouters returns the shared routers that send requests both
+// to models that reason and to models that do not, as the last listing
+// showed them.
+func (c *aiGatewayCatalog) reasoningMixedRouters() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return slices.Clone(c.reasoningMixed)
+}
+
+// logReasoningMixedRouters logs the routers configured in the Gateway that
+// send requests both to models that reason and to models that do not, once
+// each time that list changes: Agents set no reasoning effort for such a
+// router, although some of its models reason.
+func logReasoningMixedRouters(ctx context.Context, before, after []string) {
+	if len(after) > 0 && !slices.Equal(before, after) {
+		log.FromContext(ctx).Info("routers configured in the AI Gateway send requests to models that reason and to models that do not; Agents set no reasoning effort for them",
+			"routers", after)
+	}
 }
 
 // seedAIGatewayCatalog loads the last published shared and decision models,
@@ -808,29 +895,20 @@ func (r *AgentReconciler) publishAIGatewayCatalog(ctx context.Context, maxAge ti
 	client, err := r.aiGatewayClient(ctx)
 	if err != nil {
 		logger.Error(err, "AI Gateway client unavailable")
-		return
+	} else {
+		if r.refreshAIGatewayCatalogWithin(ctx, client, maxAge) {
+			r.notifyAIGatewayCatalogChanged(ctx)
+		}
+		r.notifyAIGatewayRoutesLost(ctx)
 	}
-	if r.refreshAIGatewayCatalogWithin(ctx, client, maxAge) {
-		r.notifyAIGatewayCatalogChanged(ctx)
-	}
-	r.notifyAIGatewayRoutesLost(ctx)
 	shared, known := r.aiGatewayCatalog.shared()
-	if !known {
-		return
-	}
-	if err := r.writeAIGatewayCatalog(ctx, shared); err != nil {
+	if err := r.writeAIGatewayCatalog(ctx, shared, known); err != nil {
 		logger.Error(err, "publishing the AI Gateway catalog failed")
 	}
 }
 
-func (r *AgentReconciler) writeAIGatewayCatalog(ctx context.Context, shared []aiGatewayCatalogModel) error {
+func (r *AgentReconciler) writeAIGatewayCatalog(ctx context.Context, shared []aiGatewayCatalogModel, modelsKnown bool) error {
 	namespace := r.catalogNamespace()
-	if shared == nil {
-		shared = []aiGatewayCatalogModel{}
-	}
-	view := r.aiGatewayCatalog.sharedRouters()
-	catalog := cetirunv1alpha1.AIGatewayCatalog{SharedModels: view.describe(shared), DecisionModels: view.decisionModels(),
-		GitHubCopilot: r.aiGatewayCopilotOffered()}
 	key := types.NamespacedName{Namespace: namespace, Name: cetirunv1alpha1.AIGatewayCatalogConfigMap}
 	configMap := &corev1.ConfigMap{}
 	err := r.Get(ctx, key, configMap)
@@ -840,9 +918,28 @@ func (r *AgentReconciler) writeAIGatewayCatalog(ctx context.Context, shared []ai
 	published := err == nil
 	var previous cetirunv1alpha1.AIGatewayCatalog
 	if published {
-		_ = json.Unmarshal([]byte(configMap.Data[cetirunv1alpha1.AIGatewayCatalogKey]), &previous)
+		if err := json.Unmarshal([]byte(configMap.Data[cetirunv1alpha1.AIGatewayCatalogKey]), &previous); err != nil && !modelsKnown {
+			return fmt.Errorf("decode previous catalog: %w", err)
+		}
 	}
-	catalog.Routing = r.aiGatewayRouting(ctx, previous.Routing)
+	// An outage must not turn unknown model availability into a known empty
+	// list. Keep the published model view while refreshing image approvals.
+	if !modelsKnown && !published {
+		return nil
+	}
+	catalog := previous
+	if modelsKnown {
+		if shared == nil {
+			shared = []aiGatewayCatalogModel{}
+		}
+		view := r.aiGatewayCatalog.sharedRouters()
+		catalog = cetirunv1alpha1.AIGatewayCatalog{SharedModels: view.describe(shared), DecisionModels: view.decisionModels(),
+			GitHubCopilot: r.aiGatewayCopilotOffered(), Routing: r.aiGatewayRouting(ctx, previous.Routing)}
+	}
+	catalog.CustomImages = []string{}
+	if provider, ok := r.CustomBindings.(interface{ ApprovedImages() []string }); ok {
+		catalog.CustomImages = provider.ApprovedImages()
+	}
 	raw, err := json.Marshal(catalog)
 	if err != nil {
 		return err
@@ -1005,5 +1102,6 @@ func (r *AgentReconciler) notifyAIGatewayAgents(ctx context.Context, after strin
 // sameCatalogModel compares two shared models of the operator's own view.
 func sameCatalogModel(a, b aiGatewayCatalogModel) bool {
 	return a.Name == b.Name && a.ContextWindow == b.ContextWindow && a.MaxOutputTokens == b.MaxOutputTokens &&
-		slices.Equal(a.RouterModels, b.RouterModels) && a.RouterUnverifiable == b.RouterUnverifiable && a.Vision == b.Vision
+		slices.Equal(a.RouterModels, b.RouterModels) && a.RouterUnverifiable == b.RouterUnverifiable && a.Vision == b.Vision &&
+		a.Reasoning == b.Reasoning
 }

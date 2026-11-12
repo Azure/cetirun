@@ -391,6 +391,10 @@ type Deployment struct {
 	// administrator sets it in model_info. A model the table does not know
 	// has none.
 	Vision bool
+	// Reasoning reports that the deployment's model info says its model
+	// reasons: supports_reasoning is true. LiteLLM takes the value as for
+	// Vision.
+	Reasoning bool
 	// Routing is how LiteLLM weighs the deployment against the others of its
 	// model name.
 	Routing Routing
@@ -537,8 +541,9 @@ func (c *Client) ListModels(ctx context.Context) ([]Deployment, error) {
 			Mode:   modelMode(fields),
 			Priced: declaresPrice(item.LiteLLMParams) || hasPrice(fields),
 			Model:  stringValue(item.LiteLLMParams["model"]), BaseModel: stringValue(info.BaseModel),
-			Vision:  fields["supports_vision"] == true,
-			Routing: routing(item.LiteLLMParams), Router: parseRouter(item.LiteLLMParams),
+			Vision:    fields["supports_vision"] == true,
+			Reasoning: fields["supports_reasoning"] == true,
+			Routing:   routing(item.LiteLLMParams), Router: parseRouter(item.LiteLLMParams),
 		})
 	}
 	return deployments, nil
@@ -715,6 +720,9 @@ type PriceTable struct {
 	// (supports_vision), the value LiteLLM reports in the model info of a
 	// deployment billed as that name.
 	Vision map[string]bool
+	// Reasoning are the names whose entry says the model reasons
+	// (supports_reasoning), read like Vision.
+	Reasoning map[string]bool
 }
 
 // PriceTable reads the Gateway's model price table.
@@ -723,18 +731,22 @@ func (c *Client) PriceTable(ctx context.Context) (PriceTable, error) {
 		InputCostPerToken  *float64 `json:"input_cost_per_token"`
 		OutputCostPerToken *float64 `json:"output_cost_per_token"`
 		// Read leniently: one odd entry must not fail the whole table.
-		SupportsVision json.RawMessage `json:"supports_vision"`
+		SupportsVision    json.RawMessage `json:"supports_vision"`
+		SupportsReasoning json.RawMessage `json:"supports_reasoning"`
 	}
 	if _, err := c.doLimit(ctx, http.MethodGet, "/public/litellm_model_cost_map", nil, &table, listLimit); err != nil {
 		return PriceTable{}, err
 	}
-	out := PriceTable{Priced: make(map[string]bool, len(table)), Vision: map[string]bool{}}
+	out := PriceTable{Priced: make(map[string]bool, len(table)), Vision: map[string]bool{}, Reasoning: map[string]bool{}}
 	for name, entry := range table {
 		if positive(entry.InputCostPerToken) || positive(entry.OutputCostPerToken) {
 			out.Priced[name] = true
 		}
 		if string(entry.SupportsVision) == "true" {
 			out.Vision[name] = true
+		}
+		if string(entry.SupportsReasoning) == "true" {
+			out.Reasoning[name] = true
 		}
 	}
 	return out, nil

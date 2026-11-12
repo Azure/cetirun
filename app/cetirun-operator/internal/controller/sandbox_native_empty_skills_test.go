@@ -167,7 +167,7 @@ func testNativeSandboxEmptySkillsLifecycle(t *testing.T, catalog string) {
 			t.Fatal("empty skills added an identity projection")
 		}
 	}
-	f.assertGatewayProjection(t, running)
+	f.assertGatewayProjection(t, running, "cetirun")
 	config := &corev1.ConfigMap{}
 	if err := f.kube.Get(ctx, client.ObjectKey{Namespace: running.Namespace.Name, Name: running.Workload.Name + "-config"}, config); err != nil {
 		t.Fatal(err)

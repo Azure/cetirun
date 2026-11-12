@@ -5,18 +5,19 @@ weight: 10
 ---
 
 CetiRun supplies Bicep templates for AKS and Azure Blob NFS. The cluster
-template contains the monitoring configuration. There is no separate
-`infra/monitoring` stack or Terraform deployment. Before you provision
-resources, make sure that your Azure subscription and region support the
-selected Kubernetes version and VM sizes. Also make sure that they support the
-zones, preview features, and API version.
+template also creates the Azure Data Explorer resources of the ADX-Mon
+collection. There is no separate `infra/monitoring` stack or Terraform
+deployment. Before you provision resources, make sure that your Azure
+subscription and region support the selected Kubernetes version and VM sizes.
+Also make sure that they support the zones, preview features, and API version.
 
 ## Source map
 
 | Source | Role |
 | --- | --- |
 | [infra/cluster/main.bicep]({{< repo "infra/cluster/main.bicep" >}}) | Cluster parameters and outputs |
-| [AKS module]({{< repo "infra/cluster/modules/aks-cluster.bicep" >}}) | Node pools, networking, identity, CSI, Istio, monitoring |
+| [AKS module]({{< repo "infra/cluster/modules/aks-cluster.bicep" >}}) | Node pools, networking, identity, CSI, Istio; Container Insights and managed Prometheus off |
+| [ADX module]({{< repo "infra/cluster/modules/adx.bicep" >}}) | Kusto cluster, databases, query functions, and roles of the ADX-Mon collection |
 | [cluster deploy helper]({{< repo "infra/cluster/deploy.sh" >}}) | Azure preflight, deployment, Gateway API, kubeconfig |
 | [storage sources]({{< repo "infra/storage" "tree" >}}) | Shared Blob NFS account and container |
 | [Istio chart]({{< repo "infra/istio" "tree" >}}) | Authentication and egress configuration |
@@ -41,10 +42,19 @@ value.
 | Agent pool | `Standard_D16s_v6`, 15–150 nodes, AzureLinux |
 | Agent2 pool | `Standard_D32s_v6`, 3–10 nodes, AzureLinux |
 | Managed Istio revision | Empty; AKS selects its default revision |
+| Managed Istio traffic redirection | `InitContainers`. Kata VM-isolated Agent Pods do not start with CNI chaining |
 | Availability zones | `1`, `2`, `3` on all three pools |
 | Networking | Azure CNI overlay, Cilium, load-balancer outbound |
 | Pod / Service / DNS ranges | `10.244.0.0/16`, `172.16.0.0/16`, `172.16.0.10` |
-| Monitoring | Container Insights and Prometheus enabled; both off when `adxMode` is `create` or `existing` |
+| Monitoring | ADX-Mon into a new Kusto cluster (`adxMode: create`); Container Insights and managed Prometheus off |
+| Automatic upgrades | `patch` channel for Kubernetes, `NodeImage` channel for the node OS |
+| Add-ons | Key Vault Secrets Provider, with rotation of the mounted secrets every 2 minutes |
+
+With the automatic upgrade channels, AKS installs Kubernetes patch versions
+and new node images without a manual step. An upgrade drains each node, so the
+Agent Pods on that node start again on another node. The template configures
+no maintenance window. To control the time of these upgrades, configure a
+maintenance window for the cluster.
 
 The cluster template defaults to Kubernetes 1.37, the minimum for Sandbox and
 CetiAdmin admission. The cluster helper checks the effective `kubernetesVersion`
@@ -105,7 +115,6 @@ param clusterName = 'example-cluster'
 param dnsPrefix = 'example-cluster'
 param nodeResourceGroup = 'example-rg-nodes'
 param kubernetesVersion = '1.37'
-param istioRevision = 'asm-example'
 param systemNodePoolVmSize = 'Standard_D4ds_v6'
 param agentNodePoolVmSize = 'Standard_D8ds_v6'
 param agent2NodePoolVmSize = 'Standard_D8ds_v6'
@@ -144,10 +153,17 @@ operation. The helper below has no render-only or dry-run mode.
 ## Helper side effects
 
 To run `infra/cluster/deploy.sh`, you must have Bash, Python 3, Azure CLI,
-the Bicep CLI on `PATH`, kubectl, and an Azure session that is already authorized.
-You must also set `RESOURCE_GROUP` and `LOCATION`. `PARAM_FILE` selects the parameters that you
-examined. The helper uses the current Azure subscription and does not select
-one. Confirm that scope independently. The helper does these steps:
+the Bicep CLI on `PATH`, kubectl, and kubelogin. You must also have an Azure
+session that is already authorized. `az aks install-cli` installs kubectl and
+kubelogin. On this cluster, kubectl uses kubelogin to get its Entra tokens.
+
+You must also set `RESOURCE_GROUP` and `LOCATION`. `LOCATION` sets only the
+location of a new resource group. The cluster region comes from `location` in
+the parameter file. `PARAM_FILE` selects the parameters that you examined. The
+helper uses the current Azure subscription and does not select one. Confirm
+that scope independently.
+
+The helper does these steps:
 
 1. It compiles Bicep locally (`--no-restore`), reads the compiled or supplied
    JSON parameters, and checks the effective Kubernetes version. It stops on
@@ -155,15 +171,17 @@ one. Confirm that scope independently. The helper does these steps:
    validated inputs in a private temporary directory, uses those same inputs
    for validation and deployment, and removes the directory on exit.
 2. It installs or updates `aks-preview`. If necessary, it registers the managed
-   Gateway API preview feature.
+   Gateway API preview feature. Then it waits for the registration without a
+   time limit.
 3. It creates or updates the resource group.
 4. It validates and creates the Bicep deployment.
 5. It fetches credentials with `--overwrite-existing`.
-6. It creates the Container Insights agent settings in `kube-system`. These
-   settings are in `infra/cluster/container-azm-ms-agentconfig.yaml`. If it
-   cannot create them, it stops with an error. If the cluster already has agent
-   settings, the helper does not change them. In that case, it stops unless
-   these settings disable environment variable collection.
+6. It creates the Container Insights agent settings in `kube-system`, for the
+   case that Container Insights is turned on later; the template turns it
+   off. These settings are in `infra/cluster/container-azm-ms-agentconfig.yaml`.
+   If it cannot create them, it stops with an error. If the cluster already
+   has agent settings, the helper does not change them. In that case, it stops
+   unless these settings disable environment variable collection.
 7. It enables Gateway API and runs connected checks.
 
 By default, the helper requests user credentials. `AKS_ADMIN_CREDENTIALS=true`
@@ -171,6 +189,32 @@ selects local admin credentials. This setting is only for an explicitly
 authorized bootstrap environment that has local accounts enabled. It is not a
 fallback for an Azure RBAC failure. Step 6 writes to `kube-system`. As a
 result, the identity must have write access there, not only read access.
+
+Before you run the helper, give your identity a Kubernetes role that can write
+to `kube-system`, for example **Azure Kubernetes Service RBAC Cluster Admin**.
+The cluster does not exist yet, so assign the role at the scope of the resource
+group. **Connected, mutating:**
+
+1. If the resource group does not exist, create it:
+
+   ```bash
+   az group create --name example-rg --location your-approved-region --output none
+   ```
+
+2. Assign the role at the scope of the resource group:
+
+   ```bash
+   RESOURCE_GROUP_ID=$(az group show --name example-rg --query id --output tsv)
+   az role assignment create --role 'Azure Kubernetes Service RBAC Cluster Admin' \
+     --assignee-object-id "$(az ad signed-in-user show --query id --output tsv)" \
+     --assignee-principal-type User --scope "$RESOURCE_GROUP_ID" --output none
+   ```
+
+A new role assignment can take some minutes to apply. If step 6 stops with an
+access error, examine the access with
+`kubectl auth can-i create configmaps --namespace kube-system`. When the answer
+is `yes`, run the helper again. A new run does all the steps again for the same
+resource group and cluster.
 
 **Connected, mutating example:** use it only after you examine the script and
 the parameters:
@@ -195,7 +239,11 @@ The template enables Microsoft Entra authentication with Azure RBAC for
 Kubernetes authorization. As a result, each person who runs kubectl, Helm, or
 `make deploy` must have an Azure role for the Kubernetes API of the cluster.
 An example is **Azure Kubernetes Service RBAC Cluster Admin**. A new role
-assignment can take some minutes to apply. **Connected, mutating:**
+assignment can take some minutes to apply.
+
+If you assigned the role to yourself at the scope of the resource group before
+the helper ran, it already applies to this cluster. For other administrators,
+assign the role at the scope of the cluster. **Connected, mutating:**
 
 ```bash
 CLUSTER_ID=$(az aks show --resource-group example-rg --name example-cluster \
@@ -226,10 +274,11 @@ receives. Use these values for the admission administrators of `make deploy`.
 admin credentials instead. Use them only in an explicitly authorized bootstrap
 environment, not as a fallback for an Azure RBAC failure.
 
-When `publicTLS` is enabled, `make deploy` uses the required
-`target.kubeconfig` and `target.context`; it does not use the shell
-`KUBECONFIG`. Other deployments use the kubeconfig of the shell. In either
-case, read the `target` values from the intended context:
+If you set `target.kubeconfig`, `make deploy` uses that file for every command
+and ignores the shell `KUBECONFIG`. Without it, `make deploy` uses the
+kubeconfig of the shell. With `publicTLS`, `target.kubeconfig` is necessary.
+Every command uses the context in `target.context`. Read the `target` values
+from the intended context:
 
 ```bash
 kubectl config view --minify \
@@ -249,7 +298,7 @@ kubectl get namespace kube-system -o jsonpath='{.metadata.uid}{"\n"}'
 If you only provision the cluster, that step does not publish images, create
 all Entra registrations, issue TLS certificates, or prepare end-user provider
 accounts. Complete the [platform checklist](../../getting-started/platform/).
-For Agent connections, follow [Agent Identity setup](../agent-identity/). Use
+For Agent connections, follow [Prepare Agent connections](../agent-identity/). Use
 it for the encryption identity and Key Vault key, provider applications,
 certificates, and the coordinated Broker/MCP/Portal configuration.
 
@@ -260,41 +309,63 @@ record, then issue the externally managed Gateway certificate. It does not
 configure Entra, Broker/MCP or admission certificates, and it does not change
 the cluster template.
 
-By default, the cluster parameters enable Container Insights and Prometheus
-metrics. With `adxMode` `create` or `existing`, both are off by default, and
-the [ADX-Mon collection](../observability/) replaces them; set them
-explicitly to keep them. Examine the workspace and data-collection resources,
-the retention, the access roles, and the costs. If `logAnalyticsWorkspaceId` is
-empty and Container Insights is on, the template creates a Log Analytics
-workspace with 30-day retention. The template enables the cluster's
-monitoring add-on with its data collection rule. Container Insights collects
-this data through that add-on:
+The cluster template turns Container Insights and managed Prometheus off. By
+default, it creates the Azure Data Explorer resources of the
+[ADX-Mon collection](../observability/), which `make deploy` installs. Refer
+to [Azure Data Explorer](#azure-data-explorer). On Kata node pools with the
+node image `AKSAzureLinux-V3katagen2-202610.30.1` or later, the monitoring
+add-on collects no container logs or metrics from those nodes: its pods there
+restart in a loop, because the node kernel has no legacy iptables `nat` table.
+The platform and the Agents run on these nodes.
 
-- Container stdout and stderr outside `kube-system`
-- Kubernetes inventory and events
-- Node and container performance data
+A deployment over a cluster that an earlier template created also turns the
+monitoring add-on and managed Prometheus off. It does not delete the Log
+Analytics workspace, the Azure Monitor workspace, and the data collection rules
+that the earlier template created. When you no longer need their data, delete
+them. The commands use the names that the earlier template gave them. The
+`az monitor data-collection` commands install the Azure CLI extension
+`monitor-control-service` the first time. **Connected, mutating:**
 
-By default, the add-on also copies the environment variables of every
-container into the `ContainerInventory` table one time each minute. This copy
-includes values from Secrets. CetiRun components keep credentials in
-environment variables.
+```bash
+CLUSTER_ID=$(az aks show --resource-group example-rg --name example-cluster \
+  --query id --output tsv)
+az monitor data-collection rule association delete --yes \
+  --name ContainerInsightsExtension --resource "$CLUSTER_ID"
+az monitor data-collection rule association delete --yes \
+  --name MSProm-your-approved-region-example-cluster --resource "$CLUSTER_ID"
+az monitor data-collection rule delete --yes --resource-group example-rg \
+  --name MSCI-your-approved-region-example-cluster
+az monitor data-collection rule delete --yes --resource-group example-rg \
+  --name example-cluster-prometheus
+az monitor log-analytics workspace delete --yes --resource-group example-rg \
+  --workspace-name example-cluster-logs
+az monitor account delete --yes --resource-group example-rg \
+  --name example-cluster-prometheus
+```
+
+The earlier template created no workspace when `logAnalyticsWorkspaceId` named
+an existing one, and no resources for Container Insights or managed Prometheus
+that its parameters turned off. A parameter file that still sets
+`enableContainerInsights`, `enablePrometheusMetrics`, or
+`logAnalyticsWorkspaceId` does not compile with this template, so the helper
+stops before any Azure call. Remove these parameters from the file.
+
+If you turn Container Insights on yourself, examine its collection, its access
+roles, and its costs first. By default, the add-on copies the environment
+variables of every container into the `ContainerInventory` table one time each
+minute. This copy includes values from Secrets. CetiRun components keep
+credentials in environment variables.
 
 The helper creates the settings that are in
 `infra/cluster/container-azm-ms-agentconfig.yaml`. These settings disable that
 copy. They also join log lines longer than 16 KiB that the container runtime
 splits. The agent restarts itself within minutes to apply the settings.
 CetiRun's own containers that hold credentials also disable the collection for
-themselves, but other workloads do not.
-
-Clusters that were created from earlier templates have the rule but not the
-add-on. These clusters collect no container logs. Create the settings first.
-Then enable the add-on:
+themselves, but other workloads do not. To create the settings on a cluster
+that the helper did not create:
 
 ```bash
 kubectl create -f infra/cluster/container-azm-ms-agentconfig.yaml
-az aks enable-addons --addons monitoring --enable-msi-auth-for-monitoring \
-  --resource-group "$RESOURCE_GROUP" --name "$CLUSTER_NAME" \
-  --workspace-resource-id "$LOG_ANALYTICS_WORKSPACE_ID"
 ```
 
 If `kube-system` already has a `container-azm-ms-agentconfig` ConfigMap, the
@@ -303,30 +374,25 @@ create command fails. In this case, add the two settings from the file to the
 the ConfigMap. If you do, the file replaces those settings as a whole. This
 also replaces any namespaces that they exclude.
 
-On a cluster that already ran for some time, the agent also uploads the log
-files that the containers already have. It does this one time. Log lines from
-before the add-on, back to the oldest file that the node keeps, also reach the
-workspace.
-
 The agent chart’s session logger is also enabled by default. Before you onboard
 users, see [Security](../../security/).
 
-On Kata node pools with the node image `AKSAzureLinux-V3katagen2-202610.30.1`
-or later, the monitoring add-on collects no container logs or metrics from those
-nodes: its pods there restart in a loop because the node kernel has no legacy
-iptables `nat` table. The platform and the Agents run on these nodes. To
-collect from them, use the [ADX-Mon collection](../observability/).
-
 ## Azure Data Explorer
 
-The template can also create the Azure resources of the optional
-[ADX-Mon collection](../observability/). Set `adxMode`:
+The template creates the Azure resources of the
+[ADX-Mon collection](../observability/), which `make deploy` requires. Set
+`adxMode`:
 
 | `adxMode` | Effect |
 |---|---|
-| `none` | The default: no Azure Data Explorer resources |
-| `create` | A new Kusto cluster `adxClusterName` in `adxResourceGroupName`, with the three databases |
+| `create` | The default: a new Kusto cluster `adxClusterName` in `adxResourceGroupName`, with the three databases |
 | `existing` | The three databases in the existing Kusto cluster `adxClusterName` |
+| `none` | No Azure Data Explorer resources. `make deploy` then needs a Kusto cluster, its databases, and the ingestor identity that exist; refer to [the prerequisites](../observability/#prerequisites) |
+
+The deployment registers the `Microsoft.Kusto` resource provider in the
+subscription of the Kusto cluster if it is not registered. This needs the
+`Microsoft.Kusto/register/action` permission, which the Contributor and Owner
+roles include.
 
 A new Kusto cluster goes to the AKS region unless `adxLocation` names
 another. Not every region offers every Kusto SKU; the default Dev SKU, for
@@ -334,10 +400,10 @@ example, is not offered in every region.
 
 With `create` or `existing`, the template also creates these resources:
 
-- The databases `CetiRunLogs`, `CetiRunMetrics` and `CetiRunAgents`, with the
-  retention of `adxLogsRetentionDays`, `adxMetricsRetentionDays` and
-  `adxAgentLogsRetentionDays`, 7 days in the hot cache, and 30 seconds of
-  ingestion batching.
+- The databases `CetiRunLogs`, `CetiRunMetrics` and `CetiRunAgents`. Their
+  retention is `adxLogsRetentionDays`, `adxMetricsRetentionDays` and
+  `adxAgentLogsRetentionDays`. The hot cache keeps 7 days, or the retention
+  when it is shorter. Ingestion batching is 30 seconds.
 - The query functions in `infra/cluster/modules/adx/*.kql`.
 - The user-assigned managed identity `<clusterName>-adx-ingestor` in the
   cluster resource group, with a federated credential for the ingestor's
@@ -365,8 +431,9 @@ Explorer" in the
 [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}).
 
 The default SKU, `Dev(No SLA)_Standard_E2a_v4`, has one engine node and no SLA.
-Use it for evaluation. A cluster with no ingestion or queries for five days
-stops, and you must start it again. The outputs `adxClusterUri` and
+Use it for evaluation. The template enables auto-stop on a Kusto cluster that
+it creates. Such a cluster stops after five days without ingestion or queries,
+and you must start it again. The outputs `adxClusterUri` and
 `adxIngestorClientId` are the inputs of the `observability` block of the
 `make deploy` environment file.
 

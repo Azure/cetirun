@@ -79,6 +79,28 @@ describe("InstanceDetailPage", () => {
     expect(screen.getByText("Binding or identity approval required")).toBeInTheDocument();
   });
 
+  it("warns once, on every tab, when the Agent chart cannot be downloaded", async () => {
+    const chartUnavailable = { type: "AgentConfigReady", status: "False" as const, reason: "AgentChartUnavailable",
+      message: "Agent chart 1.0.0 could not be downloaded from the registry (unauthorized: check the chart-pull credential); the deployed release is unchanged and the operator will retry" };
+    vi.mocked(adminInstances.getAdminInstance).mockResolvedValue({ ...agent, conditions: [chartUnavailable] });
+    vi.mocked(adminInstances.getAdminInstanceStatus).mockResolvedValue({ uid: agent.uid, conditions: [chartUnavailable], events: [], nsEvents: [], pods: [] });
+    const user = userEvent.setup();
+    renderPage();
+    expect(await screen.findByTestId("chart-unavailable-notice")).toHaveTextContent("unauthorized: check the chart-pull credential");
+    await user.click(screen.getByRole("tab", { name: "Status" }));
+    await screen.findByText("Conditions");
+    expect(screen.getAllByTestId("chart-unavailable-notice")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Edit" })).toBeEnabled();
+  });
+
+  it("shows no chart warning for other AgentConfigReady failures", async () => {
+    vi.mocked(adminInstances.getAdminInstance).mockResolvedValue({ ...agent, conditions: [
+      { type: "AgentConfigReady", status: "False", reason: "AgentConfigInvalid", message: "invalid" }] });
+    renderPage();
+    await screen.findByRole("button", { name: "Edit" });
+    expect(screen.queryByTestId("chart-unavailable-notice")).not.toBeInTheDocument();
+  });
+
   it.each(["hermes", "openclaw"] as const)("shows the %s port as read-only and omits it when saving", async (type) => {
     const builtIn = { ...agent, agent: { ...agent.agent, type, webUI: false } };
     vi.mocked(adminInstances.getAdminInstance).mockResolvedValue(builtIn);

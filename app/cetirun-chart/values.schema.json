@@ -363,6 +363,13 @@
                     "maxItems": 256,
                     "items": {"type": "string", "minLength": 1, "maxLength": 256}
                 },
+                "reasoningModels": {
+                    "type": "array",
+                    "description": "Ids of the models in models that reason",
+                    "default": [],
+                    "maxItems": 256,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 256}
+                },
                 "hermes": {
                     "type": "object",
                     "description": "Hermes on the Gateway",
@@ -1386,7 +1393,7 @@
         },
         "logger": {
             "type": "object",
-            "description": "Session logger sidecar that tails JSONL files to stdout for Container Insights",
+            "description": "Session logger sidecar that tails JSONL files to stdout for the cluster's log collection",
             "properties": {
                 "enabled": {
                     "type": "boolean",

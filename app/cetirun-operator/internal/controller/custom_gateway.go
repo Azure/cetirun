@@ -85,7 +85,8 @@ func (r *AgentReconciler) bindCustomGateway(ctx context.Context, instance *api.A
 		!aigateway.ValidKeyValue(string(secret.Data[aiGatewayKeySecretField])) || !secret.DeletionTimestamp.IsZero() {
 		return fmt.Errorf("Custom Gateway key binding is not owned and ready")
 	}
-	b.Model = runtimebindings.ModelAccess{ObjectReference: objectReference(secret), Key: aiGatewayKeySecretField, BaseURL: r.AIGateway.URL + "/v1"}
+	b.Model = runtimebindings.ModelAccess{ObjectReference: objectReference(secret), Key: aiGatewayKeySecretField, BaseURL: r.AIGateway.URL + "/v1",
+		GatewayModels: r.aiGatewayCustomModels(instance)}
 	b.Network.Gateway = runtimebindings.Peer{Namespace: namespace, PodLabels: selector}
 	b.Network.GatewayPort = int32(port)
 	b.Network.Revision += ":gateway:" + string(service.UID)

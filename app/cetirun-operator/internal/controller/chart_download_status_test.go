@@ -14,6 +14,7 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	"github.com/go-logr/logr"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -21,8 +22,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
+	"oras.land/oras-go/v2/errdef"
+	"oras.land/oras-go/v2/registry/remote/errcode"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // failingPrepareHelm renders the chart like chartHelm, but fails every chart
@@ -53,7 +57,7 @@ func TestChartDownloadFailureIsReportedWithAFixedMessage(t *testing.T) {
 		"chart download": {
 			err: &helm.ChartDownloadError{Chart: "oci://registry.example.com/helm/cetirun:1.0.0", Version: "1.0.0",
 				Err: fmt.Errorf(`failed to perform "Fetch" on source: %w`, cause)},
-			want: "Agent chart 1.0.0 could not be downloaded from the registry; the operator will retry",
+			want: "Agent chart 1.0.0 could not be downloaded from the registry (network: check that the registry is reachable); the operator will retry",
 		},
 		"configuration": {
 			err:  errors.New("helm.values.image must use spec.agent.image"),
@@ -105,6 +109,8 @@ type deployedAgent struct {
 	chart    *failingPrepareHelm
 	recorder *record.FakeRecorder
 	req      ctrl.Request
+	// installEvents are the HelmInstalled events of the first install.
+	installEvents []string
 }
 
 func newDeployedAgent(t *testing.T) *deployedAgent {
@@ -129,8 +135,25 @@ func newDeployedAgent(t *testing.T) *deployedAgent {
 	if phase := f.agent(t).Status.Phase; phase != api.PhaseReady || f.chart.installs != 1 {
 		t.Fatalf("phase = %q, installs = %d; want a Ready Agent after one install", phase, f.chart.installs)
 	}
-	f.warnings()
+	f.installEvents = nil
+	for len(f.recorder.Events) > 0 {
+		if event := <-f.recorder.Events; strings.HasPrefix(event, "Normal HelmInstalled ") {
+			f.installEvents = append(f.installEvents, event)
+		}
+	}
 	return f
+}
+
+// The HelmInstalled event names the chart version and the runtime type of
+// the Agent, not a fixed runtime.
+func TestHelmInstalledEventNamesChartAndRuntime(t *testing.T) {
+	f := newDeployedAgent(t)
+	a := f.agent(t)
+	want := fmt.Sprintf("Normal HelmInstalled Agent chart %s (%s) installed in namespace %s",
+		a.Spec.Helm.Version, a.Spec.Agent.Type, instanceNamespace(a.Name))
+	if a.Spec.Helm.Version == "" || len(f.installEvents) != 1 || f.installEvents[0] != want {
+		t.Fatalf("HelmInstalled events = %q, want %q", f.installEvents, want)
+	}
 }
 
 func (f *deployedAgent) agent(t *testing.T) *api.Agent {
@@ -175,7 +198,7 @@ func TestChartDownloadFailureKeepsADeployedAgent(t *testing.T) {
 	f.verificationDue(t)
 	f.chart.err = &helm.ChartDownloadError{Chart: "oci://registry.example.com/helm/cetirun:0.1.28", Version: "0.1.28",
 		Err: errors.New("synthetic registry outage")}
-	want := "Agent chart 0.1.28 could not be downloaded from the registry; the deployed release is unchanged and the operator will retry"
+	want := "Agent chart 0.1.28 could not be downloaded from the registry (unknown: see the operator log); the deployed release is unchanged and the operator will retry"
 
 	for pass := 1; pass <= 2; pass++ {
 		before := f.agent(t)
@@ -220,6 +243,71 @@ func TestChartDownloadFailureKeepsADeployedAgent(t *testing.T) {
 	}
 	if warnings := f.warnings(); len(warnings) != 0 {
 		t.Fatalf("recovery recorded warnings: %q", warnings)
+	}
+}
+
+// countingSink counts the chart download logs by level.
+type countingSink struct {
+	errors *int
+	infos  map[int]int
+}
+
+func (s countingSink) Init(logr.RuntimeInfo) {}
+func (s countingSink) Enabled(int) bool      { return true }
+func (s countingSink) Info(level int, msg string, _ ...any) {
+	if strings.Contains(msg, "chart download failed") {
+		s.infos[level]++
+	}
+}
+func (s countingSink) Error(_ error, msg string, _ ...any) {
+	if strings.Contains(msg, "chart download failed") {
+		*s.errors++
+	}
+}
+func (s countingSink) WithValues(...any) logr.LogSink { return s }
+func (s countingSink) WithName(string) logr.LogSink   { return s }
+
+// The condition message names the kind of download failure with a hint, and
+// never the registry URL or the cause text. The operator logs the failure at
+// Error level once, and repeated failures at V(1).
+func TestChartDownloadFailureClassInConditionAndLog(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cause error
+		want  string
+	}{
+		"unauthorized": {&errcode.ErrorResponse{Method: "GET", URL: &url.URL{Scheme: "https", Host: "registry.example.com", Path: "/v2/helm/cetirun/manifests/0.1.28", RawQuery: "query=synthetic"}, StatusCode: 401},
+			"(unauthorized: check the chart-pull credential)"},
+		"not found": {fmt.Errorf("registry.example.com/helm/cetirun:0.1.28: %w", errdef.ErrNotFound),
+			"(notFound: check that the registry has this chart version)"},
+		"network": {&url.Error{Op: "Get", URL: "https://storage.example.com/blob?query=synthetic", Err: errors.New("connection reset by peer")},
+			"(network: check that the registry is reachable)"},
+		"unknown": {errors.New("synthetic"), "(unknown: see the operator log)"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newDeployedAgent(t)
+			errorLogs := 0
+			sink := countingSink{errors: &errorLogs, infos: map[int]int{}}
+			ctx := log.IntoContext(context.Background(), logr.New(sink))
+			f.verificationDue(t)
+			f.chart.err = &helm.ChartDownloadError{Chart: "oci://registry.example.com/helm/cetirun:0.1.28", Version: "0.1.28", Err: tc.cause}
+			for pass := 1; pass <= 3; pass++ {
+				if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+					t.Fatal(err)
+				}
+			}
+			condition := meta.FindStatusCondition(f.agent(t).Status.Conditions, api.ConditionAgentConfigReady)
+			if condition == nil || condition.Reason != chartUnavailableReason || !strings.Contains(condition.Message, tc.want) {
+				t.Fatalf("AgentConfigReady = %+v, want %q in the message", condition, tc.want)
+			}
+			for _, leak := range []string{"example.com", "query", "synthetic", "connection reset"} {
+				if strings.Contains(condition.Message, leak) {
+					t.Fatalf("message %q contains %q", condition.Message, leak)
+				}
+			}
+			if errorLogs != 1 || sink.infos[1] != 2 {
+				t.Fatalf("Error logs = %d, V(1) logs = %d; want one Error and two V(1) over three passes", errorLogs, sink.infos[1])
+			}
+		})
 	}
 }
 
@@ -588,7 +676,7 @@ func TestDeployedAgentStillRejectsOtherPreparationFailures(t *testing.T) {
 			err: &helm.ChartDownloadError{Chart: "oci://registry.example.com/helm/cetirun:0.1.29", Version: "0.1.29",
 				Err: errors.New("synthetic registry outage")},
 			specChange: true,
-			want:       "Agent chart 0.1.29 could not be downloaded from the registry; the operator will retry",
+			want:       "Agent chart 0.1.29 could not be downloaded from the registry (unknown: see the operator log); the operator will retry",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

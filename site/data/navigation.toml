@@ -57,11 +57,14 @@
   [[modules.groups]]
     title = "Install"
     pages = [
+      "/docs/operations/install-checklist",
       "/docs/getting-started/platform",
       "/docs/operations/infrastructure",
+      "/docs/operations/capacity",
       "/docs/operations/public-ingress",
       "/docs/operations/policy-teams",
       "/docs/operations/agent-identity",
+      "/docs/operations/artifacts",
     ]
   [[modules.groups]]
     title = "Configuration"
@@ -76,6 +79,11 @@
       "/docs/guides/agent-ingress-mtls",
       "/docs/operations/entra-agent-identity",
       "/docs/operations/identity-providers",
+      "/docs/operations/cetiadmin",
+      "/docs/operations/upgrade",
+      "/docs/operations/backup-restore",
+      "/docs/operations/certificates",
+      "/docs/operations/uninstall",
     ]
   [[modules.groups]]
     title = "Troubleshooting"

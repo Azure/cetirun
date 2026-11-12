@@ -196,18 +196,19 @@ sharedSkills:
 #     containerName: marketplace
 #     storageClassName: example-skills
 
-# Optional ADX-Mon collection of the platform's and the Agents' logs, Kubernetes
-# events and metrics into Azure Data Explorer. The Kusto cluster, its databases
-# and the ingestor's managed identity exist before make deploy; the cluster
-# template creates them with adxMode (infra/cluster). The identity needs the
-# User and Ingestor roles on the three databases and a federated credential for
+# The ADX-Mon collection of the platform's and the Agents' logs, Kubernetes
+# events and metrics into Azure Data Explorer. make deploy requires it. The
+# Kusto cluster, its databases and the ingestor's managed identity exist before
+# make deploy; the cluster template creates them with adxMode (infra/cluster).
+# The identity needs the User and Ingestor roles on the three databases and a
+# federated credential for
 # system:serviceaccount:<platform.namespace>:cetirun-adx-mon-ingestor.
-# observability:
-#   clusterName: example
-#   adx:
-#     endpoint: https://example.australiaeast.kusto.windows.net
-#     databases:
-#       logs: CetiRunLogs
-#       metrics: CetiRunMetrics
-#       agentLogs: CetiRunAgents
-#   ingestorClientId: 55555555-5555-5555-5555-555555555555
+observability:
+  clusterName: example
+  adx:
+    endpoint: https://example.australiaeast.kusto.windows.net
+    databases:
+      logs: CetiRunLogs
+      metrics: CetiRunMetrics
+      agentLogs: CetiRunAgents
+  ingestorClientId: 55555555-5555-5555-5555-555555555555

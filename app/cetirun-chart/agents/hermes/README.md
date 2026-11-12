@@ -115,6 +115,16 @@ and file mode `0600`. Browser cookies still expire or can be signed out; the
 persistent password is not an unlimited browser session. Never print these
 values in logs, commands, URLs or test results.
 
+The Webapp does not read the cookies that the old Dashboard set
+(`hermes_session_*`). After an upgrade, these cookies can stay in the browser.
+They do not give access to the Webapp, and they expire. Users can delete them
+in the browser settings for the Portal host.
+
+On a new HOME, the platform answers the Hermes "Share usage stats with Nous"
+question with "No thanks" (`telemetry.shared_metrics` in
+`$HERMES_HOME/config.yaml`). An answer that the user saved stays. A user can
+change the answer with `hermes setup telemetry`.
+
 The Operator routes `/ui/<instance>/`, removes the prefix when forwarding, and
 sets `X-Forwarded-Prefix`. `webapp.public_url` carries the full HTTPS instance
 URL. Native Webapp prefix handling owns assets, auth, files and sockets; there

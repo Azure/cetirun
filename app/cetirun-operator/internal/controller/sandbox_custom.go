@@ -78,7 +78,8 @@ func (r *AgentReconciler) configureCustomSandboxInput(ctx context.Context, attem
 	contribution, err := (customharness.Harness{}).Build(resolved, agents.Bindings{
 		ContextRevision: attempt.prerequisites.Revision,
 		Model: agents.ModelBinding{BaseURL: baseURL, CredentialSlot: "model",
-			Revision: string(attempt.prerequisites.RuntimeSecret.UID)},
+			Revision: string(attempt.prerequisites.RuntimeSecret.UID), Gateway: true,
+			GatewayModels: r.aiGatewayCustomModels(agent)},
 		WebBasePath: "/ui/" + agent.Name + "/", WebInstance: string(agent.UID),
 	})
 	if err != nil {

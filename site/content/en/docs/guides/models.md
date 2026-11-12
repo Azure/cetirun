@@ -143,8 +143,8 @@ does not change the Gateway projection of the Policy. See the Gateway chart's
 [Smart routing]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#smart-routing)
 section. Its
 [Measuring the routers]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#measuring-the-routers)
-part has Log Analytics queries that show how requests were routed. A Team's own
-routers are described under
+part has queries of the ADX-Mon collection that show how requests were routed.
+A Team's own routers are described under
 [Smart-routing models](#smart-routing-models).
 
 The create form offers both sources, and both are on by default. Every new
@@ -193,11 +193,21 @@ another GitHub account takes effect only when that token expires.
 OpenClaw and Hermes receive their model list and virtual key from the AI
 Gateway on every start. Hermes writes the Gateway provider as
 `cetirun-gateway` in `~/.hermes/config.yaml` and reads its key from
-`CETIRUN_GATEWAY_API_KEY`. The key is in neither HOME file. If a model is
+`CETIRUN_GATEWAY_API_KEY`. OpenClaw writes the Gateway provider as `cetirun`
+in `~/.openclaw/openclaw.json`, so its model references are
+`cetirun/<model>`. The key is in neither HOME file. If a model is
 removed from the Gateway, it no longer appears in the Agent configuration.
 Arbitrary user code in a Custom image can make its own outbound network
 connection, and this routing does not prevent it. If that control is
 necessary, use network policy.
+
+Earlier runtime charts wrote the Gateway provider for OpenClaw as `openai`. On
+each start, OpenClaw changes the names of models under `openai` that it thinks
+are retired, for example `gpt-4.1-mini`. The instance then asked the Gateway
+for a model that the Gateway does not have. When you upgrade an OpenClaw
+instance to a chart that writes `cetirun`, the instance restarts once. A
+session that has a model under `openai/` uses the default model of the
+instance again.
 
 Each instance has its own virtual key with a monthly budget. The instance page
 lists its models. For OpenClaw and Hermes, the page also sets the default. When
@@ -205,17 +215,38 @@ you save a new default, the instance restarts. Custom images select a model
 from the models that are available through the Gateway. They make this
 selection through their own configuration or Chat UI.
 
-When an administrator does one of these actions, the operator updates every
-instance that uses shared models:
+When an administrator does one of these actions, the operator updates the
+affected Agents:
 
 - adds or removes a shared model
 - changes the limits of a shared model
 - changes if a shared model accepts images
+- changes if a shared model reasons
 - changes if a shared model is offered, through its price or the Gateway's
   setting
 
-This update restarts these instances. The operator also registers their
-Copilot models again under the names that now apply.
+The affected Agents are the standard Agents that use shared models, and the
+Sandbox Agents whose Agent Policy allows the model. This update restarts their
+instances. The operator also registers their Copilot models again under the
+names that now apply.
+
+> **Warning:** Before you remove a shared model, remove its name from
+> `modelAccess.sharedModels.allowed` in each Agent Policy. If an Agent Policy
+> allows a name that the Gateway catalog does not offer, the operator stops
+> its Agents that use shared models. It also blocks the Gateway key of each of
+> these Agents. Their `PolicyResolved` condition is `False` with the reason
+> `DependencyUnavailable` and the message
+> `the live AI Gateway catalog cannot resolve every authorized shared model`.
+
+The operator also blocks and stops these Agents in these cases:
+
+- The Gateway stops offering the model because the model has no price.
+- A console deployment copies the access group of the model.
+- An administrator removes or renames a Team router that an Agent Policy
+  allows.
+
+To recover, make the Gateway offer the model again, or remove its name from
+the Agent Policy.
 
 If only the base model or routing fields of a shared model change, the change
 reaches the Copilot routes at each instance's next check. This occurs within
@@ -247,8 +278,8 @@ deleted and added again.
 
 OpenClaw also sends short internal tasks to a utility model, for example
 generated session titles and activity recaps. On the Gateway, the utility model
-of an instance is its default model. Otherwise, OpenClaw picks OpenAI's small
-model, which the Gateway does not offer. These calls count against the
+of an instance is its default model. Otherwise, OpenClaw picks the small model
+of the provider, which the Gateway does not offer. These calls count against the
 instance's key like any other call.
 
 An instance governed by an Agent Policy can also carry these request limits on
@@ -320,15 +351,47 @@ For the other models:
 
 - Hermes first sends the image to the model in a separate call, and the model
   describes it.
-- OpenClaw uses its own model catalog, which knows only the names of some
-  OpenAI models. For a name that it does not know, another model that accepts
-  images describes the image. The `computer` tool is not available with that
-  name.
+- OpenClaw sends only text to these models. Another model that accepts images
+  describes the image. The `computer` tool is not available with these models.
 
 The instance's configuration lists the models that accept images
 (`aiGateway.visionModels` of the runtime chart). A runtime chart without this
 value sends images as before. The instance takes the value when you upgrade it
 to a chart that has it.
+
+### Reasoning
+
+OpenClaw offers its reasoning levels for the models that reason. It sends the
+level that the owner selects as the reasoning effort of each request. The
+default level is `medium`. The operator reads from the Gateway which models
+reason (`supports_reasoning`). Refer to the Gateway chart's
+[Reasoning models]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#reasoning-models)
+section.
+
+The operator uses the same rules as for images:
+
+- A model reasons only when every deployment of its name reasons.
+- When the instance's own Copilot route has the same name, that route must
+  also reason.
+- A smart-routing model reasons only when every model that it sends requests
+  to reasons. For a Team's router, the Team page shows the tier models that do
+  not reason.
+
+A GitHub Copilot model reasons only when the Gateway's price table says so and
+it is a Claude or GPT model. The Copilot proxy refuses a reasoning effort for
+the other models, such as Gemini and Grok.
+
+For the other models, OpenClaw offers only the level `off`, and it sends no
+reasoning effort. A model that reasons then uses its default effort.
+
+Hermes does not use this information. It sends its own reasoning effort to each
+model. The Gateway removes the effort from a request when no deployment that
+can answer the request reasons.
+
+The instance's configuration lists the models that reason
+(`aiGateway.reasoningModels` of the runtime chart). A runtime chart without
+this value configures OpenClaw as before. The instance takes the value when you
+upgrade it to a chart that has it.
 
 ### When the budget runs out
 

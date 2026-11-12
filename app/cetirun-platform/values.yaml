@@ -147,13 +147,9 @@ cetirun-ai-gateway:
   # bindings. Agents need an authorized model entitlement before model use.
   models: []
   # -- LiteLLM's Prometheus metrics, on a port of their own in each Gateway
-  # pod, and a PodMonitor for Azure Monitor managed Prometheus, which the
-  # CetiRun cluster template turns on. The PodMonitor is created only where
-  # the cluster serves its API.
+  # pod, which the ADX-Mon collection of cetirun-observability scrapes.
   metrics:
     enabled: true
-    podMonitor:
-      enabled: true
   # -- LiteLLM's own row per call in its database, which the console's request
   # log pages read, kept for seven days (the Gateway chart's
   # spendLogs.retention). The Gateway's request log on stdout records each call

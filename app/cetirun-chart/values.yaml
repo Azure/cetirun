@@ -111,9 +111,14 @@ aiGateway:
   models: []
   # -- Ids of the models in models that accept images, supplied by the
   # Operator. OpenClaw and Hermes send images with a request to these models.
-  # For other models, Hermes has the image described first, and OpenClaw uses
-  # its own model catalog, which marks only the models it knows.
+  # For other models, Hermes has the image described first, and OpenClaw has
+  # another model describe it.
   visionModels: []
+  # -- Ids of the models in models that reason, supplied by the Operator.
+  # OpenClaw offers its reasoning levels for these models and sends the level
+  # the owner picks as the reasoning effort. For other models, OpenClaw offers
+  # only the level off. Hermes does not read this value.
+  reasoningModels: []
   # -- Hermes on the Gateway: the environment variable that carries the
   # Agent's key to Hermes' Gateway provider. The chart sets it from the key
   # Secret, so the key is in neither Hermes' configuration nor its .env file;
@@ -559,9 +564,9 @@ tailscale:
   serve: false
 
 # -- Session logger sidecar configuration.
-# Tails session JSONL files to stdout so Container Insights (Azure Monitor)
-# captures full I/O audit logs. Query with:
-#   ContainerLogV2 | where ContainerName == "logger"
+# Tails session JSONL files to stdout, where the cluster's log collection
+# captures them. With the ADX-Mon collection, query the Agent logs database:
+#   AgentLogs | where Container == "logger"
 logger:
   # -- Enable session logger sidecar
   enabled: true

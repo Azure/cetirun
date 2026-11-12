@@ -563,12 +563,12 @@ def test_hermes_atomic_replace_failure(tmp_path, monkeypatch):
     assert sorted(path.name for path in tmp_path.iterdir()) == ["config.yaml"]
 
 
-def openai_config(models, provider=None):
-    # The configuration both an Agent on the AI Gateway and a deployment with
-    # its own openai endpoint render: an openai/ default and that provider.
+def gateway_config(models, provider=None):
+    # The configuration an Agent on the AI Gateway renders: a cetirun/
+    # default and the Gateway provider cetirun.
     return {
-        "agents": {"defaults": {"model": {"primary": "openai/model-a"}, "models": models}},
-        "models": {"providers": {"openai": provider or {"baseUrl": "https://models.example.com/v1", "models": []}}},
+        "agents": {"defaults": {"model": {"primary": "cetirun/model-a"}, "models": models}},
+        "models": {"providers": {"cetirun": provider or {"baseUrl": "https://models.example.com/v1", "models": []}}},
     }
 
 
@@ -576,7 +576,9 @@ def openai_config(models, provider=None):
 # key in OPENAI_API_KEY.
 GATEWAY_PROVIDER = {
     "baseUrl": "http://cetirun-ai-gateway.cetirun-system.svc.cluster.local:4000/v1",
-    "models": [{"id": "model-a", "name": "model-a"}],
+    "api": "openai-completions",
+    "models": [{"id": "model-a", "name": "model-a", "api": "openai-completions", "input": ["text"],
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}}],
     "auth": "api-key",
     "apiKey": {"source": "env", "provider": "default", "id": "OPENAI_API_KEY"},
 }
@@ -584,7 +586,9 @@ GATEWAY_PROVIDER = {
 
 def saved_openclaw_config(agent, provider=None):
     # A HOME the Agent has used: its own model settings, a sign-in profile,
-    # and the owner's own keys, for openai and for another provider.
+    # and the owner's own keys, for openai and for another provider. Its
+    # model references name the provider openai, the Gateway's provider in
+    # earlier charts.
     assert run(agent).returncode == 0
     saved = read_config(agent)
     saved["agents"]["defaults"]["models"] = {
@@ -602,7 +606,7 @@ def saved_openclaw_config(agent, provider=None):
     }}
     agent["config_file"].write_text(json.dumps(saved))
     (agent["config"] / "openclaw.json").write_text(
-        json.dumps(openai_config({"openai/model-a": {}, "openai/model-b": {}}, provider)))
+        json.dumps(gateway_config({"cetirun/model-a": {}, "cetirun/model-b": {}}, provider)))
 
 
 @pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
@@ -615,13 +619,15 @@ def test_openclaw_on_the_gateway_takes_the_gateway_model_list(agent):
     result = run(agent)
     assert result.returncode == 0, result.stderr
     config = read_config(agent)
-    assert config["agents"]["defaults"]["models"] == {"openai/model-a": {}, "openai/model-b": {}}
+    assert config["agents"]["defaults"]["models"] == {"cetirun/model-a": {}, "cetirun/model-b": {}}
+    assert config["agents"]["defaults"]["model"] == {"primary": "cetirun/model-a"}
     assert "github-copilot:github" not in config["auth"]["profiles"]
     # The Gateway provider is CetiRun's, bound to the Agent's key: a key or a
     # request override saved on it would be sent to the Gateway instead.
-    assert config["models"]["providers"]["openai"] == GATEWAY_PROVIDER
-    # Saved direct providers cannot survive the platform Gateway configuration.
-    assert set(config["models"]["providers"]) == {"openai"}
+    assert config["models"]["providers"]["cetirun"] == GATEWAY_PROVIDER
+    # Saved direct providers cannot survive the platform Gateway configuration,
+    # and neither can the provider openai of an earlier chart.
+    assert set(config["models"]["providers"]) == {"cetirun"}
     # Existing named Agents retain their identity and inherit the Gateway model.
     assert config["agents"]["list"] == [{"id": "research", "name": "Research"}]
 
@@ -633,9 +639,9 @@ def native_openclaw_source(agent):
     source["auth"] = {"profiles": {}}
     source["gateway"] = {"auth": {"mode": "token"}, "controlUi": {"basePath": "/ui/example-agent"}}
     source["agents"]["defaults"].update({
-        "model": {"primary": "openai/model-a"},
-        "modelPolicy": {"allow": ["openai/model-a", "openai/model-b"]},
-        "utilityModel": "openai/model-a",
+        "model": {"primary": "cetirun/model-a"},
+        "modelPolicy": {"allow": ["cetirun/model-a", "cetirun/model-b"]},
+        "utilityModel": "cetirun/model-a",
     })
     source_file.write_text(json.dumps(source))
     agent["env"].update(CETIRUN_AI_GATEWAY="true", CETIRUN_NATIVE_SANDBOX="true")
@@ -660,7 +666,7 @@ def test_native_openclaw_replaces_saved_model_and_gateway_overrides(agent):
         assert config["gateway"] == source["gateway"]
         assert config["agents"]["defaults"]["model"] == source["agents"]["defaults"]["model"]
         assert config["agents"]["defaults"]["modelPolicy"] == source["agents"]["defaults"]["modelPolicy"]
-        assert config["agents"]["defaults"]["utilityModel"] == "openai/model-a"
+        assert config["agents"]["defaults"]["utilityModel"] == "cetirun/model-a"
         assert "list" not in config["agents"]
         assert config["user_preference"] == "preserved"
 
@@ -676,13 +682,17 @@ def test_native_openclaw_requires_a_gateway_binding(agent):
 
 
 @pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
-@pytest.mark.parametrize("invalid", ["key", "named-agent"])
+@pytest.mark.parametrize("invalid", ["key", "named-agent", "openai-provider"])
 def test_native_openclaw_refuses_unbound_configuration(agent, invalid):
     native_openclaw_source(agent)
     source_file = agent["config"] / "openclaw.json"
     source = json.loads(source_file.read_text())
     if invalid == "key":
-        source["models"]["providers"]["openai"]["apiKey"] = "sk-dummy-unbound"
+        source["models"]["providers"]["cetirun"]["apiKey"] = "sk-dummy-unbound"
+    elif invalid == "openai-provider":
+        # The Gateway as the provider openai, whose model names OpenClaw's
+        # doctor rewrites.
+        source["models"]["providers"]["openai"] = source["models"]["providers"].pop("cetirun")
     else:
         source["agents"]["list"] = [{"id": "example-extra", "model": "anthropic/ungranted"}]
     source_file.write_text(json.dumps(source))

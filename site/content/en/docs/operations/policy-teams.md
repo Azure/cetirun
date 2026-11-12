@@ -12,6 +12,18 @@ enforces Sandbox admission, but it keeps Sandbox execution disabled. Until you
 enable it, the Portal refuses to create an Agent for such a Team. An Agent that
 is created for such a Team with `kubectl` is held and never starts.
 
+> **Warning:** An Agent Policy is not an access boundary between users. Every
+> signed-in Portal user can select any Team, or no Team, for a new Agent. An
+> Agent Policy applies only to the Agents of a Team that has one. Put in an
+> Agent Policy only the access that every Portal user can have.
+
+A standard Agent has no Team, or a Team without an Agent Policy. It can use
+every shared model. When the deployment offers GitHub Copilot, the Agent can
+also use it. A standard Agent has no request limits. Its Gateway key starts with the operator's
+`aiGateway.defaultBudget`, 10000 USD a month by default. To change this budget,
+set `platform.values.cetirun-operator.aiGateway.defaultBudget` before users
+create Agents.
+
 The steps on this page enable Sandbox execution for an installation that
 `make deploy` makes, as in [Install CetiRun](../../getting-started/platform/),
 in the release namespace `cetirun-system`. Do steps 1 to 3 before the first
@@ -266,6 +278,11 @@ selector-bound entries. The
 `revision` fields are labels that you change each time that you change what
 they describe.
 
+Sandbox Pods use only the resolvers in `dnsResolverIPs`, without search
+domains. A short Service name such as `<service>` or `<service>.<namespace>`
+does not resolve in an Agent. Use the full name, for example
+`<service>.<namespace>.svc.cluster.local`.
+
 The ingress entry selects the Pods of the AKS-managed ingress gateway by their
 own label. As a result, you do not have to change this entry after a gateway
 rollout. The ports are OpenClaw's UI (`18789`), the terminal (`7681`), and
@@ -378,6 +395,14 @@ change.
 
 ## What changes for Agents
 
+- Sandbox Agents can reach public internet addresses by default. The compiled
+  Cilium policy denies private, Pod, Service, node, management, and metadata
+  networks. Registered platform peers, for example DNS and the AI Gateway, and
+  the `network.allowedInternalCIDRs` grants of the Policy are the exceptions.
+  `network.blockedCIDRs` and `network.blockedPorts` remove addresses and ports
+  from the allowed traffic. `network.blockedFQDNs` needs a separately
+  registered observed-SNI capture, and it is not complete hostname
+  enforcement.
 - Tailscale is not available to Sandbox Agents.
 - Custom harnesses, Entra projection, and Agent Identity/Connections must have
   the separate approved-image and identity setup in the

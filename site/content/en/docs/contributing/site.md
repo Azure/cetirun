@@ -10,7 +10,7 @@ weight: 10
 The site pins **Hugo extended 0.164.0**, **Docsy 0.16.0**, Bootstrap 5.3.8,
 and Font Awesome 6.7.2. Use these tools:
 
-- Go 1.27.3 to install the pinned Hugo binary. This version matches the
+- Go 1.27.4 to install the pinned Hugo binary. This version matches the
   repository's [`.go-version`]({{< repo ".go-version" >}}).
 - A C/C++ compiler for the extended Hugo build
 - Node.js 24 with npm

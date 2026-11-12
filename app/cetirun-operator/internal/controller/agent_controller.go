@@ -983,6 +983,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		}
 		r.applyCopilotChartValues(helmValues, instance, prepared)
 		r.applyAIGatewayVisionModels(helmValues, instance, prepared)
+		r.applyAIGatewayReasoningModels(helmValues, instance, prepared)
 		{
 			secret := &corev1.Secret{}
 			if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: instance.Spec.GatewayTokenSecretRef}, secret); err != nil {
@@ -1117,7 +1118,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			instance.Status.ObservedOperatorHash += ":" + prepared.WorkloadHash
 		}
 		r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "HelmInstalled",
-			"Helm chart openclaw installed in namespace %s", ns)
+			"Agent chart %s (%s) installed in namespace %s", instance.Spec.Helm.Version, instance.Spec.Agent.Type, ns)
 	} else {
 		logger.V(1).Info("Skipping Helm install, already deployed at current generation", "release", releaseName)
 	}

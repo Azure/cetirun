@@ -1,6 +1,6 @@
 module github.com/Azure/CetiRun/app/cetirun-portal
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/Azure/CetiRun/app/cetirun-operator v0.1.1

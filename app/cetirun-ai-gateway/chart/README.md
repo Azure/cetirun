@@ -127,9 +127,14 @@ meets these conditions:
 
 A console deployment under the same name is not automatically trusted or
 granted. If a console deployment copies the group, the Operator distrusts it.
-Agents then lose that model until the copy is removed. Two identical entries
-render the same deployment ID. If the Gateway lists this ID twice, the Operator
-does not trust the group.
+Agents without a policy then lose that model until the copy is removed. A
+policy-bound Agent whose AgentPolicy allows the model stops: the Operator blocks
+its key until the Gateway offers the model again. The same occurs when a policy
+allows a model that is removed from `models`. See
+[Choose a model](../../../site/content/en/docs/guides/models.md#runtime-configuration).
+
+Two identical entries render the same deployment ID. If the Gateway lists this
+ID twice, the Operator does not trust the group.
 
 Earlier versions of this chart derived the group from the complete model
 configuration. As a result, a change to a model changed its group. The model
@@ -353,7 +358,8 @@ are matched in any letter case.
 The console examines neither prefix. As a result, do not add models under
 these prefixes in the console. The operator does not include such shared models
 in the model list that it configures for Agents. It does the same for names
-under `openai/`, which the agent chart refuses as a provider prefix. It also
+under `openai/` and `cetirun/`, which the agent chart refuses as provider
+prefixes. It also
 does the same for names with whitespace or with more than 256 characters.
 Shared models under other provider prefixes are listed like any other.
 
@@ -395,9 +401,25 @@ another OpenAI-compatible endpoint. `base_model` is not a substitute for this
 setting. Neither setting is necessary for a deployment that has the name of its
 model, for example `azure/gpt-5.4-nano` or `openai/gpt-5.4-nano`.
 
+The Gateway's guard removes the reasoning effort from a request when LiteLLM
+identifies no deployment of the model as a reasoning model. A model that does
+not reason, such as `gpt-4.1-mini`, then answers the request instead of the
+400. This also applies to a router's tier. Refer to
+[The guard callback](#the-guard-callback).
+
 The chart does not set LiteLLM's `drop_params`. If it is set, each 400 becomes
 a request that is sent without the reasoning effort, and nothing tells the
 client.
+
+LiteLLM also reports for each deployment if its model reasons, as
+`supports_reasoning` in `/model/info`. It takes this value in the same way as
+`supports_vision` (refer to [Images](#images)). With `operatorIntegration`, the
+CetiRun operator reads this value. OpenClaw then offers reasoning levels, and
+sends a reasoning effort, only for the models that reason. Refer to
+[Serving CetiRun Agents](#serving-cetirun-agents). An `azure/` deployment under
+a name of your own needs `base_model` for this too. With only
+`supports_reasoning: true`, OpenClaw sends the effort on Chat Completions, and
+the guard removes it. The model then reasons at its default effort.
 
 ### Images
 
@@ -411,8 +433,8 @@ OpenAI-compatible endpoint.
 
 With `operatorIntegration`, the CetiRun operator reads this value. OpenClaw and
 Hermes then send images with a request to the models that accept them. For the
-other models, OpenClaw uses its own model catalog, and Hermes has a model
-describe each image first. Refer to
+other models, OpenClaw sends only text, and another model that accepts images
+describes each image. Hermes has a model describe each image first. Refer to
 [Serving CetiRun Agents](#serving-cetirun-agents).
 
 ## Budgets and unpriced models
@@ -1655,19 +1677,20 @@ A router sends such a request to its next tier, after the failed call.
 
 #### Measuring the routers
 
-With the request log that Container Insights collects, the queries that follow
-show how the routers route. For this log, refer to
-[One log line per call](#one-log-line-per-call). Run a query on the Logs page
-of the Log Analytics workspace. Select the time range on that page. When more
-than one Gateway writes to the workspace, add
-`| where PodNamespace == "<namespace>"` under the line that contains
-`ContainerLogV2`.
+With the request log that the ADX-Mon collection keeps, the queries that
+follow show how the routers route. For this log, refer to
+[One log line per call](#one-log-line-per-call). Run a query in the logs
+database, `CetiRunLogs` by default, for example in the Azure Data Explorer web
+UI. Each query reads the last day: change `ago(1d)` for another period. When
+more than one CetiRun cluster writes to the database, add
+`| where Cluster == "<cluster>"` under the line that contains
+`GatewayRequests()`.
 
 The first five queries count only the calls that clients sent. A call that
-LiteLLM makes itself carries a `call_origin`, for example a health check probe
-or a classifier call. A routed call has a `routing_cause`. A routed call
-without a `routing_tier` went to the router's default model, for example
-because its classifier failed.
+LiteLLM makes itself has a `CallOrigin`, for example a health check probe or a
+classifier call. A routed call has a `RoutingCause`. A routed call without a
+`RoutingTier` went to the router's default model, for example because its
+classifier failed.
 
 For each router, tier, and model that served the call, the next query shows
 these values:
@@ -1681,33 +1704,29 @@ A request that failed on one deployment and then went to another writes a line
 for each try. As a result, `failed` counts tries:
 
 ```kusto
-let routed = ContainerLogV2
-| where ContainerName == "gateway"
-| where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
-| where isempty(tostring(LogMessage.call_origin)) and isnotempty(tostring(LogMessage.routing_cause))
-| extend router = tostring(LogMessage.model), tier = tostring(LogMessage.routing_tier),
-    model = tostring(LogMessage.provider_model), ok = tostring(LogMessage.status) == "success";
+let routed = GatewayRequests()
+| where Timestamp > ago(1d)
+| where isempty(CallOrigin) and isnotempty(RoutingCause)
+| extend ok = Status == "success";
 routed
 | summarize answered = countif(ok), failed = countif(not(ok)),
-    escalated = countif(ok and tostring(LogMessage.routing_escalated) == "true") by router, tier, model
-| join kind=inner (routed | summarize router_answered = countif(ok) by router) on router
+    escalated = countif(ok and RoutingEscalated) by router = Model, tier = RoutingTier, model = ProviderModel
+| join kind=inner (routed | summarize router_answered = countif(ok) by router = Model) on router
 | project router, tier, model, answered, share_pct = round(100.0 * answered / router_answered, 1),
     failed, escalated
 | order by router asc, answered desc
 ```
 
 A request whose tier failed, and that another model then answered, is not in
-`answered`. Its answered line has no routing fields, and its `fallback_from`
+`answered`. Its answered line has no routing fields, and its `FallbackFrom`
 names the router. The next query counts these calls by the model that the
 request was for and by the model that answered:
 
 ```kusto
-ContainerLogV2
-| where ContainerName == "gateway"
-| where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
-| where isnotempty(tostring(LogMessage.fallback_from))
-| summarize calls = count() by requested = tostring(LogMessage.fallback_from), model = tostring(LogMessage.model),
-    cause = tostring(LogMessage.fallback_cause), status = tostring(LogMessage.status)
+GatewayRequests()
+| where Timestamp > ago(1d)
+| where isnotempty(FallbackFrom)
+| summarize calls = count() by requested = FallbackFrom, model = Model, cause = FallbackCause, status = Status
 | order by requested asc, calls desc
 ```
 
@@ -1716,13 +1735,11 @@ It also shows the cost to classify the requests that went to the tier
 (`classifier_cost`, with a model classifier):
 
 ```kusto
-ContainerLogV2
-| where ContainerName == "gateway"
-| where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
-| where isempty(tostring(LogMessage.call_origin)) and isnotempty(tostring(LogMessage.routing_cause))
-| summarize answered = countif(tostring(LogMessage.status) == "success"),
-    spend = sum(todouble(LogMessage.spend)), classifier_cost = sum(todouble(LogMessage.classifier_cost))
-    by router = tostring(LogMessage.model), tier = tostring(LogMessage.routing_tier)
+GatewayRequests()
+| where Timestamp > ago(1d)
+| where isempty(CallOrigin) and isnotempty(RoutingCause)
+| summarize answered = countif(Status == "success"), spend = sum(Spend), classifier_cost = sum(ClassifierCost)
+    by router = Model, tier = RoutingTier
 | extend spend_per_call = spend / answered
 | order by router asc, spend desc
 ```
@@ -1732,14 +1749,12 @@ prompt cache. All input tokens include the cached input tokens. Over answered
 calls, the query gives the cached input tokens as a share of all input tokens:
 
 ```kusto
-ContainerLogV2
-| where ContainerName == "gateway"
-| where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
-| where isempty(tostring(LogMessage.call_origin)) and isnotempty(tostring(LogMessage.routing_cause))
-| where tostring(LogMessage.status) == "success"
-| summarize prompt_tokens = sum(tolong(LogMessage.prompt_tokens)),
-    cached_tokens = sum(tolong(LogMessage.cached_tokens))
-    by router = tostring(LogMessage.model), tier = tostring(LogMessage.routing_tier)
+GatewayRequests()
+| where Timestamp > ago(1d)
+| where isempty(CallOrigin) and isnotempty(RoutingCause)
+| where Status == "success"
+| summarize prompt_tokens = sum(PromptTokens), cached_tokens = sum(CachedTokens)
+    by router = Model, tier = RoutingTier
 | extend cached_pct = round(100.0 * cached_tokens / prompt_tokens, 1)
 | order by router asc, tier asc
 ```
@@ -1748,15 +1763,13 @@ The next query shows how long the answered calls of each tier took. For
 streamed calls, it also shows the time until the first token:
 
 ```kusto
-ContainerLogV2
-| where ContainerName == "gateway"
-| where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
-| where isempty(tostring(LogMessage.call_origin)) and isnotempty(tostring(LogMessage.routing_cause))
-| where tostring(LogMessage.status) == "success"
-| summarize answered = count(), avg_ms = round(avg(todouble(LogMessage.duration_ms))),
-    p95_ms = percentile(todouble(LogMessage.duration_ms), 95),
-    first_token_p95_ms = percentile(todouble(LogMessage.time_to_first_token_ms), 95)
-    by router = tostring(LogMessage.model), tier = tostring(LogMessage.routing_tier)
+GatewayRequests()
+| where Timestamp > ago(1d)
+| where isempty(CallOrigin) and isnotempty(RoutingCause)
+| where Status == "success"
+| summarize answered = count(), avg_ms = round(avg(DurationMs)), p95_ms = percentile(DurationMs, 95),
+    first_token_p95_ms = percentile(TimeToFirstTokenMs, 95)
+    by router = Model, tier = RoutingTier
 | order by router asc, tier asc
 ```
 
@@ -1768,14 +1781,12 @@ classifier calls. As a result, add one or the other to a router's spend, but
 not both:
 
 ```kusto
-ContainerLogV2
-| where ContainerName == "gateway"
-| where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
-| where tostring(LogMessage.call_origin) == "autorouter_classifier"
-| summarize calls = count(), failed = countif(tostring(LogMessage.status) == "failure"),
-    spend = sum(todouble(LogMessage.spend)), avg_ms = round(avg(todouble(LogMessage.duration_ms))),
-    p95_ms = percentile(todouble(LogMessage.duration_ms), 95)
-    by classifier = tostring(LogMessage.model)
+GatewayRequests()
+| where Timestamp > ago(1d)
+| where CallOrigin == "autorouter_classifier"
+| summarize calls = count(), failed = countif(Status == "failure"), spend = sum(Spend),
+    avg_ms = round(avg(DurationMs)), p95_ms = percentile(DurationMs, 95)
+    by classifier = Model
 ```
 
 **The cost of the same requests on the most expensive tier is not in the
@@ -2039,6 +2050,31 @@ result, a request with images can go to any of these models. A model that does
 not accept images can refuse the request. Agents do not send images to a router
 whose configuration the operator cannot read completely.
 
+The operator configures OpenClaw to offer reasoning levels for a model, and to
+send a reasoning effort, by the rules for images. It reads
+`supports_reasoning` ([Reasoning models](#reasoning-models)). Every shared
+deployment of the name, and the Agent's own Copilot route under the name, must
+reason. For a router, every model of its tiers, its default model, and its
+context compaction model must reason. The operator logs the routers configured
+in the Gateway whose models only partly reason. OpenClaw offers no reasoning
+levels for a router whose configuration the operator cannot read completely.
+
+A Copilot route reasons when the price table entry that it is billed as reports
+`supports_reasoning`, and its model is a Claude or GPT model. The Agent's
+Copilot proxy uses LiteLLM's `github_copilot` provider, which takes a reasoning
+effort only for Claude and GPT models. For the other models, such as Gemini and
+Grok, it refuses the request with a 400 (`UnsupportedParamsError`), also when
+the table says that they reason. For each Team router, the Team status lists
+the tiers that do not reason (`status.modelRouters[].nonReasoningModels`).
+Hermes does not read this information. It sends its own reasoning effort to
+each model.
+
+Under one Gateway model name, deployments can differ in reasoning support. The
+guard keeps the reasoning parameters when any candidate deployment reasons.
+LiteLLM can then still answer 400 when it picks a deployment that does not
+reason. Do not put such models under one name. By the rules above, OpenClaw
+sends no reasoning settings for such a name.
+
 LiteLLM validates a key against the requested model only. A fallback that is
 configured for the Gateway in `router_settings` or in the console is selected
 after that validation. Without the setting, LiteLLM tries the fallback without
@@ -2215,6 +2251,24 @@ these actions:
   a warning for each request that it changes. The table decides, so a wrong
   entry lets `none` through. Refer to
   [Prices are not pinned to the image by default](#known-gaps).
+- It removes `reasoning_effort` from a Chat Completions request, and the
+  `reasoning` object from a Responses API request, when no deployment that can
+  serve the request reasons. LiteLLM decides with its own
+  `get_supported_openai_params`: a deployment does not reason when the list
+  for its model, provider, and `base_model` does not include
+  `reasoning_effort`. Otherwise LiteLLM refuses the request with a 400
+  (`UnsupportedParamsError`). For example, an Agent sends a reasoning effort to
+  a router, because the router is one model in its catalog. On a test cluster,
+  a router sent such a request to a tier with `gpt-4.1-mini`, and the request
+  failed.
+
+  The guard does not change the request when one of the deployments reasons,
+  because that deployment can serve the request. It also does not change the
+  request for a GitHub Copilot route, or when LiteLLM does not know the model.
+  The Gateway logs a warning for each request that it changes. An Azure
+  deployment of a reasoning model under a name of your own needs `base_model`,
+  as [Reasoning models](#reasoning-models) tells. Without it, the guard removes
+  the effort, and the model reasons at its default effort.
 - It lets a request fail over from the deployment that its key is kept on.
   Refer to [A key stays on its deployment](#a-key-stays-on-its-deployment).
 - It removes fields that Azure OpenAI refuses from the items of a Responses
@@ -2799,8 +2853,10 @@ LiteLLM keeps a record of each call in its database, and the console's request
 view reads this record. LiteLLM also keeps daily totals for each key, user,
 Team, and model. Neither of these leaves the Gateway. For collection in other
 places, the chart adds a log line for each call, and it can serve LiteLLM's
-Prometheus metrics. The measurements used LiteLLM 1.101.0, on AKS with
-Container Insights and Azure Monitor managed Prometheus.
+Prometheus metrics. The ADX-Mon collection of the cetirun-observability chart
+takes both to Azure Data Explorer; refer to
+[Observability with ADX-Mon](../../../site/content/en/docs/operations/observability.md).
+The measurements of LiteLLM's behavior used LiteLLM 1.101.0.
 
 ### One log line per call
 
@@ -2833,28 +2889,25 @@ The log recorded every call. Across two replicas, 40 calls made 40 lines.
 These lines covered the Chat Completions and Responses APIs, streamed and not,
 and failures. The spend in the lines added up to the key's spend.
 
-With Container Insights, `ContainerLogV2` parses each line into the dynamic
-`LogMessage` column:
+With the ADX-Mon collection, the function `GatewayRequests()` in the logs
+database gives one row for each line, with the Agent, owner, and Team that the
+CetiRun operator recorded on the key:
 
 ```kusto
-ContainerLogV2
-| where ContainerName == "gateway"
-| where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
-| summarize calls = count(), spend = sum(todouble(LogMessage.spend))
-    by agent = tostring(LogMessage.key_metadata.cetirun_agent), model = tostring(LogMessage.model)
+GatewayRequests()
+| where Timestamp > ago(1d)
+| summarize calls = count(), spend = sum(Spend) by Agent, Model
 ```
 
-Lines reached the Log Analytics workspace about 80 seconds after the call. Each
-line was billed at 1.4 to 1.9 KB. The larger lines were for the Responses API,
-because its response IDs are long.
+Lines reach Azure Data Explorer about 30 to 60 seconds after the call. A line
+was 1.4 to 1.9 KB. The larger lines were for the Responses API, because its
+response IDs are long.
 
 The CetiRun operator puts `cetirun_agent` in the metadata of the keys that it
-issues. For other keys, group by `LogMessage.key_alias` instead.
+issues. For other keys, group by `KeyAlias` instead.
 
-The cluster must collect container logs. On AKS, the monitoring add-on is
-necessary for this. In a test without the add-on, only a Container Insights
-data collection rule and its association were present. They collected nothing,
-and no `ama-logs` pods ran.
+The cluster must collect container logs. `make deploy` installs the ADX-Mon
+collection with the platform.
 
 **No content.** The line carries no request or response content, and no
 setting adds it. Every string in the line is limited to 256 characters, or to
@@ -2864,8 +2917,8 @@ end user, the user agent, and the tags. LiteLLM records the session ID as
 `trace_id`.
 
 A line is never longer than 15 KiB. Container runtimes split longer lines, and
-Container Insights stores the parts as separate records. None of these records
-is valid JSON.
+a collector that does not join the parts again stores them as separate records.
+None of these records is valid JSON.
 
 Escape sequences can make a line longer, for example for control characters.
 In this case, the line first loses the error text, the client's tags, and
@@ -3063,7 +3116,8 @@ content:
 
 ### Credentials and Container Insights
 
-Container Insights copies the environment of every container into its
+The CetiRun cluster template turns Container Insights off. Where it runs
+anyway, it copies the environment of every container into its
 `ContainerInventory` table one time each minute. The copy also has the values
 that come from Secrets. Container Insights does this unless environment
 collection is disabled for the cluster or for the container. The Gateway holds
@@ -3072,7 +3126,8 @@ environment.
 
 Every container in this chart that holds a credential sets
 `AZMON_COLLECT_ENV=False`, which disables that collection for that container.
-The CetiRun cluster template also disables it for the whole cluster.
+The helper of the CetiRun cluster template also creates agent settings that
+disable it for the whole cluster.
 
 ### Metrics
 
@@ -3105,22 +3160,29 @@ labels. Examples of these metrics are `litellm_spend_metric_total`,
 client's address and user agent, and the user's email address. The address and
 the user agent start a new series with every Agent restart and client version.
 
-For Azure Monitor managed Prometheus, set `metrics.podMonitor.enabled`. When the
-cluster serves the `azmonitoring.coreos.com/v1` API, the chart creates a
-PodMonitor of that API. The managed collector reads this API. If the cluster
-does not serve it, the chart creates no PodMonitor. As a result, an install
-does not fail on a cluster without managed Prometheus.
+With `metrics.enabled`, the chart annotates the Gateway pods, so that the
+ADX-Mon collector of the cetirun-observability chart scrapes the metrics port
+of each pod. The cetirun-platform chart enables the metrics. Each metric is a
+table of the metrics database, `CetiRunMetrics` by default, with the labels in
+its `Labels` column. On a test cluster, the collector scraped both replicas of
+a Gateway. This query returns the spend of each key, from the latest sample of
+each series:
 
-For the Prometheus Operator, set `metrics.podMonitor.apiVersion` to
-`monitoring.coreos.com/v1`. The cetirun-platform chart enables both the
-metrics and the PodMonitor. In a measurement, both replicas were scraped. In
-the Azure Monitor workspace, this query returned the spend of each key:
-
-```promql
-sum by (api_key_alias, team_alias, user, requested_model) (litellm_spend_metric_total)
+```kusto
+LitellmSpendMetricTotal
+| where Timestamp > ago(1h)
+| summarize arg_max(Timestamp, Value, Labels) by Cluster, Pod, SeriesId
+| summarize spend = sum(Value) by Cluster, key = tostring(Labels.api_key_alias), team = tostring(Labels.team_alias),
+    user = tostring(Labels.user), model = tostring(Labels.requested_model)
 ```
 
-To query the workspace, you must have the Monitoring Data Reader role on it.
+To query the metrics, you must have the Viewer role on that database.
+
+For the Prometheus Operator, set `metrics.podMonitor.enabled`. When the
+cluster serves the `monitoring.coreos.com/v1` API, the chart creates a
+PodMonitor of that API. If the cluster does not serve it, the chart creates no
+PodMonitor. As a result, an install does not fail on a cluster without the
+Prometheus Operator. The cetirun-platform chart creates no PodMonitor.
 
 Counters lose the increments that a label set makes before its first scrape.
 Counters also start again from zero when a pod restarts. As a result, use the

@@ -143,6 +143,27 @@ func TestAIGatewayCatalogGivesAGatewayRouterTheSmallestLimitsOfItsModels(t *test
 	check("reversed", reversed)
 }
 
+func TestAIGatewayCatalogCustomLimitProofRequiresEveryDeploymentAndRouterTarget(t *testing.T) {
+	models := []aigateway.Deployment{
+		limitedSharedModel("complete", 128000, 4096),
+		gatewayRouter("router", tierModel("simple", "complete")),
+	}
+	var catalog aiGatewayCatalog
+	catalog.update(models, false, time.Now())
+	view := catalog.customLimitSnapshot()
+	if view == nil || !validCustomBudget(view.resolve(nil)("complete")) || !validCustomBudget(view.resolve(nil)("router")) {
+		t.Fatal("complete catalog did not prove model and router budgets")
+	}
+
+	models = append(models, aigateway.Deployment{ID: managedTestDeploymentID("complete", 4), ModelName: "complete",
+		AccessGroups: []string{gatewayRouterGroup("complete")}, DatabaseSourceKnown: true, Priced: true, MaxInputTokens: 128000})
+	catalog.update(models, false, time.Now())
+	view = catalog.customLimitSnapshot()
+	if validCustomBudget(view.resolve(nil)("complete")) || validCustomBudget(view.resolve(nil)("router")) {
+		t.Fatal("incomplete deployment or router target remained proven")
+	}
+}
+
 // The Agents configured with a router configured in the Gateway get its
 // limits, and only they are reconfigured when a change to its models changes
 // them.

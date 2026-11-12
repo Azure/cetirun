@@ -89,7 +89,7 @@ Prometheus metrics are served on port {{ include "cetirun-ai-gateway.metricsPort
 spend. Keep that port away from workloads that are not allowed to read them.
 {{- if and $settings.metrics.podMonitor.enabled (not (include "cetirun-ai-gateway.podMonitorAvailable" .)) }}
 
-The chart created no PodMonitor because the cluster does not serve {{ $settings.metrics.podMonitor.apiVersion }}/PodMonitor.
-On AKS, enable Azure Monitor managed Prometheus. Then upgrade the release.
+The chart created no PodMonitor because the cluster does not serve monitoring.coreos.com/v1/PodMonitor.
+Install the Prometheus Operator's custom resource definitions, then upgrade the release.
 {{- end }}
 {{- end }}

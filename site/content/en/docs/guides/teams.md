@@ -8,7 +8,12 @@ A `Team` is a CetiRun configuration resource.
 Both the team and its member instances are cluster-scoped.
 It does not define a membership roster, validate Entra group membership, or
 authorize access to another user's instance. Portal administrators can manage
-teams. Instance owners can select a team.
+teams.
+
+Every signed-in Portal user can select any Team, or no Team, for a new Agent.
+An Agent Policy applies only to the Agents of a Team that has one, so it is not
+an access boundary between users. Refer to
+[Policy-bound Teams](../../operations/policy-teams/).
 
 In the Portal, first create an **Agent Policy** and a **Sandbox** under
 **Admin**. A Sandbox selects these items:
@@ -141,8 +146,12 @@ the Team page in the Portal has a **Skills** section. It lists the skills that
 the Skill Marketplace synchronized from its Git repository. Select the skills
 that the Team's instances get. The Team's Agent Policy must allow each skill.
 A skill that the Policy does not allow shows **Not allowed by the Agent
-Policy**. Enter npm packages separately, in **npm skill packages, one per
-line**, each with the `npm:` prefix.
+Policy**.
+
+> **Warning:** Do not enter packages in **npm skill packages, one per line**
+> for a Team with an Agent Policy. With an `npm:` entry, the Sandbox Agents of
+> the Team do not start. Refer to
+> [Limits](../../operations/skill-marketplace/#limits).
 
 Saving changes to Team skills restarts the Team's running Sandbox Agents one
 time. Their new Pods copy the Team's published skills. OpenClaw and Hermes
@@ -265,6 +274,14 @@ and reports it on the Team. `status.modelRouters` lists each router as ready,
 or shows why it is not ready. The `ModelRoutersReady` condition summarizes
 them.
 
+For a ready router, `status.modelRouters[].nonReasoningModels` lists the tier
+models that do not reason. The Team page in the Portal shows them with the
+router. OpenClaw instances then offer no reasoning levels for the router. The
+Gateway removes reasoning settings from the requests that the router sends to a
+shared model that does not reason. This list is only a hint. The router is
+registered and granted as usual. Refer to
+[Reasoning](../models/#reasoning).
+
 A router is not registered while any of these conditions is true:
 
 - A tier or the classifier names a model that the Gateway does not offer as a
@@ -281,8 +298,8 @@ instances keep their configuration. A removed router is unregistered.
 The registrations appear in the Gateway's console under their internal
 `cetirun-router-` names. Change them on the Team, not in the console. The
 operator does not watch the console for edits. The Gateway's request log also
-shows a Team's router under that internal name. The Log Analytics queries in
-the Gateway chart's
+shows a Team's router under that internal name. The queries in the Gateway
+chart's
 [Measuring the routers]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#measuring-the-routers)
 section also show the router under that name. The Team's
 `status.modelRouters[].gatewayModel` gives the router that each name belongs
@@ -327,9 +344,10 @@ An instance that cannot use a router reports the reason in
 change to the tiers or the classifier of a router updates instance keys and
 registrations. It does not change the Policy's Gateway projection. Each change
 to a Team, its routers included, restarts the Team's running Sandbox Agents one
-time. The Team is an input of their Sandbox. Only the limits that the instance
-is configured with for the router follow the tiers, as described in
-[Choose a model](../models/#smart-routing-models).
+time. The Team is an input of their Sandbox. The limits that the instance is
+configured with for the router follow the tiers, as described in
+[Choose a model](../models/#smart-routing-models). Whether the instance sends
+images or a reasoning effort to the router also follows the tiers.
 
 Without a LiteLLM license, LiteLLM limits some router features to a single
 router per Gateway. These features are:

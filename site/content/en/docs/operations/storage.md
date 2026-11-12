@@ -24,7 +24,9 @@ Sources: [controller values]({{< repo "app/cetirun-operator/internal/controller/
 If `skills.shared` is enabled or a team supplies `skillStorage`, shared skills
 use a separate static PV/PVC. The agent mounts this PV/PVC read-only. The
 defaults for shared skills stay `azureblob-nfs-premium`, `ReadWriteMany`, and
-`100Gi`. By default, `skills.shared` is disabled.
+`100Gi`. The runtime chart disables `skills.shared` by default, but
+`make deploy` enables it for all Agents. Refer to
+[Shared skills storage for `make deploy`](#shared-skills-storage-for-make-deploy).
 
 ## Home provisioning
 
@@ -49,10 +51,14 @@ of a claim that already exists.
 ## Sandbox HOME class selection
 
 When native Sandbox sources are configured, Portal administrators choose HOME
-StorageClasses from the platform's approved `platform.json` source rather than
-typing a cluster-specific name. The Portal verifies the referenced ConfigMap
-and each selected class's UID and provisioner before showing it. A configured
-default is only a form preference; it is not an approval.
+StorageClasses from a list rather than typing a cluster-specific name. The list
+contains the StorageClasses that `platform.json` approves. This file is in the
+platform source ConfigMap that `sandboxSources.platformConfigMapName` names,
+`sandbox-platform` in the examples. Refer to
+[The platform registration](../policy-teams/#the-platform-registration). The
+Portal verifies the referenced ConfigMap and each selected class's UID and
+provisioner before showing it. A configured default is only a form preference;
+it is not an approval.
 
 The Portal does not show a stale, missing, or replaced class as a choice. It
 keeps that value visible when editing an older Sandbox so that an administrator
@@ -145,6 +151,27 @@ PUBLIC_NETWORK_ACCESS=Disabled \
   bash infra/storage/deploy.sh
 ```
 
+### Shared skills storage for `make deploy`
+
+`make deploy` sets `skills.shared: true` for all Agents. Each standard Agent,
+which does not run in a Sandbox, then mounts a static Blob NFS volume. The volume uses the
+top-level `sharedSkills` fields of the environment file.
+
+> **Warning:** `make deploy` examines only that the StorageClass exists. It
+> does not examine the storage account or the container. If they do not exist,
+> the shared skills volume cannot mount, and the Agent Pods stay in
+> `ContainerCreating`. Provision the storage before the first `make deploy`.
+
+Set the four necessary `sharedSkills` fields. Copy three of them from the
+`Deployment Summary` that the storage helper prints:
+
+| Environment file field | Value |
+| --- | --- |
+| `sharedSkills.resourceGroup` | `Resource Group` in the summary |
+| `sharedSkills.storageAccount` | `Storage Account` in the summary |
+| `sharedSkills.containerName` | `Container` in the summary |
+| `sharedSkills.storageClassName` | A Blob NFS StorageClass that exists in the cluster, for example `azureblob-nfs-premium` |
+
 ## NFS security properties
 
 The [storage module]({{< repo "infra/storage/modules/storage-account.bicep" >}})
@@ -163,22 +190,45 @@ isolation, and backups must get a separate review.
 
 NFS 3.0 authorizes clients only by network. The Skill Marketplace writes the
 Team releases into its own container. For that container, use a storage account
-that only private endpoints reach, and turn off its public network access:
+that only private endpoints reach, and disable its public network access:
 set `PRIVATE_ENDPOINT_SUBNET_ID`, `PRIVATE_DNS_ZONE_ID`, and
 `PUBLIC_NETWORK_ACCESS=Disabled`.
 
 ## Shared skills mounts
 
 Configure `skills.resourceGroup`, `skills.storageAccount`, and
-`skills.containerName`, or supply the equivalent `Team.skillStorage`. Runtime
-init reads the shared claim but does not change it. It combines the claim's
-skills with Memory in a per-Pod view at `$HOME/.agents/skills`. The Agent
-receives this view read-only. The shared claim is not mounted over the Memory
-skill directory.
+`skills.containerName`, or supply the equivalent `Team.skillStorage`. The Agent
+reads the shared claim but does not change it.
 
-The view is rebuilt when a new Pod starts. Publish shared material before a
-controlled replacement. An explicit native `skills.mountPath` adds an alias of
-the same read-only view.
+For OpenClaw and Hermes, the agent chart mounts the shared claim read-only at
+`skills.mountPath`, `/home/vibe/.aks/skills` by default. Files that you publish
+appear in this mount without a restart. The platform Memory skill comes from
+`/opt/cetirun-memory/skills`, and `$HOME/.agents/skills` stays a writable
+personal directory.
+
+A Custom Agent instead receives one read-only view at `$HOME/.agents`. Runtime
+init combines the skills of the shared claim with the Memory skill in
+`$HOME/.agents/skills`, and it rebuilds the view for each new Pod. A
+non-default `skills.mountPath` adds an alias of that view. Refer to
+[Skill sources of an Agent](../skill-marketplace/#skill-sources-of-an-agent).
+
+### Publish shared material
+
+CetiRun has no tool that writes to the shared skills container. Write the
+material with a client that the storage account accepts:
+
+- The account accepts network access only from its allowed subnet or through
+  its private endpoint. Use a client in such a network, with a data role on
+  the container.
+- Put each skill in its own directory at the root of the container, for
+  example `<skill>/SKILL.md`.
+- For a Custom Agent, runtime init copies each entry at the root into the view
+  of the Agent. Do not use the name `cetirun-memory`, or another name that the
+  CetiRun context of the Agent already uses. Use only directories, regular
+  files, and symbolic links. Otherwise, initialization fails with
+  `SharedSkillConflictsWithCanonicalContext` or `UnsupportedSkillFile`.
+- A Custom Agent sees a change only after its Pod starts again. Publish the
+  material before a controlled replacement of its Pods.
 
 NFS is the default. `skills.protocol` also accepts `fuse` and `fuse2` for
 separately configured Blobfuse mounts. For those modes, `skills.secretName`
@@ -198,9 +248,12 @@ Shared mounts and npm-installed skills are separate paths. The
 [skill installer]({{< repo "app/cetirun-chart/configs/init-skills.sh" >}})
 writes npm skills into `/home/vibe/.cetirun/skills/npm` and prunes entries that
 are no longer requested. When any requested install fails, the installer fails
-initialization. Set `skills.npmRegistry` explicitly for your approved reachable
-registry. The default feed is environment-specific. `skills.clawHub` entries
-are not installed.
+initialization.
+
+By default, the installer uses the public npm registry,
+`https://registry.npmjs.org/`. To use your approved registry, set
+`skills.npmRegistry`. With `make deploy`, set it as `sharedSkills.npmRegistry`
+for all Agents. `skills.clawHub` entries are not installed.
 
 ## Retention is not deletion protection
 
@@ -211,14 +264,17 @@ Kubernetes version of at least 1.25. This setting does not override a PV's
 reclaim policy or protect a PVC from namespace deletion. The AKS `default`
 StorageClass usually uses a `Delete` reclaim policy. As a result, the deletion
 of a HOME PVC can also delete its Azure Disk. Before you delete an instance,
-examine the actual PV policy and arrange a backup.
+examine the actual PV policy and arrange a backup, as
+[Make and restore backups](../backup-restore/) shows.
 
 The [instance deletion handler]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}})
 uninstalls Helm and deletes the entire instance namespace, which includes the
 PVCs. The PV and its data then follow the actual reclaim policy and CSI
-behavior. Suspension usually keeps the home, but a reviewed
-`persistence.retainPolicy: Delete` override can delete claims on scale-down.
-Do not use suspension as a backup.
+behavior. Suspension keeps the home of an operator-managed Agent: while the
+Agent is suspended, the Operator sets `persistence.retainPolicy: Retain`, also
+when the values select `Delete`. In a standalone runtime chart release, a
+`persistence.retainPolicy: Delete` value can delete claims on scale-down. Do
+not use suspension as a backup.
 
 ## Recovery checks
 

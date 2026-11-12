@@ -206,7 +206,7 @@ func (h *AdminInstanceHandler) UpdateInstance(w http.ResponseWriter, r *http.Req
 	if !adminInstanceAccess(w, r) {
 		return
 	}
-	management := &InstanceHandler{Config: h.Config}
+	management := &InstanceHandler{Config: h.Config, Kube: h.Kube}
 	if !management.validManagementOrigin(w, r) {
 		return
 	}
@@ -286,9 +286,11 @@ func (h *AdminInstanceHandler) UpdateInstance(w http.ResponseWriter, r *http.Req
 		// Admin authority replaces ownership only on these routes; platform
 		// type restrictions and admission still apply to runtime changes.
 		if !input.Empty() || current.Spec.Agent.Type == api.AgentTypeCustom && req.Model != nil {
-			return management.validateAgentType(agentconfig.Defaults(current.Spec.Agent).Type)
+			if err := management.validateAgentType(agentconfig.Defaults(current.Spec.Agent).Type); err != nil {
+				return err
+			}
 		}
-		return nil
+		return management.validateCustomImageUpdate(r.Context(), current.Spec.Agent, opts.Agent)
 	}
 	updated, err := h.Kube.UpdateInstanceByName(r.Context(), instance.Name, opts)
 	if err != nil {

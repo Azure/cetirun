@@ -66,7 +66,9 @@ operation and the same ID to resolve an earlier one. The request body:
 
 Use the audience and scope the native entrypoint supplied; a document claiming authorization does not
 grant private access. Commands cannot create access rights, and same-UID files and request metadata are a
-cooperative protocol, not isolation from a hostile process. Shared and unknown entrypoints stay disabled.
+cooperative protocol, not isolation from a hostile process. The helper refuses every audience except
+`owner-private`. The native adapter sets it: by default, OpenClaw and Hermes give `owner-private` to every
+session that they admit, including group and channel conversations.
 
 `status` takes no expected generation. Writes take `expectedGeneration` from the latest successful
 response; `init` uses 0. Read-only commands may omit it. Never put secrets in source refs.

@@ -213,7 +213,7 @@ func TestNativeSandboxHeldToRunningRequiresCurrentPodReadiness(t *testing.T) {
 	if !held.ExecutionHeld || held.SinglePod || held.PodUID != "" || ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 {
 		t.Fatal("preparation granted execution")
 	}
-	f.assertGatewayProjection(t, held)
+	f.assertGatewayProjection(t, held, "cetirun")
 	receipt, _, err := f.r.readSandboxPreparationReceipt(context.Background(), f.current(t))
 	if err != nil {
 		t.Fatal(err)
@@ -1066,7 +1066,9 @@ func (f *nativeSandboxFixture) assertReady(t *testing.T) {
 	}
 }
 
-func (f *nativeSandboxFixture) assertGatewayProjection(t *testing.T, expected *w.Expectation) {
+// assertGatewayProjection checks the prepared native Agent's Gateway key and
+// its OpenClaw configuration, whose Gateway provider is named provider.
+func (f *nativeSandboxFixture) assertGatewayProjection(t *testing.T, expected *w.Expectation, provider string) {
 	t.Helper()
 	agent := f.current(t)
 	secret := &corev1.Secret{}
@@ -1147,11 +1149,11 @@ func (f *nativeSandboxFixture) assertGatewayProjection(t *testing.T, expected *w
 	if !slices.Equal(nativeConfig.Gateway.TrustedProxies, []string{"10.96.1.60"}) {
 		t.Fatal("native OpenClaw proxy trust differs from the approved ingress peer IPs")
 	}
-	provider, exists := nativeConfig.Models.Providers["openai"]
+	gatewayProvider, exists := nativeConfig.Models.Providers[provider]
 	if nativeConfig.Auth.Profiles == nil || len(nativeConfig.Auth.Profiles) != 0 ||
-		!exists || len(nativeConfig.Models.Providers) != 1 || provider.BaseURL != testAIGatewayURL+"/v1" ||
-		provider.APIKey.Source != "env" || provider.APIKey.Provider != "default" || provider.APIKey.ID != "OPENAI_API_KEY" ||
-		len(provider.Models) != 1 || provider.Models[0].ID != testSharedModelOne {
+		!exists || len(nativeConfig.Models.Providers) != 1 || gatewayProvider.BaseURL != testAIGatewayURL+"/v1" ||
+		gatewayProvider.APIKey.Source != "env" || gatewayProvider.APIKey.Provider != "default" || gatewayProvider.APIKey.ID != "OPENAI_API_KEY" ||
+		len(gatewayProvider.Models) != 1 || gatewayProvider.Models[0].ID != testSharedModelOne {
 		t.Fatal("prepared native config retained direct model auth or differs from the typed Gateway projection")
 	}
 }

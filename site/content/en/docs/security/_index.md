@@ -36,16 +36,20 @@ correct for each service that your deployment uses.
   controls. A namespace name or a Helm option does not establish that isolation
   is enforced. Restrict who can change custom resources, Helm values, service
   accounts, and the operator or portal.
-- [Tailscale](../guides/tailscale/) adds another access path. The Tailscale
-  configuration does not remove public ingress or the Gateway's own
-  authentication.
+- [Tailscale](../guides/tailscale/) adds a private access path to an Agent.
+  Requests on the tailnet do not go through the Istio ingress gateway, OAuth2
+  Proxy, or the ownership check. The public routes stay in place. Configure
+  the tailnet ACLs so that only the devices of the Agent owner can reach the
+  Agent.
 
 The ownership filter defines its own fixed path exemptions. The Istio
 templates use `authPolicy.aliasExemptPrefixes` only to identify which hosts
 are explicit shared subdomain hosts and which are legacy instance subdomains.
 They do not use the `authPolicy.adminAliases` value that the
 [deployment helper]({{< repo "infra/istio/deploy.sh" >}}) supplies. If you set
-this value, it does not configure an administrator ownership bypass.
+this value, it does not configure an administrator ownership bypass. The
+shared subdomain hosts skip the ownership check, as
+[Exemptions](../operations/istio/#exemptions) describes.
 
 The [chart defaults]({{< repo "app/cetirun-chart/values.yaml" >}}) select
 `runtimeClassName: kata-vm-isolation`. The cluster must supply the runtime and
@@ -71,11 +75,23 @@ chart documents Kubernetes 1.30+). The installer must have permission to create
 these cluster-scoped resources.
 
 The policy denies `CONNECT` requests to `pods/exec` across the release
-namespace. Its match conditions contain a fixed exception for an administrative
-service account. This policy applies to the Kubernetes exec API, not to every
-route to command execution. The enabled ttyd terminal and the agent tools are
-separate access paths. After installation, make sure that the cluster accepts
-and enforces the policy.
+namespace. The chart template has no fixed exception. When CetiAdmin is
+enabled, the operator adds an exception for the CetiAdmin service account to
+the policy of each standard Agent. Refer to
+[Exec exception](../operations/cetiadmin/#exec-exception). For a Custom Agent
+with the platform terminal, the policy applies the prepared exec rule of the
+terminal.
+
+The policy covers only `pods/exec`. Kubernetes RBAC alone controls other Pod
+operations, for example `pods/attach`, `pods/portforward`, and ephemeral
+containers. These operations use the Kubernetes API directly, not the ingress
+gateway. Give these permissions in Agent namespaces only to trusted
+administrators.
+
+This policy applies to the Kubernetes exec API, not to every route to command
+execution. The enabled ttyd terminal and the agent tools are separate access
+paths. After installation, make sure that the cluster accepts and enforces the
+policy.
 
 ## Credentials and persistent state
 
@@ -94,10 +110,12 @@ workspace storage. If Chrome sync is disabled, this does not establish that all
 Chrome service traffic is disabled.
 
 Keep browser access, terminal access, model credentials, and Kubernetes Secret
-permissions consistent with instance ownership. Never include token files,
-cookies, private keys, complete Helm values, browser profiles, or unreviewed
-browser network captures in public diagnostics. A UI that masks a secret does
-not encrypt the value of that secret.
+permissions consistent with instance ownership. Some platform identities have
+wider Secret access, for example [CetiAdmin](../operations/cetiadmin/#access)
+and the [Broker](../operations/agent-identity/#3-prepare-namespaces-and-tls).
+Never include token files, cookies, private keys, complete Helm values, browser
+profiles, or unreviewed browser network captures in public diagnostics. A UI
+that masks a secret does not encrypt the value of that secret.
 
 Persistence is enabled by default, with `persistence.retainPolicy: Retain` for
 StatefulSet volume claims. This does not guarantee that the data survives
@@ -120,27 +138,29 @@ OpenClaw. For Hermes, it follows `/home/vibe/.hermes/logs/gateway.log`. The
 content of this file depends on the installed version and configuration, and it
 is not necessarily a complete transcript.
 
-The [cluster template]({{< repo "infra/cluster/main.bicep" >}}) sets
-`enableContainerInsights` and `enablePrometheusMetrics` to `true` by default,
-and to `false` when `adxMode` selects Azure Data Explorer for the
-[ADX-Mon collection](../operations/observability/).
-With them, it enables managed Prometheus and the Container Insights monitoring add-on. The
-add-on collects container stdout and stderr. This data includes the session
-logger's output and what Agents print themselves, and both can include
-conversation text. The add-on's collection rules target the configured Azure
-Log Analytics and Azure Monitor workspaces. Actual collection depends on
-deployed collectors, permissions, and settings.
+The [cluster template]({{< repo "infra/cluster/main.bicep" >}}) turns
+Container Insights and managed Prometheus off. `make deploy` installs the
+[ADX-Mon collection](../operations/observability/), which collects the
+container stdout and stderr of the platform and the Agents into Azure Data
+Explorer. This data includes the session logger's output and what Agents print
+themselves, and both can include conversation text. The Agent output goes to a
+database of its own, `CetiRunAgents`, with readers of its own. Actual
+collection depends on deployed collectors, permissions, and settings.
 
-By default, the add-on also copies the environment variables of containers,
-and these copies include Secret values. The
+If you turn Container Insights on yourself, it also copies the environment
+variables of containers by default, and these copies include Secret values. The
 [agent settings]({{< repo "infra/cluster/container-azm-ms-agentconfig.yaml" >}})
 disable that copy. The cluster helper creates these settings, or examines them
-on a cluster that has its own.
+on a cluster that has its own. Some CetiRun containers, for example the Agent
+runtime container, keep credentials in their environment and do not disable
+the copy for themselves. For the list, refer to
+[PRIVACY.md]({{< repo "PRIVACY.md" >}}).
 
-When the
-[Log Analytics template]({{< repo "infra/cluster/modules/aks-cluster.bicep" >}})
-creates a workspace, it sets 30-day retention. Workspaces that already exist,
-per-table settings, exports, and other stores can differ.
+The
+[Azure Data Explorer template]({{< repo "infra/cluster/modules/adx.bicep" >}})
+sets the retention of each database: 90 days for logs, 30 days for metrics, and
+14 days for Agent logs. Databases that already exist, exports, and other stores
+can differ.
 
 The Istio chart sets `egress.accessLog.enabled` to `true` by default.
 [Access logs]({{< repo "infra/istio/templates/egress/accesslog.yaml" >}})
@@ -187,6 +207,10 @@ examine the deployment-specific internal exception list. The
 [Istio ServiceEntries and access-log settings]({{< repo "infra/istio/values.yaml" >}})
 are audit configuration, not a destination allowlist. Source configuration and
 access logs do not prove that unlisted destinations are blocked.
+
+The Sandbox Agents of policy-bound Teams use compiled Cilium policies instead.
+These policies also allow public internet addresses by default. Refer to
+[What changes for Agents](../operations/policy-teams/#what-changes-for-agents).
 
 ## Documentation site privacy
 

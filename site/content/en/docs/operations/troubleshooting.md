@@ -1,13 +1,130 @@
 ---
 title: "Troubleshooting"
-description: "Find if reconciliation, storage, routing, or an external integration blocks an instance."
+description: "Find if a deployment step, a platform component, reconciliation, storage, routing, or an external integration fails."
 weight: 40
 ---
 
+This page is for platform administrators. It covers failures of `make deploy`,
+of the platform components, and of the Agents that the Operator reconciles.
+
+The checks on this page connect to Kubernetes, but they do not change it,
+unless a step says otherwise. Do not paste their output into public issues,
+because it can contain names, identities, or Secret values.
+
+## When make deploy fails
+
+`make deploy` does not show the output of the tools that it runs, because that
+output can contain rendered Secrets. When a step fails, the message names the
+command and its exit status, for example:
+
+```text
+ERROR: kubectl rollout status deployment/cetirun-portal --namespace cetirun-system --timeout=600s failed with exit 1; deployment did not complete
+```
+
+Run a read-only command for the named object yourself, for example
+`kubectl get` for the workload or `helm status` for the release. Other messages come from the checks
+of `make deploy` itself. These messages name the input or the object that
+failed, for example
+`Required Secret key is missing: cetirun-system/gateway-provider-keys:AZURE_OPENAI_KEY`.
+
+`make deploy` runs these stages in order. Without `publicTLS`, the first three
+stages do not write to the cluster.
+
+| Stage | Example messages | What to do |
+| --- | --- | --- |
+| Input validation | `... is required and must be a nonempty string`, `... conflicts with the complete deployment inputs`, `Invalid YAML at line 12, column 3; input contents withheld` | Correct the environment file. Run `make deploy-plan` until it passes |
+| Offline render | `helm template ... failed with exit 1; <template>: <message>` | The chart refused a value. The message names the template and the reason |
+| Preflight | `The selected context does not match target.cluster and target.server`, `Release cetirun-platform has an unfinished operation` | Find the message in [Preflight messages](#preflight-messages) |
+| Public DNS and TLS, only with `publicTLS` | Messages about DNS, cert-manager, or the staging and production certificates | This stage writes the DNS label, cert-manager, and a certificate-only platform revision. Then the preflight runs again. Refer to [Public DNS and TLS](../public-ingress/#deploy-and-verify) |
+| Releases | `helm upgrade cetirun-platform --namespace cetirun-system --timeout 660s failed with exit 1` | Examine the release, as [Release and workload failures](#release-and-workload-failures) shows |
+| Workload readiness | `kubectl rollout status ... failed with exit 1`, `cetirun-portal is missing the required Istio sidecar` | Examine the Pods of the workload |
+| Final admission check | `kubectl create --dry-run=server failed with exit 1` | The admission server refused a server-side dry run of a Team. Refer to [Platform components](#platform-components) |
+
+`make deploy` has no automatic rollback. After you correct the cause, run
+`make deploy` again with the same environment file.
+
+### Preflight messages
+
+| Message | Cause | Check |
+| --- | --- | --- |
+| `The selected context does not match target.cluster and target.server` | The kubeconfig context selects another cluster | `kubectl config view --minify`. Refer to [Connect to the cluster](../infrastructure/#connect-to-the-cluster) |
+| `target.clusterUID does not match this cluster's kube-system UID` | The context selects another cluster, or the cluster was created again | `kubectl get namespace kube-system -o jsonpath='{.metadata.uid}'` |
+| `kubectl 1.35 is outside the supported one-minor skew of Kubernetes 1.37; ...` | The kubectl client is more than one minor version from the cluster | `kubectl version` |
+| `Managed Istio prerequisite is missing: ...` | Managed Istio is not enabled, or its CRDs are missing | `kubectl get crd gateways.networking.istio.io` |
+| `The configured istio.ingressDeployment ... does not exist` | A name in the `istio` section has a wrong revision | [Write the environment file](../../getting-started/platform/#6-write-the-environment-file) |
+| `Release <release> has an unfinished operation` | A Helm operation stopped before it finished, or another writer uses the release now | [An unfinished release operation](#an-unfinished-release-operation) |
+| `Refusing to adopt <kind> <namespace>/<name> from another owner` | Another Helm release or a manual command created the object | Read the `meta.helm.sh/release-name` annotation of the object |
+| `Required Secret reference is missing: <namespace>/<name>` or `Required Secret key is missing: <namespace>/<name>:<key>` | A Secret or a key that the environment file names does not exist | `kubectl get secret <name> -n <namespace>`. Do not print the values |
+| `Retained Secret <namespace>/<name> is missing; refusing regeneration` or `Retained PostgreSQL data has no password Secret; refusing to generate a replacement` | A Secret that a release generated was deleted. For the second message, the database volume of the AI Gateway still exists | Restore the Secret. Refer to [Make and restore backups](../backup-restore/) |
+| `openssl verify failed with exit ...`, `openssl x509 failed with exit 1`, `The ingress certificate does not cover the configured domain`, or `The ingress certificate is not yet valid` | A certificate check failed. `openssl verify` covers the admission, MCP, and Broker certificates, and its message does not name the certificate. The other messages are about `cetirun-tls` | Examine each certificate, as [Certificates and credentials](../certificates/) shows |
+| `docker buildx imagetools inspect <image> failed with exit 1` or `helm show chart oci://<registry>/helm/<chart> --version <version> failed with exit 1` | The image or the chart is not in the registry, or the workstation cannot read the registry | Run the same command |
+| A message that starts with `Preserve existing` | The environment file tries to change a protected setting of the installation | Refer to [Settings that make deploy keeps](../upgrade/#settings-that-make-deploy-keeps) |
+
+### An unfinished release operation
+
+`make deploy` stops if a release is in a `pending-install`, `pending-upgrade`,
+or `pending-rollback` state. A release stays in such a state if a Helm client
+stopped during the operation.
+
+1. Make sure that no other `make deploy` or Helm command writes to the release.
+2. Read the history of the release, for example:
+
+   ```bash
+   helm history cetirun-platform -n cetirun-system
+   ```
+
+3. Decide on the recovery with the owner of the environment. A recovery writes
+   to the cluster, for example a rollback to the last `deployed` revision.
+   Refer to [Upgrade CetiRun](../upgrade/#return-to-an-earlier-version) for the data that a
+   rollback does not restore.
+
+Do not delete the Helm release Secrets to force a new run.
+
+### Release and workload failures
+
+After the preflight, `make deploy` installs the releases in this order:
+
+1. The CetiRun Istio release
+2. The OAuth2 Proxy provider of the mesh
+3. The Broker
+4. The platform
+
+On a new installation, it first installs the platform without
+enforced admission, and then with it. Examine the release and the namespace of
+the failed step, for example:
+
+```bash
+helm status cetirun-platform -n cetirun-system
+helm history cetirun-platform -n cetirun-system
+kubectl get pods -n cetirun-system
+kubectl get events -n cetirun-system --field-selector type=Warning --sort-by=.lastTimestamp
+```
+
+- `<workload> is missing the required Istio sidecar`: the Pods of the Operator,
+  the Portal, the Broker, or Connections MCP have no `istio-proxy` container.
+  Make sure that the `istio.io/rev` label of the namespace names the installed
+  revision: `kubectl get namespace <namespace> --show-labels`.
+- `Broker pods are missing the Auth SDK`: the Broker Pods have no `auth-sdk`
+  container. Microsoft delegated access adds this container.
+
+## Platform components
+
+| Symptom | Possible cause | Read-only checks |
+| --- | --- | --- |
+| The Portal cannot create or change Agents, Teams, Sandboxes, or Agent Policies. The error contains `failed calling webhook` | The Sandbox admission webhooks use `failurePolicy: Fail`. When the admission server is not available, the API server refuses these writes | `kubectl get validatingwebhookconfiguration cetirun-sandbox-admission` and `kubectl get deployment cetirun-sandbox-admission -n cetirun-system` |
+| No user can sign in | OAuth2 Proxy runs only on the `system` node pool, and its Pods are not ready | `kubectl get pods -n cetirun-istio -o wide` and `kubectl get nodes -l agentpool=system` |
+| New Agents get no status | The Operator is not ready | `kubectl get deployment cetirun-operator -n cetirun-system` |
+| Agents do not get models | The AI Gateway or its database is not ready | `kubectl get deployment cetirun-ai-gateway -n cetirun-system` and `kubectl get statefulset cetirun-ai-gateway-postgresql -n cetirun-system` |
+| Agent connections fail | The Broker or Connections MCP is not ready | `kubectl get pods -n <broker namespace>` and `kubectl get deployment cetirun-connections-mcp -n cetirun-system` |
+
+Read the logs of a platform component privately. The logs of the Portal and of
+OAuth2 Proxy can contain user identities.
+
+## Agent status
+
 Start with the status and the events. Then examine only the layer that fails.
-These commands connect to Kubernetes, but they do not change it. Replace the
-example values with the actual instance name and its reported namespace. The
-`alice-example` name is synthetic.
+Replace the example values with the actual instance name and its reported
+namespace. The `alice-example` name is synthetic.
 
 ```bash
 kubectl get agents.cetirun.microsoft.com alice-example
@@ -20,13 +137,13 @@ Resource names use `metadata.name`, not `spec.user.alias`. With the controller
 and chart defaults, the namespace of this example is `cetirun-alice-example`.
 Its Helm release is `openclaw-alice-example`, and its StatefulSet and Service
 are both `openclaw-alice-example-cetirun`. You cannot use one of these API
-names in place of another. We recommend that you use the status and the actual
-resource lists, not guesses.
+names in place of another. Use the status and the actual resource lists, not
+guesses.
 
 Sources: [name and routing helpers]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}})
 and [reconciler]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}}).
 
-## Read governance status in the Portal
+### Read governance status in the Portal
 
 The **My Agents** and administrator **All agents** lists show a governance
 cause next to the lifecycle phase. The Agent detail page shows the same cause
@@ -53,12 +170,13 @@ The summary requires an observation for the current Agent generation. Some
 policy and Agent Identity conditions do not have their own observed generation.
 For those conditions, the Portal checks the generation and matching state in
 the corresponding policy or identity status. It omits older observations after
-a configuration change and does not override deletion or suspension. Specific
-causes take precedence over a generic enforcement wait. Full reported
+a configuration change and does not override deletion or suspension.
+
+Specific causes take precedence over a generic enforcement wait. Full reported
 conditions remain available under **Status**. The summary describes the latest
 reported observation; it does not approve a grant or verify live enforcement.
 
-## Follow the first failure
+### Follow the first failure
 
 | Observation | Inspect next |
 | --- | --- |
@@ -68,12 +186,14 @@ reported observation; it does not approve a grant or verify live enforcement.
 | Pod cannot be scheduled | RuntimeClass existence and scheduling, node taints, and total resource requests and capacity |
 | Image pull failure | Actual image reference or digest, node registry permissions, and the namespace-local pull Secret |
 | Secret key does not exist, or container configuration error | Gateway Secret key names, agent type, and controller enrichment. Do not print the values. |
+| Pod stays in `Init`, and the `istio-validation` init container fails | The managed Istio traffic redirection of the cluster is not `InitContainers`. Refer to [Cluster requirements](../../getting-started/platform/#cluster-requirements) |
 | Init container fails | `init-home-data` permissions and mounts, OpenClaw `doctor`, or npm `init-skills` registry and package access |
 | `HomeSeedStateUnknown` or `HomeSeedImageUnconfirmed` | The HOME and initialization records that exist, and the source image of the interrupted copy. Do not clear the PVC or delete records to retry. |
 | Native configuration apply fails | JSON/YAML or environment-file syntax, destination permissions and symlinks. The initializer keeps the files that failed. |
 | `PodReady` is false | StatefulSet rollout generation, ready and updated replicas, probes, and desktop dependencies |
 | `IngressReady` is false | Instance VirtualService and shared gateway |
 | Login loop or 403 | OAuth callback and TLS, groups, sidecar injection, and ownership |
+| Portal returns HTTP 403 `invalid_identity` | The user name. The part before `@` must give a valid alias. The Portal does not replace characters. Refer to [User names](../../getting-started/platform/#user-names) |
 | Agent opens but model fails | AI Gateway conditions, Portal sign-in, selected model entitlement, DNS, and egress. Readiness does not test inference. |
 
 The controller can mark the overall instance `Ready` even when the
@@ -101,9 +221,8 @@ prerequisites and the operator ClusterRole. The chart does not have a condition
 that omits that policy for older clusters. Do not change the cluster access
 policy only to make a render install.
 
-For opt-in alerts about the reported Sandbox status and for offline `promtool`
-tests, refer to the
-[standalone examples]({{< repo "app/cetirun-operator/observability/README.md" >}}).
+For the metrics and the optional alerts about the reported Sandbox status,
+refer to [Monitoring and logs](../observability/).
 
 ## Routing
 
@@ -138,10 +257,14 @@ A Helm render cannot validate those dependencies.
 
 For ownership 403 errors, examine the instance owner and the portal service
 address. Also examine the actual portal sidecar injection and the
-gateway-to-portal NetworkPolicy. The ownership call goes to port 8081 with mTLS
-disabled. Port 8080 uses strict mTLS. An admin alias is not an exception to
-native instance ownership. For the separate authentication and ownership
-exemptions, refer to [Istio operations](../istio/).
+gateway-to-portal NetworkPolicy.
+
+With `make deploy`, the ownership call to port 8081 uses mesh mTLS. In this
+case, also examine the `portalAuth.mtls.serverIdentity` value of the Istio
+release. A standalone Portal chart can keep port 8081 without mTLS. Refer to
+[Authentication and ownership](../istio/#authentication-and-ownership). An admin
+alias is not an exception to native instance ownership. For the separate
+authentication and ownership exemptions, refer to [Istio operations](../istio/).
 
 ## Agent services
 
@@ -156,8 +279,9 @@ By default, the chart enables the desktop, ttyd, and session logging. Keep the
 debug and terminal endpoints behind the intended authenticated path.
 
 OpenClaw uses `/startupz`, `/healthz`, and `/readyz` for startup, liveness, and
-readiness on its gateway port. Hermes checks `/health` on its API port; startup
-and readiness also check Webapp health and built assets. Examine the actual StatefulSet,
+readiness on its gateway port. Hermes uses exec probes in its container. Its
+startup and liveness probes request `/health` on the API port. Its readiness
+probe also checks the Webapp status and the built Webapp assets. Examine the actual StatefulSet,
 because overrides and the way that sidecars handle probes can affect the
 effective pod configuration.
 Sources: [OpenClaw probes]({{< repo "app/cetirun-chart/templates/agents/openclaw/_runtime.tpl" >}})

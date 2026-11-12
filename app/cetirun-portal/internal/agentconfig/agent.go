@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"k8s.io/utils/ptr"
@@ -78,6 +79,9 @@ func (in Input) Apply(current api.HarnessSpec) (api.HarnessSpec, error) {
 	}
 	if current.Image != nil && agent.Image == nil {
 		return api.HarnessSpec{}, fmt.Errorf("a pinned agent.image cannot be cleared")
+	}
+	if in.Image.Set && agent.Type == api.AgentTypeCustom && agent.Image != nil && !strings.Contains(*agent.Image, "@sha256:") {
+		return api.HarnessSpec{}, fmt.Errorf("custom agent.image updates require an immutable sha256 reference")
 	}
 	return agent, Validate(agent)
 }

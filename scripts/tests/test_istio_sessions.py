@@ -4,6 +4,7 @@
 """Render the real session-storage chart with synthetic configuration."""
 
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -106,6 +107,20 @@ class IstioSessionTests(unittest.TestCase):
         for name in ("oauth2-proxy", "oauth2-proxy-sessions"):
             self.assertNotEqual(before[("Deployment", name)]["spec"]["template"]["metadata"]["annotations"],
                                 after[("Deployment", name)]["spec"]["template"]["metadata"]["annotations"])
+
+    def test_first_no_change_upgrade_preserves_both_pod_templates(self):
+        with lookup_api({}) as (config, _):
+            installed = self.render(kubeconfig=config)
+        data = installed[("Secret", "oauth2-proxy-sessions")]["data"]
+        expected = hashlib.sha256(json.dumps(data, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        with lookup_api({}, {"sessions": data}) as (config, _):
+            upgraded = self.render(kubeconfig=config, upgrade=True)
+        self.assertEqual(upgraded[("Secret", "oauth2-proxy-sessions")]["data"], data)
+        for name in ("oauth2-proxy", "oauth2-proxy-sessions"):
+            with self.subTest(deployment=name):
+                before = installed[("Deployment", name)]["spec"]["template"]
+                self.assertEqual(before["metadata"]["annotations"]["checksum/redis-session-credentials"], expected)
+                self.assertEqual(before, upgraded[("Deployment", name)]["spec"]["template"])
 
     def test_incomplete_existing_secret_is_not_replaced(self):
         with lookup_api({}, {"sessions": {}}) as (config, _):

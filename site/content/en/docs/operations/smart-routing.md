@@ -120,6 +120,12 @@ Pods again, as [Peer labels](../policy-teams/#peer-labels) shows.
 
 ## 2. Allow the routers in an Agent Policy
 
+> **Warning:** Use a new Policy for this step. For a Policy that already has
+> Agents, create the router first, as step 3 shows. Then add `auto-team` to the
+> Policy. Until the router exists, the operator cannot resolve the name, and it
+> stops the Agents of that Policy. Refer to
+> [Choose a model](../../guides/models/#runtime-configuration).
+
 In the Portal, select **Admin → Agent policies → New policy**. Allow the
 harnesses, OpenClaw and Hermes. Under **Allowed shared models**, list the
 routers, the models of their tiers, and their default models, one per line.
@@ -239,6 +245,12 @@ request fits every tier.
 The Agent sends images to a router only when every model that the router sends
 requests to accepts images. Refer to [Images](../../guides/models/#images).
 
+In the same way, OpenClaw offers reasoning levels for a router only when every
+model that the router sends requests to reasons. Refer to
+[Reasoning](../../guides/models/#reasoning). For a Team's router, the Team's
+`status.modelRouters[].nonReasoningModels` lists the tier models that do not
+reason. The Team page in the Portal shows them with the router.
+
 ## 5. Check where requests go
 
 Send a short question to the Agent. Then send a request for a design or a proof.
@@ -263,8 +275,8 @@ kubectl logs -n cetirun-system -c gateway --since=15m --tail=-1 \
 | `provider_model` | The deployment that answered, such as `azure/my-gpt-deployment` |
 | `spend` | What the request cost |
 
-For Container Insights, the Gateway chart README has Log Analytics queries for
-these lines in
+The Gateway chart README has queries of the ADX-Mon collection for these lines
+in
 [Measuring the routers]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#measuring-the-routers).
 The queries show the share of each tier, its spend, and its latency. A client
 that calls the Gateway with its own key also gets the tier in response headers.

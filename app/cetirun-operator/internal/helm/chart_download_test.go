@@ -90,4 +90,60 @@ func TestChartDownloadErrorKeepsTheCauseWithoutURLQueries(t *testing.T) {
 	if strings.Contains(message, "query=synthetic") || !strings.Contains(message, "/storage/") || !strings.Contains(message, "403") {
 		t.Fatalf("message = %q, want the cause without the URL query", message)
 	}
+	if got := download.Class(); got != ChartDownloadUnauthorized {
+		t.Fatalf("class of a refused storage download = %q, want %q", got, ChartDownloadUnauthorized)
+	}
+}
+
+// statusRegistry answers every request with one HTTP status.
+func statusRegistry(t *testing.T, status int) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if status == http.StatusUnauthorized {
+			w.Header().Set("Www-Authenticate", `Basic realm="synthetic"`)
+		}
+		http.Error(w, http.StatusText(status), status)
+	}))
+	t.Cleanup(server.Close)
+	return strings.TrimPrefix(server.URL, "http://")
+}
+
+// Class comes from what the registry client returned, for real failures of
+// the registry client.
+func TestChartDownloadErrorClassFromTheRegistryClient(t *testing.T) {
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closedHost := strings.TrimPrefix(closed.URL, "http://")
+	closed.Close()
+	for name, tc := range map[string]struct {
+		host string
+		want ChartDownloadClass
+	}{
+		"unauthorized": {statusRegistry(t, http.StatusUnauthorized), ChartDownloadUnauthorized},
+		"forbidden":    {statusRegistry(t, http.StatusForbidden), ChartDownloadUnauthorized},
+		"not found":    {statusRegistry(t, http.StatusNotFound), ChartDownloadNotFound},
+		"server error": {statusRegistry(t, http.StatusServiceUnavailable), ChartDownloadNetwork},
+		"refused":      {closedHost, ChartDownloadNetwork},
+		"no such host": {"registry.invalid", ChartDownloadNetwork},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := NewClient(ChartReference{RepoURL: "oci://" + tc.host + "/helm/cetirun", Version: "1.0.0"})
+			_, err := client.InspectChart(context.Background(), "")
+			var download *ChartDownloadError
+			if !errors.As(err, &download) {
+				t.Fatalf("got %T: %v", err, err)
+			}
+			if got := download.Class(); got != tc.want {
+				t.Fatalf("Class() = %q, want %q (cause %T: %v)", got, tc.want, download.Err, download.Err)
+			}
+		})
+	}
+}
+
+func TestChartDownloadErrorClassOfOtherErrors(t *testing.T) {
+	if got := (&ChartDownloadError{Err: errors.New("synthetic")}).Class(); got != ChartDownloadUnknown {
+		t.Fatalf("Class() of a plain error = %q", got)
+	}
+	if got := (&ChartDownloadError{}).Class(); got != ChartDownloadUnknown {
+		t.Fatalf("Class() without a cause = %q", got)
+	}
 }

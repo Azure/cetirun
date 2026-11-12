@@ -40,7 +40,7 @@ const (
 // plan: scale the supplied StatefulSet to zero without changing its UID, owner
 // or protected annotations, and wait for Pods referencing HOME to terminate.
 // Providers need workload patch/Pod read permissions and must honor context
-// deadlines. The default operator has no provider and waits.
+// deadlines. A disabled Custom runtime has no provider and waits.
 type CustomBindingProvider interface {
 	Resolve(context.Context, *api.Agent, *api.Team) (runtimebindings.Custom, error)
 	ApproveApply(context.Context, *api.Agent, *appsv1.StatefulSet, CustomApplyOperation) (CustomApplyLease, error)
@@ -163,13 +163,17 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 		return r.rejectCustomConfig(ctx, instance, err)
 	}
 	if r.CustomBindings == nil {
-		return r.customWaiting(ctx, instance, "CustomBindingsPending",
-			"Custom requires platform model, HOME, context, policy and lifecycle bindings")
+		return r.customWaiting(ctx, instance, "CustomRuntimeDisabled",
+			"Custom provisioning is disabled; ask an administrator to enable the runtime and approve an image digest")
 	}
 	resolveCtx, cancelResolve := context.WithTimeout(ctx, customProviderTimeout)
 	bindings, err := r.CustomBindings.Resolve(resolveCtx, instance.DeepCopy(), team)
 	cancelResolve()
 	if err != nil {
+		if errors.Is(err, errCustomImageNotApproved) {
+			return r.customWaiting(ctx, instance, "CustomImageNotApproved",
+				"Custom image is not approved; ask an administrator to approve this exact sha256 image reference or select an approved image")
+		}
 		return r.customWaiting(ctx, instance, "CustomBindingsPending", "Platform binding resolution is not ready")
 	}
 	bindings.RestartRequestID = instance.Spec.RestartRequestID

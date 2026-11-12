@@ -47,6 +47,11 @@ func TestCetiAdminBoundAgentDeletionAPIServer(t *testing.T) {
 			agent.Spec.Helm.Version = "0.1.0"
 			agent.Spec.Agent.Image = ptr.To("registry.example.com/retained-runtime@sha256:" + strings.Repeat("a", 64))
 			agent.Annotations = map[string]string{"cetirun.microsoft.com/native-auth-rotation-request-id": "retained-rotation-12345678"}
+			if kind != api.AgentTypeCustom {
+				h.create(t, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: agent.Spec.GatewayTokenSecretRef, Namespace: namespace.Name,
+					Annotations: map[string]string{"cetirun.microsoft.com/native-auth-rotation-request-id": "retained-rotation-12345678"}},
+					Type: corev1.SecretTypeOpaque, Data: map[string][]byte{"CETIRUN_AUTH_KEY": []byte("synthetic-rotated-key")}})
+			}
 			agent.Finalizers = []string{api.Finalizer}
 			if kind == api.AgentTypeCustom {
 				agent.Finalizers = append(agent.Finalizers, customOwnershipFinalizer)
@@ -111,6 +116,15 @@ func TestCetiAdminBoundAgentDeletionAPIServer(t *testing.T) {
 				RoleRef:  rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "portal-delete"},
 				Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Namespace: "operator-test", Name: "portal-delete"}}})
 			h.assertPermission(t, portal, "delete", api.GroupVersion.Group, "agents", "", "", agent.Name, true)
+			h.create(t, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "namespace-controller", Namespace: "operator-test"}})
+			namespaceController := h.newClient(t, h.accountConfig(t, "operator-test", "namespace-controller", nil), h.operator.Scheme())
+			h.create(t, &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: "namespace-cleanup", Namespace: namespace.Name}, Rules: []rbacv1.PolicyRule{{
+				APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list", "delete", "deletecollection"},
+			}}})
+			h.create(t, &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "namespace-cleanup", Namespace: namespace.Name},
+				RoleRef:  rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: "namespace-cleanup"},
+				Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Namespace: "operator-test", Name: "namespace-controller"}}})
+			h.assertPermission(t, namespaceController, "deletecollection", "", "secrets", "", namespace.Name, "", true)
 			for _, value := range []string{"", "replacement-binding"} {
 				next := agent.DeepCopy()
 				if value == "" {
@@ -174,7 +188,7 @@ func TestCetiAdminBoundAgentDeletionAPIServer(t *testing.T) {
 					t.Fatalf("Custom released finalizers before namespace cleanup: %v", err)
 				}
 			}
-			completeRetainedDeletionNamespaceGC(t, h, namespace)
+			completeRetainedDeletionNamespaceGC(t, h, namespace, namespaceController)
 			if _, err := r.Reconcile(h.ctx, request); err != nil {
 				t.Fatalf("normal finalizer cleanup failed: %v", err)
 			}
@@ -222,10 +236,18 @@ func retainedDeletionExecPolicy(agent *api.Agent, namespace *corev1.Namespace) (
 // Envtest has no namespace/volume controllers. Only simulate their deletion of
 // dependents after the Operator requested namespace deletion; never strip any
 // CetiRun finalizer. This is API cleanup evidence, not physical CSI reclamation.
-func completeRetainedDeletionNamespaceGC(t *testing.T, h *cetiAdminInstallationAPI, namespace *corev1.Namespace) {
+func completeRetainedDeletionNamespaceGC(t *testing.T, h *cetiAdminInstallationAPI, namespace *corev1.Namespace, namespaceController client.Client) {
 	t.Helper()
 	if namespace.DeletionTimestamp == nil || len(namespace.Finalizers) != 0 {
 		t.Fatal("namespace cleanup was not released by the Operator")
+	}
+	// Secret cleanup uses ordinary controller credentials, not the Operator or admin.
+	if err := namespaceController.DeleteAllOf(h.ctx, &corev1.Secret{}, client.InNamespace(namespace.Name)); err != nil {
+		t.Fatalf("namespace controller could not delete retained native auth receipts: %v", err)
+	}
+	secrets := &corev1.SecretList{}
+	if err := namespaceController.List(h.ctx, secrets, client.InNamespace(namespace.Name)); err != nil || len(secrets.Items) != 0 {
+		t.Fatalf("namespace still contains Secrets after cleanup: count=%d error=%v", len(secrets.Items), err)
 	}
 	for _, list := range []client.ObjectList{&appsv1.StatefulSetList{}, &corev1.PersistentVolumeClaimList{}, &corev1.ServiceAccountList{}, &rbacv1.RoleList{}, &rbacv1.RoleBindingList{}} {
 		if err := h.admin.List(h.ctx, list, client.InNamespace(namespace.Name)); err != nil {
