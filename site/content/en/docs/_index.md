@@ -1,17 +1,24 @@
 ---
 title: "Documentation"
-description: "An introduction to CetiRun and its architecture."
+description: "Find the CetiRun documentation for your task: the overview, the user guide, operations, reference, and contributing."
 weight: 10
 no_list: true
 ---
 
 CetiRun is an open-source managed runtime for hosting AI agents and AI applications.
 
-CetiRun runs **OpenClaw and Hermes** on a shared AKS cluster.
-A Kubernetes operator manages instances. A self-service portal lets users
-create and access the instances. The runtime chart supports these two agent
-types.
+CetiRun runs three agent types on a shared AKS cluster: OpenClaw, Hermes, and
+Custom Agents that use your own container image. A Custom Agent can serve a
+chat API, a browser application, or no HTTP interface. The operator deploys
+each Agent, and users create and open their Agents in the self-service Portal.
 
-Start with the [overview](overview/), [core concepts](concepts/), or
-[architecture](concepts/architecture/). Before you grant access, read
-[Security](security/).
+| Module | Use it to |
+| --- | --- |
+| [Overview](overview/) | Learn what CetiRun does, its concepts, its architecture, and its security model |
+| [User Guide](user-guide/) | Create and use Agents on a deployment that already exists |
+| [Operations](operations/) | Install, configure, and troubleshoot a deployment |
+| [Reference](reference/) | Find resource fields, Helm values, and command options |
+| [Contributing](contributing/) | Change, test, and document CetiRun |
+
+To find the path for your role, read [Get Started](getting-started/). Before
+you give users access, read [Security](security/).

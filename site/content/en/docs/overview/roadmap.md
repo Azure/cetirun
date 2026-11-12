@@ -1,24 +1,22 @@
 ---
 title: "Roadmap"
-description: "A short view of the improvements planned for CetiRun."
+description: "Improvements that are planned for CetiRun and that are not available yet."
 weight: 40
 status: planned
 ---
 
 **Status: planned.** These directions are not a list of available features or
-a commitment to release dates.
+a commitment to release dates. For the features that CetiRun has, read the
+[Overview](../).
 
-- **More execution options:** qualify AKS/Kata and self-managed
-  Kubernetes/KVM/Firecracker environments.
-- **Governed model access:** shared AI Gateway, private Copilot authorization,
-  usage visibility, and later token budgets and Smart Routing.
-- **Team capabilities:** approved, versioned skills and supported harness
-  choices, enforced beyond the user interface.
-- **Private memory and safer lifecycle:** built-in Wiki-style memory, private
-  data that CetiRun keeps, and controlled replacement and recovery.
+- **More execution targets:** self-managed Kubernetes with KVM or Firecracker,
+  in addition to AKS.
+- **Usage reports:** model spend and use for each Agent, user, and Team in the
+  Portal.
 - **Shared agent pools:** an Agent mode with many interchangeable replicas for
-  headless, queue-driven work: throwaway home storage instead of a private
-  volume, one Gateway key with per-task usage attribution, and no inbound
-  route.
-- **Operations:** scoped diagnostics, clearer policy status, and CetiAdmin
-  assistance with explicit authorization.
+  headless, queue-driven work. The replicas use throwaway home storage instead
+  of a private volume and have no inbound route. They share one AI Gateway key
+  that records the usage of each task.
+- **Approved operations:** a Portal step in which a platform administrator
+  approves each change that CetiAdmin, the operations Agent of the platform,
+  proposes.

@@ -1,8 +1,9 @@
-# Tailscale integration
+# Moved: Tailscale integration
 
-Read [Connect Tailscale](../../site/content/en/docs/guides/tailscale.md).
-It covers portal enablement, the Secret reference, tailnet access, how to handle
-keys, and gateway authentication.
+This file keeps old links working. Read
+[Connect Tailscale](../../site/content/en/docs/guides/tailscale.md). It covers
+Portal enablement, the Secret reference, tailnet access, how to handle keys,
+and the authentication that the Agent itself keeps.
 
-For a navigable preview, run `make -C site serve` from the repository root and
-open `http://localhost:1313/cetirun/docs/guides/tailscale/`.
+For a preview with working links, run `make -C site serve` from the repository
+root and open `http://localhost:1313/cetirun/docs/guides/tailscale/`.
