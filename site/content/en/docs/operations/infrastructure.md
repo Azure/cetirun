@@ -470,7 +470,9 @@ has the role `Viewer` on the logs and metrics databases only. The output
 environment file.
 
 The default SKU, `Dev(No SLA)_Standard_E2a_v4`, has one engine node and no SLA.
-Use it for evaluation. The template enables auto-stop on a Kusto cluster that
+Use it for evaluation; for production, refer to
+[Size Azure Data Explorer](../observability/#size-azure-data-explorer). The
+template enables auto-stop on a Kusto cluster that
 it creates. Such a cluster stops after five days without ingestion or queries,
 and you must start it again. The outputs `adxClusterUri` and
 `adxIngestorClientId` are the inputs of the `observability` block of the

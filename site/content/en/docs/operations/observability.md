@@ -435,8 +435,27 @@ Kusto compresses this data about ten times. The metrics grow with the number
 of containers, and the logs with the use of the AI Gateway and the Agents. When
 the collection starts on a node, it also sends the kubelet and containerd
 journal that the node keeps. On the test cluster, this was about 350,000 rows
-and 125 MB for four nodes. The default Dev SKU of the cluster template has one
-engine node and no SLA. For production data, select a production SKU, as
+and 125 MB for four nodes.
+
+The default SKU of the cluster template, `Dev(No SLA)_Standard_E2a_v4`, has one
+engine node, no SLA, and one ingestion slot. Use it for evaluation, and give each
+CetiRun cluster in testing a Dev cluster of its own. With one CetiRun cluster, a
+log line reached ADX in about 80 seconds. With two CetiRun clusters on one Dev
+cluster, it took 12 to 20 minutes while one of them sent its nodes' old log
+files.
+
+For production data, use the Standard tier with at least two instances. For
+example, set these parameters of the cluster template with `adxMode: create`:
+
+```bicep
+param adxSkuName = 'Standard_E2ads_v5'
+param adxSkuTier = 'Standard'
+param adxSkuCapacity = 2
+```
+
+A Standard cluster costs more than a Dev cluster: Azure Data Explorer also
+charges for each of its vCores. Select the size for your ingestion and queries,
+as
 [Choose an optimal compute SKU](https://learn.microsoft.com/azure/data-explorer/manage-cluster-choose-sku)
 describes.
 
