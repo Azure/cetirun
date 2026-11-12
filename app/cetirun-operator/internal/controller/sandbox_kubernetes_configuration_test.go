@@ -27,6 +27,8 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/egresscapture"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
@@ -1083,6 +1085,30 @@ func TestKubernetesPlatformFailureReasonReachesStatus(t *testing.T) {
 		{"RuntimeClass pin mismatch", func(document *controller.SandboxPlatformConfiguration) {
 			document.RuntimeClasses["example-kata"] = controller.SandboxRuntimePrerequisite{UID: "example-runtime-uid", Handler: canary}
 		}, sandboxpolicy.ErrUnavailable, "RuntimeClass no longer matches its configured UID/handler"},
+		{"ingress mTLS registration without a pinned image", func(document *controller.SandboxPlatformConfiguration) {
+			registration := document.Registrations[api.SandboxKata]
+			registration.Capabilities.MutualTLS = true
+			document.Registrations[api.SandboxKata] = registration
+			platform := document.Platforms[api.SandboxKata]
+			platform.IngressMTLS = &ingressmtls.Registration{Image: "registry.example.com/" + canary + ":latest", Bindings: []ingressmtls.Binding{}}
+			document.Platforms[api.SandboxKata] = platform
+		}, sandboxpolicy.ErrUnavailable,
+			"invalid Sandbox platform declaration: mTLS registration requires a digest-pinned image and bounded bindings"},
+		{"egress SNI registration without pinned images", func(document *controller.SandboxPlatformConfiguration) {
+			registration := document.Registrations[api.SandboxKata]
+			registration.Capabilities.BlockedFQDNs = true
+			document.Registrations[api.SandboxKata] = registration
+			platform := document.Platforms[api.SandboxKata]
+			platform.EgressSNI = &egresscapture.Registration{EnvoyImage: "registry.example.com/" + canary + ":latest", InitImage: canary}
+			document.Platforms[api.SandboxKata] = platform
+		}, sandboxpolicy.ErrUnavailable,
+			"invalid Sandbox platform declaration: observed-SNI registration requires digest-pinned Envoy and trusted capture-init images"},
+		{"registration without a mandatory network control", func(document *controller.SandboxPlatformConfiguration) {
+			registration := document.Registrations[api.SandboxKata]
+			registration.Capabilities.DenyPrecedence = false
+			document.Registrations[api.SandboxKata] = registration
+		}, sandboxpolicy.ErrUnsupportedControl,
+			"invalid Sandbox platform declaration: the registration does not support every mandatory network control"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -1159,4 +1185,89 @@ func TestKubernetesPlatformFailureReasonReachesStatus(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestKubernetesPlatformReadFailureReachesStatus checks that a platform
+// dependency that cannot be read gives a fixed reason to the AgentPolicy,
+// Sandbox and Team status. The API error names the object: only the reconcile
+// errors, which the operator logs, keep it.
+func TestKubernetesPlatformReadFailureReachesStatus(t *testing.T) {
+	const canary = "value-canary-5d1f"
+	const reason = "a platform dependency could not be read"
+	ctx := context.Background()
+	box, snapshot, objects := nativeConfigurationSnapshot()
+	document := controller.SandboxPlatformConfiguration{
+		Version: "v1", Registrations: snapshot.Registrations, Platforms: snapshot.Platforms,
+		RuntimeClasses: snapshot.RuntimeClasses, StorageClasses: snapshot.StorageClasses,
+	}
+	// The registration approves a StorageClass that does not exist.
+	document.StorageClasses[canary] = controller.SandboxStoragePrerequisite{UID: "example-missing-storage-uid", Provisioner: "csi.example.com"}
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform-system", Name: "sandbox-platform", UID: "native-platform-uid", ResourceVersion: "1"},
+		Data:       map[string]string{controller.SandboxPlatformConfigurationKey: kubernetesPlatformJSON(t, document)},
+	}
+	source, _ := kubernetesPlatformSource(t, cm, objects)
+	readFailure := func(what string, err error) {
+		t.Helper()
+		if !apierrors.IsNotFound(err) || errors.Is(err, sandboxpolicy.ErrUnavailable) || !strings.Contains(err.Error(), canary) {
+			t.Fatalf("%s lost the class or the API error of the read failure: %v", what, err)
+		}
+	}
+	snapshotErr := requireKubernetesPlatformFailure(t, source)
+	readFailure("snapshot error", snapshotErr)
+	if detail := sandboxpolicy.PublicDetail(snapshotErr, nil); detail != reason {
+		t.Fatalf("the read failure has no fixed reason: %q", detail)
+	}
+
+	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid", Generation: 2},
+		Spec: api.AgentPolicySpec{Harnesses: nativePolicyHarnesses()}}
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid", Generation: 3}, Spec: api.TeamSpec{
+		AgentPolicyRef: policy.Name, SandboxRefs: []string{box.Name}, DefaultSandboxRef: box.Name,
+	}}
+	kube := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(box, policy, team).
+		WithObjects(box, policy, team).Build()
+	now := func() time.Time { return snapshot.ObservedAt }
+	fixedReasonOnly := func(what, message, want string) {
+		t.Helper()
+		if message != want || strings.Contains(message, canary) {
+			t.Fatalf("%s does not show only the fixed reason: %q", what, message)
+		}
+	}
+
+	policies := &controller.AgentPolicyReconciler{Client: kube, APIReader: kube, Source: source, Now: now, NativeExecution: true}
+	_, err := policies.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
+	readFailure("AgentPolicy reconcile error", err)
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(policy), policy); err != nil {
+		t.Fatal(err)
+	}
+	accepted := apimeta.FindStatusCondition(policy.Status.Conditions, api.ConditionAgentPolicyAccepted)
+	if accepted == nil || accepted.Status != metav1.ConditionUnknown || accepted.Reason != "PrerequisitesUnavailable" {
+		t.Fatalf("AgentPolicy status does not show the read failure: %+v", accepted)
+	}
+	fixedReasonOnly("AgentPolicy status", accepted.Message, "Current platform support inventory is unavailable: "+reason+".")
+
+	boxes := &controller.SandboxReconciler{Client: kube, APIReader: kube, Source: source, Now: now, NativeExecution: true}
+	_, err = boxes.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(box)})
+	readFailure("Sandbox reconcile error", err)
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(box), box); err != nil {
+		t.Fatal(err)
+	}
+	ready := apimeta.FindStatusCondition(box.Status.Conditions, api.ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionUnknown {
+		t.Fatalf("Sandbox status does not show the read failure: %+v", ready)
+	}
+	fixedReasonOnly("Sandbox status", ready.Message, "Current platform prerequisite state is unavailable: "+reason+".")
+
+	teams := &controller.TeamReconciler{Client: kube, APIReader: kube, Source: source, Now: now, NativeExecution: true}
+	if _, err := teams.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(team)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(team), team); err != nil {
+		t.Fatal(err)
+	}
+	report := team.Status.Compatibility
+	if report == nil || report.State != api.CompatibilityUnknown {
+		t.Fatalf("Team compatibility does not show the read failure: %+v", report)
+	}
+	fixedReasonOnly("Team compatibility", report.Message, "Current platform compatibility cannot be verified: "+reason+".")
 }

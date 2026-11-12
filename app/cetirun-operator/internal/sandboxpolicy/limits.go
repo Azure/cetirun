@@ -31,7 +31,8 @@ const (
 
 func consumeBudget(remaining *int, count int, name string) error {
 	if count > *remaining {
-		return fmt.Errorf("%w: %s budget exceeded", ErrConflict, name)
+		// Callers name their budget with a constant, never with input.
+		return controlFailure(ErrConflict, name+" budget exceeded")
 	}
 	*remaining -= count
 	return nil
@@ -109,10 +110,10 @@ type networkRuleBudget struct {
 
 func (b *networkRuleBudget) take(entries int) error {
 	if b.rules == MaxNetworkRules {
-		return fmt.Errorf("%w: network rule count exceeds %d", ErrConflict, MaxNetworkRules)
+		return controlFailure(ErrConflict, fmt.Sprintf("network rule count exceeds %d", MaxNetworkRules))
 	}
 	if entries > MaxNetworkRuleEntries-b.entries {
-		return fmt.Errorf("%w: expanded network rule entries exceed %d", ErrConflict, MaxNetworkRuleEntries)
+		return controlFailure(ErrConflict, fmt.Sprintf("expanded network rule entries exceed %d", MaxNetworkRuleEntries))
 	}
 	b.rules++
 	b.entries += entries
@@ -162,7 +163,8 @@ func validateNetworkPolicySize(policy CiliumNetworkPolicy) error {
 		return fmt.Errorf("encode CiliumNetworkPolicy size: %w", err)
 	}
 	if len(data) > MaxNetworkPolicyBytes {
-		return fmt.Errorf("%w: CiliumNetworkPolicy %q is %d bytes; limit is %d", ErrConflict, policy.Name, len(data), MaxNetworkPolicyBytes)
+		// The policy name and its size are not part of the fixed reason.
+		return controlFailure(ErrConflict, fmt.Sprintf("a generated network policy exceeds %d bytes", MaxNetworkPolicyBytes))
 	}
 	return nil
 }

@@ -144,6 +144,9 @@ func (r Reference) Validate() error {
 	return nil
 }
 
+// Validate checks the registration. Status shows its errors, including those
+// of Binding.Validate and Reference.Validate, so every message is constant text
+// without registered values.
 func (r Registration) Validate() error {
 	if !imageDigest.MatchString(r.Image) || len(r.Bindings) > 128 {
 		return fmt.Errorf("mTLS registration requires a digest-pinned image and bounded bindings")

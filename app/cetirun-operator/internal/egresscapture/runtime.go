@@ -39,6 +39,8 @@ type Plan struct {
 	IPv6      bool     `json:"ipv6"`
 }
 
+// Validate checks the registration. Status shows its error, so the message is
+// constant text without registered values.
 func (r Registration) Validate() error {
 	if !pinnedImage.MatchString(r.EnvoyImage) || !pinnedImage.MatchString(r.InitImage) {
 		return fmt.Errorf("observed-SNI registration requires digest-pinned Envoy and trusted capture-init images")

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -127,6 +128,26 @@ func TestKubernetesSourceChanged(t *testing.T) {
 				t.Fatalf("unexpected reads=%d lists=%d", reader.reads, reader.lists)
 			}
 		})
+	}
+}
+
+// TestKubernetesSourceReadFailureHasFixedReason checks that a platform
+// dependency that cannot be read gives a fixed reason that status can show.
+// The API error, which names the object, stays in the error for the log, and
+// the error keeps its class.
+func TestKubernetesSourceReadFailureHasFixedReason(t *testing.T) {
+	const canary = "value-canary-5d1f"
+	source, reader := newKubernetesSource(t)
+	source.Name = canary
+	_, err := source.Snapshot(context.Background())
+	if !apierrors.IsNotFound(err) || errors.Is(err, sandboxpolicy.ErrUnavailable) || reader.reads != 1 {
+		t.Fatalf("the read failure changed its class: %v", err)
+	}
+	if detail := sandboxpolicy.PublicDetail(err, nil); detail != "a platform dependency could not be read" {
+		t.Fatalf("the read failure has no fixed public reason: %q", detail)
+	}
+	if !strings.Contains(err.Error(), canary) {
+		t.Fatalf("the read failure lost the API error for the log: %v", err)
 	}
 }
 

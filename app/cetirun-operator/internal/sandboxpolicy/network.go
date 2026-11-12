@@ -98,15 +98,16 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 		return platform, err
 	}
 	adapter := platform.Adapter
+	// Field errors can quote registered values. Status shows only fixed text.
 	if errs := sandbox.CheckCapabilityProfile(capabilities); len(errs) != 0 {
-		return platform, fmt.Errorf("%w: %v", ErrUnsupportedControl, errs.ToAggregate())
+		return platform, controlFailure(ErrUnsupportedControl, "unsupported Sandbox capability profile")
 	}
 	if capabilities.Profile == sandbox.ProfileNativeSingleStart {
 		if adapter.Name != Cilium || adapter.Qualified || adapter.Revision == "" {
 			return platform, controlFailure(ErrUnsupportedControl, "native single-start requires an explicitly revisioned cilium adapter without full qualification")
 		}
 		if errs := sandbox.CheckNetworkCapabilities(capabilities); len(errs) != 0 {
-			return platform, fmt.Errorf("%w: %v", ErrUnsupportedControl, errs.ToAggregate())
+			return platform, controlFailure(ErrUnsupportedControl, "the registration does not support every mandatory network control")
 		}
 		if !capabilities.KubernetesAccess && len(platform.Grants) != 0 {
 			return platform, controlFailure(ErrUnsupportedControl, "native Kubernetes grants require explicitly registered support")
@@ -132,7 +133,8 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 			return platform, controlFailure(ErrUnsupportedControl, "observed-SNI capture requires the common executor and explicit image registration")
 		}
 		if err := platform.EgressSNI.Validate(); err != nil {
-			return platform, fmt.Errorf("%w: %v", ErrUnavailable, err)
+			// Validate returns constant text without registered values.
+			return platform, controlFailure(ErrUnavailable, err.Error())
 		}
 		if platform.IngressMTLS != nil && platform.EgressSNI.EnvoyImage != platform.IngressMTLS.Image {
 			return platform, controlFailure(ErrConflict, "ingress and egress registrations must share one Envoy image")
@@ -148,7 +150,8 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 			return platform, controlFailure(ErrUnsupportedControl, "mTLS registration requires native endpoint support")
 		}
 		if err := platform.IngressMTLS.Validate(); err != nil {
-			return platform, fmt.Errorf("%w: %v", ErrUnavailable, err)
+			// Validate returns constant text without registered values.
+			return platform, controlFailure(ErrUnavailable, err.Error())
 		}
 	} else if capabilities.MutualTLS {
 		return platform, controlFailure(ErrUnavailable, "mTLS support requires explicit certificate and endpoint registration")
