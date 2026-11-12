@@ -477,7 +477,7 @@ stop. The approved terminal selection does not change. The suspension does
 not authorize terminal access. The shutdown must still be acknowledged.
 
 > **Warning:** A replacement or a deletion of a pinned Secret or of the pinned
-> `Gateway` resource stops the mTLS Agents that use it, and it removes their
+> `Gateway` resource stops the mTLS Agents that use it. It also removes their
 > route. A change to the servers or the selector of the `Gateway` resource
 > does the same. With UID and `resourceVersion` pins, every change does the
 > same: for example, a label change. Then update the pins of every affected
@@ -506,12 +506,12 @@ connections last at most five minutes (300 seconds). To revoke the open
 connections immediately, a shutdown is still necessary. The removal of a CA
 alone does not close them.
 
-The connection limit also applies to the Terminal. ttyd starts one shell for
-each connection, so after five minutes the Terminal connects to a new shell.
-The shell history and the commands that run in the old shell are lost. The
-Control UI and the Hermes Webapp connect again without a new sign-in. To keep a
-Terminal session, run this command after you open the Terminal and again after
-each new connection:
+The connection limit also applies to the Terminal. The terminal server, ttyd,
+starts one shell for each connection. After five minutes, the Terminal
+connects to a new shell. The shell history and the commands that run in the
+old shell are lost. The Control UI and the Hermes Webapp connect again without
+a new sign-in. To keep a Terminal session, run this command after you open the
+Terminal and again after each new connection:
 
 ```bash
 tmux new -A -s main
