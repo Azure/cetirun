@@ -629,8 +629,10 @@ sidecarScope:
   additionalEgressHosts: []
 
 # -- Network Policy configuration
-# Default deny-all with explicit allows for Istio ingress, DNS,
-# and external egress (RFC 1918 + IMDS always blocked).
+# Default deny-all. Inside the cluster, the Agent reaches only the DNS Pods,
+# istiod, the platform services it uses (such as the AI Gateway) and the
+# entries of allowedInternalCIDRs. Other egress can go to IPv4 addresses
+# outside blockedCIDRs.
 networkPolicy:
   # -- Enable NetworkPolicy
   enabled: true
@@ -645,28 +647,33 @@ networkPolicy:
   # istioIngressNamespace: ""
   # -- Namespace where kube-dns runs (egress DNS)
   dnsNamespace: kube-system
+  # -- Labels of the DNS Pods in dnsNamespace. Only these Pods get DNS
+  # traffic (TCP/UDP 53). Helm merges maps, so set k8s-app to null to replace
+  # the default label. Without labels, every Pod in dnsNamespace gets it.
+  dnsPodLabels:
+    k8s-app: kube-dns
   # -- Namespace hosting the deployment-level Agent Identity Broker.
   agentIdentityBrokerNamespace: cetirun-credentials
   # -- Namespace of the platform AI Gateway, used when aiGateway.enabled.
   gatewayNamespace: cetirun-system
   # -- Service port of the platform AI Gateway.
   gatewayPort: 4000
-  # -- CIDRs to block from external egress.
-  # kube-dns is allowed via namespace selectors
-  # regardless of these blocks.
-  # -- Internal IPs/CIDRs to explicitly allow despite blockedCIDRs.
-  # Each entry needs a cidr and a list of ports.
-  allowedInternalCIDRs:
-    - cidr: 10.230.0.4/32
-      ports:
-        - port: 80
-          protocol: TCP
+  # -- Internal destinations that the Agent can reach despite blockedCIDRs.
+  # Each entry is a cidr and its ports, and adds one egress allow rule.
+  # Empty by default: list only the destinations that you approve.
+  allowedInternalCIDRs: []
+  # -- Ranges excluded from the public egress rule. The DNS, platform service
+  # and allowedInternalCIDRs rules are separate allow rules.
   blockedCIDRs:
     - 10.0.0.0/8
     - 172.16.0.0/12
     - 192.168.0.0/16
-    # Azure IMDS — always blocked; workload identity uses token exchange, not IMDS
-    - 169.254.169.254/32
+    # Shared address space, which clusters can use for Pod, Service or node ranges.
+    - 100.64.0.0/10
+    # Link-local, including Azure IMDS. Workload identity uses token exchange.
+    - 169.254.0.0/16
+    # Azure host address for platform DNS, health probes and WireServer.
+    - 168.63.129.16/32
 
 # -- Shared skills volume configuration.
 # Auto-creates PV/PVC backed by Azure Blob CSI (NFS by default; Fuse/Fuse2 supported).

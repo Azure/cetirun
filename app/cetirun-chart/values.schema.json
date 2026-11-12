@@ -1513,6 +1513,16 @@
                     "description": "Namespace of kube-dns (egress DNS)",
                     "default": "kube-system"
                 },
+                "dnsPodLabels": {
+                    "type": "object",
+                    "description": "Labels of the DNS Pods in dnsNamespace that receive DNS traffic (TCP/UDP 53). Set a default key to null to remove it. Without labels, every Pod in dnsNamespace receives it.",
+                    "additionalProperties": {
+                        "type": "string"
+                    },
+                    "default": {
+                        "k8s-app": "kube-dns"
+                    }
+                },
                 "agentIdentityBrokerNamespace": {
                     "type": "string",
                     "description": "Namespace hosting the deployment-level Agent Identity Broker",
@@ -1532,13 +1542,13 @@
                 },
                 "allowedInternalCIDRs": {
                     "type": "array",
-                    "description": "Internal IPs/CIDRs to explicitly allow despite blockedCIDRs. Each entry specifies a CIDR and a list of ports.",
+                    "description": "Internal destinations to allow despite blockedCIDRs. Each entry is a CIDR and its ports, and adds one egress allow rule.",
                     "items": {
                         "type": "object",
                         "properties": {
                             "cidr": {
                                 "type": "string",
-                                "description": "CIDR to allow (e.g., 10.230.0.4/32)",
+                                "description": "CIDR to allow (e.g., 192.0.2.10/32)",
                                 "pattern": "^([0-9./]+|[0-9a-fA-F:]+/[0-9]{1,3})$"
                             },
                             "ports": {
@@ -1579,7 +1589,7 @@
                 },
                 "blockedCIDRs": {
                     "type": "array",
-                    "description": "CIDRs to block from external egress (kube-dns and gateway are allowed via namespace selectors regardless)",
+                    "description": "Ranges excluded from the public egress rule. The DNS, platform service and allowedInternalCIDRs rules are separate allow rules.",
                     "items": {
                         "type": "string",
                         "pattern": "^[0-9./]+$"
@@ -1588,7 +1598,9 @@
                         "10.0.0.0/8",
                         "172.16.0.0/12",
                         "192.168.0.0/16",
-                        "169.254.169.254/32"
+                        "100.64.0.0/10",
+                        "169.254.0.0/16",
+                        "168.63.129.16/32"
                     ]
                 }
             }

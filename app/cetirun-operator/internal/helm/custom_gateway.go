@@ -101,7 +101,7 @@ func (p *PreparedRelease) customCopilotObjects(b runtimebindings.Custom) ([]map[
 		Spec: networkv1.NetworkPolicySpec{PodSelector: metav1.LabelSelector{MatchLabels: labels}, PolicyTypes: []networkv1.PolicyType{networkv1.PolicyTypeIngress, networkv1.PolicyTypeEgress},
 			Ingress: []networkv1.NetworkPolicyIngressRule{{From: []networkv1.NetworkPolicyPeer{caller}, Ports: []networkv1.NetworkPolicyPort{tcp(4000)}}},
 			Egress: []networkv1.NetworkPolicyEgressRule{
-				{To: []networkv1.NetworkPolicyPeer{peer(text(network["dnsNamespace"]))}, Ports: []networkv1.NetworkPolicyPort{{Protocol: ptr.To(corev1.ProtocolUDP), Port: ptr.To(intstr.FromInt32(53))}, tcp(53)}},
+				dnsEgress(network),
 				{To: []networkv1.NetworkPolicyPeer{peer(text(network["istioNamespace"]))}, Ports: []networkv1.NetworkPolicyPort{tcp(15012)}},
 				{To: []networkv1.NetworkPolicyPeer{{IPBlock: block}}, Ports: []networkv1.NetworkPolicyPort{tcp(443)}}}}})
 	result := make([]map[string]any, 0, len(objects))

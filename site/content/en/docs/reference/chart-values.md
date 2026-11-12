@@ -271,11 +271,13 @@ Source: [app/cetirun-chart/values.yaml]({{< repo "app/cetirun-chart/values.yaml"
 | `networkPolicy.enabled` | `true` | Enable NetworkPolicy |
 | `networkPolicy.istioNamespace` | `"istio-system"` | Namespace where istiod runs; also used as the default ingress gateway namespace unless istioIngressNamespace is set. Used for istiod mTLS egress (port 15012) and as the default ingress source. Typical istiod namespaces: AKS managed Istio: aks-istio-system; upstream Istio: istio-system. |
 | `networkPolicy.dnsNamespace` | `"kube-system"` | Namespace where kube-dns runs (egress DNS) |
+| `networkPolicy.dnsPodLabels` |  | Labels of the DNS Pods in dnsNamespace. Only these Pods get DNS traffic (TCP/UDP 53). Helm merges maps, so set k8s-app to null to replace the default label. Without labels, every Pod in dnsNamespace gets it. |
+| `networkPolicy.dnsPodLabels.k8s-app` | `"kube-dns"` |  |
 | `networkPolicy.agentIdentityBrokerNamespace` | `"cetirun-credentials"` | Namespace hosting the deployment-level Agent Identity Broker. |
 | `networkPolicy.gatewayNamespace` | `"cetirun-system"` | Namespace of the platform AI Gateway, used when aiGateway.enabled. |
 | `networkPolicy.gatewayPort` | `4000` | Service port of the platform AI Gateway. |
-| `networkPolicy.allowedInternalCIDRs` | 1 entry | Internal IPs/CIDRs to explicitly allow despite blockedCIDRs. Each entry needs a cidr and a list of ports. |
-| `networkPolicy.blockedCIDRs` | 4 items |  |
+| `networkPolicy.allowedInternalCIDRs` | `[]` | Internal IPs/CIDRs to explicitly allow despite blockedCIDRs. Each entry needs a cidr and a list of ports. |
+| `networkPolicy.blockedCIDRs` | 6 items | Ranges excluded from the public egress rule. The DNS, platform service and allowedInternalCIDRs rules are separate allow rules. |
 | `skills` |  | Shared skills volume configuration. Auto-creates PV/PVC backed by Azure Blob CSI (NFS by default; Fuse/Fuse2 supported). Protocol, secretName, and mountOptions are install-time-only PV settings. |
 | `skills.shared` | `false` | Enable shared skills PV/PVC |
 | `skills.storageClassName` | `"azureblob-nfs-premium"` | StorageClass for the shared skills PV/PVC |
@@ -542,6 +544,7 @@ Source: [app/cetirun-operator/chart/values.yaml]({{< repo "app/cetirun-operator/
 | `aiGateway` |  | Platform AI Gateway integration: the operator gives each built-in Agent its own virtual key and routes OpenClaw model traffic through the Gateway: the shared models every Agent may use and, per Agent, a GitHub Copilot proxy for the owner's account. The cetirun-platform chart installs the Gateway and requires this. While the operator has a Gateway to call, with enabled on or url set, deleting an Agent waits until its key is revoked; turning enabled off stops creating keys, not revoking them. Set neither to stop calling the Gateway, for example once it has been removed. |
 | `aiGateway.enabled` | `true` | Every Agent harness takes its models from the platform AI Gateway. The platform chart requires it. Disabling it holds Agent execution; there is no platform-provided direct-provider fallback. |
 | `aiGateway.url` | `""` | In-cluster Gateway URL: http://\<service>.\<namespace>.svc.cluster.local:\<port>. Empty means the Gateway named cetirun-ai-gateway in the operator namespace, where the platform chart installs it. |
+| `aiGateway.peerNamespaces` | `[]` | Namespaces of the AI Gateway Pods that native Sandbox egress selects by the protected label sandbox.cetirun.microsoft.com/peer. With native execution on, an admission policy in these namespaces lets only the ReplicaSet controller create Pods with that label and refuses changes to it on existing Pods. Empty means the operator namespace. |
 | `aiGateway.masterKeySecret` |  | Secret in the operator namespace that holds the Gateway master key. A Gateway installed separately must run in the operator namespace, or its master key Secret must be copied there. |
 | `aiGateway.masterKeySecret.name` | `"cetirun-ai-gateway-auth"` |  |
 | `aiGateway.masterKeySecret.key` | `"master-key"` |  |

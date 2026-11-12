@@ -375,8 +375,9 @@ Sources: [OpenClaw helpers]({{< repo "app/cetirun-chart/templates/agents/opencla
 | `networkPolicy.istioNamespace` | `istio-system`. The operator sets `aks-istio-system`. |
 | `networkPolicy.istioIngressNamespace` | Uses the Istio namespace as a fallback. The operator sets `aks-istio-ingress`. |
 | `networkPolicy.dnsNamespace` | `kube-system` |
-| `networkPolicy.blockedCIDRs` | RFC 1918 ranges and Azure IMDS |
-| `networkPolicy.allowedInternalCIDRs` | A deployment-specific exception list. Examine or replace it before installation. |
+| `networkPolicy.dnsPodLabels` | `k8s-app: kube-dns`. Only the Pods in `dnsNamespace` that have these labels get DNS traffic. Helm merges maps, so set `k8s-app` to `null` to replace the label. |
+| `networkPolicy.blockedCIDRs` | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, `169.254.0.0/16` (includes Azure IMDS), and `168.63.129.16/32` |
+| `networkPolicy.allowedInternalCIDRs` | `[]`. Each entry allows one internal CIDR on the listed ports. |
 | `sidecarScope.enabled` | `true`. It limits the scope of service discovery. |
 | `logger.enabled`, `logger.scanInterval` | `true`, 30 seconds |
 | `skills.shared` | `false`. An optional static Blob CSI PV and PVC. `make deploy` sets `true` from the `sharedSkills` block of the environment file. |
@@ -387,11 +388,17 @@ Sources: [OpenClaw helpers]({{< repo "app/cetirun-chart/templates/agents/opencla
 | `execRestriction.enabled` | `true`. It renders a cluster-scoped policy that denies `pods/exec` in this namespace. |
 | `tailscale.hostname`, `tailscale.serve` | `cetirun`, `false`. The operator enables Serve for Tailscale instances. |
 
-NetworkPolicy allows gateway ingress, DNS, Istiod, approved internal exceptions,
-and other external IPv4 traffic. Gateway ingress is selected by namespace, not
-by an individual gateway pod. The configurable CIDR exceptions are additive
-allow rules. It is not an HTTPS-only policy or an immutable block on every
-private address.
+NetworkPolicy allows gateway ingress. Gateway ingress is selected by namespace,
+not by an individual gateway pod. By default, inside the cluster the Agent can
+reach only the DNS Pods, istiod on port 15012, and the platform services that
+it uses, such as the AI Gateway. This relies on the Pod, Service, and node
+ranges of the cluster being inside `blockedCIDRs`, as in the infrastructure
+template. Other egress can go to any IPv4 address outside `blockedCIDRs`, on
+any port. The policy is not HTTPS-only.
+
+Each `allowedInternalCIDRs` entry is a separate allow rule, so it opens its
+CIDR on the listed ports even inside `blockedCIDRs`. Add an entry only for an
+internal destination that you approve.
 
 `execRestriction` renders `admissionregistration.k8s.io/v1` policy and binding
 resources. It does not examine the availability of the cluster API.

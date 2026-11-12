@@ -656,9 +656,9 @@ controls and approved Pod-local visible-SNI capture belong to each Agent's
 common Sandbox execution pipeline.
 
 The agent NetworkPolicy allows external IPv4 egress, except to blocked ranges.
-It does not restrict all external traffic to HTTPS. Its configured
-`allowedInternalCIDRs` add more allow rules. As a result, private-range
-exclusions are not absolute. Review or replace that environment-specific list.
+It does not restrict all external traffic to HTTPS. Each `allowedInternalCIDRs`
+entry is a separate allow rule, so it opens its CIDR on the listed ports even
+inside the blocked ranges. The list is empty by default.
 
 ### Retired shared blacklist
 

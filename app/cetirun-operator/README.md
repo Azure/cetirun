@@ -3376,8 +3376,8 @@ failure counters, alert rules, dashboards, or production qualification.
 Source inspection identifies Azure CNI Overlay powered by Cilium and Kata node
 pools in the [cluster template](../../infra/cluster/modules/aks-cluster.bicep).
 The [current chart network template](../cetirun-chart/templates/networkpolicy.yaml)
-uses standard NetworkPolicy, namespace-wide DNS, and an IPv4 egress rule. It is
-not a qualified implementation of the new contract.
+uses standard NetworkPolicy, DNS to the DNS Pods only, and an IPv4 egress rule.
+It is not a qualified implementation of the new contract.
 
 Public documentation that was reviewed on 2026-09-25 narrows the next trial:
 

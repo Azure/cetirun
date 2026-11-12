@@ -66,6 +66,70 @@ func TestCustomSharedPlatformNetwork(t *testing.T) {
 	}
 }
 
+func dnsPeers(policy map[string]any) []any {
+	var peers []any
+	for _, rule := range array(object(policy["spec"])["egress"]) {
+		for _, port := range array(object(rule)["ports"]) {
+			if fmt.Sprint(object(port)["port"]) == "53" {
+				peers = append(peers, array(object(rule)["to"])...)
+				break
+			}
+		}
+	}
+	return peers
+}
+
+func TestCustomDNSEgressFollowsChartValues(t *testing.T) {
+	namespace := map[string]any{"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": "kube-system"}}}
+	coreDNS := map[string]any{"namespaceSelector": namespace["namespaceSelector"], "podSelector": map[string]any{"matchLabels": map[string]any{"k8s-app": "kube-dns"}}}
+	for _, test := range []struct {
+		name         string
+		withoutValue bool
+		peer         map[string]any
+	}{
+		{"current chart", false, coreDNS},
+		// A pinned chart from before dnsPodLabels renders the namespace-wide rule.
+		{"chart without dnsPodLabels", true, namespace},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ch := testChart(t)
+			if test.withoutValue {
+				delete(object(ch.Values["networkPolicy"]), "dnsPodLabels")
+			}
+			input := terminalInput(8080)
+			b := input["customBindings"].(runtimebindings.Custom)
+			b.Copilot = customCopilotInput()["customBindings"].(runtimebindings.Custom).Copilot
+			input["customBindings"] = b
+			p, err := PrepareChart(ch, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			policies := 0
+			for key, obj := range manifestObjects(t, p) {
+				if strings.HasPrefix(key, "NetworkPolicy/") {
+					policies++
+					if peers := dnsPeers(obj); !reflect.DeepEqual(peers, []any{test.peer}) {
+						t.Fatalf("%s DNS destinations = %v", key, peers)
+					}
+				}
+			}
+			if policies != 3 {
+				t.Fatalf("expected the Agent, terminal and Copilot proxy policies, got %d", policies)
+			}
+		})
+	}
+}
+
+func TestCustomRejectsInvalidDNSPodLabels(t *testing.T) {
+	for _, labels := range []map[string]any{{"k8s-app": "kube dns"}, {"k8s-app": 53}} {
+		input := customInput(nil)
+		input["networkPolicy"] = map[string]any{"dnsPodLabels": labels}
+		if _, err := PrepareChart(testChart(t), input); err == nil || !strings.Contains(err.Error(), "dnsPodLabels") {
+			t.Fatalf("DNS Pod labels %v: %v", labels, err)
+		}
+	}
+}
+
 func TestCustomDesktopAndSharedControls(t *testing.T) {
 	for _, port := range []any{nil, 8080} {
 		for _, desktop := range []bool{true, false} {
@@ -175,6 +239,7 @@ func TestCustomSharedControlTamperingIsRejected(t *testing.T) {
 		{"deny-exec-policy.yaml", "expression: \"false\"", "expression: \"true\""},
 		{"poddisruptionbudget.yaml", "minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}", "minAvailable: 0"},
 		{"networkpolicy.yaml", "169.254.169.254/32", "169.254.169.253/32"},
+		{"_helpers.tpl", "{{- with .Values.networkPolicy.dnsPodLabels }}", "{{- with dict }}"},
 		{"_platform.tpl", "allowPrivilegeEscalation: false", "allowPrivilegeEscalation: true"},
 	} {
 		t.Run(test.file, func(t *testing.T) {

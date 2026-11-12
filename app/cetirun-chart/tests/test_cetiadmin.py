@@ -20,7 +20,7 @@ NAMESPACE = "cetirun-cetiadmin"
 ASSETS = "/opt/cetirun/cetiadmin"
 API_MOUNT = "/var/run/cetirun/kubernetes"
 PRIVATE = "synthetic-credential-must-not-render"
-BLOCKED = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.169.254/32"]
+BLOCKED = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16", "168.63.129.16/32"]
 OFFLINE = {**os.environ, "KUBECONFIG": os.devnull, "HELM_REGISTRY_CONFIG": os.devnull,
            "HELM_REPOSITORY_CONFIG": os.devnull}
 
@@ -418,6 +418,13 @@ class CetiAdminChartTests(unittest.TestCase):
             changed = copy.deepcopy(values)
             changed["networkPolicy"]["allowedInternalCIDRs"][0]["ports"] = ports
             self.rejected(changed)
+
+    def test_each_default_block_is_required(self):
+        for cidr in BLOCKED:
+            with self.subTest(cidr=cidr):
+                values = prepared_values()
+                values["networkPolicy"]["blockedCIDRs"].remove(cidr)
+                self.assertIn("default blockedCIDRs", self.rejected(values).stderr)
 
     def test_bad_network_and_shared_audience_fail(self):
         for field, value in (("allowedInternalCIDRs", []), ("allowedInternalCIDRs", [{"cidr": "0.0.0.0/0", "ports": [{"port": 443}]}]),

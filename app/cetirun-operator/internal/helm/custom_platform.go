@@ -23,6 +23,7 @@ import (
 	networkv1 "k8s.io/api/networking/v1"
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -98,6 +99,13 @@ func validateCustomPlatformValues(values map[string]any, agent agents.ResolvedAg
 		}
 	}
 	if network["enabled"] == true {
+		var labels map[string]string
+		if err := decodeObject(network["dnsPodLabels"], &labels); err != nil {
+			return fmt.Errorf("networkPolicy.dnsPodLabels must contain string values")
+		}
+		if problems := metav1validation.ValidateLabels(labels, field.NewPath("networkPolicy", "dnsPodLabels")); len(problems) != 0 {
+			return fmt.Errorf("invalid networkPolicy.dnsPodLabels: %s", problems.ToAggregate())
+		}
 		for _, entry := range array(network["blockedCIDRs"]) {
 			if problems := validation.IsValidCIDRForLegacyField(field.NewPath("networkPolicy", "blockedCIDRs"), text(entry), false, nil); len(problems) != 0 {
 				return fmt.Errorf("invalid networkPolicy.blockedCIDRs: %s", problems.ToAggregate())
@@ -342,6 +350,24 @@ func sameJSON(a, b any) bool {
 	return leftErr == nil && rightErr == nil && string(left) == string(right)
 }
 
+// dnsEgress is the chart's DNS rule. Like the chart, it reads dnsPodLabels, so
+// a pinned chart that predates the value keeps its namespace-wide rule.
+func dnsEgress(network map[string]any) networkv1.NetworkPolicyEgressRule {
+	peer := networkv1.NetworkPolicyPeer{NamespaceSelector: &metav1.LabelSelector{
+		MatchLabels: map[string]string{"kubernetes.io/metadata.name": text(network["dnsNamespace"])},
+	}}
+	if labels := object(network["dnsPodLabels"]); len(labels) != 0 {
+		peer.PodSelector = &metav1.LabelSelector{MatchLabels: map[string]string{}}
+		for key, value := range labels {
+			peer.PodSelector.MatchLabels[key] = text(value)
+		}
+	}
+	return networkv1.NetworkPolicyEgressRule{To: []networkv1.NetworkPolicyPeer{peer}, Ports: []networkv1.NetworkPolicyPort{
+		{Protocol: ptr.To(corev1.ProtocolUDP), Port: ptr.To(intstr.FromInt32(53))},
+		{Protocol: ptr.To(corev1.ProtocolTCP), Port: ptr.To(intstr.FromInt32(53))},
+	}}
+}
+
 func (p *PreparedRelease) customNetwork(n runtimebindings.Network) networkv1.NetworkPolicySpec {
 	config := object(p.Values["networkPolicy"])
 	peer := func(namespace string) networkv1.NetworkPolicyPeer {
@@ -362,9 +388,7 @@ func (p *PreparedRelease) customNetwork(n runtimebindings.Network) networkv1.Net
 		PolicyTypes: []networkv1.PolicyType{networkv1.PolicyTypeIngress, networkv1.PolicyTypeEgress},
 		Ingress:     []networkv1.NetworkPolicyIngressRule{},
 		Egress: []networkv1.NetworkPolicyEgressRule{
-			{To: []networkv1.NetworkPolicyPeer{peer(text(config["dnsNamespace"]))}, Ports: []networkv1.NetworkPolicyPort{
-				{Protocol: ptr.To(corev1.ProtocolUDP), Port: ptr.To(intstr.FromInt32(53))}, tcp(53),
-			}},
+			dnsEgress(config),
 			{To: []networkv1.NetworkPolicyPeer{peer(text(config["istioNamespace"]))}, Ports: []networkv1.NetworkPolicyPort{tcp(15012)}},
 		},
 	}

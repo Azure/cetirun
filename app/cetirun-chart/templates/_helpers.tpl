@@ -638,6 +638,27 @@ Dispatcher: network policy ingress ports
 {{- end }}
 
 {{/*
+Egress rule for name resolution: TCP/UDP 53 to the DNS Pods in dnsNamespace.
+The operator builds the same rule for Custom Agents from these values.
+*/}}
+{{- define "cetirun.networkPolicy.dnsEgress" -}}
+- to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Values.networkPolicy.dnsNamespace }}
+      {{- with .Values.networkPolicy.dnsPodLabels }}
+      podSelector:
+        matchLabels:
+          {{- toYaml . | nindent 10 }}
+      {{- end }}
+  ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+{{- end }}
+
+{{/*
 Shared init container that installs npm-packaged skills onto the PVC.
 Rendered only when .Values.skills.npm is non-empty. Used by both agents.
 Both the openclaw-gateway and hermes-gateway images intentionally bundle
