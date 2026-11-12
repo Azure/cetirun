@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplatform"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 )
 
 const emptyConfigurationJSON = `{"version":"v1","registrations":{},"platforms":{},"runtimeClasses":{},"storageClasses":{}}`
@@ -115,11 +117,67 @@ func TestKubernetesSourceChanged(t *testing.T) {
 			if !errors.Is(err, sandboxplatform.ErrSourceChanged) {
 				t.Fatalf("concurrent change lost its shared error category: %v", err)
 			}
+			if detail := sandboxpolicy.PublicDetail(err, sandboxplatform.ErrSourceChanged); detail != "platform configuration changed during capture" {
+				t.Fatalf("concurrent change has no fixed public reason: %q", detail)
+			}
 			if !reflect.DeepEqual(snapshot, sandboxplatform.Snapshot{}) {
 				t.Fatalf("concurrent change returned partial inventory: %+v", snapshot)
 			}
 			if reader.reads != 2 || reader.lists != 0 {
 				t.Fatalf("unexpected reads=%d lists=%d", reader.reads, reader.lists)
+			}
+		})
+	}
+}
+
+// TestKubernetesSourceFailuresHaveFixedReasons checks that a configuration
+// that cannot be used reports a fixed reason that status can show, and never
+// the values of the configuration.
+func TestKubernetesSourceFailuresHaveFixedReasons(t *testing.T) {
+	const canary = "value-canary-5d1f"
+	document := func(version, registrations, platforms string) string {
+		return `{"version":"` + version + `","registrations":{` + registrations + `},"platforms":{` + platforms +
+			`},"runtimeClasses":{},"storageClasses":{}}`
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*corev1.ConfigMap)
+		class  error
+		reason string
+	}{
+		{"Agent-owned configuration", func(cm *corev1.ConfigMap) {
+			cm.OwnerReferences = []metav1.OwnerReference{{APIVersion: "cetirun.microsoft.com/v1alpha1", Kind: "Agent", Name: canary, UID: canary}}
+		}, sandboxpolicy.ErrOwnership, "Agent-owned platform configuration is not trusted"},
+		{"unsupported version", func(cm *corev1.ConfigMap) {
+			cm.Data[sandboxplatform.ConfigurationKey] = document(canary, "", "")
+		}, sandboxpolicy.ErrUnavailable, "platform version v1 and all four inventory maps are required"},
+		{"unsupported registration key", func(cm *corev1.ConfigMap) {
+			cm.Data[sandboxplatform.ConfigurationKey] = document("v1", `"`+canary+`":{"Capabilities":{},"Available":false}`, "")
+		}, sandboxpolicy.ErrUnsupportedControl, "unsupported Sandbox registration key"},
+		{"platform without registration", func(cm *corev1.ConfigMap) {
+			cm.Data[sandboxplatform.ConfigurationKey] = document("v1", "", `"kata":{"adapter":{"name":"`+canary+`"}}`)
+		}, sandboxpolicy.ErrUnavailable, "platform has no matching Sandbox registration"},
+		// Both registrations fail. The first one in a fixed order is reported,
+		// so the status does not change between attempts.
+		{"two registrations that cannot be used", func(cm *corev1.ConfigMap) {
+			cm.Data[sandboxplatform.ConfigurationKey] = document("v1",
+				`"kata":{"Capabilities":{},"Available":false},"container":{"Capabilities":{},"Available":false}`, "")
+		}, sandboxpolicy.ErrUnsupportedControl, "unsupported Sandbox capability profile"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source, reader := newKubernetesSource(t)
+			reader.after = func(cm *corev1.ConfigMap, _ int) { tc.mutate(cm) }
+			for range 20 {
+				_, err := source.Snapshot(context.Background())
+				if !errors.Is(err, tc.class) || err.Error() != tc.class.Error()+": "+tc.reason {
+					t.Fatalf("unexpected failure: %v", err)
+				}
+				if sandboxpolicy.PublicDetail(err, tc.class) != tc.reason || sandboxpolicy.PublicDetail(err, nil) != tc.reason {
+					t.Fatalf("the failure has no fixed public reason: %v", err)
+				}
+				if strings.Contains(err.Error(), "canary") {
+					t.Fatalf("the failure quoted the configuration: %v", err)
+				}
 			}
 		})
 	}

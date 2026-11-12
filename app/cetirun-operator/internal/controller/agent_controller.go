@@ -346,7 +346,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 	if reconciledSandbox && instance.Spec.Suspended {
 		if err := r.stopReconciledSandboxForSuspension(ctx, instance); err != nil {
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+			return ctrl.Result{}, err
 		}
 	}
 
@@ -374,6 +374,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		// stop compute until fresh authorization evidence is available.
 		bootstrapErr := r.bootstrapPendingIngressMTLS(ctx, instance, policy.ingressMTLSPending)
 		bootstrapErr = stderrors.Join(bootstrapErr, r.bootstrapPendingIdentity(ctx, instance, policy.identityPending))
+		if err == nil && bootstrapErr != nil {
+			// The policy status is recorded; a bootstrap wait retries periodically.
+			return r.holdReconciledBootstrap(ctx, instance, bootstrapErr)
+		}
 		result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
 		return result, stderrors.Join(err, bootstrapErr, holdErr)
 	} else if err != nil {
@@ -410,7 +414,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 	if reconciledSandbox && r.SandboxNativeCoordination != nil && controllerutil.ContainsFinalizer(instance, sandbox.HoldFinalizer) {
 		if err := stderrors.Join(r.stopReconciledAuxiliaries(ctx, instance), r.stopSandboxBuiltin(ctx, instance)); err != nil {
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+			return ctrl.Result{}, err
 		}
 	}
 
@@ -522,8 +526,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		// must not create a namespace that protected bootstrap cannot adopt.
 		if reconciledSandbox {
 			if err := r.bootstrapReconciledSandbox(ctx, instance); err != nil {
-				result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
-				return result, stderrors.Join(err, holdErr)
+				return r.holdReconciledBootstrap(ctx, instance, err)
 			}
 		}
 		// An unmatched Registry operation must not prevent repair of its exec gate.
@@ -713,7 +716,18 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed,
 			metav1.ConditionFalse, "ChartNotInstalled", "Helm chart not installed yet")
 	}
-	if instance.Status.Phase == "" || instance.Status.Phase == cetirunv1alpha1.PhasePending {
+	if reconciledSandbox && instance.Status.Phase == cetirunv1alpha1.PhasePending {
+		// A held common-executor Agent stays Pending until this pass applies
+		// or holds it again. Writing Provisioning first would make every pass
+		// of a steady hold write two alternating phases. Keep the phase in
+		// memory; a later status write in this pass persists it.
+		instance.Status.Phase = cetirunv1alpha1.PhaseProvisioning
+		if creating {
+			if err := r.updateStatus(ctx, instance); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	} else if instance.Status.Phase == "" || instance.Status.Phase == cetirunv1alpha1.PhasePending {
 		logger.V(1).Info("Setting phase to Provisioning", "alias", instance.Spec.User.Alias, "currentPhase", instance.Status.Phase)
 		if reconciledSandbox && !creating {
 			// Bootstrap may still fail before it creates any lifetime evidence.
@@ -776,8 +790,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 	if namespaceErr != nil {
 		if reconciledSandbox {
-			result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
-			return result, stderrors.Join(namespaceErr, holdErr)
+			return r.holdReconciledBootstrap(ctx, instance, namespaceErr)
 		}
 		return r.failWith(ctx, instance, "ProvisioningFailed", fmt.Sprintf("ensure namespace: %v", namespaceErr))
 	}
@@ -1009,7 +1022,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 				return r.reconciledSandboxFailure(ctx, instance, err)
 			}
 			if reconciledSandbox && stderrors.Is(err, errSandboxIngressMTLS) {
-				result, holdErr := r.holdReconciledSandbox(ctx, instance)
+				result, holdErr := r.holdReconciledIngressMTLS(ctx, instance, err)
 				return result, stderrors.Join(err, holdErr)
 			}
 			if reconciledSandbox && stderrors.Is(err, errSandboxSourceChanged) {
@@ -1105,7 +1118,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 					return result, stderrors.Join(err, expectationErr, holdErr)
 				}
 			}
-			return ctrl.Result{RequeueAfter: 60 * time.Second}, err
+			return ctrl.Result{}, err
 		}
 		logger.Info("Helm chart installed/upgraded successfully", "release", releaseName)
 		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed,
@@ -1158,7 +1171,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		logger.Info("Instance is suspended, removing ingress and marking Suspended", "alias", alias)
 		if reconciledSandbox {
 			if err := r.stopNativeSandboxReservation(ctx, instance); err != nil {
-				return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+				return ctrl.Result{}, err
 			}
 		}
 		// Delete VirtualService so users see connection refused instead of 503.
@@ -1408,7 +1421,7 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 	} else {
 		if reconciledSandbox {
 			if err := r.checkSandboxBootstrapCleanup(ctx, instance); err != nil {
-				return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+				return ctrl.Result{}, err
 			}
 			if err := r.releaseSandboxBootstrapResources(ctx, instance, nsObj); err != nil {
 				return ctrl.Result{}, err

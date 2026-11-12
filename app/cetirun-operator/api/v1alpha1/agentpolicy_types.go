@@ -286,6 +286,16 @@ type AgentPolicyStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
+	// AcceptedGeneration is the latest metadata.generation that the operator
+	// accepted. It keeps that acceptance across later transient or
+	// registration-only failures of the same generation, so that the operator
+	// can tell a refusal caused only by the platform registration from a
+	// definitive refusal. It never permits execution: an Agent runs only when
+	// the Accepted condition is True for the current generation.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	AcceptedGeneration int64 `json:"acceptedGeneration,omitempty"`
+
 	// +listType=map
 	// +listMapKey=type
 	// +optional

@@ -29,7 +29,12 @@ const (
 	RevisionAnnotation      = "sandbox.cetirun.microsoft.com/revision"
 	BindingAnnotation       = "sandbox.cetirun.microsoft.com/binding"
 	GrantRevisionAnnotation = "sandbox.cetirun.microsoft.com/grant-revision"
-	EntraAudience           = "api://AzureADTokenExchange"
+	// PeerLabel is the protected label that the AI Gateway chart sets on its
+	// Pods, with the value PeerAIGateway. A selector-bound AI Gateway peer
+	// must select it; the operator chart admission policy restricts its writers.
+	PeerLabel     = "sandbox.cetirun.microsoft.com/peer"
+	PeerAIGateway = "ai-gateway"
+	EntraAudience = "api://AzureADTokenExchange"
 )
 
 var (
@@ -40,6 +45,55 @@ var (
 	ErrOwnership          = errors.New("sandbox resource ownership is not established")
 	ErrRevocationPending  = errors.New("sandbox binding revocation is pending")
 )
+
+// controlError carries a fixed explanation of a classified failure. The
+// explanation is a constant written in code and never contains values from a
+// policy or registration, so status writers can show it. Its Error text is the
+// same as the earlier fmt.Errorf("%w: <detail>", sentinel) form.
+type controlError struct {
+	sentinel error
+	detail   string
+}
+
+func (e *controlError) Error() string { return e.sentinel.Error() + ": " + e.detail }
+func (e *controlError) Unwrap() error { return e.sentinel }
+
+func controlFailure(sentinel error, detail string) error {
+	return &controlError{sentinel: sentinel, detail: detail}
+}
+
+// ControlFailure returns a failure of class sentinel with a fixed explanation
+// that PublicDetail returns. Other packages, for example the platform
+// registration loader, use it. The detail must be constant text written in
+// code, never values from a policy or registration.
+func ControlFailure(sentinel error, detail string) error {
+	return controlFailure(sentinel, detail)
+}
+
+// PublicDetail returns the first fixed explanation in err whose class is
+// sentinel, or an empty string. A nil sentinel accepts every class. It never
+// returns text from user input.
+func PublicDetail(err, sentinel error) string {
+	switch current := err.(type) {
+	case nil:
+		return ""
+	case *controlError:
+		if sentinel == nil || current.sentinel == sentinel {
+			return current.detail
+		}
+		return ""
+	case interface{ Unwrap() []error }:
+		for _, wrapped := range current.Unwrap() {
+			if detail := PublicDetail(wrapped, sentinel); detail != "" {
+				return detail
+			}
+		}
+		return ""
+	case interface{ Unwrap() error }:
+		return PublicDetail(current.Unwrap(), sentinel)
+	}
+	return ""
+}
 
 // AdapterRegistration must describe independently qualified managed versions,
 // Cilium deny/port-range and endpoint/CIDR semantics, protected peer labels, and

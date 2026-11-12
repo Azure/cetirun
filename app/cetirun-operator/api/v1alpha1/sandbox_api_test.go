@@ -210,7 +210,10 @@ func TestGeneratedSandboxSchemaShapes(t *testing.T) {
 	requireSchemaProperties(t, policySpec.Properties["modelAccess"], "copilot", "gatewayBudget", "rateLimits", "sharedModels")
 	requireSchemaProperties(t, policySpec.Properties["modelAccess"].Properties["gatewayBudget"], "defaultMonthlyUSD", "maxMonthlyUSD")
 	requireSchemaProperties(t, policySpec.Properties["modelAccess"].Properties["rateLimits"], "maxParallelRequests", "perModel", "rpm", "tpm")
-	requireSchemaProperties(t, policy.Properties["status"], "observedGeneration", "conditions")
+	requireSchemaProperties(t, policy.Properties["status"], "observedGeneration", "acceptedGeneration", "conditions")
+	if history := policy.Properties["status"].Properties["acceptedGeneration"]; history.Type != "integer" || history.Minimum == nil || *history.Minimum != 0 {
+		t.Fatal("AgentPolicy acceptance history must be a nonnegative integer")
+	}
 
 	agent := apiContractCRD(t, "agents").Spec.Versions[0].Schema.OpenAPIV3Schema
 	for _, name := range []string{"sandboxRef", "team"} {

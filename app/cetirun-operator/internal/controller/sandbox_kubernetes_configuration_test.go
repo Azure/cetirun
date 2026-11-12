@@ -1055,3 +1055,108 @@ func TestKubernetesSandboxConfigurationSourceBounds(t *testing.T) {
 		}
 	})
 }
+
+// TestKubernetesPlatformFailureReasonReachesStatus checks that a platform
+// registration that cannot be used gives its fixed reason to the AgentPolicy,
+// Sandbox and Team status and to the reconcile error, never the registered
+// values.
+func TestKubernetesPlatformFailureReasonReachesStatus(t *testing.T) {
+	const canary = "value-canary-5d1f"
+	selector := map[string]string{"selector-canary.example.com/key": canary}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*controller.SandboxPlatformConfiguration)
+		class  error
+		reason string
+	}{
+		{"Gateway selector without the protected label", func(document *controller.SandboxPlatformConfiguration) {
+			platform := document.Platforms[api.SandboxKata]
+			platform.Topology.Gateway[0].Peer.PodSelector = selector
+			document.Platforms[api.SandboxKata] = platform
+		}, sandboxpolicy.ErrUnsupportedControl,
+			"invalid Sandbox platform declaration: a selector-bound AI Gateway peer must select the protected " + sandboxpolicy.PeerLabel + " Pod label"},
+		{"selector-bound ingress without trusted proxy CIDRs", func(document *controller.SandboxPlatformConfiguration) {
+			platform := document.Platforms[api.SandboxKata]
+			platform.Topology.Ingress[0].Peer.IPs, platform.Topology.Ingress[0].Peer.PodSelector = nil, selector
+			document.Platforms[api.SandboxKata] = platform
+		}, sandboxpolicy.ErrUnavailable, "invalid Sandbox platform declaration: selector-bound ingress requires explicit trusted proxy Pod CIDRs"},
+		{"RuntimeClass pin mismatch", func(document *controller.SandboxPlatformConfiguration) {
+			document.RuntimeClasses["example-kata"] = controller.SandboxRuntimePrerequisite{UID: "example-runtime-uid", Handler: canary}
+		}, sandboxpolicy.ErrUnavailable, "RuntimeClass no longer matches its configured UID/handler"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			box, snapshot, objects := nativeConfigurationSnapshot()
+			document := controller.SandboxPlatformConfiguration{
+				Version: "v1", Registrations: snapshot.Registrations, Platforms: snapshot.Platforms,
+				RuntimeClasses: snapshot.RuntimeClasses, StorageClasses: snapshot.StorageClasses,
+			}
+			tc.mutate(&document)
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "platform-system", Name: "sandbox-platform", UID: "native-platform-uid", ResourceVersion: "1"},
+				Data:       map[string]string{controller.SandboxPlatformConfigurationKey: kubernetesPlatformJSON(t, document)},
+			}
+			source, _ := kubernetesPlatformSource(t, cm, objects)
+			fixedReasonOnly := func(what, text string) {
+				t.Helper()
+				if !strings.Contains(text, tc.reason) || strings.Contains(text, "canary") {
+					t.Fatalf("%s does not show only the fixed reason: %q", what, text)
+				}
+			}
+			snapshotErr := requireKubernetesPlatformFailure(t, source)
+			if !errors.Is(snapshotErr, tc.class) || sandboxpolicy.PublicDetail(snapshotErr, nil) != tc.reason {
+				t.Fatalf("snapshot failure lost its class or fixed reason: %v", snapshotErr)
+			}
+			fixedReasonOnly("snapshot error", snapshotErr.Error())
+
+			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid", Generation: 2},
+				Spec: api.AgentPolicySpec{Harnesses: nativePolicyHarnesses()}}
+			team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid", Generation: 3}, Spec: api.TeamSpec{
+				AgentPolicyRef: policy.Name, SandboxRefs: []string{box.Name}, DefaultSandboxRef: box.Name,
+			}}
+			kube := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(box, policy, team).
+				WithObjects(box, policy, team).Build()
+			now := func() time.Time { return snapshot.ObservedAt }
+
+			policies := &controller.AgentPolicyReconciler{Client: kube, APIReader: kube, Source: source, Now: now, NativeExecution: true}
+			_, err := policies.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
+			if !errors.Is(err, tc.class) {
+				t.Fatalf("AgentPolicy reconcile lost the failure: %v", err)
+			}
+			fixedReasonOnly("AgentPolicy reconcile error", err.Error())
+			if err := kube.Get(ctx, client.ObjectKeyFromObject(policy), policy); err != nil {
+				t.Fatal(err)
+			}
+			accepted := apimeta.FindStatusCondition(policy.Status.Conditions, api.ConditionAgentPolicyAccepted)
+			if accepted == nil || accepted.Status != metav1.ConditionUnknown || accepted.Reason != "PrerequisitesUnavailable" ||
+				accepted.Message != "Current platform support inventory is unavailable: "+tc.reason+"." {
+				t.Fatalf("AgentPolicy status does not show the reason: %+v", accepted)
+			}
+
+			boxes := &controller.SandboxReconciler{Client: kube, APIReader: kube, Source: source, Now: now, NativeExecution: true}
+			if _, err := boxes.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(box)}); !errors.Is(err, tc.class) {
+				t.Fatalf("Sandbox reconcile lost the failure: %v", err)
+			}
+			if err := kube.Get(ctx, client.ObjectKeyFromObject(box), box); err != nil {
+				t.Fatal(err)
+			}
+			ready := apimeta.FindStatusCondition(box.Status.Conditions, api.ConditionReady)
+			if ready == nil || ready.Status != metav1.ConditionUnknown ||
+				ready.Message != "Current platform prerequisite state is unavailable: "+tc.reason+"." {
+				t.Fatalf("Sandbox status does not show the reason: %+v", ready)
+			}
+
+			teams := &controller.TeamReconciler{Client: kube, APIReader: kube, Source: source, Now: now, NativeExecution: true}
+			if _, err := teams.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(team)}); err != nil {
+				t.Fatal(err)
+			}
+			if err := kube.Get(ctx, client.ObjectKeyFromObject(team), team); err != nil {
+				t.Fatal(err)
+			}
+			if report := team.Status.Compatibility; report == nil || report.State != api.CompatibilityUnknown ||
+				report.Message != "Current platform compatibility cannot be verified: "+tc.reason+"." {
+				t.Fatalf("Team compatibility does not show the reason: %+v", report)
+			}
+		})
+	}
+}

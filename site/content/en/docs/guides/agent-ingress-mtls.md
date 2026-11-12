@@ -151,14 +151,19 @@ operator.
    [Externally provisioned certificates](#externally-provisioned-certificates)
    shows. Create the server Secret in the namespace of the Agent. Create the
    client Secret in the namespace of the `Gateway` resource.
-6. Read the UID and the resource version of both Secrets and of the `Gateway`
-   resource:
+6. Make both Secrets immutable. Then read the UID of both Secrets and of the
+   `Gateway` resource:
 
    ```bash
-   kubectl get secret <server-secret> -n "cetirun-$AGENT" -o jsonpath='{.metadata.uid} {.metadata.resourceVersion}{"\n"}'
-   kubectl get secret <client-secret> -n aks-istio-ingress -o jsonpath='{.metadata.uid} {.metadata.resourceVersion}{"\n"}'
-   kubectl get gateways.networking.istio.io cetirun-gateway -n aks-istio-ingress -o jsonpath='{.metadata.uid} {.metadata.resourceVersion}{"\n"}'
+   kubectl patch secret <server-secret> -n "cetirun-$AGENT" --type merge -p '{"immutable":true}'
+   kubectl patch secret <client-secret> -n aks-istio-ingress --type merge -p '{"immutable":true}'
+   kubectl get secret <server-secret> -n "cetirun-$AGENT" -o jsonpath='{.metadata.uid}{"\n"}'
+   kubectl get secret <client-secret> -n aks-istio-ingress -o jsonpath='{.metadata.uid}{"\n"}'
+   kubectl get gateways.networking.istio.io cetirun-gateway -n aks-istio-ingress -o jsonpath='{.metadata.uid}{"\n"}'
    ```
+
+   These commands give UID-only pins. For the other pin form, refer to
+   [Pin forms](#pin-forms).
 
 7. Add a binding for the Agent to `ingressMTLS.bindings` in `platform.json`.
    The binding has the UID, the namespace, and the port of the Agent. It also
@@ -210,7 +215,7 @@ also verifies the exact server SAN and SNI.
 
 The example that follows is a **synthetic registration fragment**, not a
 deployable credential configuration. In your environment, replace each
-identity and version with the values of the approved live object:
+identity with the values of the approved live object:
 
 ```json
 {
@@ -226,20 +231,17 @@ identity and version with the values of the approved live object:
     "serverSecret": {
       "namespace": "cetirun-example",
       "name": "agent-ingress-tls",
-      "uid": "example-server-secret-uid",
-      "resourceVersion": "100"
+      "uid": "example-server-secret-uid"
     },
     "clientSecret": {
       "namespace": "managed-ingress",
       "name": "gateway-example-client",
-      "uid": "example-client-secret-uid",
-      "resourceVersion": "101"
+      "uid": "example-client-secret-uid"
     },
     "gateway": {
       "namespace": "managed-ingress",
       "name": "shared-ingress",
-      "uid": "example-gateway-uid",
-      "resourceVersion": "102"
+      "uid": "example-gateway-uid"
     }
   }]
 }
@@ -252,10 +254,10 @@ above is a public, digest-pinned Envoy 1.36.3 multi-platform index. A digest
 pin does not qualify the image for the target runtime.
 
 No TLS workload is authorized until both Secrets and the `Gateway` resource
-match their registered UID and resourceVersion pins. The operator reads only the Secret
-metadata for these approvals, not the certificate or key contents. Only Envoy
-mounts the key. The application receives only the public certificate and the
-trust bundle for its readiness checks.
+match their registered pins. The operator does not read the certificate or key
+contents for these approvals. Only Envoy mounts the key. The application
+receives only the public certificate and the trust bundle for its readiness
+checks.
 
 Hermes validates the authority of its API and Webapp listeners before each
 supervised start of the Hermes gateway process, with and without mTLS. Platform values supply the
@@ -278,6 +280,48 @@ the Secret references, the ConfigMap, the Cilium policy, the Service targets,
 and the Istio DestinationRule of each Service. The read grant for the client
 Secret of the ingress gateway is limited to its name, and the grant journal
 records it.
+
+### Pin forms
+
+Each `serverSecret`, `clientSecret`, `gateway`, and Chat client `secret`
+reference has one of two forms:
+
+| Form | What it pins | What stops the Agent |
+| --- | --- | --- |
+| UID only (no `resourceVersion`), recommended | The object UID. A pinned Secret must be immutable. | A replacement or a deletion of the object, a Secret that is not immutable, or a change to the servers or the selector of the `Gateway` resource |
+| UID and `resourceVersion` | The exact object version | Every change to the object, including a label or an annotation change |
+
+With the UID-only form:
+
+- Label and annotation changes do not stop the Agent. This includes the
+  `helm.sh/chart` label that a `cetirun-istio` chart upgrade writes on the
+  `Gateway` resource.
+- The operator reads each pinned Secret only to check its `immutable` field.
+  It does not log, hash, or copy the Secret data. The operator ServiceAccount
+  already has `get` permission on Secrets.
+- The execution pins the configuration of the `Gateway` resource with a
+  content digest, and the operator checks its HTTPS server and its selector.
+  A change to them stops the Agent.
+
+To create a Secret that is immutable from the start:
+
+```bash
+kubectl create secret generic agent-ingress-tls -n cetirun-example \
+  --from-file=tls.crt=server.crt --from-file=tls.key=server.key \
+  --from-file=ca.crt=client-ca.crt --dry-run=client -o yaml \
+  | kubectl patch --local -f - --type merge -p '{"immutable":true}' -o yaml \
+  | kubectl apply -f -
+```
+
+Registrations that already have a `resourceVersion` keep the strict behavior.
+To change to the UID-only form, remove the `resourceVersion` fields and make
+the Secrets immutable. This changes the execution revision, so the Agent
+restarts one time.
+
+If an approval is stale, the Agent stays `Pending`, and its `Ready` and
+`SandboxReady` conditions have the reason `IngressMTLSApprovalStale`. The
+condition message names the kind, the namespace, and the name of the stale
+object.
 
 ## OpenClaw Control UI Portal sign-in
 
@@ -363,8 +407,7 @@ empty:
     "secret": {
       "namespace": "portal-system",
       "name": "custom-chat-client",
-      "uid": "example-chat-secret-uid",
-      "resourceVersion": "100"
+      "uid": "example-chat-secret-uid"
     },
     "uri": "spiffe://example.com/portal/example-agent-uid",
     "podLabels": {"app": "cetirun-portal"}
@@ -418,7 +461,9 @@ together:
 1. Suspend the affected Agents. Then make sure that each shutdown is
    acknowledged. The acknowledged shutdown includes the HOME and writer checks
    and the release of the source reservation of the Agent.
-2. Provision the replacement certificates outside CetiRun.
+2. Provision the replacement certificates outside CetiRun. With UID-only pins,
+   create new immutable Secrets. You cannot change the data of an immutable
+   Secret, so a rotation always gives a new UID.
 3. In one edit of the platform registration, update the pins of the Secrets
    and of the `Gateway` resource. Then replace the ConfigMap one time, as
    [The platform registration](../../operations/policy-teams/#the-platform-registration)
@@ -431,13 +476,15 @@ When a Custom Agent is suspended, its application and its separate terminal
 stop. The approved terminal selection does not change. The suspension does
 not authorize terminal access. The shutdown must still be acknowledged.
 
-> **Warning:** A change to a pinned Secret or to the pinned `Gateway` resource
-> stops the mTLS Agents that use it, and it removes their route. For example,
-> an update of the `Gateway` resource changes its resourceVersion. Then update
-> the pins of every affected Agent, as the steps above show.
+> **Warning:** A replacement or a deletion of a pinned Secret or of the pinned
+> `Gateway` resource stops the mTLS Agents that use it. It also removes their
+> route. A change to the servers or the selector of the `Gateway` resource
+> does the same. With UID and `resourceVersion` pins, every change does the
+> same: for example, a label change. Then update the pins of every affected
+> Agent, as the steps above show. Refer to [Pin forms](#pin-forms).
 
 CetiRun does not adopt a replaced Secret by its name. A recreated Secret must
-get a new UID and version approval. Secret metadata events put the affected
+get a new approval for its new UID. Secret metadata events put the affected
 Agents in the reconcile queue. Active mTLS Agents also
 reconcile every five seconds. These are the bounds of control-plane
 reconciliation. They do not guarantee instantaneous revocation in the data
@@ -455,9 +502,22 @@ The public certificate probe examines the validity and the active Envoy
 certificate. An expired certificate cannot keep an endpoint ready.
 
 TLS session resumption is disabled. Authenticated downstream and upstream
-connections last at most five minutes. To revoke the open connections
-immediately, a shutdown is still necessary. The removal of a CA alone does not
-close them.
+connections last at most five minutes (300 seconds). To revoke the open
+connections immediately, a shutdown is still necessary. The removal of a CA
+alone does not close them.
+
+The connection limit also applies to the Terminal. The terminal server, ttyd,
+starts one shell for each connection. After five minutes, the Terminal
+connects to a new shell. The shell history and the commands that run in the
+old shell are lost. The Control UI and the Hermes Webapp connect again without
+a new sign-in. To keep a Terminal session, run this command after you open the
+Terminal and again after each new connection:
+
+```bash
+tmux new -A -s main
+```
+
+The tmux session and its commands continue in the Agent container.
 
 Cleanup uses the usual ownership and journal rules. The retention policy of
 HOME does not change. Cleanup does not delete or change the client Secret of
@@ -475,9 +535,9 @@ The Agent reports these messages in its status conditions:
 | `mTLS requires current common-executor certificate registration` | The platform of the isolation type has no `ingressMTLS` registration, or Sandbox execution does not run the Agent | Register `ingressMTLS`, and enable Sandbox execution |
 | `mTLS approval differs from this Agent's actual harness, port or shared Gateway` | The agent type (`harness`), the `port`, or the `gateway` of the binding does not match the Agent, or the Agent has no `spec.agent.port` | Correct the binding or the Agent |
 | `mTLS endpoint credentials must be distinct from application and model Secrets` | The server Secret is also an application or model Secret of the Agent | Use a separate Secret |
-| `mTLS approved Secret is unavailable` | The operator cannot read a pinned Secret | Create the Secret, or correct its name and namespace in the binding |
-| `mTLS Secret UID/version approval changed` | A pinned Secret was changed or replaced | Update its UID and resourceVersion in the binding |
-| `mTLS shared Gateway is unavailable` or `mTLS Gateway identity changed` | The pinned `Gateway` resource is absent, or it was changed | Update the pin of the `Gateway` resource in the binding |
+| `mTLS approved Secret is unavailable` | The operator cannot read a pinned Secret | Make sure that the operator can read the Secret, and that its name and namespace in the binding are correct |
+| `The mTLS approval for Secret <namespace>/<name> is stale (...)`, reason `IngressMTLSApprovalStale` | The pinned Secret was replaced or deleted. Or it has a UID-only pin and is not immutable. Or it has a `resourceVersion` pin and changed | Register the current UID of the Secret. With a UID-only pin, make the Secret immutable |
+| `mTLS shared Gateway is unavailable`, or `The mTLS approval for Gateway <namespace>/<name> is stale (...)` | The operator cannot read the pinned `Gateway` resource, or the resource was replaced or deleted. Or it has a `resourceVersion` pin and changed | Update the pin of the `Gateway` resource in the binding |
 | `mTLS must retain the shared browser HTTPS Gateway` | The `Gateway` resource has no HTTPS server on port 443 for the domain of the installation | Restore the HTTPS server of the `Gateway` resource |
 | `mTLS Gateway selector differs from the protected Cilium ingress peers` | The namespace or the selector of the `Gateway` resource is different from the `topology.ingress` peers | Correct `topology.ingress` |
 

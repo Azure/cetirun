@@ -378,6 +378,17 @@ spec:
             description: AgentPolicyStatus reports configuration acceptance, not Agent
               enforcement.
             properties:
+              acceptedGeneration:
+                description: |-
+                  AcceptedGeneration is the latest metadata.generation that the operator
+                  accepted. It keeps that acceptance across later transient or
+                  registration-only failures of the same generation, so that the operator
+                  can tell a refusal caused only by the platform registration from a
+                  definitive refusal. It never permits execution: an Agent runs only when
+                  the Accepted condition is True for the current generation.
+                format: int64
+                minimum: 0
+                type: integer
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current

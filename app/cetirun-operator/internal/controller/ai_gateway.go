@@ -1293,7 +1293,10 @@ func (r *AgentReconciler) aiGatewayKeySecret(ctx context.Context, instance *ceti
 func (r *AgentReconciler) revokeAIGatewayKey(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
 	var failures []error
 	status := ensureAIGatewayStatus(instance)
-	if status.Phase != cetirunv1alpha1.AIGatewayPhaseDeleting {
+	// Report the revocation once, on the pass that starts it. Later passes
+	// repeat the idempotent deletes while the hold stays in place (#490).
+	transitioned := status.Phase != cetirunv1alpha1.AIGatewayPhaseDeleting
+	if transitioned {
 		status.Phase = cetirunv1alpha1.AIGatewayPhaseDeleting
 		status.Routed = false
 		if err := r.updateStatus(ctx, instance); err != nil {
@@ -1325,7 +1328,7 @@ func (r *AgentReconciler) revokeAIGatewayKey(ctx context.Context, instance *ceti
 	if err := client.DeleteKeyByAlias(ctx, aiGatewayKeyAlias(instance)); err != nil {
 		failures = append(failures, fmt.Errorf("revoke AI Gateway virtual key by alias: %w", err))
 	}
-	if len(failures) == 0 {
+	if len(failures) == 0 && transitioned {
 		r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "AIGatewayKeyRevoked",
 			"Revoked AI Gateway virtual key %s", aiGatewayKeyAlias(instance))
 	}

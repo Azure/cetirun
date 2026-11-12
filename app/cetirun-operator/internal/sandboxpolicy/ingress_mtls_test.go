@@ -87,12 +87,12 @@ func TestIngressMTLSCompilerRejectsIncompleteApproval(t *testing.T) {
 		"wrong client scope": func(i *CompileInput) {
 			i.Platform.IngressMTLS.Bindings[0].ClientURI = "spiffe://example.com/gateway/other-agent"
 		},
-		"missing Secret UID":     func(i *CompileInput) { i.Platform.IngressMTLS.Bindings[0].ServerSecret.UID = "" },
-		"missing Secret version": func(i *CompileInput) { i.Platform.IngressMTLS.Bindings[0].ClientSecret.ResourceVersion = "" },
-		"client key in Agent":    func(i *CompileInput) { i.Platform.IngressMTLS.Bindings[0].ClientSecret.Namespace = i.Namespace },
-		"unapproved port":        func(i *CompileInput) { i.Platform.Topology.Ingress[0].Ports = i.Platform.Topology.Ingress[0].Ports[:1] },
-		"disabled ingress":       func(i *CompileInput) { i.Resolution.AgentPolicy.Network.Ingress.Mode = api.AgentPolicyIngressDisabled },
-		"legacy execution":       func(i *CompileInput) { i.NativeExecution = false },
+		"missing Secret UID":    func(i *CompileInput) { i.Platform.IngressMTLS.Bindings[0].ServerSecret.UID = "" },
+		"padded Secret version": func(i *CompileInput) { i.Platform.IngressMTLS.Bindings[0].ClientSecret.ResourceVersion = " 1" },
+		"client key in Agent":   func(i *CompileInput) { i.Platform.IngressMTLS.Bindings[0].ClientSecret.Namespace = i.Namespace },
+		"unapproved port":       func(i *CompileInput) { i.Platform.Topology.Ingress[0].Ports = i.Platform.Topology.Ingress[0].Ports[:1] },
+		"disabled ingress":      func(i *CompileInput) { i.Resolution.AgentPolicy.Network.Ingress.Mode = api.AgentPolicyIngressDisabled },
+		"legacy execution":      func(i *CompileInput) { i.NativeExecution = false },
 	} {
 		t.Run(name, func(t *testing.T) {
 			input := ingressMTLSFixture(t, "hermes")
@@ -117,5 +117,19 @@ func TestIngressMTLSRevisionPinsCertificateApproval(t *testing.T) {
 	if err != nil || !strings.Contains(string(raw), `"mode":"MUTUAL"`) ||
 		!strings.Contains(string(raw), `"subjectAltNames"`) || strings.Contains(string(raw), "PRIVATE KEY") {
 		t.Fatal("compiled TLS resources lost exact peer verification or contained key material:", err)
+	}
+}
+
+func TestIngressMTLSCompilesUIDOnlyApprovals(t *testing.T) {
+	input := ingressMTLSFixture(t, "openclaw")
+	binding := &input.Platform.IngressMTLS.Bindings[0]
+	binding.ServerSecret.ResourceVersion, binding.ClientSecret.ResourceVersion, binding.Gateway.ResourceVersion = "", "", ""
+	before := mustCompile(t, input)
+	if before.IngressMTLS == nil || !before.IngressMTLS.ServerSecret.UIDOnly() || !before.IngressMTLS.Gateway.UIDOnly() {
+		t.Fatal("UID-only approvals did not compile into the plan")
+	}
+	binding.ClientSecret.UID = "replacement-client-uid"
+	if after := mustCompile(t, input); after.Revision == before.Revision {
+		t.Fatal("a replaced UID-only Secret did not change the protected execution revision")
 	}
 }

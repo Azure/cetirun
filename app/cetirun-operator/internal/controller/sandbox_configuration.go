@@ -204,7 +204,7 @@ func (r *TeamReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 		compatibility, compatibilityErr := r.assessCompatibility(ctx, team, now)
 		now = configurationNow(r.Now)
 		if compatibilityErr != nil {
-			compatibility = r.unknownCompatibility(team, now)
+			compatibility = r.unknownCompatibility(team, now, compatibilityErr)
 			observeErr = errors.Join(observeErr, compatibilityErr)
 		}
 		team.Status.Compatibility = retainTeamCompatibility(before.Status.Compatibility, compatibility, now)
@@ -307,28 +307,28 @@ func (r *TeamReconciler) assessCompatibility(ctx context.Context, team *api.Team
 		resources.Sandboxes[box.Name] = box
 	}
 	if r.Source == nil {
-		return r.unknownCompatibility(team, now), nil
+		return r.unknownCompatibility(team, now, nil), nil
 	}
 	snapshot, err := r.Source.Snapshot(ctx)
 	if err != nil {
-		return r.unknownCompatibility(team, now), nil
+		return r.unknownCompatibility(team, now, err), nil
 	}
 	// Capture the assessment time after Snapshot: a synchronous source may have
 	// observed its inventory between the caller's previous clock read and now.
 	now = configurationNow(r.Now)
 	if err := configurationSnapshotTime(snapshot.ObservedAt, now, r.MaxSnapshotAge); err != nil {
-		return r.unknownCompatibility(team, now), nil
+		return r.unknownCompatibility(team, now, err), nil
 	}
 	report := sandbox.TeamCompatibilityReport(team, resources, snapshot.Registrations, r.NativeExecution)
 	if err := r.assessNativeCompatibility(ctx, &report, resources, snapshot); err != nil {
 		if errors.Is(err, sandboxpolicy.ErrUnavailable) {
-			return r.unknownCompatibility(team, now), nil
+			return r.unknownCompatibility(team, now, err), nil
 		}
 		return nil, err
 	}
 	report.CheckedAt, report.ValidUntil = metav1.NewTime(now), metav1.NewTime(now.Add(teamCompatibilityValidity))
 	if err := r.verifyCompatibilityInputs(ctx, team, resources, snapshot, report); err != nil {
-		return r.unknownCompatibility(team, now), nil
+		return r.unknownCompatibility(team, now, err), nil
 	}
 	return &report, nil
 }
@@ -357,6 +357,19 @@ func (r *TeamReconciler) assessNativeCompatibility(ctx context.Context, report *
 		if !found {
 			return sandboxpolicy.ErrUnavailable
 		}
+		if refused := policyRefusal(policy); refused != nil {
+			// Agents cannot run with a refused policy, so do not report the
+			// binding as compatible (#490). The reason is a fixed code.
+			message, _ := api.CompatibilityIssueMessage("sandbox_incompatible")
+			issue := api.CompatibilityIssue{Code: "sandbox_incompatible", Field: "spec.agentPolicyRef", Message: message,
+				Team: &report.Team, Policy: &report.Policy, Sandbox: &status.Sandbox}
+			status.State, status.Reason = api.CompatibilityIncompatible, "PolicyNotAccepted"
+			status.Issues = append(status.Issues, issue)
+			report.Issues = append(report.Issues, issue)
+			report.State, report.Reason = api.CompatibilityIncompatible, "ConfigurationIncompatible"
+			report.Message = "The Team Policy is not accepted for the current platform registration (" + refused.Reason + ")."
+			continue
+		}
 		if err := sandboxpolicy.ValidateNativeTeamPolicyBinding(ctx, policy, registration.Capabilities, platform, reader, r.NativeExecution); err != nil {
 			if errors.Is(err, sandboxpolicy.ErrUnavailable) {
 				return err
@@ -375,6 +388,17 @@ func (r *TeamReconciler) assessNativeCompatibility(ctx context.Context, report *
 		}
 	}
 	return nil
+}
+
+// policyRefusal returns the current AgentPolicy refusal for the current
+// generation, or nil when the policy is accepted or not yet observed.
+func policyRefusal(policy *api.AgentPolicy) *metav1.Condition {
+	accepted := apimeta.FindStatusCondition(policy.Status.Conditions, api.ConditionAgentPolicyAccepted)
+	if accepted == nil || accepted.Status != metav1.ConditionFalse || accepted.ObservedGeneration != policy.Generation ||
+		policy.Status.ObservedGeneration != policy.Generation {
+		return nil
+	}
+	return accepted
 }
 
 func (r *TeamReconciler) verifyCompatibilityInputs(ctx context.Context, team *api.Team, resources sandbox.Resources, snapshot SandboxConfigurationSnapshot, report api.TeamCompatibilityStatus) error {
@@ -439,13 +463,15 @@ func (r *TeamReconciler) verifyCompatibilityInputs(ctx context.Context, team *ap
 	return nil
 }
 
-func (r *TeamReconciler) unknownCompatibility(team *api.Team, now time.Time) *api.TeamCompatibilityStatus {
+// unknownCompatibility reports that compatibility cannot be verified. It adds
+// only a fixed explanation of cause, never values from the registration.
+func (r *TeamReconciler) unknownCompatibility(team *api.Team, now time.Time, cause error) *api.TeamCompatibilityStatus {
 	if !team.Spec.PolicyConfigured() {
 		return nil
 	}
 	report := &api.TeamCompatibilityStatus{
 		State: api.CompatibilityUnknown, Reason: "DependenciesUnavailable",
-		Message:   "Current platform compatibility cannot be verified.",
+		Message:   configurationErrorMessage("Current platform compatibility cannot be verified", cause, nil),
 		Team:      api.CompatibilityReference{Name: team.Name, UID: string(team.UID), Generation: team.Generation},
 		Policy:    api.CompatibilityReference{Name: team.Spec.AgentPolicyRef},
 		CheckedAt: metav1.NewTime(now), ValidUntil: metav1.NewTime(now.Add(teamCompatibilityValidity)),
@@ -535,6 +561,14 @@ func (r *AgentPolicyReconciler) Reconcile(ctx context.Context, request ctrl.Requ
 	condition.LastTransitionTime = metav1.NewTime(now)
 	apimeta.SetStatusCondition(&object.Status.Conditions, condition)
 	object.Status.ObservedGeneration = object.Generation
+	if condition.Status == metav1.ConditionTrue || policyAcceptedBefore(before) {
+		// Keep the acceptance of this generation when a transient or
+		// registration-only failure replaces the condition. This also
+		// records an acceptance that only the replaced condition shows, for
+		// example one from an operator without this field. The history never
+		// permits execution, and it is never cleared or lowered.
+		object.Status.AcceptedGeneration = object.Generation
+	}
 	if !reflect.DeepEqual(before.Status, object.Status) {
 		if err := r.Status().Patch(ctx, object, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 			return ctrl.Result{}, errors.Join(observeErr, fmt.Errorf("update AgentPolicy configuration status: %w", err))
@@ -559,7 +593,8 @@ func assessSandboxPrerequisites(ctx context.Context, reader client.Reader, objec
 	}
 	snapshot, err := configurationSnapshot(ctx, source, clock, maxAge)
 	if err != nil {
-		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable", "Current platform prerequisite state is unavailable."), time.Time{}, err
+		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable",
+			configurationErrorMessage("Current platform prerequisite state is unavailable", err, nil)), time.Time{}, err
 	}
 	registration, exists := snapshot.Registrations[spec.Type]
 	if !exists || sandbox.CheckExecutionProfile(registration.Capabilities, nativeExecution) != nil ||
@@ -619,7 +654,8 @@ func (r *AgentPolicyReconciler) assess(ctx context.Context, reader client.Reader
 	}
 	snapshot, err := configurationSnapshot(ctx, r.Source, r.Now, r.MaxSnapshotAge)
 	if err != nil {
-		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable", "Current platform support inventory is unavailable."), time.Time{}, err
+		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable",
+			configurationErrorMessage("Current platform support inventory is unavailable", err, nil)), time.Time{}, err
 	}
 	keys := make([]api.SandboxType, 0, len(snapshot.Registrations))
 	for key := range snapshot.Registrations {
@@ -627,6 +663,10 @@ func (r *AgentPolicyReconciler) assess(ctx context.Context, reader client.Reader
 	}
 	slices.Sort(keys)
 	var failures []error
+	// registrationOnly stays true while every failure comes from compiling the
+	// unchanged policy against the current registration. Static policy errors,
+	// grant approvals and missing inventory never qualify.
+	registrationOnly := len(keys) != 0
 	for _, key := range keys {
 		platform, exists := snapshot.Platforms[key]
 		if !exists {
@@ -636,15 +676,24 @@ func (r *AgentPolicyReconciler) assess(ctx context.Context, reader client.Reader
 		capabilities := snapshot.Registrations[key].Capabilities
 		if errs := sandbox.CheckRuntimeCapabilities(key, capabilities); len(errs) != 0 {
 			failures = append(failures, fmt.Errorf("registration %s: %w: %v", key, sandboxpolicy.ErrUnsupportedControl, errs.ToAggregate()))
+			registrationOnly = false
 			continue
 		}
 		if err := sandbox.CheckExecutionProfile(capabilities, r.NativeExecution); err != nil {
 			failures = append(failures, fmt.Errorf("registration %s: %w: %v", key, sandboxpolicy.ErrUnsupportedControl, err))
+			registrationOnly = false
 			continue
 		}
 		err := sandboxpolicy.ValidatePolicyConfiguration(object, capabilities, platform)
+		if err != nil && (errors.Is(err, sandboxpolicy.ErrUnavailable) ||
+			(!errors.Is(err, sandboxpolicy.ErrUnsupportedControl) && !errors.Is(err, sandboxpolicy.ErrConflict))) {
+			registrationOnly = false
+		}
 		if err == nil {
 			err = sandboxpolicy.VerifyPolicyGrants(ctx, reader, object, platform.Grants)
+			if err != nil {
+				registrationOnly = false
+			}
 		}
 		if err == nil {
 			return configurationCondition(metav1.ConditionTrue, "PolicyAccepted", "Standalone policy support and requested role approvals match a registered adapter; Sandbox compatibility, home access and per-Agent enforcement are not assessed."), snapshot.ObservedAt, nil
@@ -659,7 +708,35 @@ func (r *AgentPolicyReconciler) assess(ctx context.Context, reader client.Reader
 	if errors.Is(unsupported, sandboxpolicy.ErrUnavailable) {
 		return condition, snapshot.ObservedAt, unsupported
 	}
+	if registrationOnly && policyAcceptedBefore(object) {
+		// The same policy generation was accepted before, so only the platform
+		// registration changed. Agents keep their keys and wait (see #490).
+		condition.Reason = policyRegistrationIncompatibleReason
+		condition.Message = "The current platform registration cannot enforce this previously accepted AgentPolicy; correct the registration or the policy. " + condition.Message
+	}
 	return condition, snapshot.ObservedAt, nil
+}
+
+// policyRegistrationIncompatibleReason marks an AgentPolicy that was accepted
+// for its current generation and is now refused only because of the current
+// platform registration. Agents treat it as an unavailable dependency.
+const policyRegistrationIncompatibleReason = "RegistrationIncompatible"
+
+// policyAcceptedBefore reports whether the current generation was accepted
+// before. Status.AcceptedGeneration keeps that acceptance across transient and
+// registration-only failures. The Accepted condition still counts for a policy
+// that an operator without that field accepted, or already refused only
+// because of the registration. This history never permits execution.
+func policyAcceptedBefore(policy *api.AgentPolicy) bool {
+	if policy.Generation > 0 && policy.Status.AcceptedGeneration == policy.Generation {
+		return true
+	}
+	accepted := apimeta.FindStatusCondition(policy.Status.Conditions, api.ConditionAgentPolicyAccepted)
+	if accepted == nil || accepted.ObservedGeneration != policy.Generation || policy.Status.ObservedGeneration != policy.Generation {
+		return false
+	}
+	return accepted.Status == metav1.ConditionTrue ||
+		(accepted.Status == metav1.ConditionFalse && accepted.Reason == policyRegistrationIncompatibleReason)
 }
 
 func runtimePrerequisitesSupported(spec api.SandboxSpec, capabilities sandbox.Capabilities) bool {
@@ -680,14 +757,26 @@ func prerequisiteReadError(err error) (metav1.Condition, error) {
 func configurationErrorCondition(err error) metav1.Condition {
 	switch {
 	case errors.Is(err, sandboxpolicy.ErrUnavailable):
-		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable", "Current trusted prerequisite bindings are unavailable.")
+		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable", configurationErrorMessage("Current trusted prerequisite bindings are unavailable", err, sandboxpolicy.ErrUnavailable))
 	case errors.Is(err, sandboxpolicy.ErrUnapprovedGrant):
-		return configurationCondition(metav1.ConditionFalse, "UnapprovedGrant", "A requested identity or role grant is not approved.")
+		return configurationCondition(metav1.ConditionFalse, "UnapprovedGrant", configurationErrorMessage("A requested identity or role grant is not approved", err, sandboxpolicy.ErrUnapprovedGrant))
 	case errors.Is(err, sandboxpolicy.ErrConflict):
-		return configurationCondition(metav1.ConditionFalse, "PolicyConflict", "Policy rules conflict with required platform controls.")
+		return configurationCondition(metav1.ConditionFalse, "PolicyConflict", configurationErrorMessage("Policy rules conflict with required platform controls", err, sandboxpolicy.ErrConflict))
 	default:
-		return configurationCondition(metav1.ConditionFalse, "UnsupportedControl", "A requested control has no supported, qualified implementation.")
+		return configurationCondition(metav1.ConditionFalse, "UnsupportedControl", configurationErrorMessage("A requested control has no supported, qualified implementation", err, sandboxpolicy.ErrUnsupportedControl))
 	}
+}
+
+// configurationErrorMessage adds the fixed explanation of a classified
+// failure. Only constant text from the policy compiler or the platform
+// registration loader is shown; names, CIDRs and other values from the policy
+// or the registration never are. A nil sentinel accepts every class, for
+// example for a platform snapshot that cannot be used.
+func configurationErrorMessage(summary string, err, sentinel error) string {
+	if detail := sandboxpolicy.PublicDetail(err, sentinel); detail != "" {
+		return summary + ": " + detail + "."
+	}
+	return summary + "."
 }
 
 func configurationCondition(status metav1.ConditionStatus, reason, message string) metav1.Condition {

@@ -893,7 +893,7 @@ func validSource(source w.SourceReference) bool {
 		len(pathvalidation.IsValidPathSegmentName(source.Name)) == 0 &&
 		(source.Namespace == "" || len(validation.IsDNS1123Label(source.Namespace)) == 0) &&
 		literal(string(source.UID), 128) && source.ValidIdentity() &&
-		(source.IsAgent() || literal(source.ResourceVersion, 256))
+		(source.IsAgent() || source.ImmutableSecret || literal(source.ResourceVersion, 256))
 }
 
 func uses(sources []w.SourceReference, target w.SourceReference) bool {

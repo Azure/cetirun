@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
@@ -22,6 +23,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
@@ -337,7 +339,9 @@ func TestSandboxSkillsCatalogRejectsInvalidPublicationBeforeEffects(t *testing.T
 		t.Run(test.name, func(t *testing.T) {
 			f, catalog := newSkillsPublicationFixture(t, "hermes")
 			test.edit(f, catalog)
-			assertCatalogRejectedBeforeEffects(t, f, catalog)
+			// A valid catalog without this Team waits for its publication (#493).
+			wait := slices.Contains([]string{"empty catalog", "wrong Team name", "wrong Team UID"}, test.name)
+			assertCatalogRejectedBeforeEffects(t, f, catalog, wait)
 		})
 	}
 	for _, test := range []struct{ name, old, replacement string }{
@@ -362,7 +366,7 @@ func TestSandboxSkillsCatalogRejectsInvalidPublicationBeforeEffects(t *testing.T
 				t.Fatal("negative catalog fixture did not exercise its intended field")
 			}
 			catalog.Data[controller.SandboxSkillsCatalogKey] = strings.Replace(raw, test.old, test.replacement, 1)
-			assertCatalogRejectedBeforeEffects(t, f, catalog)
+			assertCatalogRejectedBeforeEffects(t, f, catalog, false)
 		})
 	}
 	t.Run("exact byte bound", func(t *testing.T) {
@@ -378,13 +382,19 @@ func TestSandboxSkillsCatalogRejectsInvalidPublicationBeforeEffects(t *testing.T
 	})
 }
 
-func assertCatalogRejectedBeforeEffects(t *testing.T, f *preparationFixture, catalog *corev1.ConfigMap) {
+func assertCatalogRejectedBeforeEffects(t *testing.T, f *preparationFixture, catalog *corev1.ConfigMap, wait bool) {
 	t.Helper()
 	ctx := context.Background()
 	if err := f.client.Update(ctx, catalog); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.reconcile(); err == nil {
+	result, err := f.reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKey{Name: f.fixture.Agent.Name}})
+	if wait {
+		ready := apimeta.FindStatusCondition(f.current(t).Status.Conditions, api.ConditionSandboxReady)
+		if err != nil || result.RequeueAfter != 30*time.Second || ready == nil || ready.Status == metav1.ConditionTrue {
+			t.Fatalf("missing publication did not wait with a held status: result=%+v err=%v condition=%+v", result, err, ready)
+		}
+	} else if err == nil {
 		t.Fatal("invalid catalog was accepted")
 	}
 	if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Namespace), &corev1.Namespace{}); !apierrors.IsNotFound(err) {

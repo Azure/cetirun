@@ -147,7 +147,7 @@ func sandboxPolicyTransition(policy *api.AgentPolicy) sandboxTransitionEvent {
 		event.event = "sandbox.policy.accepted"
 	case metav1.ConditionFalse:
 		switch condition.Reason {
-		case "InvalidConfiguration", "UnsupportedControl", "UnapprovedGrant", "PolicyConflict":
+		case "InvalidConfiguration", "UnsupportedControl", "UnapprovedGrant", "PolicyConflict", policyRegistrationIncompatibleReason:
 			event.event = "sandbox.policy.rejected"
 		default:
 			return sandboxTransitionEvent{}

@@ -188,8 +188,25 @@ func (r *AgentReconciler) startKubernetesSandbox(ctx context.Context, requested 
 	err := r.prepareSandboxHeld(prepareContext, requested)
 	cancel()
 	if err != nil {
-		statusErr := r.sandboxPreparationStatus(ctx, requested, false, err)
-		return ctrl.Result{RequeueAfter: sandboxExecutionRequeue}, errors.Join(err, statusErr)
+		changed, statusErr := r.recordSandboxPreparationStatus(ctx, requested, false, err)
+		result, waitErr := prerequisiteResult(ctx, err, changed, statusErr)
+		if waitErr != nil {
+			return ctrl.Result{}, waitErr
+		}
+		// A classified wait keeps the same hold as a failure, but retries
+		// periodically instead of through the error rate limiter (#493).
+		current := &api.Agent{}
+		if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(requested), current); err != nil {
+			return ctrl.Result{}, err
+		}
+		holdResult, holdErr := r.holdSandbox(ctx, current)
+		if holdErr != nil {
+			return ctrl.Result{}, holdErr
+		}
+		if holdResult.RequeueAfter > 0 && holdResult.RequeueAfter < result.RequeueAfter {
+			result = holdResult
+		}
+		return result, nil
 	}
 	agent := &api.Agent{}
 	if err := r.APIReader.Get(ctx, client.ObjectKey{Name: requested.Name}, agent); err != nil {

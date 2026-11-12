@@ -20,6 +20,7 @@ import (
 	istio "istio.io/client-go/pkg/apis/networking/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -97,22 +98,25 @@ func (r *AgentReconciler) sandboxIngressMTLSInputs(ctx context.Context, attempt 
 		return fmt.Errorf("mTLS endpoint credentials must be distinct from application and model Secrets")
 	}
 	for _, ref := range append([]ingressmtls.Reference{plan.ServerSecret}, plan.ClientSecrets()...) {
-		object := &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"}}
-		if err := r.customReader().Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, object); err != nil {
-			return fmt.Errorf("mTLS approved Secret is unavailable: %w", err)
+		source, err := r.ingressMTLSSecretSource(ctx, ref)
+		if err != nil {
+			return err
 		}
-		if object.UID != ref.UID || object.ResourceVersion != ref.ResourceVersion || !object.DeletionTimestamp.IsZero() {
-			return fmt.Errorf("mTLS Secret UID/version approval changed")
-		}
-		attempt.sources = append(attempt.sources, sandboxSource(object, "v1", "Secret"))
+		attempt.sources = append(attempt.sources, source)
 	}
 	gateway := &istio.Gateway{}
 	ref := plan.Gateway
 	if err := r.customReader().Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, gateway); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ref.Stale("Gateway", "the approved Gateway no longer exists")
+		}
 		return fmt.Errorf("mTLS shared Gateway is unavailable: %w", err)
 	}
-	if gateway.UID != ref.UID || gateway.ResourceVersion != ref.ResourceVersion || !gateway.DeletionTimestamp.IsZero() {
-		return fmt.Errorf("mTLS Gateway identity changed")
+	// A UID-only Gateway pin accepts metadata changes such as a chart upgrade
+	// label. Its effective content is pinned by the execution source digest,
+	// and the checks below verify the browser server and the selector.
+	if !ref.Matches(gateway.UID, gateway.ResourceVersion) || !gateway.DeletionTimestamp.IsZero() {
+		return ref.Stale("Gateway", "its UID or pinned resourceVersion changed, or it is terminating")
 	}
 	https := false
 	for _, server := range gateway.Spec.Servers {
@@ -171,6 +175,42 @@ func (r *AgentReconciler) sandboxMTLSSourceAccess(attempt *sandboxPreparationAtt
 		AgentName: attempt.agent.Name, AgentUID: attempt.agent.UID, RoleRef: binding.RoleRef,
 		ServiceAccountName: account, ServiceAccountNamespace: r.OperatorNamespace, GrantRevision: revision}
 	return role, binding, ref, nil
+}
+
+// ingressMTLSSecretSource checks one approved Secret. A version-pinned
+// approval keeps the strict metadata check. A UID-only approval requires an
+// immutable Secret: the typed read only checks that marker and never logs,
+// hashes or copies the Secret data.
+func (r *AgentReconciler) ingressMTLSSecretSource(ctx context.Context, ref ingressmtls.Reference) (w.SourceReference, error) {
+	key := client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}
+	if !ref.UIDOnly() {
+		object := &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"}}
+		if err := r.customReader().Get(ctx, key, object); err != nil {
+			if apierrors.IsNotFound(err) {
+				return w.SourceReference{}, ref.Stale("Secret", "the approved Secret no longer exists")
+			}
+			return w.SourceReference{}, fmt.Errorf("mTLS approved Secret is unavailable: %w", err)
+		}
+		if !ref.Matches(object.UID, object.ResourceVersion) || !object.DeletionTimestamp.IsZero() {
+			return w.SourceReference{}, ref.Stale("Secret", "its UID or pinned resourceVersion changed, or it is terminating")
+		}
+		return sandboxSource(object, "v1", "Secret"), nil
+	}
+	secret := &corev1.Secret{}
+	if err := r.customReader().Get(ctx, key, secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return w.SourceReference{}, ref.Stale("Secret", "the approved Secret no longer exists")
+		}
+		return w.SourceReference{}, fmt.Errorf("mTLS approved Secret is unavailable: %w", err)
+	}
+	if secret.UID != ref.UID || !secret.DeletionTimestamp.IsZero() {
+		return w.SourceReference{}, ref.Stale("Secret", "its UID changed, or it is terminating")
+	}
+	source, err := w.ImmutableSecretReference(secret)
+	if err != nil {
+		return w.SourceReference{}, ref.Stale("Secret", "a UID-only approval requires an immutable Secret")
+	}
+	return source, nil
 }
 
 func (r *AgentReconciler) restrictMTLSRoute(ctx context.Context, agent *api.Agent, route *istio.VirtualService) error {

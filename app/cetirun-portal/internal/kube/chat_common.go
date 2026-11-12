@@ -61,6 +61,7 @@ type commonChatSource struct {
 	ResourceVersion string    `json:"resourceVersion,omitempty"`
 	Generation      int64     `json:"generation,omitempty"`
 	IntentDigest    string    `json:"intentDigest,omitempty"`
+	ImmutableSecret bool      `json:"immutableSecret,omitempty"`
 }
 
 type commonChatExpectation struct {
@@ -221,10 +222,12 @@ func (c *Client) verifyCommonChatIngress(ctx context.Context, agent *api.Agent, 
 		return 0, false, nil
 	}
 	approved := clients[0]
-	if approved.Secret.Name == "" || approved.Secret.UID == "" || approved.Secret.ResourceVersion == "" ||
+	// An approval without a resourceVersion pins an immutable Secret by UID.
+	if approved.Secret.Name == "" || approved.Secret.UID == "" ||
 		!slices.ContainsFunc(expected.Sources, func(source commonChatSource) bool {
 			return source.APIVersion == "v1" && source.Kind == "Secret" && source.Namespace == approved.Secret.Namespace &&
-				source.Name == approved.Secret.Name && source.UID == approved.Secret.UID && source.ResourceVersion == approved.Secret.ResourceVersion
+				source.Name == approved.Secret.Name && source.UID == approved.Secret.UID && source.ResourceVersion == approved.Secret.ResourceVersion &&
+				source.ImmutableSecret == (approved.Secret.ResourceVersion == "")
 		}) {
 		return 0, false, nil
 	}

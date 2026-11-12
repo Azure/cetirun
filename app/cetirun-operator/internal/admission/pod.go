@@ -446,6 +446,18 @@ func (h *PodHandler) readPodSource(ctx context.Context, expected sandboxworkload
 		}
 		return nil
 	}
+	if source.ImmutableSecret {
+		// Read only the immutability marker of a UID-pinned Secret; its data
+		// is not compared, hashed or logged.
+		secret := &corev1.Secret{}
+		if err := h.reader.Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: source.Name}, secret); err != nil {
+			return podReadFailure("Source", err)
+		}
+		if !sandboxworkload.ImmutableSecretMatches(source, secret) {
+			return podDenied("SourceChanged", "a UID-pinned Secret was replaced, became mutable, or is terminating")
+		}
+		return nil
+	}
 	var object client.Object = &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: source.APIVersion, Kind: source.Kind}}
 	effectiveSource := expected.SinglePod && sandboxworkload.EffectiveSource(source)
 	if effectiveSource {

@@ -1,0 +1,69 @@
+{{- /*
+Native Sandbox egress can select the AI Gateway Pods by the protected label
+sandbox.cetirun.microsoft.com/peer. Without this policy, any identity that can
+create or relabel Pods in the Gateway namespace could receive Agent traffic.
+Only the ReplicaSet controller (or the controller manager when it runs without
+per-controller credentials) may create Pods with the label, and the label of an
+existing Pod cannot be added, changed or removed.
+*/ -}}
+{{- if .Values.sandboxSources.nativeExecution -}}
+{{- $namespaces := .Values.aiGateway.peerNamespaces | default (list .Values.namespace) -}}
+{{- if not (kindIs "slice" $namespaces) -}}
+{{- fail "aiGateway.peerNamespaces must be a list of namespace names" -}}
+{{- end -}}
+{{- range $namespaces -}}
+{{- if or (not (kindIs "string" .)) (gt (len .) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" .)) -}}
+{{- fail "aiGateway.peerNamespaces must contain namespace names" -}}
+{{- end -}}
+{{- end -}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: cetirun-sandbox-protected-peer
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+        scope: Namespaced
+  variables:
+    - name: key
+      expression: '"sandbox.cetirun.microsoft.com/peer"'
+    - name: labels
+      expression: 'has(object.metadata.labels) ? object.metadata.labels : {}'
+    - name: oldLabels
+      expression: 'oldObject != null && has(oldObject.metadata.labels) ? oldObject.metadata.labels : {}'
+  validations:
+    - expression: >-
+        request.operation != "CREATE" || !(variables.key in variables.labels) ||
+        request.userInfo.username == "system:serviceaccount:kube-system:replicaset-controller" ||
+        request.userInfo.username == "system:kube-controller-manager"
+      message: "Only the ReplicaSet controller may create Pods with the protected sandbox.cetirun.microsoft.com/peer label."
+      reason: Forbidden
+    - expression: >-
+        request.operation != "UPDATE" ||
+        (
+          (variables.key in variables.labels) == (variables.key in variables.oldLabels) &&
+          (!(variables.key in variables.labels) || variables.labels[variables.key] == variables.oldLabels[variables.key])
+        )
+      message: "The protected sandbox.cetirun.microsoft.com/peer label of an existing Pod cannot be added, changed or removed."
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: cetirun-sandbox-protected-peer
+spec:
+  policyName: cetirun-sandbox-protected-peer
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values:
+            {{- toYaml $namespaces | nindent 12 }}
+{{- end }}

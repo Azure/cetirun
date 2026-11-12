@@ -119,7 +119,9 @@ type Bundle struct {
 }
 
 // SourceReference pins exact resource versions except for the status-bearing
-// Agent, whose generation and authorization-relevant intent are pinned instead.
+// Agent, whose generation and authorization-relevant intent are pinned instead,
+// and for an immutable Secret, which is pinned by UID. Readers must confirm
+// that such a Secret is still immutable; its data stays unread.
 type SourceReference struct {
 	APIVersion      string    `json:"apiVersion"`
 	Kind            string    `json:"kind"`
@@ -129,6 +131,7 @@ type SourceReference struct {
 	ResourceVersion string    `json:"resourceVersion,omitempty"`
 	Generation      int64     `json:"generation,omitempty"`
 	IntentDigest    string    `json:"intentDigest,omitempty"`
+	ImmutableSecret bool      `json:"immutableSecret,omitempty"`
 }
 
 // Expectation is persisted only by the controller in its protected state
