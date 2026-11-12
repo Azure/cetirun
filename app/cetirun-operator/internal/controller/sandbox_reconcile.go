@@ -1091,13 +1091,24 @@ func (r *AgentReconciler) reconciledSandboxFailure(ctx context.Context, agent *a
 }
 
 func (r *AgentReconciler) holdReconciledSandbox(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
-	return r.holdReconciledSandboxWithStatus(ctx, agent, reconciledSandboxHoldStatus{
-		phase: api.PhasePending, reason: "SandboxHeld",
-		message: "Current Sandbox authorization or prerequisites are unavailable",
-	}, reconciledSandboxHoldStatus{
-		phase: api.PhasePending, reason: "SandboxHeld",
-		message: "Current Sandbox authorization or prerequisites are unavailable",
-	})
+	return r.holdReconciledSandboxBecause(ctx, agent, "")
+}
+
+// reconciledSandboxHeldMessage is the Ready and SandboxReady text of a held
+// common-executor Agent.
+const reconciledSandboxHeldMessage = "Current Sandbox authorization or prerequisites are unavailable"
+
+// holdReconciledSandboxBecause is holdReconciledSandbox with the reason of the
+// hold after the generic text. The condition reason stays SandboxHeld. cause
+// must be bounded text that the Agent already shows, for example the
+// PolicyResolved message of a policy hold.
+func (r *AgentReconciler) holdReconciledSandboxBecause(ctx context.Context, agent *api.Agent, cause string) (ctrl.Result, error) {
+	message := reconciledSandboxHeldMessage
+	if cause != "" {
+		message += ": " + cause
+	}
+	status := reconciledSandboxHoldStatus{phase: api.PhasePending, reason: "SandboxHeld", message: message}
+	return r.holdReconciledSandboxWithStatus(ctx, agent, status, status)
 }
 
 // holdReconciledIngressMTLS holds an Agent whose mTLS prerequisites failed.

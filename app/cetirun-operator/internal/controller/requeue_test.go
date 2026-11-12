@@ -127,6 +127,19 @@ func TestNativeAgentWaitsForSkillsPublication(t *testing.T) {
 				!slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) || f.installer.stages != 0 {
 				t.Fatalf("missing Skills publication was not recorded as a hold: phase=%s condition=%+v", agent.Status.Phase, held)
 			}
+			// Only a policy that does not resolve adds its reason to the hold
+			// text (#556). Here only the mTLS approval holds the policy.
+			want := reconciledSandboxHeldMessage
+			if path == "pending ingress mTLS approval" {
+				resolved := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionPolicyResolved)
+				if resolved == nil || resolved.Status != metav1.ConditionFalse {
+					t.Fatalf("the pending mTLS approval did not hold the policy: %+v", resolved)
+				}
+				want += ": " + resolved.Message
+			}
+			if held.Message != want {
+				t.Fatalf("the hold text does not match its cause: %q, want %q", held.Message, want)
+			}
 			if err := f.kube.Get(ctx, client.ObjectKey{Name: instanceNamespace(agent.Name)}, &corev1.Namespace{}); !apierrors.IsNotFound(err) {
 				t.Fatal("bootstrap continued without the Skills publication:", err)
 			}
