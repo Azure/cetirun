@@ -149,9 +149,12 @@ gets the operator's `aiGateway.defaultBudget` when it is created. An
 administrator can change this budget in the Gateway's console.
 
 When the spend of the key reaches the budget, the Gateway refuses every
-request of the key with HTTP 402. OpenClaw then reports a billing error of its
-model provider. Hermes says to add credits with the provider. Neither message
-says that the CetiRun budget is used up. The requests to the instance's GitHub
+request of the key with HTTP 402. Its message says that the instance's budget
+is spent, when the budget resets, and that a CetiRun administrator can raise
+it. Hermes shows this message, and then its own advice to add credits with the
+provider, which does not apply to the Gateway. OpenClaw shows a shorter
+message: the instance is out of budget on the CetiRun AI Gateway, and a CetiRun
+administrator can raise the budget. The requests to the instance's GitHub
 Copilot models count against the same budget, so they stop too.
 
 The budget resets on the first day of each month, UTC, up to about ten minutes

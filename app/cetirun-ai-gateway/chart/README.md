@@ -534,11 +534,27 @@ for each request matched those rates exactly.
 ### When a budget runs out
 
 Budgets are in US dollars. There is no token allowance. The Gateway refuses a
-request over budget with HTTP 402 and `Budget has been exceeded!` by default
-(`budgetExceededStatusCode`). LiteLLM's own default is 422 from version 1.105,
-and 429 before that. The status decides what an agent does next. A measurement
-with OpenClaw 2026.9.6 and Hermes v2026.9.24 against an exhausted key gave these
-results:
+request over budget with HTTP 402 by default (`budgetExceededStatusCode`), and
+with the error type `budget_exceeded`. LiteLLM's own default status is 422
+from version 1.105, and 429 before that.
+
+The image's guard callback replaces LiteLLM's message, `Budget has been
+exceeded!`, which showed the key's alias and the last characters of the key.
+The Gateway's message says which budget is spent: the budget of the key, the
+budget of its team, or another budget that applies to the key. It gives the
+spend and the budget, the reset time of the key's own budget when the key has
+a reset period, and that a CetiRun administrator can raise the budget. For a
+key that the CetiRun operator issued, the message names the Agent:
+
+> CetiRun AI Gateway: this Agent has spent 10.02 USD of its 10.00 USD budget.
+> The Gateway refuses its model requests until the budget resets on
+> 2026-12-01 00:00 UTC. A CetiRun administrator can raise the budget sooner.
+
+The Gateway's own log keeps LiteLLM's message.
+
+The status decides what an agent does next. A measurement with OpenClaw
+2026.9.6 and Hermes v2026.9.24 against an exhausted key, with LiteLLM's
+message, gave these results:
 
 | Status | OpenClaw | Hermes |
 | --- | --- | --- |
@@ -548,11 +564,32 @@ results:
 
 With 402, both agents stop immediately and say that no credit is left, which is
 closest to the cause. With 429, the agents continue to retry, but the budget is
-available again only at its reset. The message for 402 still refers to the
-provider's billing or API key, and not to the Gateway's budget. As a result, a
-user can look for the problem in the wrong place. To select another status, set
+available again only at its reset. To select another status, set
 `budgetExceededStatusCode` to 422 or 429, because the chart refuses any other
 value. Other agents and other versions were not measured.
+
+The Gateway's message names no limit, quota, retry, or wait. With such words,
+OpenClaw 2026.9.6 classifies a 402 as a rate limit and retries it. Hermes
+0.22.7 does the same when a usage limit or a quota is named together with a
+wait or a reset. The classification code of OpenClaw 2026.9.6 and Hermes
+0.22.7 puts each of the three statuses in the same class with the Gateway's
+message as with LiteLLM's. This was checked against their sources, with the
+responses of a LiteLLM 1.108.3 proxy, and not with running agents.
+
+With 402, Hermes shows the Gateway's message after "Billing or credits
+exhausted", followed by its own advice to add credits with the provider.
+OpenClaw 2026.9.6 shows its own text for a billing error instead: the provider
+`cetirun` returned a billing error, and the user should check its billing
+dashboard. It then stops using the Gateway key for ten minutes, so a raised
+budget would wait that long. The CetiRun OpenClaw image changes both, with
+`agents/openclaw/compat/apply-gateway-budget.mjs` of the runtime chart. Its
+text says that the Agent is out of budget on the CetiRun AI Gateway, and that a
+CetiRun administrator can raise the budget or that the budget resets. It does
+not give the reset time. OpenClaw keeps no cooldown for the Gateway key, as it
+does for the providers `openrouter` and `kilocode`: after a refusal, its next
+request goes to the Gateway again. The image changes two chunks of the
+published OpenClaw 2026.9.6 package. The change was checked on those files,
+and not with a running Agent.
 
 ### Key request limits
 
@@ -2315,6 +2352,10 @@ these actions:
   the response also keeps the `retry-after` header. LiteLLM sets no such
   header on its Anthropic Messages API. The Gateway's own log and the request
   log keep the full message.
+- It replaces LiteLLM's message for a request that is refused because a budget
+  is spent. The message says which budget is spent and who can raise it,
+  without the key's alias. The response keeps its status and the error type
+  `budget_exceeded`. Refer to [When a budget runs out](#when-a-budget-runs-out).
 
 When `operatorIntegration` is off, the guard's request fields, its decision
 model rules, its parameter changes, and its error messages apply in the same

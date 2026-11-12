@@ -231,8 +231,9 @@ def gateway(args, environ=None):
     affinity is on, writes that mark in a form clients keep, ends fallbacks
     after a deployment refused a request's encrypted reasoning, removes the
     sampling parameters a reasoning model refuses from requests an auto router
-    sends it, and keeps LiteLLM's list of deployments in cooldown out of the
-    errors callers get
+    sends it, keeps LiteLLM's list of deployments in cooldown out of the
+    errors callers get, and replaces LiteLLM's message for a request refused
+    because a budget is spent with one that says whose budget it is
     (cetirun_ai_gateway/guard.py).
 
     The callbacks are registered here, in code, rather than in

@@ -496,7 +496,7 @@ kubectl logs -n cetirun-system -c gateway --since=15m --tail=-1 \
 
 | Symptom or message | Cause | Action |
 | --- | --- | --- |
-| HTTP 402, `Budget has been exceeded!`. OpenClaw reports a billing error of its provider. Hermes says to add credits | The key spent its monthly budget | Raise the budget, or wait for the reset. Refer to [Budgets and spend](../budgets/) |
+| HTTP 402, `CetiRun AI Gateway: this Agent has spent ...`. Hermes shows the message and says to add credits. OpenClaw says that the Agent is out of budget on the AI Gateway | The key, or its AI Gateway team, spent its budget | Raise the budget, or wait for the reset. Refer to [Budgets and spend](../budgets/) |
 | HTTP 429 with a `retry-after` header | A request limit of the Agent Policy | Wait, or raise the limit in the Policy. Refer to [Request limits](../budgets/#request-limits) |
 | HTTP 429, `No deployments available` | No deployment of the model is available to the key. For example, all deployments are in cooldown after errors, or only Copilot routes serve the name and the key cannot use them | Examine the provider errors in the request log. Wait for the cooldown to end |
 | HTTP 403, `This key may not use the model <name>.` | A router sent the request to a tier model that the key cannot use, or the key asked for a decision model | Allow the tier model in the Policy of the Agent. Refer to [Smart routing](../smart-routing/) |
