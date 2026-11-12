@@ -159,8 +159,8 @@ export async function fetchInstances(): Promise<InstanceResponse[]> {
   return response.json();
 }
 
-export async function fetchInstanceByName(name: string): Promise<InstanceResponse> {
-  const response = await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}`);
+export async function fetchInstanceByName(name: string, signal?: AbortSignal): Promise<InstanceResponse> {
+  const response = await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}`, { signal });
   if (!response.ok) throw new Error(`Failed to fetch instance ${name}: ${response.statusText}`);
   return response.json();
 }

@@ -56,6 +56,11 @@ When you open an Agent, a sidebar shows on the left side of the page.
 return to the portal, use the back button of the browser. **Web UI** of a Custom Agent opens
 in a new tab.
 
+For Hermes, **Agent UI** signs you in with the current Agent key before it
+opens the Webapp. The button shows **Opening Agent UI...** during sign-in.
+An error appears below the button, and you can retry after you follow its
+instructions. Automatic sign-in requires the Webapp on the Portal address.
+
 ## Overview tab
 
 The **Overview** tab of an Agent shows these items, from top to bottom:

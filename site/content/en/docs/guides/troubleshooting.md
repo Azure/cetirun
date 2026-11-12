@@ -91,6 +91,8 @@ deployment does not configure them for its image. A Custom Agent shows
 
 | What you see | What to do |
 | --- | --- |
+| Automatic Hermes sign-in reports an expired Portal session. | Refresh the Portal page, complete Portal sign-in, and select **Agent UI** again. |
+| Automatic Hermes sign-in rejects the key or times out. | Wait for the Agent to be **Ready**, refresh its page, and select **Agent UI** again. If the error stays, send the error text to your administrator. |
 | The Hermes Webapp rejects the username or the password. | Enter the username `cetirun`, not `vibe`. For the password, copy **Hermes API / Webapp Key (user: cetirun)** from the **Overview** tab. |
 | The OpenClaw Control UI asks for the gateway token. | Copy **Gateway Token** from the **Overview** tab. If you changed the token in **Edit Agent**, use the new token. |
 | The OpenClaw Control UI asks to pair the browser again. | Each new browser, and each browser with cleared site data, must be paired. Approve the request in **Terminal**. Refer to [Open an OpenClaw Agent](../../getting-started/first-instance/#open-an-openclaw-agent). |

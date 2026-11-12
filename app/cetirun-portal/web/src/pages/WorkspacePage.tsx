@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, type CSSProperties } from "react";
 import { useParams, useNavigate, Navigate } from "react-router-dom";
 import {
   Button,
@@ -21,6 +21,7 @@ import { useInstanceByNameQuery } from "../hooks/useInstance";
 import { useMe } from "../context/MeContext";
 import { SESSION_EXPIRED_MESSAGE } from "../api/fetch";
 import { OverviewSection } from "../components/OverviewSection";
+import { HermesWebappButton } from "../components/HermesWebappButton";
 import {
   agentUIUrl,
   desktopUrl,
@@ -222,6 +223,19 @@ export function WorkspacePage() {
             const externalDisabled =
               Boolean(item.external) &&
               (instance?.phase !== "Ready" || !externalUrl);
+            const buttonStyle: CSSProperties = {
+              justifyContent: "flex-start",
+              borderRadius: 0,
+              fontWeight: section === item.section ? 600 : 400,
+              borderLeft: section === item.section
+                ? `3px solid ${tokens.colorBrandForeground1}`
+                : "3px solid transparent",
+            };
+
+            if (item.external === "agent" && instance?.agent.type === "hermes") {
+              return <HermesWebappButton key={item.section} instance={instance}
+                disabled={externalDisabled} className={styles.navButton} style={buttonStyle} />;
+            }
 
             return (
               <Button
@@ -246,15 +260,7 @@ export function WorkspacePage() {
                     : () =>
                         navigate(`/instances/${instanceName}/${item.section}`)
                 }
-                style={{
-                  justifyContent: "flex-start",
-                  borderRadius: 0,
-                  fontWeight: section === item.section ? 600 : 400,
-                  borderLeft:
-                    section === item.section
-                      ? `3px solid ${tokens.colorBrandForeground1}`
-                      : "3px solid transparent",
-                }}
+                style={buttonStyle}
               >
                 {item.external === "agent" && hasWebUI ? "Web UI" : item.label}
               </Button>
