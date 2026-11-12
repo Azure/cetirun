@@ -37,6 +37,7 @@ import { PortalError } from "../../api/fetch";
 import { EventsTab } from "../../components/EventsTab";
 import { StatusTab } from "../../components/StatusTab";
 import { GovernanceNotice } from "../../components/GovernanceNotice";
+import { ChartUnavailableNotice } from "../../components/ChartUnavailableNotice";
 import { useFeatures } from "../../hooks/useFeatures";
 import { agentTypeLabel } from "../../utils/instance";
 
@@ -323,6 +324,7 @@ export function InstanceDetailPage() {
     {pendingReconcile && !deleting && <MessageBar intent="info">Configuration saved; waiting for the Operator to apply generation {detail.generation}.</MessageBar>}
     {reviewNotice && !editing && <MessageBar intent="info">{reviewNotice}</MessageBar>}
     {!deletionInProgress && <GovernanceNotice instance={detail} />}
+    {!deletionInProgress && <ChartUnavailableNotice conditions={detail.conditions} />}
 
     <TabList selectedValue={selectedTab} onTabSelect={(_, data: SelectTabData) => setSelectedTab(data.value as string)} style={{ marginTop: 16, marginBottom: 16 }}>
       <Tab value="overview">Overview</Tab><Tab value="status">Status</Tab><Tab value="events">Events</Tab>
@@ -335,7 +337,7 @@ export function InstanceDetailPage() {
     {(selectedTab === "status" || selectedTab === "events") && <>
       {statusQuery.error && <MessageBar intent="error">Failed to load diagnostics: {statusQuery.error.message}</MessageBar>}
       {statusQuery.data?.uid === detail.uid && statusQuery.data.errors?.map((error) => <MessageBar key={error.section} intent="warning">{error.section}: {error.message}</MessageBar>)}
-      {selectedTab === "status" ? <StatusTab data={statusQuery.data?.uid === detail.uid ? statusQuery.data : undefined} isLoading={statusQuery.isLoading} /> : <EventsTab data={statusQuery.data?.uid === detail.uid ? statusQuery.data : undefined} isLoading={statusQuery.isLoading} />}
+      {selectedTab === "status" ? <StatusTab data={statusQuery.data?.uid === detail.uid ? statusQuery.data : undefined} isLoading={statusQuery.isLoading} showChartNotice={false} /> : <EventsTab data={statusQuery.data?.uid === detail.uid ? statusQuery.data : undefined} isLoading={statusQuery.isLoading} />}
     </>}
 
     <Dialog open={editing && draft !== null} onOpenChange={(_, data) => { if (!data.open && !editBusy) cancelEditing(); }}>

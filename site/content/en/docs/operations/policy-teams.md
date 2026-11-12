@@ -278,6 +278,11 @@ selector-bound entries. The
 `revision` fields are labels that you change each time that you change what
 they describe.
 
+Sandbox Pods use only the resolvers in `dnsResolverIPs`, without search
+domains. A short Service name such as `<service>` or `<service>.<namespace>`
+does not resolve in an Agent. Use the full name, for example
+`<service>.<namespace>.svc.cluster.local`.
+
 The ingress entry selects the Pods of the AKS-managed ingress gateway by their
 own label. As a result, you do not have to change this entry after a gateway
 rollout. The ports are OpenClaw's UI (`18789`), the terminal (`7681`), and

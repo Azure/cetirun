@@ -645,6 +645,11 @@ Blocked CIDRs that overlap registered Pod networks are rejected with this mode:
 changing backend IPs cannot be mapped to stable endpoint denies. It does not
 claim support for node-local DNS or host-networked backends.
 
+Sandbox Pods use only the registered resolvers in `dnsResolverIPs`. Their DNS
+configuration has no search domains, so a short name such as `<service>` or
+`<service>.<namespace>` does not resolve. Use the full name, for example
+`<service>.<namespace>.svc.cluster.local`.
+
 Upgrade all Operator/admission readers before adopting these selectors. Change
 the protected platform registration through the normal configuration-change
 and lifecycle workflow; do not rewrite active expectations or reservations.

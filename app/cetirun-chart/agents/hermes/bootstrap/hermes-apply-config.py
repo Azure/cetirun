@@ -36,6 +36,8 @@ GATEWAY_PROVIDER = "cetirun-gateway"
 RESERVED_ENV = ("CETIRUN_AI_GATEWAY",)
 INGRESS_ENV = ("API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_PORT", "HERMES_WEBAPP_PUBLIC_URL")
 ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+# Hermes' OFFER_VERSION for the shared-metrics offer (2 = after the type-ahead fix).
+SHARED_METRICS_OFFER_VERSION = 2
 
 
 def read_yaml(path: Path) -> dict[str, Any]:
@@ -118,6 +120,30 @@ def replace_file(path: Path, content: str) -> None:
     finally:
         if os.path.exists(name):
             os.unlink(name)
+
+
+def answer_shared_metrics(existing: dict[str, Any], config: dict[str, Any]) -> None:
+    """Answer Hermes' "Share usage stats with Nous" offer with "No thanks" for a
+    HOME that has no answer yet.
+
+    Hermes reads the answer only from the user's own config.yaml (keys
+    telemetry.shared_metrics.enabled and .send; offer_version settles an "off"
+    answer, see hermes_cli/observability/shared_metrics_consent.py). An answer
+    that the user saved stays as it is, also when the generated file contains
+    one. An earlier "off" answer without offer_version gets it, so Hermes does
+    not ask again.
+    """
+    telemetry = existing.get("telemetry")
+    saved = telemetry.get("shared_metrics") if isinstance(telemetry, dict) else None
+    saved = copy.deepcopy(saved) if isinstance(saved, dict) else {}
+    if "enabled" not in saved and "send" not in saved:
+        saved.update({"enabled": False, "send": False, "offer_version": SHARED_METRICS_OFFER_VERSION})
+    elif saved.get("enabled") is not True and "offer_version" not in saved:
+        saved["offer_version"] = SHARED_METRICS_OFFER_VERSION
+    section = config.get("telemetry")
+    # Hermes ignores a telemetry value that is not a mapping.
+    config["telemetry"] = dict(section) if isinstance(section, dict) else {}
+    config["telemetry"]["shared_metrics"] = saved
 
 
 def apply_gateway(config: dict[str, Any], desired: dict[str, Any]) -> dict[str, Any]:
@@ -248,6 +274,7 @@ def main() -> int:
             desired_config["platforms"] = {key: value for key, value in platforms.items() if key != "cetirun_teams"}
         reconcile_memory_lists(existing_config, generated, desired_config, root)
         desired_config = apply_gateway(desired_config, generated)
+        answer_shared_metrics(existing_config, desired_config)
         for key, value in generated_env.items():
             if value or key not in existing_env:
                 existing_env[key] = value
