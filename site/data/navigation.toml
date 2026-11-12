@@ -117,6 +117,8 @@
       "/docs/reference/crds",
       "/docs/reference/agent-harness",
       "/docs/reference/helm",
+      "/docs/reference/chart-values",
+      "/docs/reference/portal-api",
       "/docs/reference/scripts",
       "/docs/reference/examples",
     ]

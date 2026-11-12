@@ -8,6 +8,39 @@ Run repository scripts from the repository root. Before you use a script, read
 its inputs and side effects. Not all scripts in this repository implement
 `--help`.
 
+## Make targets
+
+The root [Makefile]({{< repo "Makefile" >}}) is the entry point for checks,
+releases, and deployments. Run `make help` for the short list.
+
+| Target | Action | Network and side effects |
+| --- | --- | --- |
+| `make check` | Runs `make lint` and `make test` | Offline. Install the tools first |
+| `make test` | Runs the Go, Portal, auth, runtime, and CI helper unit tests | Offline |
+| `make lint` | Checks headers, Go vet, TypeScript, Python, Helm, Bicep, shell scripts, and workflows | Offline |
+| `make docs-check` | Runs `make -C site check` | Offline after `make -C site deps` |
+| `make set-version VERSION=X.Y.Z` | Sets the release version in the chart, Go, and Portal sources, and updates the dependencies of the platform chart | Changes source files. Needs `helm` |
+| `make artifact-check` | Checks the release inventory of images and charts | Offline |
+| `make build-images REGISTRY=<registry>` | Builds the release images | Downloads dependencies |
+| `make publish-images`, `make publish-charts`, `make publish` | Pushes the images, the charts, or both to `REGISTRY`, and makes sure that the charts can be pulled | Writes to the registry. Needs registry authentication |
+| `make deploy-plan DEPLOY_CONFIG=<file>` | Validates the environment file and renders the charts | Offline |
+| `make deploy DEPLOY_CONFIG=<file>` | Installs or upgrades CetiRun | Changes the cluster. Needs explicit authorization for the environment |
+| `make deploy-verify DEPLOY_CONFIG=<file>` | Verifies the public DNS, TLS, and Portal access | Read-only live checks |
+
+| Variable | Default and effect |
+| --- | --- |
+| `REGISTRY` | The release registry of the source metadata, which is a pull address. Publication needs an explicit writable registry |
+| `VERSION` | The version of the runtime chart. `make set-version` changes it in the sources |
+| `GIT_SHA` | The current commit. The release builds record it |
+| `FORCE_PUBLISH` | `false`. `true` allows a publication to replace version tags that exist |
+| `VERIFY_PULL` | `true`. The release targets refuse another value |
+| `ACCEPT_VSCODE_SERVER_LICENSE_TERMS` | `true`. With another value, `make build-images`, `make publish-images`, and `make publish` stop before they build an image. To build the other images without VS Code, run the [release CLI](#release-cli) with `--exclude-image cetirun-vscode` |
+| `DEPLOY_CONFIG` | The environment file of the deployment targets. Necessary for them |
+
+For the deployment targets, `VERSION` and `REGISTRY` on the `make` command line
+become `--version` and `--registry` of the platform helper. For the steps of an
+installation, see [Install CetiRun](../../getting-started/platform/).
+
 ## Validation and license helpers
 
 The root [Makefile]({{< repo "Makefile" >}}) delegates to the offline
@@ -21,6 +54,7 @@ For the gate names, use `python3 scripts/ci/validate.py --help`.
 | `scripts/check-license-headers.py --root PATH` | Examines the in-scope first-party headers. It accepts a Git worktree or a source export |
 | `scripts/add-license-headers.py --root PATH --dry-run` | Shows a preview of the mechanical header additions. To write the headers, an explicit `--confirm-first-party` is necessary |
 | `scripts/ci/install_tools.py --bin-dir PATH TOOL...` | Downloads the selected checksum-pinned CI tools into a task-local directory. Linux amd64/arm64 only |
+| `site/scripts/reference_tables.py [--write]` | Checks that the generated field and value tables of the Reference pages match the CRDs and the `values.yaml` files of the charts. `--write` updates the tables. It keeps each Description cell that is not empty, also when the source description changes. `make -C site test` runs the same check |
 | `scripts/ci/scan_image.py --image IMAGE` | Scans the already-built local `cetirun-operator:validation` or `cetirun-portal:validation` image. Docker downloads the pinned Trivy image and the vulnerability database |
 
 The header checker has explicit generated/upstream exclusions. A successful
@@ -157,7 +191,119 @@ explicit override fails before an image build in that mode or when the driver
 is unavailable; it is never silently ignored. The unified release passes this
 input to its image builders and validates its syntax before registry preflight.
 
+## Release CLI
+
+The release targets of the Makefile run
+[`scripts/cetirun-release.py`]({{< repo "scripts/cetirun-release.py" >}}). Run
+it directly to inspect or publish one part of the release:
+
+| Command | Action |
+| --- | --- |
+| `list images`, `list charts`, `list chart-paths` | Prints the release inventory |
+| `check` | Checks that the chart inventory of the release matches the charts of the repository |
+| `plan` | Prints the registry, the version, the commit, and the images and charts of the release |
+| `build-images`, `publish-images` | Builds or pushes the images |
+| `package-charts`, `publish-charts` | Packages the charts into `--package-dir`, or pushes the charts |
+| `publish` | Pushes the images and the charts, and makes sure that the charts can be pulled |
+
+| Option | Effect |
+| --- | --- |
+| `--registry`, `--version`, `--git-sha` | The target registry, the release version, and the commit. The defaults are `REGISTRY`, `VERSION`, and `GIT_SHA` |
+| `--force` | Allows the publication to replace version tags that exist |
+| `--exclude-image NAME` | Leaves one optional image out of the release. Repeat the option for each image |
+| `--chart NAME`, `--chart-dir PATH`, `--app-version VERSION`, `--values-file PATH` | Packages or publishes one chart of the inventory, with an optional source directory, application version, and lint values |
+
+The publication commands write to the registry. They do not log in, deploy to
+Kubernetes, or change another registry.
+
 ## Connected deployment helpers
+
+### Deployment commands
+
+- `infra/cluster/deploy.sh`: cloud provisioning, preview registration, and
+  kubeconfig changes. See [infrastructure](../../operations/infrastructure/).
+- `infra/storage/deploy.sh`: subnet endpoint changes and Blob deployment.
+  See [storage](../../operations/storage/).
+- `infra/istio/deploy.sh`: identity/TLS, Helm, and shared mesh configuration.
+  See [Istio](../../operations/istio/).
+- `scripts/cetirun-platform-deploy.sh`, which `make deploy` runs: examine the
+  target cluster, references, certificates, and published artifacts. Then
+  install the CetiRun Istio, Broker, and platform releases, and wait for their
+  workloads.
+- `app/cetirun-operator/deploy/deploy.sh`: examine StorageClass/gateway
+  prerequisites, then install the operator chart with its packaged CRDs.
+- `app/cetirun-portal/deploy/deploy.sh`: portal namespace injection and Helm.
+
+Operator deployment inputs include `REGISTRY`, `VERSION`, `CHART_VERSION`, `NAMESPACE`,
+`RELEASE_NAME`, `LOCAL_CHART`, `IMAGE_REPO`, `IMAGE_TAG`, `IMAGE_DIGEST`,
+`DOMAIN`, `CETIRUN_REPO_URL`, `CETIRUN_CHART_VERSION`, and `HELM_SET_ARGS`.
+`ISTIO_GATEWAY` selects the Gateway resource as `namespace/name`.
+`ISTIO_INGRESS_NAMESPACE` selects the gateway workload namespace for agent
+NetworkPolicies.
+
+Portal deployment also uses `ISTIO_HOST`, `ISTIO_REV`, `NOTICE_BANNER`,
+`ADMIN_ALIASES`, and `MAX_INSTANCES_PER_USER`. The default registry prefix is
+`mcr.microsoft.com/aks/ai-runtime/cetirun`. `VERSION` selects both the chart
+and image version unless a component-specific override is explicit. Configure
+actual, accessible artifacts; changing defaults does not migrate existing
+Agents or their pinned images.
+
+### Platform deployment helper
+
+`make deploy` runs `scripts/cetirun-platform-deploy.sh`. The helper reads one
+environment file. It never sources the file as shell code.
+
+| Argument or variable | Effect |
+| --- | --- |
+| `--config <file>` | Necessary. The environment file |
+| `--plan` | Validates the inputs and renders the charts locally, without cluster or registry calls |
+| `--verify` | Verifies the public DNS, TLS, and Portal access, read-only. Needs `publicTLS.enabled: true` |
+| `--registry`, `--version` | Override `release.registry` and `release.version` of the environment file for one run |
+| `REGISTRY`, `VERSION` | Used when `--registry` or `--version` is not given |
+| `HELM_DRIVER` | Must be empty or `secret` when `publicTLS` is enabled |
+
+Without `--plan` or `--verify`, the helper changes the cluster. See
+[platform installation](../../getting-started/platform/#platform-chart).
+
+### Istio cleanup helper
+
+[`scripts/cetirun-istio-cleanup.py`]({{< repo "scripts/cetirun-istio-cleanup.py" >}})
+inspects or removes one retired blacklist object that Helm kept after an
+upgrade or an uninstall of the CetiRun Istio release. It needs
+`--kubeconfig`, `--context`, `--cluster-uid`, `--release`,
+`--release-namespace`, and `--legacy-namespace`. It is read-only by default.
+`--apply` deletes only the object with the reviewed `--expected-uid` and
+`--expected-resource-version`.
+
+Without `--after-uninstall`, the helper needs exactly one deployed release.
+After an uninstall, add `--after-uninstall`. The helper then makes sure that
+the release does not exist. See [Istio operations](../../operations/istio/).
+
+For the development helper `scripts/cetirun-dev-deploy.sh`, an explicit
+`REGISTRY` and alias argument are necessary. It does not insert a default user
+team label. For the available modes, use its `--help`.
+
+## Publication and integration boundaries
+
+The repository also contains these items:
+
+- Helm publication helpers for the agent, operator, portal, platform, and Istio
+- A development deployment helper
+- An end-to-end test script
+
+They are not part of documentation validation. Publication pushes artifacts
+to a registry. Deployment and end-to-end checks change a live environment. Do
+not run them as a substitute for the local documentation or chart checks.
+
+`scripts/verify-mcr-image.py --image IMAGE --digest SHA256` examines the public
+MCR digest and AMD64 pull before the release pipeline updates `latest`.
+
+Source: [scripts directory]({{< repo "scripts" "tree" >}}).
+
+## Live probes
+
+These helpers examine a live cluster. Run them only on a target that you are
+authorized to examine.
 
 ### Application E2E lifecycle
 
@@ -311,61 +457,3 @@ is not an Agent tool or a default deployment. Its bounded receipt always
 disclaims durable writer exclusion and production eligibility. After a
 successful stop, Kubelet can recreate a sandbox with the same Pod UID. As a
 result, this prototype must not be connected to execution authorization.
-
-### Deployment commands
-
-- `infra/cluster/deploy.sh`: cloud provisioning, preview registration, and
-  kubeconfig changes. See [infrastructure](../../operations/infrastructure/).
-- `infra/storage/deploy.sh`: subnet endpoint changes and Blob deployment.
-  See [storage](../../operations/storage/).
-- `infra/istio/deploy.sh`: identity/TLS, Helm, and shared mesh configuration.
-  See [Istio](../../operations/istio/).
-- `scripts/cetirun-platform-deploy.sh`, which `make deploy` runs: examine the
-  target cluster, references, certificates, and published artifacts. Then
-  install the CetiRun Istio, Broker, and platform releases, and wait for their
-  workloads.
-- `app/cetirun-operator/deploy/deploy.sh`: examine StorageClass/gateway
-  prerequisites, then install the operator chart with its packaged CRDs.
-- `app/cetirun-portal/deploy/deploy.sh`: portal namespace injection and Helm.
-
-Operator deployment inputs include `REGISTRY`, `VERSION`, `CHART_VERSION`, `NAMESPACE`,
-`RELEASE_NAME`, `LOCAL_CHART`, `IMAGE_REPO`, `IMAGE_TAG`, `IMAGE_DIGEST`,
-`DOMAIN`, `CETIRUN_REPO_URL`, `CETIRUN_CHART_VERSION`, and `HELM_SET_ARGS`.
-`ISTIO_GATEWAY` selects the Gateway resource as `namespace/name`.
-`ISTIO_INGRESS_NAMESPACE` selects the gateway workload namespace for agent
-NetworkPolicies.
-
-Portal deployment also uses `ISTIO_HOST`, `ISTIO_REV`, `NOTICE_BANNER`,
-`ADMIN_ALIASES`, and `MAX_INSTANCES_PER_USER`. The default registry prefix is
-`mcr.microsoft.com/aks/ai-runtime/cetirun`. `VERSION` selects both the chart
-and image version unless a component-specific override is explicit. Configure
-actual, accessible artifacts; changing defaults does not migrate existing
-Agents or their pinned images.
-
-The platform helper reads one environment file: `--config <file>`. With
-`--plan`, it validates the file and renders the charts offline. It does not
-read `DOMAIN`, `VALUES_FILE`, or the other variables of the earlier helper. See
-[platform installation](../../getting-started/platform/#platform-chart).
-
-For the development helper `scripts/cetirun-dev-deploy.sh`, an explicit
-`REGISTRY` and alias argument are necessary. It does not insert a default user
-team label. For the available modes, use its `--help`.
-
-## Publication and integration boundaries
-
-The repository also contains these items:
-
-- Helm publication helpers for the agent, operator, portal, platform, and Istio
-- A development deployment helper
-- An end-to-end test script
-
-They are not part of documentation validation. Publication can push artifacts.
-Deployment and end-to-end checks can mutate a live environment.
-
-Do not run these as a substitute for local docs or chart checks. This site does
-not establish a release process or automate publication.
-
-`scripts/verify-mcr-image.py --image IMAGE --digest SHA256` examines the public
-MCR digest and AMD64 pull before the release pipeline updates `latest`.
-
-Source: [scripts directory]({{< repo "scripts" "tree" >}}).

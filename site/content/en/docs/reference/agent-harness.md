@@ -1,12 +1,12 @@
 ---
 title: "Agent Harness"
-description: "This page describes the Agent configuration, the Hermes defaults, and the BYO contract for images and HTTP."
+description: "The spec.agent fields, the OpenClaw and Hermes runtime profiles, and the contract of a bring-your-own Custom image for files, ports, probes, environment, and HTTP."
 weight: 15
 ---
 
-Agent Harness defines the configuration for Hermes, OpenClaw and bring-your-own
-(BYO) images. It does not replace native reasoning, tools, conversations or
-context.
+Agent Harness is the runtime configuration of an Agent: Hermes, OpenClaw, or
+a bring-your-own (BYO) Custom image. Each runtime keeps its own reasoning,
+tools, conversations, and context.
 
 > **Availability:** The CRD accepts the configuration below.
 > Hermes and OpenClaw run through the shared Harness interface. Operator pins
@@ -14,7 +14,8 @@ context.
 > them. Custom has a typed adapter for the common Sandbox executor on Kata and
 > the explicit ordinary-container backend. It must have platform registration,
 > current Team/AgentPolicy authorization and a Gateway-qualified image. Custom
-> without Sandbox selection uses its separate binding provider.
+> without a Sandbox uses the `customRuntime` binding provider, which the
+> Operator chart enables by default.
 >
 > Private images use Portal-managed Registry credentials and the Operator's
 > credential synchronizer. Custom supports non-default usernames. Built-in
@@ -55,9 +56,13 @@ outside it. `gatewayTokenSecretRef` is necessary for built-ins and not allowed
 for Custom. It is not a model or registry credential. There is no legacy
 `spec.agentType` fallback or migration tool.
 
-Policy controls allowed types and images separately. Other user images use
-Custom. An arbitrary image cannot claim built-in compatibility. The API exposes
-no UID/GID, command, environment or volume overrides.
+AgentPolicy limits the Harness types of a Team with `harnesses.allowed`. Image
+approval is deployment-wide: a built-in image override must match its runtime
+profile, and a Custom image must be in the Operator's
+`customRuntime.approvedImages`. There is no per-Team image allowlist. Other
+user images use Custom. An arbitrary image cannot claim built-in
+compatibility. The API exposes no UID/GID, command, environment or volume
+overrides.
 
 ## Built-in runtime profiles
 
@@ -72,10 +77,11 @@ its `qualifiedImages` list. This compatibility check does not replace image
 authorization policy. Port overrides must not use a native helper, dashboard,
 desktop or terminal port.
 
-Use `spec.agent.image` and `spec.agent.port`. Do not use the old image or
-primary-port Helm values. `runtime`, `agentRequest` and managed
-`imagePullSecrets` are reserved platform inputs. Other supported deployment
-values keep the same scope.
+Use `spec.agent.image` and `spec.agent.port`. Do not use image or primary-port
+Helm values. The operator rejects these values and other reserved platform
+inputs, for example `runtime`, `agentRequest`, and `imagePullSecrets`. For the
+complete list on each execution path, see
+[Helm-value admission](../crds/#helm-value-admission).
 
 The Go adapters return configuration and endpoint descriptions. They do not
 operate Kubernetes, run Agent code or manage conversations. Standalone Helm
@@ -89,9 +95,12 @@ The Portal and Operator charts enable Custom support by default. The Operator's
 rejects every image until an administrator approves its immutable digest. No
 image is approved by default. The list holds at most 64 entries, and each entry
 must have the form `<repository>@sha256:<64 hex digits>`. An Agent's
-`spec.agent.image` must exactly match an entry. Numeric `imageUsers` entries are
+`spec.agent.image` must exactly match an entry.
+
+Numeric `imageUsers` entries are
 required when the selected policy enables FQDN capture; other images keep their
-image-owned identity and must be qualified for the configured HOME storage.
+image-owned identity and must be qualified for the configured HOME storage. See
+[Governed observed-SNI capture](#governed-observed-sni-capture).
 
 The Operator publishes approved image references in its catalog. The Portal
 shows those references when creating a Custom Agent or editing its image. Both
@@ -110,13 +119,14 @@ Gateway is unavailable; the catalog retains its last known model availability.
 Custom uses its own Go adapter and chart branch. For Custom, a built-in profile,
 native provider, configuration template or preferred model name is not
 necessary. The main container keeps the image's ENTRYPOINT/CMD. Gateway-backed
-instances receive `HOME`, `OPENAI_BASE_URL` and a Secret-backed
-`OPENAI_API_KEY`. When the Agent declares an HTTP port, they also receive
-`PORT`. Init does not receive the model credential.
+instances receive `HOME`, `OPENAI_BASE_URL`, a Secret-backed `OPENAI_API_KEY`,
+and `CETIRUN_GATEWAY_MODEL_LIMITS`. When the Agent declares an HTTP port, they
+also receive `PORT`. Init does not receive the model credential.
 
 ### Policy-governed Custom execution
 
-Enable the common executor through the Operator's `sandboxSources`
+The common executor is the operator flow that runs Sandbox Agents when
+Sandbox execution is enabled. Enable it through the Operator's `sandboxSources`
 configuration. This configuration includes `enabled`,
 `bootstrapOwnedPrerequisites` and `nativeExecution`. Use the same registered
 Sandbox, platform inventory and coordination authority that managed Agents use.
@@ -154,10 +164,16 @@ cannot override those controls.
 Headless Agents have a portless governing Service and no application HTTP
 probes. HTTP Chat and Web UI keep their explicit port and `/healthz` contract.
 The platform's static loopback probe works without curl, Node or Python in the
-main image. For HTTP or observed-SNI probes, configure an immutable
-`ttyd.image` digest in the Operator's `cetirun` runtime values, even if
-`ttyd.enabled` is false. This helper is packaged with `cetirun-terminal`, and
-the image must be available to the target nodes.
+main image. This helper is packaged with `cetirun-terminal`, and the image must
+be available to the target nodes.
+
+The terminal and the probe helper take the `cetirun-terminal` image only from
+the Operator's `cetirun.helmValues`, with an immutable digest. The terminal is
+on by default, so each Custom Agent in a Sandbox needs this image, also a
+headless Agent. Without it, the Agent reports `PolicyResolved=False` with the
+reason `PolicyDenied`. With `ttyd.enabled: false`, only HTTP probes and
+observed-SNI capture need the image. `make deploy` does not set it. See
+[Custom terminal image](../helm/#custom-terminal-image).
 
 The optional terminal uses the same pinned image and the registered
 `topology.kubernetesAPI` destinations. Its separate Cilium selector excludes it
@@ -285,9 +301,12 @@ use the separate credential synchronizer. Native integrations are still
 rejected. No placeholder credentials or native-secret fallback can start the
 workload.
 
-Administrators approve qualified image digests in `customRuntime.approvedImages`
-in the Operator chart. This default-enabled provider prepares the namespace, HOME
-claim template and canonical context. It also coordinates Pod replacements, for
+The Operator chart enables the `customRuntime` Kubernetes provider by default.
+It runs only the image digests that an administrator approves in
+`customRuntime.approvedImages`.
+
+This provider prepares the namespace, HOME claim template and canonical
+context. It also coordinates Pod replacements, for
 example for approved image updates. The runtime Chart keeps and reuses the same
 HOME claim. Every approved Custom image receives only its own Virtual Key and
 the Gateway API base for model access that the platform supplies. This does not
@@ -452,11 +471,11 @@ defaults. Semantic-version tags (`X.Y.Z`, with an optional suffix such as
 must pin the exact image, supply a digest. The Memory image that matches the release
 must be published with the release before you deploy it.
 
-To omit Memory delivery, set `memoryContext.enabled: false` on the Operator or
-standalone runtime chart. An empty image no longer disables it. For OpenClaw
-and Hermes, when Memory is disabled, the direct read-only shared Skills PVC
-mount at `skills.mountPath` stays. A new context snapshot is not necessary for
-updates.
+To disable Memory, set `memoryContext.enabled: false` on the Operator or on the
+standalone runtime chart. An empty image value does not disable it. When Memory
+is disabled, OpenClaw and Hermes keep the read-only shared skills mount at
+`skills.mountPath`. Updates of the shared skills appear there without a new
+context snapshot.
 
 ### Common initialization and discovery
 
@@ -517,11 +536,9 @@ Examples are files under `.ssh`, `.aws`, `.azure` or `.kube`, `.env` files,
 `.git-credentials` and the harnesses' configuration. The helper also refuses
 text that looks like a token or key.
 
-A revision of a note that already exists can keep its complete source records
-unchanged. This includes provenance that was accepted before these checks were
-tightened. This keeps body and status corrections possible without a deletion
-of source lineage. New or changed sources and other revised text must pass the
-current checks.
+When you revise a note, its source records can stay as they are. Thus, you can
+correct the body and the status without a deletion of the source lineage. New
+or changed sources and other revised text must pass the current checks.
 
 Directory placement and host discovery are separate:
 
@@ -574,13 +591,23 @@ prompt does not authorize it. A child cannot relax inherited restrictions or
 attest an owner preference. Messaging tools still require confirmation before
 sending recalled material outside the session.
 
-There is no Memory policy ConfigMap, installation identity or Portal policy
-editor. The helper does not bind stored notes to an Agent or namespace UID.
-The platform still assigns separate HOME volumes and enforces the user access
-rules that it already has. `/memory off` and `/memory no-capture` are still
-conversation restrictions on supported native entrypoints. They do not delete
-notes or disable the Harness's own history. Private methods are not published
-as Team Skills.
+CetiRun has no central Memory policy. Each Agent keeps its own store on its
+HOME volume, and the platform enforces its user access rules. In OpenClaw,
+owners control Memory for each conversation with `/memory off`,
+`/memory no-capture`, and `/memory on`. These commands do not delete notes or
+disable the history of the Harness.
+
+The commands do not work in Hermes. Hermes has its own `/memory` command, which
+approves or rejects changes to its native memory files. As a result, these
+commands do not reach the Memory adapter in Hermes, and Memory stays on. In
+Hermes, use `owner_access` instead. The Custom image of the
+[Pi example]({{< repo "examples/pi-agent/README.md" >}}) also handles these
+commands, through the shared Memory bridge.
+
+To limit the channels and senders that can use Memory, configure
+`owner_access`. The helper does not bind
+stored notes to an Agent or namespace UID. Private methods are not published as
+Team skills.
 
 ## Private registries
 
@@ -740,6 +767,25 @@ Administrators must also do these tasks:
 Registry mutations do live authorization reviews. API capacity and latency at
 the deployment's instance count must be qualified for the environment.
 
+## BYO image contract
+
+A Custom image must meet these requirements. The sections that follow give the
+details.
+
+| Area | Contract |
+| --- | --- |
+| Image | An exact `repository@sha256:<digest>` reference that the Operator's `customRuntime.approvedImages` lists. The Pod uses `imagePullPolicy: IfNotPresent`. The image keeps its own ENTRYPOINT and CMD, which must run in the foreground. |
+| User | A numeric non-root `USER <uid>:<gid>` that matches `username`. HOME is `/home/<username>`. |
+| Security | The main container and the HOME initializer run with `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, all capabilities dropped, and the `RuntimeDefault` seccomp profile. Images that need setuid programs, for example `sudo`, do not work. |
+| Root filesystem | Read-only. Without a Sandbox, this is fixed. In a Sandbox, the AgentPolicy setting `security.readOnlyRootFilesystem` controls it, and its default is `true`. Do not write to `/etc`, `/var`, `/opt`, or other image paths. |
+| Writable paths | `$HOME`, which is the retained HOME volume, and `/tmp`, which is an `emptyDir`. In a Sandbox, the scratch limit of the Sandbox applies to `/tmp`. |
+| Read-only paths | `$HOME/.agents`, which holds `AGENTS.md` and the approved skills, and `/opt/cetirun-memory` when Memory is enabled. |
+| Kubernetes identity | Without a Sandbox, the Pod does not mount a ServiceAccount token, and its volume group is the Operator's `customRuntime.fsGroup` (`1024` by default). |
+| Ports and routes | With `port`, the image serves the [Chat](#chat) routes, or the [Web UI](#custom-web-ui) when `webUI` is `true`. Without `port`, the Agent is headless. |
+| Probes | `GET /healthz` on the HTTP port for startup and readiness. Startup runs every 5 seconds and allows 60 failures, so the image must be ready in about 300 seconds. Readiness runs every 10 seconds. In a Sandbox, the timeout of each probe is 3 seconds. Without a Sandbox, it is the Kubernetes default of 1 second. There is no liveness probe, so the platform does not restart a process that hangs. A headless Agent has no HTTP probes. |
+| Environment | Always `HOME`, `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `CETIRUN_GATEWAY_MODEL_LIMITS`. With a port, `PORT`. With a Web UI, `CETIRUN_WEB_BASE_PATH` and `CETIRUN_WEB_INSTANCE`. With Memory, `CETIRUN_MEMORY_ASSETS=/opt/cetirun-memory` and `CETIRUN_MEMORY_ROOT=$HOME/.cetirun/memory`. With ingress mTLS, `CETIRUN_BIND_HOST=127.0.0.1`. With governed Connections, `CETIRUN_CONNECTIONS_MCP_URL`, `CETIRUN_CONNECTIONS_MCP_TOKEN_FILE`, and `CETIRUN_CONNECTIONS_MCP_CA_FILE`. |
+| Initialization tools | `sh`, `cp`, `mkdir`, `mv`, `rm`, `chmod`, `mktemp`, `find`, and `cmp`. For a Team of the Skill Marketplace, also `sleep`. See [Initialization](#initialization). |
+
 ## Image, storage and model access
 
 BYO images must have a foreground entrypoint and a numeric non-root
@@ -781,9 +827,14 @@ image. The image gets the models from `GET $OPENAI_BASE_URL/models`.
 
 The Operator also sets `CETIRUN_GATEWAY_MODEL_LIMITS` for a Custom image. This
 JSON value has the context window and the output limit of each model that the
-Agent can use. A router has the smallest limits of the models that it can
-select. A model without known limits is not in the value. For the model
-configuration of the built-in runtimes, refer to
+Agent can use. Its `version` is `1`, and each entry of `models` has `id`,
+`contextWindow`, and `maxOutputTokens`. A model with several Gateway
+deployments has their smallest limits. A router has the smallest limits of the
+models that it can select.
+
+A model without known limits is not in the value, and the image should refuse
+it instead of guessing its limits. The variable does not grant access to a
+model. For the model configuration of the built-in runtimes, refer to
 [Choose a model](../../guides/models/).
 
 ## Chat
@@ -894,18 +945,20 @@ currentRevision. Identical inputs that produce different rendered output report
 `RendererDrift`. Suspension can request zero replicas even when bindings are
 unavailable.
 
-Apply approval is a lease with validity and completion checks. It is bound to
-both input and output digests. The controller examines the live Agent's
-generation and pause/deletion state again before the apply. If Helm succeeds
-but the status write fails, a successful Helm record that matches restores
-status without another stop.
+For a Custom Agent without a Sandbox, the operator applies a change only
+after the platform approves the handoff. The approval has a validity period and
+completion checks, and it is bound to the digests of both the inputs and the
+rendered output. Before the apply, the controller reads the generation and the
+suspension and deletion state of the Agent again. If Helm succeeds but the
+status write fails, the controller restores the status from the matching Helm
+record and does not stop the Agent again.
 
-A separate operator-owned outbox records each apply operation before approval.
-It keeps the outcome until the provider acknowledges completion. Recovery uses
-the same operation ID through `ResumeApply`, also after a controller restart or
-a change to the desired configuration. It never repeats Helm merely to release
-coordination. Providers must support durable, idempotent completion for that
-ID.
+The operator records each apply operation before the approval and keeps its
+outcome until the binding provider acknowledges the completion. The operator
+can restart, or the desired configuration can change. Then the operator gives
+the recorded outcome to the provider again with the same operation ID. It
+does not run Helm again only to release the coordination. The provider must
+support a durable completion that it can repeat for that ID.
 
 A pending completion does not prevent a request for suspension. Cleanup waits
 for the completion to finish.
@@ -923,7 +976,7 @@ receipt does not replace a data backup.
 
 For a headless Custom Agent, `Ready` describes the running process, not HTTP
 health, a successful model call or recovered sessions. With a port, probes use
-`/healthz`. Protocol qualification examines the response separately from
+`/healthz`. See [BYO image contract](#byo-image-contract) for the probe timing. Protocol qualification examines the response separately from
 Kubernetes probes.
 
 When Web UI is enabled and its route is configured, the Operator sets the Agent
@@ -982,8 +1035,10 @@ features:
 
 Custom uses the Portal login and instance-ownership checks that already exist.
 Set `customRuntime.enabled: false` in the Operator chart to disable its Custom
-provider separately. Update the Operator image and chart together; older
-Operator images reject an enabled provider with an empty approval list.
+provider separately. Update the Operator image and the chart together. An
+Operator image that is older than the chart can reject an enabled provider with
+an empty approval list.
+
 These opt-outs apply to direct Helm chart installations. The `make deploy`
 entry point requires the complete platform configuration, including enabled
 Custom support and a nonempty approval list. An empty `allowedAgentTypes: []`
@@ -996,15 +1051,15 @@ Remove retired `agentManagedModel` and `gatewayImages` fields, replace tag
 approvals with digests, and check storage and image-user entries. Invalid
 configuration stops the Operator, including reconciliation of other types.
 An explicit `customRuntime.enabled: false` keeps the provider disabled.
+
 Enablement of the type does not enable Agent Identity or make a separate Portal
 admission grant necessary. The backend still examines the type flag, instance
 limits and request fields. This includes immutable fields and concurrent-update
 preconditions.
 
-Per-user and Team-specific type and image restrictions are deferred to
-AgentPolicy. This management flow does not implement them. The Operator's
-runtime image approvals, profile compatibility and reserved-port checks that
-already exist stay in effect. Portal creation does not bypass those checks or
+AgentPolicy limits the Harness types of a Team. There is no per-user or
+per-Team image allowlist. The Operator's runtime image approvals, profile
+compatibility and reserved-port checks stay in effect. Portal creation does not bypass those checks or
 release a Sandbox hold.
 
 ### Editing and concurrent changes

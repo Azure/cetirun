@@ -2,13 +2,16 @@
 
 The chart deploys an OpenClaw, Hermes, or approved Custom instance. For
 settings and defaults, read the
-[Helm configuration reference](../../site/content/en/docs/reference/helm.md).
+[Helm configuration reference](../../site/content/en/docs/reference/helm.md)
+and the [list of chart values](../../site/content/en/docs/reference/chart-values.md#agent-chart).
 To render the chart without credentials, read the
 [local checks guide](../../site/content/en/docs/getting-started/local-checks.md).
 We recommend that maintainers who update the bundled Hermes release also follow
 [the Hermes runtime upgrade procedure](agents/hermes/README.md).
 
-`values.yaml`, `values.schema.json`, and `templates/` are the source of truth.
+`values.yaml` and `templates/` are the source of truth. The defaults come from
+`values.yaml`. `values.schema.json` only validates the values: its `default`
+notes are not used, and some of them are different from `values.yaml`.
 Operator-resolved values differ from standalone chart defaults. A local render
 does not prove storage, RuntimeClass, image access, or cloud readiness.
 
@@ -61,7 +64,7 @@ The Agents of a Skill Marketplace Team read a copy of the Team's release at
 `skills.mountPath` instead, and Custom Agents in `$HOME/.agents/skills`. Refer
 to [Protected Sandbox rendering](#protected-sandbox-rendering).
 
-Memory no longer mounts a read-only directory over the whole `$HOME/.agents`.
+Memory does not mount a read-only directory over the whole `$HOME/.agents`.
 Personal files and Skills there remain visible and writable. The platform still
 mounts its instructions over `$HOME/.agents/AGENTS.md`; any underlying HOME copy
 stays on disk. A Team that explicitly sets `skills.mountPath` to
