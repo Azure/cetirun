@@ -1,5 +1,8 @@
 # Standalone sandbox node guard prototype
 
+> **Experiment.** This document is not part of a supported installation. Do
+> not use it to operate CetiRun.
+
 **Production enablement is blocked pending independent review and
 unreachable-node fencing.** This is a one-shot, trusted-node CRI experiment,
 not a shipped controller integration, pre-start gate, or writer-exclusion
@@ -15,21 +18,18 @@ remote endpoint, runtime endpoint discovery, or batch mode.
 
 ## Dependency boundary
 
-The operator did not previously declare `k8s.io/cri-api`. To call the real
-runtime service, this prototype must have the official CRI v1 protobuf messages
-and the generated gRPC client from that module. For the local wire-protocol
-tests, it also must have the server bindings from that module. It adds exactly
-`k8s.io/cri-api v0.37.1`, which aligns with the Kubernetes module versions that
-the operator already uses. It imports the generated CRI bindings from that
+To call the real runtime service, this prototype must have the official CRI v1
+protobuf messages and the generated gRPC client from `k8s.io/cri-api`. For the
+local wire-protocol tests, it also must have the server bindings from that
+module. The operator declares `k8s.io/cri-api v0.37.2`, which aligns with the
+Kubernetes module versions of the operator. It imports the generated CRI bindings from that
 module. It does not copy or keep them in this repository.
 
-The client declares `google.golang.org/grpc v1.83.2` directly. This version
+The client declares `google.golang.org/grpc v1.85.0` directly. This version
 includes the fixes for
 [HTTP/2 frame memory exhaustion](https://github.com/advisories/GHSA-vp52-pcj8-j9qc)
 and the [xDS header crash](https://github.com/advisories/GHSA-2v4p-qf9q-27wj).
-Dependency review reported these problems for the previously selected version.
-The protobuf version that the operator already uses and the other dependency
-versions stay the same. Dependency setup uses Go's versioned module commands
+The guard uses the protobuf version of the operator. Dependency setup uses Go's versioned module commands
 and checksum verification. The guard does not invoke an external runtime CLI
 or substitute an unpinned library.
 

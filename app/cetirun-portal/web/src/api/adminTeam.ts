@@ -35,6 +35,8 @@ export interface TeamModelRouterStatus {
   name: string;
   ready: boolean;
   message?: string;
+  /** The tier models that do not reason according to the AI Gateway: a hint, not a refusal. */
+  nonReasoningModels?: string[];
 }
 
 export interface CompatibilityReference {

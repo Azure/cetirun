@@ -147,6 +147,7 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 			delete(proxy, "replicaCount")
 		}
 		delete(gateway, "visionModels")
+		delete(gateway, "reasoningModels")
 	}
 	assets := map[string]*[]byte{"values.schema.json": &chrt.Schema}
 	for _, files := range [][]*chart.File{chrt.Files, chrt.Templates} {
@@ -156,6 +157,77 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 	}
 	if err := restoreRemovedTeamsAssets(assets); err != nil {
 		return err
+	}
+
+	// Reverse the rename of the Gateway provider from openai to cetirun first:
+	// the reversals below start from the text before it. The models' reasoning
+	// came after the rename, so it goes first of all.
+	for _, replacement := range [][2]string{
+		{`{{- /* A model the Gateway reports as reasoning gets OpenClaw's reasoning
+   levels, and OpenClaw sends the level the owner picks as its reasoning
+   effort, which by default it does not send to an address such as the
+   Gateway's. The other models offer only the level off. */}}
+{{- if has .id (dig "reasoningModels" (list) $.Values.aiGateway) }}
+{{- $_ := set $entry "reasoning" true }}
+{{- $_ := set $entry "compat" (dict "supportsReasoningEffort" true) }}
+{{- else }}
+{{- $_ := set $entry "reasoning" false }}
+{{- end }}
+`, ""},
+		{`"input" (list "text") "reasoning" false)`, `"input" (list "text"))`},
+		{`{{- /* The Gateway is the provider cetirun, not openai: OpenClaw's doctor
+   rewrites the model names of the provider openai that OpenClaw thinks are
+   retired, such as gpt-4.1-mini, in the configuration and in the provider's
+   catalog, so the Agent asked the Gateway for a model it does not have. */}}
+{{- $providerPrefix := "cetirun" }}
+{{- $modelFull := printf "%s/%s" $providerPrefix $model }}
+`, `{{- $providerPrefix := "openai" }}
+{{- $modelFull := printf "openai/%s" $model }}
+`},
+		{`   the primary model's provider, which the Gateway does not offer, so those
+   requests fail. The Agent's default model serves them instead. */}}
+`, `   the primary model's provider, OpenAI's for the Gateway provider, which
+   the Gateway does not offer, so those requests fail. The Agent's default
+   model serves them instead. */}}
+`},
+		{`{{- /* OpenClaw has no catalog of its own for the provider cetirun, so each
+   model states how OpenClaw calls it: Chat Completions, the transport that
+   OpenClaw used for the Gateway as the provider openai, and no cost, as the
+   Gateway keeps the spend. */}}
+{{- $zeroCost := dict "input" 0 "output" 0 "cacheRead" 0 "cacheWrite" 0 }}
+`, ""},
+		{`{{- $entry := dict "id" .id "name" (.name | default .id) "api" "openai-completions" "cost" $zeroCost }}`,
+			`{{- $entry := dict "id" .id "name" (.name | default .id) }}`},
+		{`   request. Another model describes images for the rest. */}}
+{{- if has .id (dig "visionModels" (list) $.Values.aiGateway) }}
+{{- $_ := set $entry "input" (list "text" "image") }}
+{{- else }}
+{{- $_ := set $entry "input" (list "text") }}
+{{- end }}
+`, `   request. Without input, OpenClaw takes the value from its own catalog,
+   which knows only some model names; for the rest, another model describes
+   images. */}}
+{{- if has .id (dig "visionModels" (list) $.Values.aiGateway) }}
+{{- $_ := set $entry "input" (list "text" "image") }}
+{{- end }}
+`},
+		{`(dict "id" $model "name" $model "api" "openai-completions" "cost" $zeroCost "input" (list "text"))`,
+			`(dict "id" $model "name" $model)`},
+		{`{{- $providerEntry := dict "baseUrl" .Values.secrets.apiBase "api" "openai-completions" "models" $providerModels }}`,
+			`{{- $providerEntry := dict "baseUrl" .Values.secrets.apiBase "models" $providerModels }}`},
+		{`   passes in OPENAI_API_KEY. OpenClaw otherwise prefers a stored profile
+   over that variable, and an upgraded home may keep the owner's own: it
+   would be sent to the Gateway instead. */}}
+`, `   passes in OPENAI_API_KEY. OpenClaw otherwise prefers a stored openai
+   profile over that variable, and an upgraded home may keep the owner's
+   own: it would be sent to the Gateway instead. */}}
+`},
+	} {
+		data := assets["agents/openclaw/config/native.tpl"]
+		if data == nil || bytes.Count(*data, []byte(replacement[0])) != 1 {
+			return fmt.Errorf("pre-proxy fixture requires the exact Gateway provider rename in agents/openclaw/config/native.tpl")
+		}
+		*data = bytes.Replace(*data, []byte(replacement[0]), []byte(replacement[1]), 1)
 	}
 
 	// Reverse the Gateway-only source changes before checking the immutable
@@ -464,6 +536,14 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 			{`                "visionModels": {
                     "type": "array",
                     "description": "Ids of the models in models that accept images",
+                    "default": [],
+                    "maxItems": 256,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 256}
+                },
+`, ""},
+			{`                "reasoningModels": {
+                    "type": "array",
+                    "description": "Ids of the models in models that reason",
                     "default": [],
                     "maxItems": 256,
                     "items": {"type": "string", "minLength": 1, "maxLength": 256}

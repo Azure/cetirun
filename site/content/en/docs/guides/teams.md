@@ -18,7 +18,10 @@ an access boundary between users. Refer to
 In the Portal, first create an **Agent Policy** and a **Sandbox** under
 **Admin**. A Sandbox selects these items:
 
-- Kata (the default), gVisor, or ordinary Container
+- The isolation type, which the form labels **Runtime**: Kata (the default) or
+  Container. The form lists only the runtimes that the platform registered, and
+  it saves a Sandbox only for a registered runtime. Sandbox execution does not
+  support gVisor.
 - CPU, memory, and ephemeral-storage requests and limits for the Agent and
   each helper
 - A HOME StorageClass and size
@@ -31,56 +34,41 @@ Container, an explicitly registered RuntimeClass/handler and the common
 AgentPolicy execution path are necessary. Container does not bypass policy or
 HOME ownership.
 
-Then select **Admin → Teams → New Team**. Select the Agent Policy, one or more
-allowed Sandboxes, and a default Sandbox from that set. Portal-created Teams
-must have all three bindings. The editor links to prerequisites that do not
-exist. When the cluster rejects a selection, the editor shows configuration
-admission errors. The selected Policy must allow the Team Skills.
+The Agent Policy editor offers more controls than a platform registration can
+support. Before you use a control, make sure that the registration supports
+it. Otherwise, the Team becomes incompatible. Refer to
+[Policy settings and registration capabilities](../../operations/policy-teams/#policy-settings-and-registration-capabilities).
 
-The Agent Policy can also limit the AI Gateway traffic of each Agent:
+Then select **Admin → Teams → New Team**. Select the Agent Policy, the allowed
+Sandboxes, and a default Sandbox from that set. Portal-created Teams must have
+all three bindings.
 
-- Parallel requests
-- Requests per minute (RPM)
-- Tokens per minute (TPM)
-- RPM or TPM for individual models
+If no Agent Policy or Sandbox exists yet, the editor links to the page that
+creates one. A Team can allow more than one Sandbox only when its Policy
+enables **Allow multiple Sandboxes per Team**. When the cluster rejects a
+selection, the editor shows configuration admission errors. The selected
+Policy must allow the Team skills.
 
-Every Agent of a Team that uses the Policy gets the same limits on its own
-Gateway key. As a result, the traffic of one Agent does not count against
-another Agent. To set no limit, leave a field empty.
+The Agent Policy can also limit the AI Gateway traffic of each Agent: parallel
+requests, and requests and tokens per minute, also for individual models. Each
+Agent gets the limits on its own key. Owners see the limits in the Agent
+creation form and on the Agent's page. Refer to
+[Request limits](../../operations/budgets/#request-limits). A change to only
+the limits does not restart Agents. For the changes that restart them, refer
+to [What changes for Agents](../../operations/policy-teams/#what-changes-for-agents).
 
-When only the limits change, the operator applies the change to the key that
-each Agent already has. It does not restart running Agents. Changes to budget,
-model access, and Sandbox controls keep their normal enforcement checks. Owners
-see the limits in the Agent creation form and on the Agent's page. TPM counts
-the tokens of finished requests. See [AgentPolicy rate limits](../../reference/crds/#agentpolicy-rate-limits).
+The Portal saves a Team as [Save changes](../../operations/portal-administration/#save-changes)
+shows. Some deployments enable configuration coordination. There, a change to
+a binding can require that you suspend the Agents of the Team first.
 
-Updates and deletions include the resource UID and version that the editor
-read. If another administrator changed or replaced the resource, reload it
-before you submit again. Deployments with configuration coordination use the
-same protected update/delete flow as Agent Policy administration. Before a
-binding can change, it can be necessary to suspend the Agent consumers that
-exist.
+If a save fails after the cluster accepted it, reload the editor and save
+again. The Portal finds the change that the cluster committed, and it does not
+write the change two times. This recovery also works after a Portal restart.
 
-If an update succeeds in the cluster but its response or coordination release
-fails, reload the editor. Then save again. Before the Portal handles the save,
-it compares the recorded operation with the current resource. This also
-applies to a save with an unchanged configuration. The Portal releases the
-reservation only after it finds the exact committed content at a newer version
-of the same resource UID.
-
-This recovery works across Portal restarts and never replays the original
-write. A stale save still returns a version conflict. An uncertain outcome
-keeps its reservation.
-
-If an update stops before submission and its operation is still `Reserved`,
-retry the same configuration. Use the original resource UID and version. Only
-that exact request can resume the reservation and submit the update. A changed
-request or an unchanged save cannot replace or discard the reserved operation.
-
-When the cluster rejects a Team create or update, the Portal shows known field
-paths and validation reasons. Before you retry, correct the fields that the
-Portal shows. Unexpected server failures keep a generic message.
-Administrators can examine the Portal logs for details.
+With configuration coordination, a save that stops before the Portal sends it
+stays reserved. To complete it, save the same configuration again, from the
+same version of the Team. A changed request or a save without changes cannot
+replace or discard it.
 
 The equivalent configuration is:
 
@@ -119,21 +107,32 @@ validate them separately. The shared storage account/container and the CSI
 prerequisites must already exist. The team resource does not provision cloud
 storage.
 
+The Sandbox Agents of a policy-bound Team do not mount the container that
+`spec.skillStorage` names. They receive Team skills from the
+[Skill Marketplace](../../operations/skill-marketplace/), or from a published
+skills catalog. Refer to
+[Skill sources of an Agent](../../operations/skill-marketplace/#skill-sources-of-an-agent).
+
 A Team has at most 100 skill entries. With the
 [Skill Marketplace](#skills-from-the-skill-marketplace), the entries without
 the `npm:` prefix are the names of marketplace skills.
 
-The team supplies context, policy, and skills. It does not select a model
-provider or hold API credentials. Model access is configured through the AI
-Gateway. The effective skill IDs are `(team skills ∪ add) − remove`. Removal
-wins, but it does not enforce a prohibition against separate Helm
-configuration or user-installed files.
+A Team selects the Agent Policy that decides the models, the budget, and the
+request limits of its Agents. It also selects the Sandboxes that run them, its
+smart-routing models, the shared context, and the skills. It holds no provider
+credentials. Refer to [Model access](../../operations/models/).
+
+The effective skill IDs are `(team skills ∪ add) − remove`. Removal wins, but
+it does not enforce a prohibition against separate Helm configuration or
+user-installed files.
 
 When you apply a team or edit its context, this triggers reconciliation of
 the member instances. Before you apply a change, review the affected users.
 The deletion of a referenced team is not a cascade-delete or a safe detach.
-Before you delete a team, move the references deliberately. Configuration
-admission continues to enforce its consumer and cleanup rules.
+Before you delete a team, move its Agents to another Team, as
+[Move an Agent to another Team](../../operations/policy-teams/#move-an-agent-to-another-team)
+shows. Configuration admission continues to enforce its consumer and cleanup
+rules.
 
 The Team controller reports if configuration references are accepted. For
 runtime readiness, examine the conditions and the effective configuration of
@@ -187,14 +186,15 @@ see the configuration of the router.
 CetiRun does not manage routers made in the Gateway's own console. The routers
 of the Gateway chart's `models` stay as they are. The operator gives those
 routers to instances under the same rule as a Team's routers. See
-[Choose a model](../models/#models-through-the-ai-gateway).
+[Model access](../../operations/models/#routers).
 
 Each router has:
 
 - A **name** of 1 to 64 characters, without spaces or slashes. The name does
   not start with the reserved `cetirun-` prefix, and it is not the name of a
-  shared model. On an installation that `make deploy` made, `auto` is the name
-  of a shared model, because it is the Gateway's router.
+  shared model. With the default `modelRouting.mode: auto` of `make deploy`,
+  `auto` is the name of a shared model, because it is the router of the AI
+  Gateway.
 - A **classifier**. `heuristic` (the default) scores each request locally
   without a model call. `llm` asks a shared chat model to classify each
   request. `jev` asks a shared decision model, such as Microsoft-Decision-1, to
@@ -219,7 +219,7 @@ Each router has:
 
 If the model of a `copilot/<model>` tier is the same model as a shared model,
 the tier is registered as that shared model. GitHub Copilot routes of that
-model join this shared model (see [Models](../models/#models-through-the-ai-gateway)).
+model join this shared model (see [Names of GitHub Copilot models](../../operations/models/#names-of-github-copilot-models)).
 To be granted the router, an instance must have that shared model, and its
 AgentPolicy must allow that model. The shared deployments can then also answer
 the requests of the tier. A tier that is registered under the Copilot model's
@@ -274,6 +274,14 @@ and reports it on the Team. `status.modelRouters` lists each router as ready,
 or shows why it is not ready. The `ModelRoutersReady` condition summarizes
 them.
 
+For a ready router, `status.modelRouters[].nonReasoningModels` lists the tier
+models that do not reason. The Team page in the Portal shows them with the
+router. OpenClaw instances then offer no reasoning levels for the router. The
+Gateway removes reasoning settings from the requests that the router sends to a
+shared model that does not reason. This list is only a hint. The router is
+registered and granted as usual. Refer to
+[Reasoning](../models/#reasoning).
+
 A router is not registered while any of these conditions is true:
 
 - A tier or the classifier names a model that the Gateway does not offer as a
@@ -317,9 +325,11 @@ router sends a request to a model outside the instance's key, the Gateway
 refuses the request with HTTP 403. As a result:
 
 - With an Agent Policy, the Policy's allowed shared models must list the
-  router's name and each shared tier. For GitHub Copilot tiers, Copilot must
-  be allowed. The classifier must be a shared model, a chat model for `llm` or
-  a decision model for `jev`. But it is not necessary to list the classifier.
+  router's name and each shared tier. After you save the Team, the router's
+  name appears in the **Allowed shared models** picker of the Policy. For
+  GitHub Copilot tiers, Copilot must be allowed. The classifier must be a
+  shared model, a chat model for `llm` or a decision model for `jev`. But it
+  is not necessary to list the classifier.
 - For a router with a shared tier or an `llm` or `jev` classifier, the
   instance must use shared models.
 - A GitHub Copilot tier works for an instance after its owner signs in to
@@ -333,12 +343,15 @@ refuses the request with HTTP 403. As a result:
 
 An instance that cannot use a router reports the reason in
 `status.aiGateway.modelRouters`, and its Portal page shows the reason. A
-change to the tiers or the classifier of a router updates instance keys and
-registrations. It does not change the Policy's Gateway projection. Each change
-to a Team, its routers included, restarts the Team's running Sandbox Agents one
-time. The Team is an input of their Sandbox. Only the limits that the instance
-is configured with for the router follow the tiers, as described in
-[Choose a model](../models/#smart-routing-models).
+change to the routers of a Team updates the AI Gateway registrations and the
+keys of the Team's Agents. It does not change the Policy's Gateway projection. It
+restarts an Agent only when the model configuration of the Agent changes. For
+example, this occurs when a router is added, or when the limits of its tiers
+change, as described in
+[Choose a model](../models/#smart-routing-models). A change to the tiers that
+changes if the Agent sends images or a reasoning effort to the router also
+restarts the Agent. Other Team changes, such as its context or its skills,
+restart the Team's running Sandbox Agents one time.
 
 Without a LiteLLM license, LiteLLM limits some router features to a single
 router per Gateway. These features are:

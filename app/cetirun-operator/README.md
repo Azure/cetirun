@@ -2,8 +2,11 @@
 
 The operator reconciles `Agent`, `Team`, `Sandbox`, and `AgentPolicy` resources
 in `cetirun.microsoft.com/v1alpha1`. Policy assignment and AI Gateway
-projection are active control-plane contracts. Native Sandbox execution stays
-held at zero replicas until a separately delivered execution adapter is enabled.
+projection are active control-plane contracts. With
+`sandboxSources.nativeExecution`, the common executor runs new policy-bound
+Agents in their Sandbox, and retained single-start lifetimes keep their
+recorded execution contract. Without that setting, policy-bound Agents stay
+held at zero replicas.
 
 - [Custom-resource reference](../../site/content/en/docs/reference/crds.md)
 - [Agent Harness contract](../../site/content/en/docs/reference/agent-harness.md)
@@ -200,7 +203,10 @@ all of those no-lifetime proofs still hold. This does not retain HOME or a
 Gateway key because neither exists yet. Any missing, conflicting, or unreadable
 evidence instead leaves the requested suspension `Pending` and never starts
 bootstrap; resume is the explicit intent that lets the controller try
-provisioning again.
+provisioning again. A confirmed pause reports the phase `Suspended`, with the
+reason `Suspended` on `Ready`, `PodReady`, `SandboxReady`, and `IngressReady`.
+An incomplete one reports the phase `Pending`, with the reason
+`SuspensionPending` on the same conditions.
 
 The current Gateway reconciliation also removes the per-Agent Copilot token
 and proxy-key Secrets during explicit suspension. Suspension keeps HOME and the
@@ -559,10 +565,11 @@ They do not test a live AKS driver, a model, storage durability, or physical
 fencing. See the
 [lifecycle guide](../../site/content/en/docs/guides/lifecycle.md#planned-node-migration).
 
-### Retained single-start profile and capability registration
+### Capability registration and retained single-start records
 
-These single-start lifecycle notes describe retained version-1 records. New
-native lifetimes use the version-2 common flow above.
+The registration profile `native-single-start` is also the profile of the
+common executor. New native lifetimes use the version-2 common flow above, and
+they are not single-start lifetimes.
 
 For the explicit native option, these items are necessary: enabled, enforced
 configuration/Pod admission, `sandboxSources.enabled`,
@@ -637,6 +644,39 @@ for certificate ownership, supported surfaces, source pins, and
 stop/change/resume rotation. Managed ingress mTLS alone does not enable
 outbound inspection. Observed-SNI egress must have the separate registration
 that is described below.
+
+### Managed ingress mTLS internals
+
+Read-only Helm configuration/history failures do not mark workload submission.
+If TLS prerequisites become unavailable before the first apply, the pending
+checkpoint can be cancelled safely. This allows normal retry, suspension and
+deletion. For an apply that was submitted, or whose outcome is uncertain, a
+confirmed shutdown is still necessary, also when no StatefulSet is visible. If
+the reads of the same Secret are restored, the Secret keeps its approval.
+
+Each final apply first claims the expectation's resource version with an
+`apply-attempt` identifier. First attempts stay pending through every
+authority read. They change to submitted only by a conditional write
+immediately before manifest delivery. A failed read or lost claim
+acknowledgement is still recoverable. Claims that compete invalidate stale
+writers. Lost submission acknowledgements and attempts that were submitted
+before are never rolled back.
+
+Offline tests exercise the compiler, the common render path, source pins,
+final-Pod validation, rotation/holds and cleanup for both harnesses and both
+HOME modes. Real localhost Envoy tests generate ephemeral certificates and
+cover valid peers, absent/wrong/expired client certificates, wrong server
+CA/SAN, plaintext, certificate loss/readiness, replacement and old-authority
+retirement.
+
+Optional network-disabled, read-only cached image tests exercise OpenClaw's
+native API/Control UI and ttyd, and Hermes' API/Webapp and ttyd behind the
+generated endpoint. The Hermes test covers fresh HOME, stale listener overrides
+in a HOME that is kept, and reintroduced overrides before a supervised process
+restart. The cached desktop test exercises actual websockify/noVNC HTTP and
+WebSocket traffic through the TLS endpoint. This includes an RFB banner and
+backend-loss readiness. Its RFB and CDP backends are synthetic. The test does
+not run or qualify the graphical X/Chrome stack.
 
 ### Ordinary-container backend
 
@@ -1396,8 +1436,8 @@ Gateway-qualified image. See the [Custom contract](../../site/content/en/docs/re
 
 Portal creation accepts legacy Teams without a default Sandbox. If the Gateway
 is disabled, it also accepts no Team, as before. If the Gateway is enabled,
-supported model routing and a Team that exists are still necessary. Portal
-support to manage policy configuration is delivered separately. Admission still
+supported model routing and a Team that exists are still necessary. The Portal
+Admin pages manage Teams, AgentPolicies, and Sandboxes. Admission still
 defaults governed creation and protects exact Team/Sandbox/policy UIDs. For
 later governed assignment or budget changes, an authorized administrator and a
 suspended Agent are necessary.
@@ -1432,7 +1472,9 @@ domains. These are the initial single-policy formats, not version upgrades of
 the undeployed dual-policy design. Strict decoding, ownership checks and
 explicit reauthorization stay fail-closed. No migration readers are added.
 
-The controller holds these Agents:
+With `sandboxSources.nativeExecution`, the common executor runs new lifetimes,
+and retained single-start lifetimes keep their recorded execution contract.
+Without that setting, the controller holds these Agents:
 
 - Agents that request Sandbox policy.
 - Agents that belong to a Team with policy settings.
@@ -1483,9 +1525,9 @@ it.
 If that ownership write fails, creation reports an error, and the Agent stays
 tracked for recovery. It must not be retried as an unrelated new Agent.
 
-This hold is a development activation guard. It is not an enforcement adapter or
-a fence for an unreachable node. Do not adopt live workloads that already exist
-until these items are implemented and qualified:
+This hold is the stop path of the controller. It is not an enforcement
+adapter or a fence for an unreachable node. Do not adopt live workloads that
+already exist until these items are implemented and qualified:
 
 - Admission.
 - Approved rendering.
@@ -1493,7 +1535,7 @@ until these items are implemented and qualified:
 - Actual enforcement observation/fencing.
 - The ordered rollout path.
 
-The guard is the temporary controller-owned stop path. Normal runtime
+The guard is the controller-owned stop path. Normal runtime
 reconciliation cannot recreate a held workload at the same time.
 
 ### Optional configuration admission
@@ -1522,7 +1564,7 @@ rules are not installed. `enforce` is a separate bootstrap step. After
 admission is enforced, even legacy Agent writes depend on webhook availability.
 But healthy admission does not change their Sandbox selection.
 
-This increment implements:
+This admission process implements:
 
 - Explicit administrator usernames/groups for shared policy configuration,
   and trusted Team assignments for policy-bound member Agents. Kubernetes RBAC
@@ -1575,16 +1617,20 @@ This increment implements:
   releases the hold, it must authorize those specific writes or move them into
   authorized creation.
 
-There are **no production capability registrations**. Standalone Sandbox and
-AgentPolicy definitions can be validated. But without a qualified registration,
-policy-bound Team/Agent bindings are rejected. The tests inject synthetic
-registrations. When this process is enabled, those registrations do not become
-production evidence, and the controller hold is not released.
+The chart installs no capability registration. The platform administrator
+writes it in the `platform.json` source, as
+[Policy-bound Teams](../../site/content/en/docs/operations/policy-teams.md)
+shows. Standalone Sandbox and AgentPolicy definitions can be validated. But
+without a registration, policy-bound Team/Agent bindings are rejected. The
+tests inject synthetic registrations, which are not production evidence. A
+registration alone does not release the controller hold:
+`sandboxSources.nativeExecution` is also necessary.
 
 An opt-in **held controller preparation** path, described below, connects
 protected rendering, final-Pod checks and policy compilation. It does not
 serialize concurrent shared-configuration changes, coordinate rollout/start
 barriers, produce enforcement observations, or allow policy-bound execution.
+The common executor of `sandboxSources.nativeExecution` is a separate path.
 Reference reads are checks against current objects, not an atomic
 cross-resource transaction. Those boundaries must be completed before
 production adoption.
@@ -2099,8 +2145,8 @@ As an alternative, the separately selected publication catalog below can
 create static bindings to content that is already published. The only
 exception is the explicitly enabled native profile with an empty effective
 selection, no Team shared skills storage, and no recorded publication. A
-globally configured catalog does not require an empty Team to publish. It uses the read-only in-Pod directory described
-above. It does not use an empty replacement for published content. Without
+globally configured catalog does not require an empty Team to publish. It uses
+the read-only in-Pod directory described above. It does not use an empty replacement for published content. Without
 native execution, the stock binary still stops because qualified writer
 exclusion is not available. The native authentication Secret is not evidence
 that a model provider issued usable credentials.
@@ -3304,7 +3350,7 @@ sum(cetirun_sandbox_agents{
 Examine non-ready reports, but not reports of explicit suspension/deletion:
 
 ```promql
-sum by (runtime, class, reason) (cetirun_sandbox_agents{
+sum by (runtime, reason) (cetirun_sandbox_agents{
   job="example-cetirun-operator", instance="operator.example.com:8080",
   status!="True", reason!~"Suspended|Deleting|InstanceDeleting"
 })
@@ -3321,10 +3367,9 @@ expected lifecycle and collection behavior of the deployment.
 | Unknown evidence or unavailable runtime | Examine the trusted platform inventory and qualified providers. Restore the necessary evidence. Do not reinterpret Pod absence, scale-zero, or a PVC access mode as writer fencing. |
 | Apply/conflict failures or reported enforcement loss | Examine the affected control through trusted status/logs and the qualified containment procedure. Metrics and alerts do not stop execution, revoke grants, or establish containment. |
 
-Keep holds and recovery finalizers intact during the investigation. This
-increment does not add observation-age, rollout, or fencing-duration metrics,
-durable failure counters, alert rules, dashboards, or production
-qualification.
+Keep holds and recovery finalizers intact during the investigation. The
+operator has no observation-age, rollout, or fencing-duration metrics, durable
+failure counters, alert rules, dashboards, or production qualification.
 
 ### Enforcement feasibility baseline
 

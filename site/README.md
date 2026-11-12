@@ -15,7 +15,7 @@ Run these commands from the repository root. The preview URL is
 override `HUGO=/absolute/path/to/hugo`. To select another loopback port,
 override `PORT=1314`. `make -C site help` shows the entrypoints.
 
-Prerequisites: Make, Go 1.27.3 (the same version as the repository's
+Prerequisites: Make, Go 1.27.4 (the same version as the repository's
 `.go-version`), C/C++ build tools for Hugo extended, Node.js 24 with npm, and
 Python 3.11+. The first build downloads dependencies. `make -C site test` runs
 the regression suite of the Python validator without network access. `check`

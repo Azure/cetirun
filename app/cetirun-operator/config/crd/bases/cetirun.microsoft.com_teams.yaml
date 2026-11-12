@@ -567,6 +567,21 @@ spec:
                     name:
                       description: Name is the router's name in spec.modelRouters.
                       type: string
+                    nonReasoningModels:
+                      description: |-
+                        NonReasoningModels are the tier models, as the tiers name them, that
+                        do not reason according to the AI Gateway: a shared model whose
+                        deployments do not all report supports_reasoning, or a copilot/<ID>
+                        tier whose GitHub Copilot model does not reason or whose reasoning
+                        effort the Copilot proxy does not pass on. A copilot/<ID> tier is
+                        listed only when the Gateway's price table can tell. Agents do not
+                        offer reasoning levels for the router, and the Gateway removes
+                        reasoning settings from the requests that the router sends to a shared
+                        model that does not reason. This is a hint: the router is registered
+                        and granted as usual.
+                      items:
+                        type: string
+                      type: array
                     ready:
                       description: |-
                         Ready reports whether the router is registered in the Gateway with its

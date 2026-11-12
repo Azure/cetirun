@@ -69,7 +69,6 @@ class ApiDocumentationTests(unittest.TestCase):
         self.assertIn("scripts/cetirun-platform-deploy.sh", install)
         # The helper reads only its environment file since make deploy.
         self.assertNotIn("VALUES_FILE=", install)
-        self.assertIn("PORTAL_AUTH_NAMESPACE=cetirun-system", install)
         self.assertIn("Helm upgrades the CRDs", install)
         self.assertIn("does not convert, adopt, or delete", reference)
 

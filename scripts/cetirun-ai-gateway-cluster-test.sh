@@ -606,6 +606,26 @@ api_post "${port_a}" /model/new '{"model_name":"mock-db","litellm_params":{"mode
 [ "$(chat "${port_a}" "${master_key}" mock-db)" = "200" ] || fail "database-backed model was not served: $(last_body)"
 pass "model added through the management API and served"
 
+# GET /v1/models lists the models a key may use. The CetiRun operator registers
+# a Team's router under an internal name and gives an Agent's key an alias for
+# it, the router's name. The guard lists such a router under the alias only.
+# With LiteLLM 1.108.3, a guard that took fewer arguments than LiteLLM passes
+# to this listing failed every GET /v1/models with 500.
+echo "==> GET /v1/models lists a key's models, and a router under the key's alias only"
+api_post "${port_a}" /model/new '{"model_name":"cetirun-router-cluster-test","litellm_params":{"model":"openai/mock-model","api_base":"http://mock-provider:8080","api_key":"sk-literal-encrypted-at-rest","input_cost_per_token":0.00001,"output_cost_per_token":0.00001},"model_info":{"id":"cetirun-router-cluster-test-id"}}' >/dev/null \
+  || fail "could not add a model under a Team router's internal name"
+alias_key="$(api_post "${port_a}" /key/generate \
+  '{"models":["mock-priced","cetirun-router-cluster-test"],"aliases":{"team-router":"cetirun-router-cluster-test"},"max_budget":10}' \
+  | jq -er .key)" || fail "could not create a key with an alias"
+listed="$(curl -fsS -m 30 "http://127.0.0.1:${port_a}/v1/models" -H "Authorization: Bearer ${alias_key}" \
+  | jq -c '[.data[].id] | sort')" || fail "GET /v1/models failed for a key with an alias"
+[ "${listed}" = '["mock-priced","team-router"]' ] || fail "GET /v1/models listed ${listed} for a key with an alias"
+curl -fsS -m 30 -o /dev/null "http://127.0.0.1:${port_a}/v1/models" -H "Authorization: Bearer ${master_key}" \
+  || fail "GET /v1/models failed for the master key"
+api_post "${port_a}" /model/delete '{"id":"cetirun-router-cluster-test-id"}' >/dev/null \
+  || fail "could not delete the model under a Team router's internal name"
+pass "GET /v1/models listed a key's models, and the router under the key's alias only"
+
 # A LiteLLM auto router picks one of the configured models for each request.
 # Its own name carries a price, twice the model's here, only to pass the
 # unpriced-model check: the call is charged as the model it picked, and the

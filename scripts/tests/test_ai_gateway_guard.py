@@ -12,6 +12,7 @@ API it came through, and RouterRateLimitError's message.
 """
 
 import asyncio
+import base64
 import collections
 import copy
 import importlib.util
@@ -227,7 +228,7 @@ class GuardTest(unittest.TestCase):
 
     # ----- failover past key affinity -----
 
-    def install_affinity(self):
+    def install_affinity(self, extra_parameter=False):
         name = "litellm.router_utils.pre_call_checks.deployment_affinity_check"
 
         class DeploymentAffinityCheck:
@@ -239,6 +240,14 @@ class GuardTest(unittest.TestCase):
                                                parent_otel_span=None):
                 kept = [d for d in healthy_deployments if d["model_info"]["id"] == self.pinned]
                 return kept or healthy_deployments
+
+        if extra_parameter:
+            # A later LiteLLM that passes the filter one more argument.
+            async def async_filter_deployments(self, model, healthy_deployments, messages, request_kwargs=None,
+                                               parent_otel_span=None, call_type=None):
+                return healthy_deployments
+
+            DeploymentAffinityCheck.async_filter_deployments = async_filter_deployments
 
         module = types.ModuleType(name)
         module.DeploymentAffinityCheck = DeploymentAffinityCheck
@@ -266,21 +275,46 @@ class GuardTest(unittest.TestCase):
     def test_without_litellms_affinity_check_nothing_is_installed(self):
         self.assertFalse(self.module.install_failover_past_affinity())
 
+    def test_the_build_checks_the_affinity_filters_parameters(self):
+        self.install_affinity()
+        self.assertIs(self.module.exercise_failover_past_affinity(), True)
+
+    def test_an_affinity_filter_with_other_parameters_fails_the_build(self):
+        self.install_affinity(extra_parameter=True)
+        self.assertIs(self.module.exercise_failover_past_affinity(), False)
+
     # ----- a Team router listed under its alias -----
 
     INTERNAL = "cetirun-router-0123456789abcdef"
 
-    def install_listing(self, proxy_loaded):
+    def install_listing(self, proxy_loaded, deployed_argument=False, extra_argument=False):
         """LiteLLM's listing module, whose alias_listing_entries adds a row for each alias whose target is
-        listed, as LiteLLM 1.105.6 does; and the proxy module that imported it by name."""
+        listed, and the proxy module that imported it by name. LiteLLM 1.105.6 calls it with the listing
+        and the caller's aliases; LiteLLM 1.108.3 adds the model groups the listing may describe, and builds
+        the aliases with caller_alias_maps. extra_argument stands for a later LiteLLM that adds one more."""
         name = "litellm.proxy.common_utils.model_listing_utils"
 
-        def alias_listing_entries(entries, aliases):
+        def entries_and_aliases(entries, aliases):
             listed = {model for _, model in entries}
             return (*entries, *((alias, target) for alias, target in aliases.items() if target in listed))
 
+        def entries_aliases_and_groups(entries, aliases, deployed):
+            listed = {model for _, model in entries}
+            return (*entries, *((alias, target) for alias, target in aliases.items()
+                                if target in listed and target in deployed))
+
+        def with_a_later_argument(entries, aliases, deployed, view):
+            return entries
+
+        alias_listing_entries = (with_a_later_argument if extra_argument
+                                 else entries_aliases_and_groups if deployed_argument else entries_and_aliases)
+
+        def caller_alias_maps(key_aliases, team_aliases, key_team_id, listed_team_id, router_aliases=None):
+            return {**(team_aliases or {}), **(key_aliases or {})}
+
         module = types.ModuleType(name)
         module.alias_listing_entries = alias_listing_entries
+        module.caller_alias_maps = caller_alias_maps
         previous = sys.modules.get(name)
         sys.modules[name] = module
         self.addCleanup(lambda: sys.modules.__setitem__(name, previous) if previous else sys.modules.pop(name, None))
@@ -288,26 +322,52 @@ class GuardTest(unittest.TestCase):
             proxy = types.ModuleType(PROXY_SERVER)
             proxy.alias_listing_entries = alias_listing_entries
             sys.modules[PROXY_SERVER] = proxy
+        else:
+            sys.modules.pop(PROXY_SERVER, None)
         return module
 
     def test_a_team_router_is_listed_under_its_alias_only(self):
-        for proxy_loaded in (False, True):
-            with self.subTest(proxy_loaded=proxy_loaded):
-                listing = self.install_listing(proxy_loaded)
-                self.assertTrue(self.module.install_router_alias_listing())
-                self.assertTrue(self.module.install_router_alias_listing())  # once only
-                entries = (("gpt-4o", "gpt-4o"), (self.INTERNAL, self.INTERNAL), ("cetirun-router-ffff", "cetirun-router-ffff"))
-                aliases = {"auto": self.INTERNAL, "fast": "gpt-4o"}
-                expected = (("gpt-4o", "gpt-4o"), ("cetirun-router-ffff", "cetirun-router-ffff"), ("auto", self.INTERNAL),
-                            ("fast", "gpt-4o"))
-                self.assertEqual(listing.alias_listing_entries(entries, aliases), expected)
-                if proxy_loaded:
-                    self.assertIs(sys.modules[PROXY_SERVER].alias_listing_entries, listing.alias_listing_entries)
+        entries = (("gpt-4o", "gpt-4o"), (self.INTERNAL, self.INTERNAL), ("cetirun-router-ffff", "cetirun-router-ffff"))
+        aliases = {"auto": self.INTERNAL, "fast": "gpt-4o"}
+        expected = (("gpt-4o", "gpt-4o"), ("cetirun-router-ffff", "cetirun-router-ffff"), ("auto", self.INTERNAL),
+                    ("fast", "gpt-4o"))
+        # LiteLLM 1.105.6 passes the listing and the aliases, LiteLLM 1.108.3 also the model groups.
+        for deployed_argument, arguments in ((False, (entries, aliases)),
+                                             (True, (entries, aliases, frozenset(model for _, model in entries)))):
+            for proxy_loaded in (False, True):
+                with self.subTest(deployed_argument=deployed_argument, proxy_loaded=proxy_loaded):
+                    listing = self.install_listing(proxy_loaded, deployed_argument=deployed_argument)
+                    self.assertTrue(self.module.install_router_alias_listing())
+                    self.assertTrue(self.module.install_router_alias_listing())  # once only
+                    self.assertEqual(listing.alias_listing_entries(*arguments), expected)
+                    if proxy_loaded:
+                        self.assertIs(sys.modules[PROXY_SERVER].alias_listing_entries, listing.alias_listing_entries)
+
+    def test_the_build_calls_the_listing_as_litellm_1_108_3_does(self):
+        # Measured on a test installation with LiteLLM 1.108.3: a replacement that took the two arguments of
+        # LiteLLM 1.105.6 failed every GET /v1/models with 500 (TypeError), for every key.
+        self.install_listing(proxy_loaded=True, deployed_argument=True)
+        self.assertTrue(self.module.install_router_alias_listing())
+        self.assertIs(self.module.exercise_router_alias_listing(), True)
+
+    def test_a_listing_litellm_calls_with_other_arguments_fails_the_build(self):
+        self.install_listing(proxy_loaded=False, extra_argument=True)
+        self.assertTrue(self.module.install_router_alias_listing())
+        self.assertTrue(self.module.exercise_patches()["router_alias_listing"].startswith("TypeError"))
+
+    def test_a_proxy_that_kept_litellms_listing_fails_the_build(self):
+        listing = self.install_listing(proxy_loaded=True, deployed_argument=True)
+        original = listing.alias_listing_entries
+        self.assertTrue(self.module.install_router_alias_listing())
+        sys.modules[PROXY_SERVER].alias_listing_entries = original
+        self.assertIs(self.module.exercise_router_alias_listing(), False)
 
     def test_without_litellms_listing_nothing_is_replaced(self):
         self.assertFalse(self.module.install_router_alias_listing())
         self.assertEqual(self.module.PATCHED, {"mark_form": False, "failover_past_affinity": False,
                                                "router_alias_listing": False, "savings_provider_lookup": False})
+        # The build's exercise of each replacement fails as well.
+        self.assertFalse(any(result is True for result in self.module.exercise_patches().values()))
 
     def test_loading_the_guard_replaces_the_listing(self):
         listing = self.install_listing(proxy_loaded=False)
@@ -375,6 +435,12 @@ class GuardTest(unittest.TestCase):
 
     def test_without_litellms_savings_module_nothing_is_replaced(self):
         self.assertFalse(self.module.install_savings_provider_lookup())
+
+    def test_the_build_checks_the_savings_lookup(self):
+        savings, identity, asked = self.install_savings()
+        self.assertTrue(self.module.install_savings_provider_lookup())
+        self.assertIs(self.module.exercise_savings_provider_lookup(), True)
+        self.assertEqual(asked, [])  # named from the model name, without LiteLLM's lookup
 
     def test_loading_the_guard_replaces_the_savings_lookup(self):
         savings, _, _ = self.install_savings()
@@ -1251,6 +1317,134 @@ class GuardTest(unittest.TestCase):
         self.filtered(request, [terra], "gpt-5.6-terra")
         self.assertEqual(request["temperature"], 0)
 
+    # ----- reasoning parameters for models that do not reason -----
+
+    def with_supported_params(self, reasoning=(), unknown=(), failing=()):
+        """LiteLLM's get_supported_openai_params, as 1.108.3 states it, for (model, provider, base_model).
+
+        A model or base_model in reasoning supports reasoning_effort; a model in
+        unknown gives None; a model in failing raises. Records each call.
+        """
+        calls = []
+
+        def get_supported_openai_params(model, custom_llm_provider=None, request_type="chat_completion",
+                                        base_model=None):
+            calls.append((model, custom_llm_provider, base_model))
+            if model in failing:
+                raise ValueError("lookup failed")
+            if model in unknown:
+                return None
+            params = ["max_tokens", "temperature", "top_p"]
+            if model in reasoning or base_model in reasoning:
+                params.append("reasoning_effort")
+            return params
+
+        names = ("litellm.litellm_core_utils", "litellm.litellm_core_utils.get_supported_openai_params")
+        stubs = {name: types.ModuleType(name) for name in names}
+        stubs[names[-1]].get_supported_openai_params = get_supported_openai_params
+        saved = {name: sys.modules.get(name) for name in stubs}
+        sys.modules.update(stubs)
+
+        def restore():
+            for name, previous in saved.items():
+                if previous is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = previous
+
+        self.addCleanup(restore)
+        return calls
+
+    def test_a_router_tier_that_does_not_reason_gets_no_reasoning_effort(self):
+        # Issue #498: a router sent a request with reasoning_effort to a tier
+        # without reasoning, and LiteLLM answered 400 UnsupportedParamsError.
+        calls = self.with_supported_params(reasoning=("gpt-5.6-terra",))
+        mini = self.model_deployment("gpt-4.1-mini", "azure/gpt-4.1-mini")
+        for bucket in ("metadata", "litellm_metadata"):
+            with self.subTest(bucket=bucket):
+                request = self.routed(bucket=bucket, reasoning_effort="high", max_tokens=16)
+                with self.assertLogs(LOGGER, level="WARNING") as logs:
+                    kept = self.filtered(request, [mini], "gpt-4.1-mini")
+                self.assertEqual(kept, [mini])
+                self.assertNotIn("reasoning_effort", request)
+                self.assertEqual(request["max_tokens"], 16)
+                self.assertIn("removed reasoning_effort", logs.output[0])
+                self.assertIn("the router auto sent to gpt-4.1-mini", logs.output[0])
+        self.assertIn(("gpt-4.1-mini", "azure", None), calls)
+
+    def test_the_responses_form_goes_too(self):
+        self.with_supported_params()
+        mini = self.model_deployment("gpt-4.1-mini", "azure/gpt-4.1-mini")
+        request = self.routed(bucket="litellm_metadata", reasoning={"effort": "medium", "summary": "auto"},
+                              input=[{"role": "user", "content": "hi"}])
+        with self.assertLogs(LOGGER, level="WARNING"):
+            self.filtered(request, [mini], "gpt-4.1-mini")
+        self.assertNotIn("reasoning", request)
+        self.assertEqual(request["input"], [{"role": "user", "content": "hi"}])
+
+    def test_a_model_asked_for_by_name_that_does_not_reason_gets_no_reasoning_effort(self):
+        self.with_supported_params()
+        mini = self.model_deployment("gpt-4.1-mini", "azure/gpt-4.1-mini")
+        request = {"metadata": {"user_api_key_auth": Key(["cetirun-shared"])}, "reasoning_effort": "low"}
+        with self.assertLogs(LOGGER, level="WARNING") as logs:
+            self.filtered(request, [mini], "gpt-4.1-mini")
+        self.assertNotIn("reasoning_effort", request)
+        self.assertIn("for gpt-4.1-mini", logs.output[0])
+
+    def test_reasoning_stays_where_litellm_knows_it_is_taken_or_cannot_tell(self):
+        calls = self.with_supported_params(reasoning=("gpt-5",), unknown=("mystery",), failing=("broken",))
+        for deployment in (
+                # Named after no model; LiteLLM goes by base_model, from either place.
+                self.model_deployment("enterprise", "azure/enterprise", base_model="azure/gpt-5"),
+                {"model_name": "enterprise", "litellm_params": {"model": "azure/enterprise", "base_model": "gpt-5"},
+                 "model_info": {"id": "d-e", "access_groups": ["cetirun-shared"]}},
+                # Copilot routes and providers that sign in are not looked up.
+                self.model_deployment("gpt-4.1-mini", "litellm_proxy/gpt-4.1-mini"),
+                self.model_deployment("gpt-4.1-mini", "github_copilot/gpt-4.1-mini"),
+                # LiteLLM does not know the model, or the lookup fails.
+                self.model_deployment("mystery", "azure/mystery"),
+                self.model_deployment("broken", "azure/broken")):
+            with self.subTest(deployment=deployment["litellm_params"]):
+                request = self.routed(reasoning_effort="high", reasoning={"effort": "high"})
+                self.filtered(request, [deployment], deployment["model_name"])
+                self.assertEqual(request["reasoning_effort"], "high")
+                self.assertEqual(request["reasoning"], {"effort": "high"})
+        self.assertIn(("enterprise", "azure", "gpt-5"), calls)
+        self.assertFalse([call for call in calls if call[1] in ("litellm_proxy", "github_copilot")])
+
+    def test_one_deployment_that_reasons_keeps_the_effort(self):
+        # The deployment that reasons may serve the request.
+        self.with_supported_params(reasoning=("gpt-5",))
+        deployments = [self.model_deployment("mixed", "azure/gpt-4.1-mini"), self.model_deployment("mixed", "azure/gpt-5")]
+        request = self.routed(reasoning_effort="high")
+        self.filtered(request, deployments, "mixed")
+        self.assertEqual(request["reasoning_effort"], "high")
+        deployments = [self.model_deployment("mixed", "azure/gpt-4.1-mini"),
+                       self.model_deployment("mixed", "litellm_proxy/gpt-4.1-mini")]
+        request = self.routed(reasoning_effort="high")
+        self.filtered(request, deployments, "mixed")
+        self.assertEqual(request["reasoning_effort"], "high")
+
+    def test_an_effort_of_none_goes_from_a_model_that_does_not_reason(self):
+        self.with_azure_gpt5_rule()
+        self.with_supported_params()
+        mini = self.model_deployment("gpt-4.1-mini", "azure/gpt-4.1-mini")
+        for effort in ("none", {"effort": "none"}):
+            with self.subTest(effort=effort):
+                request = self.routed(reasoning_effort=effort, temperature=0)
+                with self.assertLogs(LOGGER, level="WARNING") as logs:
+                    self.filtered(request, [mini], "gpt-4.1-mini")
+                self.assertNotIn("reasoning_effort", request)
+                self.assertEqual(request["temperature"], 0)
+                self.assertEqual(len(logs.output), 1)
+
+    def test_without_reasoning_parameters_nothing_is_looked_up(self):
+        calls = self.with_supported_params()
+        mini = self.model_deployment("gpt-4.1-mini", "azure/gpt-4.1-mini")
+        request = self.routed(max_tokens=16)
+        self.filtered(request, [mini], "gpt-4.1-mini")
+        self.assertEqual(calls, [])
+
     # ----- encrypted reasoning without the Gateway's mark -----
 
     def responses_request(self, *items):
@@ -1432,6 +1626,93 @@ class GuardTest(unittest.TestCase):
         # Items marked before the change still route and are unwrapped.
         self.assertEqual(unwrap("litellm_enc:dep-2;gAAAAold"), ("dep-2", "gAAAAold"))
         self.assertEqual(unwrap("gAAAAplain"), (None, "gAAAAplain"))
+
+    def install_responses_utils(self, writer="wrap_encrypted_content_with_model_id",
+                                reader="unwrap_encrypted_content_with_model_id"):
+        """LiteLLM 1.108.3's ResponsesAPIRequestUtils: the functions that write and read the mark under public
+        names, the private names of LiteLLM 1.105.6 as aliases, and the functions that mark the items of a
+        response and unmark the items of a request, which call the names writer and reader."""
+
+        class ResponsesAPIRequestUtils:
+            @staticmethod
+            def wrap_encrypted_content_with_model_id(encrypted_content, model_id):
+                metadata = base64.b64encode(f"model_id:{model_id}".encode()).decode()
+                return f"litellm_enc:{metadata};{encrypted_content}"
+
+            _wrap_encrypted_content_with_model_id = wrap_encrypted_content_with_model_id
+            # A name for the same function that the guard does not know.
+            wrap_encrypted_content_v3 = wrap_encrypted_content_with_model_id
+
+            @staticmethod
+            def unwrap_encrypted_content_with_model_id(wrapped_content):
+                if not wrapped_content.startswith("litellm_enc:"):
+                    return None, wrapped_content
+                metadata, content = wrapped_content[len("litellm_enc:"):].split(";", 1)
+                return base64.b64decode(metadata).decode().removeprefix("model_id:"), content
+
+            _unwrap_encrypted_content_with_model_id = unwrap_encrypted_content_with_model_id
+
+            @staticmethod
+            def _update_encrypted_content_item_ids_in_response(response, model_id):
+                for item in response["output"]:
+                    if item.get("encrypted_content"):
+                        item["encrypted_content"] = getattr(ResponsesAPIRequestUtils, writer)(
+                            item["encrypted_content"], model_id)
+                return response
+
+            @staticmethod
+            def _restore_encrypted_content_item_ids_in_input(request_input):
+                for item in request_input:
+                    if item.get("encrypted_content"):
+                        item["encrypted_content"] = getattr(ResponsesAPIRequestUtils, reader)(item["encrypted_content"])[1]
+                return request_input
+
+        utils = types.ModuleType("litellm.responses.utils")
+        utils.ResponsesAPIRequestUtils = ResponsesAPIRequestUtils
+        for module in (types.ModuleType("litellm.responses"), utils):
+            self.addCleanup(self.restore_module, module.__name__, sys.modules.get(module.__name__))
+            sys.modules[module.__name__] = module
+        return ResponsesAPIRequestUtils
+
+    def test_litellm_1_108_3_writes_and_reads_the_gateways_form_by_its_public_names(self):
+        # Measured on a test installation with LiteLLM 1.108.3: with only the private names replaced, LiteLLM
+        # returned its own form of the mark again, and Azure OpenAI refused an item in the Gateway's form, as a
+        # conversation from before the upgrade sends it back (400 invalid_encrypted_content).
+        utils = self.install_responses_utils()
+        self.assertTrue(self.module.install_mark_form())
+        self.assertTrue(self.module.install_mark_form())  # a second install changes nothing
+        response = {"output": [{"type": "reasoning", "encrypted_content": "gAAAAraw"}]}
+        utils._update_encrypted_content_item_ids_in_response(response, "dep-1")
+        marked = response["output"][0]["encrypted_content"]
+        self.assertEqual(marked, self.module.mark_encrypted_content("gAAAAraw", "dep-1"))
+        request = [{"type": "reasoning", "encrypted_content": marked},
+                   {"type": "reasoning", "encrypted_content": "litellm_enc:bW9kZWxfaWQ6ZGVwLTI=;gAAAAold"}]
+        utils._restore_encrypted_content_item_ids_in_input(request)
+        self.assertEqual([item["encrypted_content"] for item in request], ["gAAAAraw", "gAAAAold"])
+        # The private names, which LiteLLM 1.105.6 calls, are replaced as well.
+        self.assertEqual(utils._wrap_encrypted_content_with_model_id("gAAAAraw", "dep-1"), marked)
+        self.assertEqual(utils._unwrap_encrypted_content_with_model_id(marked), ("dep-1", "gAAAAraw"))
+        self.assertIs(self.module.exercise_mark_form(), True)
+
+    def test_a_mark_function_litellm_calls_by_another_name_fails_the_build(self):
+        self.install_responses_utils(writer="wrap_encrypted_content_v3")
+        self.assertTrue(self.module.install_mark_form())
+        self.assertIs(self.module.exercise_mark_form(), False)
+
+    def test_without_both_mark_functions_nothing_is_replaced(self):
+        utils = self.install_responses_utils()
+        del utils.wrap_encrypted_content_with_model_id, utils._wrap_encrypted_content_with_model_id
+        self.assertFalse(self.module.install_mark_form())
+
+    def test_the_build_exercises_each_replacement(self):
+        self.install_affinity()
+        self.install_listing(proxy_loaded=True, deployed_argument=True)
+        self.install_savings()
+        self.install_responses_utils()
+        for install in (self.module.install_mark_form, self.module.install_router_alias_listing,
+                        self.module.install_savings_provider_lookup):
+            self.assertTrue(install())
+        self.assertEqual(self.module.exercise_patches(), dict.fromkeys(self.module.PATCHED, True))
 
     def test_items_in_the_gateways_form_are_marked(self):
         self.with_affinity(EncryptedContentAffinityCheck())

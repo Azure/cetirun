@@ -22,6 +22,34 @@ func testModelRouterDTO(name string) TeamModelRouterDTO {
 	return TeamModelRouterDTO{Name: name, Simple: "small-model", Medium: "medium-model", Complex: "copilot/large-model"}
 }
 
+// The operator's hint that some tiers do not reason reaches the Team page.
+func TestAdminTeamReportsTheTiersThatDoNotReason(t *testing.T) {
+	team := &cetirunv1alpha1.Team{
+		ObjectMeta: metav1.ObjectMeta{Name: "research"},
+		Spec: cetirunv1alpha1.TeamSpec{AgentPolicyRef: "standard-policy", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard",
+			ModelRouters: []cetirunv1alpha1.TeamModelRouter{
+				{Name: "auto", Tiers: cetirunv1alpha1.TeamModelRouterTiers{Simple: "small-model", Medium: "medium-model", Complex: "large-model"}},
+				{Name: "auto-thinks", Tiers: cetirunv1alpha1.TeamModelRouterTiers{Simple: "large-model", Medium: "large-model", Complex: "large-model"}},
+			}},
+		Status: cetirunv1alpha1.TeamStatus{ModelRouters: []cetirunv1alpha1.TeamModelRouterStatus{
+			{Name: "auto", Ready: true, NonReasoningModels: []string{"medium-model", "small-model"}},
+			{Name: "auto-thinks", Ready: true},
+		}},
+	}
+	_, statuses := toTeamModelRouterDTOs(team)
+	if len(statuses) != 2 || !slices.Equal(statuses[0].NonReasoningModels, []string{"medium-model", "small-model"}) ||
+		statuses[1].NonReasoningModels != nil {
+		t.Fatalf("statuses = %+v", statuses)
+	}
+	raw, err := json.Marshal(statuses)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `[{"name":"auto","ready":true,"nonReasoningModels":["medium-model","small-model"]},{"name":"auto-thinks","ready":true}]`; string(raw) != want {
+		t.Fatalf("JSON = %s", raw)
+	}
+}
+
 func TestAdminTeamKeepsModelRoutersAndReportsTheirStatus(t *testing.T) {
 	team := &cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "research"},

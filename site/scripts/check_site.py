@@ -7,12 +7,17 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import hashlib
 import json
 import re
 import sys
+from collections import Counter
+from collections.abc import Iterable, Iterator
 from html.parser import HTMLParser
+from itertools import accumulate
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import unquote, urljoin, urlsplit
 
 import tomllib
@@ -350,22 +355,35 @@ def check_generated(root: Path, base_url: str) -> list[str]:
     return errors
 
 
+FRONTMATTER = re.compile(r"---\n(.*?)\n---\n", re.DOTALL)
+HEADING = re.compile(r"#{1,6}\s+(.+?)\s*#*\s*$")
+# One Hugo heading attribute, such as #custom-id, .class, or key=value.
+HEADING_ATTRIBUTE = re.compile(r"[#.][\w-]+|[\w-]+=[^\s}]+")
+MARKDOWN_LINK = re.compile(r"(?<!!)\[([^\]\n]+)\]\(([^)\n]+)\)")
+
+
+def frontmatter_lines(text: str) -> dict[str, tuple[int, str]]:
+    """Return the line number and the value of each frontmatter field."""
+    match = FRONTMATTER.match(text)
+    fields = {}
+    for number, line in enumerate(match[1].splitlines() if match else [], 2):
+        if field := re.match(r"(\w+):\s*(.+)$", line):
+            fields[field[1]] = (number, field[2].strip().strip("\"'"))
+    return fields
+
+
 def frontmatter(text: str) -> dict[str, str]:
-    match = re.match(r"---\n(.*?)\n---\n", text, re.DOTALL)
-    if not match:
-        return {}
-    return {
-        key: value.strip().strip("\"'")
-        for key, value in re.findall(r"^(\w+):\s*(.+)$", match[1], re.MULTILINE)
-    }
+    return {key: value for key, (_, value) in frontmatter_lines(text).items()}
 
 
-def markdown_prose(text: str) -> str:
-    """Ignore frontmatter and fenced examples when checking source links."""
-    text = re.sub(r"\A---\n.*?\n---\n", "", text, count=1, flags=re.DOTALL)
-    prose = []
+def prose_lines(text: str) -> list[str]:
+    """Blank frontmatter and fenced examples, but keep the line numbers."""
+    lines = text.splitlines()
+    match = FRONTMATTER.match(text)
+    start = match[0].count("\n") if match else 0
+    prose = [""] * start
     fence = ""
-    for line in text.splitlines():
+    for line in lines[start:]:
         marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
         if fence:
             if (
@@ -375,23 +393,66 @@ def markdown_prose(text: str) -> str:
                 and not marker[2].strip()
             ):
                 fence = ""
+            line = ""
         elif marker:
             fence = marker[1]
+            line = ""
+        prose.append(line)
+    return prose
+
+
+def markdown_prose(text: str) -> str:
+    """Ignore frontmatter and fenced examples when checking source links."""
+    return "\n".join(prose_lines(text))
+
+
+def split_attributes(line: str) -> tuple[str, str]:
+    """Split Hugo attributes, such as {#custom-id .class}, from the end of a line.
+
+    Return the text before the attributes and the custom anchor, or "" if there
+    is no anchor. A line without valid attributes stays the same. String methods
+    keep the time linear: one regular expression for this grammar can backtrack
+    exponentially.
+    """
+    body = line.rstrip()
+    start = body.rfind("{")
+    if start < 0 or not body.endswith("}"):
+        return line, ""
+    tokens = body[start + 1 : -1].split()
+    if not all(HEADING_ATTRIBUTE.fullmatch(token) for token in tokens):
+        return line, ""
+    anchor = next((token[1:] for token in tokens if token.startswith("#")), "")
+    return body[:start].rstrip(), anchor
+
+
+def heading_lines(prose: list[str]) -> list[tuple[int, str, str]]:
+    """Return the line, the text, and the custom anchor or "" of each heading."""
+    return [
+        (number, *split_attributes(match[1]))
+        for number, line in enumerate(prose, 1)
+        if (match := HEADING.match(line))
+    ]
+
+
+def markdown_headings(prose: list[str]) -> dict[str, str]:
+    """Map each heading anchor to its text, with the suffixes that Hugo adds."""
+    headings: dict[str, str] = {}
+    seen: Counter[str] = Counter()
+    for _, text, anchor in heading_lines(prose):
+        if anchor:
+            seen[anchor] += 1
         else:
-            prose.append(line)
-    return "\n".join(prose)
+            slug = re.sub(r"[^\w -]", "", text.lower()).replace(" ", "-")
+            anchor = f"{slug}-{seen[slug]}" if seen[slug] else slug
+            seen[slug] += 1
+        headings[anchor] = text
+    return headings
 
 
 def markdown_anchors(text: str) -> set[str]:
-    prose = markdown_prose(text)
-    anchors = set(re.findall(r'<a\s+(?:id|name)=["\']([^"\']+)', prose))
-    seen: dict[str, int] = {}
-    for heading in re.findall(r"^#{1,6}\s+(.+?)\s*#*\s*$", prose, re.MULTILINE):
-        slug = re.sub(r"[^\w -]", "", heading.lower()).replace(" ", "-")
-        count = seen.get(slug, 0)
-        anchors.add(f"{slug}-{count}" if count else slug)
-        seen[slug] = count + 1
-    return anchors
+    prose = prose_lines(text)
+    anchors = set(re.findall(r'<a\s+(?:id|name)=["\']([^"\']+)', "\n".join(prose)))
+    return anchors | set(markdown_headings(prose))
 
 
 def check_doc_inventory(site: Path) -> list[str]:
@@ -427,8 +488,8 @@ def check_repository_links(repo: Path) -> list[str]:
             errors.append(f"{relative}: source link checker will not follow a symlink")
             continue
         prose = markdown_prose(source.read_text(encoding="utf-8"))
-        for link in re.findall(r"(?<!!)\[[^\]\n]+\]\(([^)\n]+)\)", prose):
-            target = link.split(maxsplit=1)[0].strip("<>")
+        for match in MARKDOWN_LINK.finditer(prose):
+            target = match[2].split(maxsplit=1)[0].strip("<>")
             parsed = urlsplit(target)
             if parsed.scheme or parsed.netloc:
                 continue
@@ -477,21 +538,629 @@ def check_planned_content(text: str, metadata: dict[str, str]) -> list[str]:
     return errors
 
 
+class StyleRule(NamedTuple):
+    name: str
+    level: str
+    advice: str
+    pattern: str = ""
+
+
+class StyleFinding(NamedTuple):
+    rule: StyleRule
+    line: int
+    text: str
+
+    def __str__(self) -> str:
+        text = self.text if len(self.text) <= 90 else self.text[:87] + "..."
+        return f"line {self.line}: {self.rule.advice} ({self.rule.name}): {text}"
+
+
+class Block(NamedTuple):
+    """A paragraph, list item, numbered step, or quote, joined into one line."""
+
+    kind: str
+    first: int
+    offsets: list[int]
+    text: str
+
+    def line(self, offset: int) -> int:
+        """Return the source line of a character in the joined text."""
+        return self.first + bisect.bisect_right(self.offsets, offset) - 1
+
+
+class Page(NamedTuple):
+    """The parts of a page that the cross-page rules compare."""
+
+    fields: dict[str, tuple[int, str]]
+    prose: list[str]
+    headings: dict[str, str]
+
+    def field(self, key: str) -> str:
+        return self.fields.get(key, (0, ""))[1]
+
+
+STEP_WORDS, SENTENCE_WORDS, PARAGRAPH_SENTENCES, PAGE_LINES = 20, 25, 6, 400
+# Style rules for documentation pages. An "error" rule fails the check. A
+# "pending" rule only reports, because pages do not meet it yet: when
+# `check_site.py --style-report` shows no findings for it, change its level to
+# "error". A "review" rule marks text for a person to judge and only reports.
+# Pattern rules ignore code, link targets, and bold UI labels.
+STYLE_LEVELS = ("error", "pending", "review")
+STYLE_RULES = (
+    StyleRule(
+        "contraction",
+        "error",
+        'write the full form, such as "do not"',
+        r"\b(?:\w+n['’]t|(?:it|that|there|here|what|who|let)['’]s"
+        r"|(?:i|you|we|they)['’](?:m|re|ve|ll|d)|(?:he|she|it|that)['’](?:ll|d))\b",
+    ),
+    StyleRule(
+        "phrasal-verb",
+        "error",
+        "use one verb, such as start, stop, remove, or find",
+        r"\b(?:(?:spin|spins|spinning|spun|start|starts|starting|started"
+        r"|bring|brings|bringing|brought|look|looks|looking|looked)\s+up"
+        r"|(?:shut|shuts|shutting|tear|tears|tearing|tore|torn)\s+down"
+        r"|(?:find|finds|finding|found|carry|carries|carrying|carried"
+        r"|figure|figures|figuring|figured)\s+out"
+        r"|(?:fill|fills|filling|filled)\s+(?:in|out))\b",
+    ),
+    StyleRule(
+        "phrasal-verb",
+        "pending",
+        "use one verb, such as configure, enable, disable, or remove",
+        r"\b(?:(?:set|sets|setting|clean|cleans|cleaning|cleaned"
+        r"|back|backs|backing|backed)\s+up"
+        r"|(?:turn|turns|turning|turned)\s+(?:on|off)"
+        r"|(?:roll|rolls|rolling|rolled)\s+back)\b",
+    ),
+    StyleRule("link-text", "error", "name the target in the link text"),
+    StyleRule(
+        "dev-narrative",
+        "error",
+        "describe product behavior rather than development progress",
+        r"\b(?:current\s+(?:implementation|source\s+code)|this\s+checkout"
+        r"|if\s+the\s+checkout\s+includes|earlier\s+checkout|this\s+increment"
+        r"|separately\s+delivered|not\s+defined\s+yet|now\s+supplies"
+        r"|we\s+(?:are|['’]re)\s+(?:refactoring|rewriting|rebuilding)"
+        r"|(?:is|are|was|were)\s+being\s+(?:refactored|rewritten|rebuilt))\b",
+    ),
+    StyleRule(
+        "dev-narrative",
+        "pending",
+        "describe product behavior rather than development progress",
+        r"\b(?:this\s+repository\s+change|initial\s+scope|in\s+this\s+version"
+        r"|now\s+exports|in\s+a\s+measurement|measured\s+on\s+an?\s+test)\b",
+    ),
+    StyleRule(
+        "verb-tense",
+        "error",
+        'use the simple present tense, such as "the operator deletes the Agent"',
+        r"\b(?:is|are|was|were)\s+being\s+\w+",
+    ),
+    StyleRule(
+        "timeless",
+        "error",
+        "describe the product without reference to a date or a release",
+        r"\b(?:currently|presently|nowadays|(?<!\bas\s)soon|recently|anymore"
+        r"|for\s+now|at\s+(?:present|the\s+moment|this\s+time)|as\s+of"
+        r"|in\s+the\s+future|going\s+forward)\b",
+    ),
+    StyleRule(
+        "timeless",
+        "review",
+        "make sure that the text describes the product, not a release change",
+        r"\b(?:now|no\s+longer)\b",
+    ),
+    StyleRule(
+        "minimizing-word",
+        "error",
+        "remove words that tell the reader that a task is easy",
+        r"\b(?:simply|easy|easily|obviously|of\s+course|basically)\b",
+    ),
+    StyleRule(
+        "first-person",
+        "pending",
+        'address the reader; do not use "we"',
+        r"\b(?:we|ours?|(?-i:us))\b",
+    ),
+    StyleRule(
+        "examine-subject",
+        "review",
+        'use "check" when a tool or a component does the action',
+        r"\b(?:it|this|that|which|commands?|checks?|scripts?|helpers?|validators?"
+        r"|tests?|renders?|charts?|webhooks?|operators?|controllers?|portal"
+        r"|gateway|gates?|jobs?|plans?|preflights?|probes?|tools?|workflows?"
+        r"|workers?)\s+(?:(?:also|only|then|first|still|again|does\s+not"
+        r"|do\s+not|cannot)\s+)?examines?\b",
+    ),
+    StyleRule("repo-url", "pending", "use the repo shortcode for repository paths"),
+    StyleRule("heading-case", "pending", "use sentence case"),
+    StyleRule(
+        "description",
+        "pending",
+        "start with the reader's task or the purpose, not with an announcement",
+    ),
+    StyleRule("duplicate-title", "pending", "give each page a unique title"),
+    StyleRule(
+        "step-length",
+        "pending",
+        f"keep each sentence of a numbered step to {STEP_WORDS} words or fewer",
+    ),
+    StyleRule(
+        "sentence-length",
+        "pending",
+        f"keep each descriptive sentence to {SENTENCE_WORDS} words or fewer",
+    ),
+    StyleRule(
+        "paragraph-length",
+        "pending",
+        f"keep each paragraph to {PARAGRAPH_SENTENCES} sentences or fewer",
+    ),
+    StyleRule(
+        "negative-paragraph",
+        "review",
+        "most sentences are negative; tell the reader what to do",
+    ),
+    StyleRule(
+        "link-title",
+        "review",
+        "use the title of the target page or section as the link text",
+    ),
+    StyleRule("term-case", "review", "capitalize each product term in one way"),
+    StyleRule(
+        "page-length",
+        "review",
+        f"a page of more than {PAGE_LINES} lines often mixes concepts, tasks, and"
+        " reference",
+    ),
+)
+# Names that keep their capital letters in a sentence-case heading. Keep this
+# list aligned with the glossary.
+PROPER_NAMES = (
+    "ADX-Mon", "AI Gateway", "Agent Broker", "Agent Harness", "Agent Identity",
+    "Agent Policy", "Agent", "Agents", "Azure Blob", "Azure Container Registry",
+    "Azure Data Explorer", "Azure Monitor", "Azure", "Bicep", "Blob", "Broker",
+    "Cilium", "Connections MCP", "Container Insights", "Copilot", "Custom Web UI",
+    "Custom", "Docker", "Docsy", "Entra", "Gateway", "GitHub App", "Google Cloud",
+    "Google", "Helm", "Hermes", "Hugo", "Istio", "Kata", "Key Vault", "Kubernetes",
+    "Let's Encrypt", "Linux", "Memory Context", "Microsoft Graph", "Microsoft",
+    "Node.js", "OAuth App", "OpenClaw Control UI", "Pod", "Pods", "Portal Chat",
+    "Portal", "Python", "Sandbox", "Sandboxes", "Secret", "Secrets",
+    "Skill Marketplace", "Tailscale", "Team", "Teams", "User Guide",
+)  # fmt: skip
+GENERIC_LINK_TEXT = {
+    "click here", "here", "learn more", "link", "more", "read more", "see here",
+    "this", "this document", "this guide", "this link", "this page", "this section",
+}  # fmt: skip
+CASED_TERMS = ("Agent", "Team", "Sandbox", "Portal", "Operator", "Gateway")
+ANNOUNCEMENT = re.compile(
+    r"(?:this|the\s+following)\s+(?:page|guide|section|document|topic)\s+"
+    r"(?:describes|explains|shows|covers|lists|contains|gives|provides"
+    r"|introduces)\b|(?:an?\s+)?(?:introduction|overview)\s+(?:to|of)\b",
+    re.IGNORECASE,
+)
+CODE_SPAN = re.compile(r"`[^`\n]+`")
+# Bold UI labels and quotations. Like a link, each one can wrap once.
+LABEL = re.compile(
+    r'\*\*[^*\n]+(?:\n[^*\n]+)?\*\*|"[^"\n]*(?:\n[^"\n]*)?"|“[^”\n]*(?:\n[^”\n]*)?”'
+)
+LINK_TEXT = re.compile(r"!?\[([^\]\n]*(?:\n[^\]\n]*)?)\]\([^)\n]*\)")
+LIST_MARKER = r"\s*(?:([-*+])|\d+[.)])\s+"
+LIST_ITEM = re.compile(LIST_MARKER + "(.+)")
+NEGATION = re.compile(r"\b(?:not|cannot|never)\b|n['’]t\b", re.IGNORECASE)
+REPO_URL = re.compile(
+    r"https?://github\.com/Azure/cetirun/(?:blob|tree|raw|edit)/[^\s)>\]\"']*",
+    re.IGNORECASE,
+)
+SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[\"'(\[]?[A-Z0-9])")
+TERM = re.compile(
+    r"(?<=[a-z,][ \n])("
+    + "|".join(f"{term}|{term.lower()}" for term in CASED_TERMS)
+    + r")(?:e?s)?\b"
+)
+WORD = re.compile(r"\S*\w\S*")
+
+
+def names_pattern(names: Iterable[str]) -> re.Pattern[str]:
+    """Match any of the names, longest first, also when a name wraps."""
+    words = [
+        r"\s+".join(re.escape(word).replace("'", "['’]") for word in name.split())
+        for name in sorted(names, key=len, reverse=True)
+    ]
+    return re.compile(r"\b(?:" + ("|".join(words) or "(?!)") + r")\b")
+
+
+PROPER_NAME = names_pattern(PROPER_NAMES)
+# The pattern rules skip a name that one of them matches, such as Let's Encrypt.
+RULE_NAME = names_pattern(
+    name
+    for name in PROPER_NAMES
+    if any(
+        re.search(rule.pattern, name, re.IGNORECASE)
+        for rule in STYLE_RULES
+        if rule.pattern
+    )
+)
+
+
+def style_rule(name: str) -> StyleRule:
+    """Return the rule of a check that is not a pattern; it has one level."""
+    (rule,) = [rule for rule in STYLE_RULES if rule.name == name and not rule.pattern]
+    return rule
+
+
+def found(name: str, line: int, text: str) -> StyleFinding:
+    return StyleFinding(style_rule(name), line, text)
+
+
+def mask(pattern: re.Pattern[str], placeholder: str, text: str) -> str:
+    """Replace each match with a placeholder, but keep its line breaks."""
+    return pattern.sub(lambda match: placeholder + "\n" * match[0].count("\n"), text)
+
+
+def plain_text(text: str) -> str:
+    """Keep the words and the line breaks of Markdown text.
+
+    Code and URLs become placeholders, and links keep only their text.
+    Shortcodes, HTML tags, and heading attributes are removed.
+    """
+    text = CODE_SPAN.sub("CODE", text)
+    text = re.sub(r"\{\{[<%].*?[%>]\}\}", "", text)
+    text = LINK_TEXT.sub(r"\1", text)
+    text = re.sub(r"<[^>\n]*>", "", text)
+    text = "\n".join(split_attributes(line)[0] for line in text.split("\n"))
+    return re.sub(r"https?://\S+", "URL", text)
+
+
+def offsets(parts: list[str]) -> list[int]:
+    """Return where each part starts when the parts are joined with spaces."""
+    return list(accumulate((len(part) + 1 for part in parts[:-1]), initial=0))
+
+
+def text_blocks(lines: list[str]) -> list[Block]:
+    """Group prose lines into paragraphs, list items, numbered steps, and quotes."""
+    blocks: list[tuple[str, int, list[str]]] = []
+    current = None
+    for number, line in enumerate(lines, 1):
+        stripped = line.strip()
+        item = LIST_ITEM.match(line)
+        if not stripped or stripped.startswith(("#", "|", "<")):
+            current = None
+            continue
+        if item:
+            kind, body = ("item" if item[1] else "step"), item[2]
+        elif stripped.startswith(">"):
+            kind, body = "quote", stripped.lstrip("> ")
+            if not body:
+                current = None
+                continue
+        else:
+            kind, body = "paragraph", stripped
+        if item or not current or (kind == "quote") != (current[0] == "quote"):
+            current = (kind, number, [])
+            blocks.append(current)
+        current[2].append(body)
+    return [
+        Block(kind, first, offsets(parts), " ".join(parts))
+        for kind, first, parts in blocks
+    ]
+
+
+def sentence_spans(text: str) -> list[tuple[int, str]]:
+    """Split text into sentences; abbreviations and bold markers do not end them."""
+    masked = re.sub(
+        r"\b(?:e\.g|i\.e|etc|vs)\.",
+        lambda match: match[0].replace(".", "_"),
+        text.replace("**", "  "),
+        flags=re.IGNORECASE,
+    )
+    spans, start = [], 0
+    for end in [*SENTENCE_END.finditer(masked), None]:
+        stop = end.start() if end else len(text)
+        if sentence := text[start:stop].replace("**", "").strip():
+            spans.append((start, sentence))
+        start = end.end() if end else stop
+    return spans
+
+
+def sentence_case_words(heading: str) -> list[str]:
+    """Return the words of a heading that sentence case writes in lowercase."""
+    text = mask(PROPER_NAME, "NAME", mask(LABEL, "UI", plain_text(heading)))
+    words = []
+    for clause in re.split(r":\s+", text):
+        for token in re.findall(r"[A-Za-z][\w'-]*", clause)[1:]:
+            # A hyphenated word with a digit, such as Decision-1, is a name.
+            if not re.search(r"\d", token):
+                words.extend(
+                    part
+                    for part in token.split("-")
+                    if part[:1].isupper() and part[1:].islower()
+                )
+    return words
+
+
+def word_findings(lines: list[str]) -> list[StyleFinding]:
+    """Apply the pattern rules and compare the capitals of product terms.
+
+    A match of a stricter rule, or of an earlier rule of the same level, hides
+    an overlapping match of another rule. Bold UI labels, quotations, and names
+    that a rule matches are not checked.
+    """
+    text = mask(RULE_NAME, "NAME", mask(LABEL, "UI", "\n".join(lines)))
+
+    def line(offset: int) -> int:
+        return text.count("\n", 0, offset) + 1
+
+    findings: list[StyleFinding] = []
+    taken: list[tuple[int, int]] = []
+    for rule in sorted(
+        (rule for rule in STYLE_RULES if rule.pattern),
+        key=lambda rule: STYLE_LEVELS.index(rule.level),
+    ):
+        for match in re.finditer(rule.pattern, text, re.IGNORECASE):
+            if any(start < match.end() and match.start() < end for start, end in taken):
+                continue
+            taken.append(match.span())
+            excerpt = " ".join(match[0].split())
+            findings.append(StyleFinding(rule, line(match.start()), excerpt))
+    forms: dict[str, dict[str, list[int]]] = {term: {} for term in CASED_TERMS}
+    for match in TERM.finditer(text):
+        forms[match[1].capitalize()].setdefault(match[1], []).append(match.start())
+    for term, spellings in forms.items():
+        if len(spellings) == 2:
+            lower = term.lower()
+            rare = min(spellings, key=lambda form: len(spellings[form]))
+            counts = f"{term}: {len(spellings[term])}, {lower}: {len(spellings[lower])}"
+            findings.append(found("term-case", line(spellings[rare][0]), counts))
+    return findings
+
+
+def link_findings(prose: list[str]) -> list[StyleFinding]:
+    findings = []
+    for number, line in enumerate(prose, 1):
+        line = CODE_SPAN.sub("CODE", line)
+        for match in MARKDOWN_LINK.finditer(line):
+            label = match[1]
+            if " ".join(label.strip(" .:*_").casefold().split()) in GENERIC_LINK_TEXT:
+                findings.append(found("link-text", number, label))
+        findings += [found("repo-url", number, url) for url in REPO_URL.findall(line)]
+    return findings
+
+
+def heading_findings(
+    fields: dict[str, tuple[int, str]], prose: list[str]
+) -> list[StyleFinding]:
+    headings = [fields[key] for key in ("title", "linkTitle") if key in fields]
+    headings += [(number, text) for number, text, _ in heading_lines(prose)]
+    return [
+        found("heading-case", number, f"{heading} ({', '.join(words)})")
+        for number, heading in headings
+        if (words := sentence_case_words(heading))
+    ]
+
+
+def opening_findings(
+    fields: dict[str, tuple[int, str]], blocks: list[Block]
+) -> list[StyleFinding]:
+    """Check the description and the first paragraph for an announcement."""
+    openings = [fields["description"]] if "description" in fields else []
+    if first := next((block for block in blocks if block.kind == "paragraph"), None):
+        openings.append((first.first, first.text))
+    return [
+        found("description", number, text)
+        for number, text in openings
+        if ANNOUNCEMENT.match(text)
+    ]
+
+
+def block_findings(blocks: list[Block]) -> list[StyleFinding]:
+    """Check the length of sentences and paragraphs, and their negations."""
+    findings = []
+    for block in blocks:
+        spans = sentence_spans(block.text)
+        name, limit = "sentence-length", SENTENCE_WORDS
+        if block.kind == "step":
+            name, limit = "step-length", STEP_WORDS
+        for offset, sentence in spans:
+            if (count := len(WORD.findall(sentence))) > limit:
+                text = f"{count} words: {sentence}"
+                findings.append(found(name, block.line(offset), text))
+        if len(spans) > PARAGRAPH_SENTENCES:
+            text = f"{len(spans)} sentences"
+            findings.append(found("paragraph-length", block.first, text))
+        negative = sum(1 for _, sentence in spans if NEGATION.search(sentence))
+        if len(spans) >= 3 and negative * 2 > len(spans):
+            text = f"{negative} of {len(spans)} sentences: {block.text}"
+            findings.append(found("negative-paragraph", block.first, text))
+    return findings
+
+
+def page_style_findings(text: str) -> list[StyleFinding]:
+    """Apply the page rules at every level; the caller decides what fails."""
+    prose = prose_lines(text)
+    fields = frontmatter_lines(text)
+    plain = plain_text("\n".join(prose)).split("\n")
+    words = list(plain)
+    for key in ("title", "linkTitle", "description"):
+        if key in fields:
+            number, value = fields[key]
+            words[number - 1] = plain_text(value)
+    blocks = text_blocks(plain)
+    findings = [
+        *word_findings(words),
+        *link_findings(prose),
+        *heading_findings(fields, prose),
+        *opening_findings(fields, blocks),
+        *block_findings(blocks),
+    ]
+    if (count := len(text.splitlines())) > PAGE_LINES:
+        findings.append(found("page-length", 1, f"{count} lines"))
+    return sorted(findings, key=lambda finding: finding.line)
+
+
 def check_editorial_style(text: str, metadata: dict[str, str]) -> list[str]:
     errors = []
     title = metadata.get("title", "").casefold()
     if title in {"current architecture", "security and data handling", "guidances"}:
         errors.append("use a concise product title: Architecture, Security, or Guides")
-    prose = markdown_prose(text)
-    if re.search(
-        r"\b(?:current (?:implementation|source)|this checkout|"
-        r"we (?:are|'re) (?:refactoring|rewriting|rebuilding)|"
-        r"is being (?:refactored|rewritten|rebuilt))\b",
-        prose,
-        re.IGNORECASE,
-    ):
-        errors.append("describe product behavior rather than development progress")
+    errors.extend(
+        str(finding)
+        for finding in page_style_findings(text)
+        if finding.rule.level == "error"
+    )
     return errors
+
+
+def link_name(text: str) -> str:
+    return " ".join(re.sub(r"[`*_]", "", text).casefold().split())
+
+
+def duplicate_title_findings(
+    pages: dict[str, Page],
+) -> list[tuple[str, StyleFinding]]:
+    routes_by_title: dict[str, list[str]] = {}
+    for route, page in pages.items():
+        if title := page.field("title"):
+            routes_by_title.setdefault(title.casefold(), []).append(route)
+    findings = []
+    for routes in routes_by_title.values():
+        if len(routes) < 2:
+            continue
+        for route in routes:
+            number, title = pages[route].fields["title"]
+            others = ", ".join(other for other in routes if other != route)
+            text = f"{title} (also {others})"
+            findings.append((route, found("duplicate-title", number, text)))
+    return findings
+
+
+def naming_links(prose: list[str]) -> Iterator[tuple[int, str, str]]:
+    """Yield the line, the text, and the target of each link that names its target.
+
+    A link names its target after "Refer to" or "See", or at the start of a
+    list item.
+    """
+    for number, line in enumerate(prose, 1):
+        for match in MARKDOWN_LINK.finditer(line):
+            before = line[: match.start()]
+            if re.search(
+                r"\b(?:refer\s+to|see)\s+(?:the\s+)?$", before, re.I
+            ) or re.fullmatch(LIST_MARKER, before):
+                yield number, match[1], match[2].split(maxsplit=1)[0].strip("<>")
+
+
+def link_title_findings(pages: dict[str, Page]) -> list[tuple[str, StyleFinding]]:
+    """Compare the text of a link that names its target with the target title."""
+    findings = []
+    for route, page in pages.items():
+        for number, label, target in naming_links(page.prose):
+            if target.startswith("{{"):
+                continue
+            parts = urlsplit(urljoin(route + "/", target))
+            destination = None if parts.scheme else pages.get(parts.path.rstrip("/"))
+            if not destination:
+                continue
+            names = {link_name(destination.field(k)) for k in ("title", "linkTitle")}
+            expected = destination.field("title")
+            if parts.fragment:
+                expected = destination.headings.get(parts.fragment)
+                names.add(link_name(expected or ""))
+            if link_name(label) not in names - {""}:
+                text = f"{label} (target: {expected})"
+                findings.append((route, found("link-title", number, text)))
+    return findings
+
+
+def navigation_title_findings(
+    navigation: Path, pages: dict[str, Page]
+) -> list[StyleFinding]:
+    """Check the case of navigation groups and match it with their page titles."""
+    source = navigation.read_text(encoding="utf-8")
+    lines = source.splitlines()
+    titles = {route: page.field("title") for route, page in pages.items()}
+    findings = []
+    for module in tomllib.loads(source)["modules"]:
+        for group in module["groups"]:
+            if not (title := group["title"]):
+                continue
+            problems = sentence_case_words(title) + [
+                f"page title {titles[page]}"
+                for page in group["pages"]
+                if titles.get(page, "").casefold() == title.casefold()
+                and titles[page] != title
+            ]
+            if problems:
+                number = next(
+                    (n for n, line in enumerate(lines, 1) if f'"{title}"' in line), 1
+                )
+                text = f"{title} ({', '.join(problems)})"
+                findings.append(found("heading-case", number, text))
+    return findings
+
+
+def cross_page_style_findings(site: Path) -> dict[str, list[StyleFinding]]:
+    """Apply the rules that compare pages with each other or with navigation."""
+    content = site / "content/en"
+    paths = {
+        content_route(path, content): path
+        for path in sorted((content / "docs").rglob("*.md"))
+    }
+    pages = {}
+    for route, path in paths.items():
+        text = path.read_text(encoding="utf-8")
+        prose = prose_lines(text)
+        pages[route] = Page(frontmatter_lines(text), prose, markdown_headings(prose))
+    findings: dict[str, list[StyleFinding]] = {}
+    for route, finding in [
+        *duplicate_title_findings(pages),
+        *link_title_findings(pages),
+    ]:
+        findings.setdefault(paths[route].relative_to(site).as_posix(), []).append(
+            finding
+        )
+    if navigation := navigation_title_findings(site / "data/navigation.toml", pages):
+        findings["data/navigation.toml"] = navigation
+    return findings
+
+
+def style_report(site: Path) -> dict[str, list[StyleFinding]]:
+    """Return every style finding of the site at every level, by file."""
+    report = {}
+    for path in sorted((site / "content/en/docs").rglob("*.md")):
+        if findings := page_style_findings(path.read_text(encoding="utf-8")):
+            report[path.relative_to(site).as_posix()] = findings
+    for page, findings in cross_page_style_findings(site).items():
+        report[page] = sorted(
+            report.get(page, []) + findings, key=lambda finding: finding.line
+        )
+    return dict(sorted(report.items()))
+
+
+def format_style_report(report: dict[str, list[StyleFinding]]) -> str:
+    lines = []
+    for page, findings in report.items():
+        lines.append(page)
+        lines.extend(f"  {finding.rule.level}: {finding}" for finding in findings)
+    counts = Counter(finding.rule for items in report.values() for finding in items)
+    files = Counter(
+        rule for items in report.values() for rule in {item.rule for item in items}
+    )
+    lines += ["", f"{'Rule':20} {'Level':8} {'Findings':>8} {'Files':>6}"]
+    lines += [
+        f"{rule.name:20} {rule.level:8} {counts[rule]:8} {files[rule]:6}"
+        for rule in STYLE_RULES
+    ]
+    ready = [
+        rule.name
+        for rule in STYLE_RULES
+        if rule.level == "pending" and not counts[rule]
+    ]
+    lines.append(
+        "Pending rules without findings (change them to error): "
+        + (", ".join(ready) or "none")
+    )
+    return "\n".join(lines)
 
 
 def content_route(path: Path, content: Path) -> str:
@@ -676,6 +1345,12 @@ def check_content(site: Path, policy_root: Path | None = None) -> list[str]:
         ref = menu.get("pageRef")
         if ref and not (site / "content/en" / ref.lstrip("/") / "_index.md").is_file():
             errors.append(f"menu page does not exist: {ref}")
+    errors.extend(
+        f"{page}: {finding}"
+        for page, findings in cross_page_style_findings(site).items()
+        for finding in findings
+        if finding.rule.level == "error"
+    )
     errors.extend(check_doc_inventory(site))
     errors.extend(check_repository_links(repo))
     errors.extend(check_repository_contracts(repo))
@@ -727,18 +1402,24 @@ def check_styles(path: Path) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--public", type=Path, required=True, help="Built Hugo output directory"
-    )
-    parser.add_argument(
-        "--base-url", required=True, help="Absolute base URL used for this build"
-    )
+    parser.add_argument("--public", type=Path, help="Built Hugo output directory")
+    parser.add_argument("--base-url", help="Absolute base URL used for this build")
     parser.add_argument(
         "--policy-root",
         type=Path,
         help="Optional verified policy checkout for independent documentation worktrees",
     )
+    parser.add_argument(
+        "--style-report",
+        action="store_true",
+        help="Print the style findings of every level from the sources and exit",
+    )
     args = parser.parse_args()
+    if args.style_report:
+        print(format_style_report(style_report(SITE)))
+        return 0
+    if args.public is None or args.base_url is None:
+        parser.error("--public and --base-url are required")
     base = urlsplit(args.base_url)
     if (
         base.scheme not in {"http", "https"}
@@ -766,6 +1447,16 @@ def main() -> int:
         f"Checked {len(list(root.rglob('*.html')))} HTML pages: links, fragments, "
         "navigation, search, content, repository sources, toolchain, logo, "
         "and static accessibility."
+    )
+    levels = Counter(
+        finding.rule.level
+        for findings in style_report(SITE).values()
+        for finding in findings
+    )
+    print(
+        f"Style rules that only report: {levels['pending']} pending and "
+        f"{levels['review']} review findings. For the list, run "
+        "scripts/check_site.py --style-report."
     )
     return 0
 

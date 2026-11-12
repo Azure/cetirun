@@ -1,18 +1,36 @@
 ---
-title: "Observability with ADX-Mon"
-description: "Collect the logs, Kubernetes events and metrics of the platform and the Agents into Azure Data Explorer."
+title: "Monitoring and logs"
+description: "The metrics, logs, and alerts of CetiRun, and their collection into Azure Data Explorer with ADX-Mon."
 weight: 29
 ---
 
-The `cetirun-observability` chart sends the logs of the platform and the
-Agents, the Kubernetes events, and the metrics of the cluster to Azure Data
-Explorer (ADX). It runs [ADX-Mon](https://github.com/Azure/adx-mon), which
-CetiRun builds from pinned upstream source. It is CetiRun's collection of logs
-and metrics: `make deploy` installs it with the platform. In the platform
+The CetiRun components write their logs to standard output, and the Operator,
+the Sandbox admission server, and the AI Gateway serve Prometheus metrics. The
+`cetirun-observability` chart sends these logs and metrics to Azure Data
+Explorer (ADX). It also sends the output of the Agents, the Kubernetes events,
+and the metrics of the cluster. It runs [ADX-Mon](https://github.com/Azure/adx-mon),
+which CetiRun builds from pinned upstream source. It is CetiRun's collection of
+logs and metrics: `make deploy` installs it with the platform. In the platform
 chart, it is off by default.
 
 ADX-Mon is in active development upstream and has no stable release line.
 Treat this collection as a preview.
+
+## Signals of CetiRun
+
+| Component | Signal | ADX-Mon writes it to |
+| --- | --- | --- |
+| Operator | Metrics on port 8080: `cetirun_sandbox_agents{runtime,status,reason}` and `cetirun_sandbox_metrics_collection_success` | `CetiRunMetrics` |
+| Sandbox admission server | Metrics on port 8080: `cetirun_sandbox_admission_decisions_total`, `cetirun_sandbox_admission_request_duration_seconds`, `cetirun_sandbox_pod_admission_denials_total`, and `cetirun_sandbox_admission_certificate_not_after_seconds` | `CetiRunMetrics` |
+| AI Gateway | LiteLLM metrics on the port named `metrics` | `CetiRunMetrics` |
+| AI Gateway | One JSON line for each model call, with the `log_type` `cetirun.ai_gateway.request`. The line has the model, the tokens, the spend, the timing, the Agent, the Team, and the outcome. It has no prompt or response content | The `Gateway` table of `CetiRunLogs`. `GatewayRequests()` reads it |
+| Other platform components | Logs on standard output | The `Platform` table of `CetiRunLogs` |
+
+The metrics ports of the Operator, the admission server, and the AI Gateway use
+plain HTTP without authentication. Allow only your metrics scrapers to connect
+to these ports, for example with a NetworkPolicy. The
+[Operator README]({{< repo "app/cetirun-operator/README.md" >}}#sandbox-reported-status-metrics)
+describes the labels and the values of the Sandbox metrics.
 
 ## What the chart runs
 
@@ -27,10 +45,17 @@ The collector reads the files that the container runtime writes on the node.
 Agents in Kata VM-isolated Pods write their output to the same files, so the
 collector needs no access to the Agent Pods. The collector runs as root,
 because the log files belong to root. It has no Linux capabilities and a
-read-only root file system. It mounts `/var/log` read-only.
+read-only root file system. It mounts `/var/log` read-only. It also mounts the
+host directory `collector.hostPath` with write access, for its write-ahead log
+and its read positions.
 
 The collector accepts no data from other Pods: it has no OTLP or Prometheus
 remote write receiver, and its listener binds the Pod's loopback address.
+
+The chart also installs the ADX-Mon custom resource definitions `Function`,
+`ManagementCommand`, and `SummaryRule`. The ingestor runs the Kusto commands of
+these objects with its own identity, and this identity can read the Agent
+logs. Allow only cluster administrators to create these objects.
 
 ## Where the data goes
 
@@ -46,13 +71,27 @@ Agent output can contain conversation content: for example, what a session
 logger or an Agent command prints. Give `CetiRunAgents` a smaller group of
 readers and a shorter retention than the other databases.
 
-The collector routes a Pod by its labels and namespace, not by annotations on
-the Pod. The routes of Agent Pods come first, so an Agent's output never
-reaches the platform tables. Pods in `kube-system` and in namespaces that the
-chart does not list are not collected.
+When its value `content.enabled` is `true`, the AI Gateway writes the prompt and
+the response of each call to a separate database, by default `CetiRunContent`.
+It uses its own identity, and ADX-Mon has no access to this database. Refer to
+[Content in Azure Data Explorer]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#content-in-azure-data-explorer).
 
-An Agent's values cannot set Pod annotations that start with `adx-mon/`. The
-operator refuses them for built-in, Custom and Sandbox Agents.
+The routes of the chart select a Pod by its labels and namespace. The routes of
+Agent Pods come first, so an Agent's output never reaches the platform tables.
+The chart does not collect the logs of Pods in `kube-system` and in the
+namespaces that it does not list. The kubelet metrics, kube-state-metrics, and
+Warning events cover all namespaces.
+
+The platform namespaces of the chart are its release namespace and, by
+default, `cetirun-credentials`, `cetirun-istio`, and `aks-istio-system`. The
+access log comes from `aks-istio-ingress`. `make deploy` does not pass the
+namespaces of the environment file to the chart. If you use other namespaces,
+set `logs.platformNamespaces` and `logs.ingressNamespace` under
+`platform.values.cetirun-observability`.
+
+ADX-Mon also reads `adx-mon/` annotations on a Pod. An Agent's values cannot
+set Pod annotations that start with `adx-mon/`. The operator refuses them for
+built-in, Custom and Sandbox Agents.
 
 ## Attribution
 
@@ -65,7 +104,8 @@ when it starts and every hour.
 `AgentLogsWithOwner()` in `CetiRunAgents` gives each line of Agent output the
 Agent, owner and Team that had its namespace when the line was written. A
 deleted Agent's lines keep their owner when a later Agent of the same name
-gets the namespace.
+gets the namespace. Readers of `AgentLogsWithOwner()` also need the `Viewer`
+role on `CetiRunLogs`.
 
 `AgentInventory()` lists the current Agents: those in the latest complete
 snapshot of each cluster, and those created or changed after that snapshot
@@ -86,7 +126,7 @@ The cluster template creates these functions:
 
 | Database | Function | Rows |
 |---|---|---|
-| `CetiRunLogs` | `GatewayRequests()` | One AI Gateway call with its Agent, owner, Team, model, tokens, spend, routing and outcome. No request or response content. `CallOrigin` is `health_check` for LiteLLM's own probes and empty for a client's call |
+| `CetiRunLogs` | `GatewayRequests()` | One AI Gateway call with its Agent, owner, Team, model, tokens, spend, routing and outcome. No request or response content. `CallOrigin` is `health_check` for LiteLLM's own probes, the origin of the classifier for the classifier call of a router, and empty for a client's call |
 | `CetiRunLogs` | `KubeEvents()` | One Kubernetes event version |
 | `CetiRunLogs` | `AgentInventoryHistory()`, `AgentInventory()` | Each record of an Agent's namespace, owner, Team and policy; the current Agents |
 | `CetiRunLogs` | `InventorySnapshots()` | One complete inventory snapshot of a kind, per cluster |
@@ -101,19 +141,26 @@ GatewayRequests()
 | summarize Calls = count(), Spend = sum(Spend) by Agent, Owner, Team, Model
 ```
 
-`CollectionHealth()` checks the last 15 minutes by default: platform and
-Gateway logs and metrics still arrive, the collector dropped no log lines, no
-backlog was refused, the oldest unsent data is younger than 10 minutes
-(`Warning`) or 30 minutes (`Failed`), the ingestor reports healthy, and no
-platform container restarted more than three times in an hour. It does not
-read the Agent logs database. To see only the problems:
+`CollectionHealth()` checks the last 15 minutes by default:
+
+- Platform or Gateway logs still arrive, and the metrics of the collector
+  still arrive.
+- The collector dropped no log lines, and no backlog was refused.
+- The oldest unsent data is not older than 10 minutes. Older data gives
+  `Warning`, and data older than 30 minutes gives `Failed`.
+- The ingestor reports healthy.
+- No container in `cetirun-system`, `cetirun-credentials`, or `cetirun-istio`
+  restarted more than three times in an hour.
+
+It does not read the Agent logs database. To see only the problems:
 
 ```kusto
 CollectionHealth() | where Status != "OK"
 ```
 
 A cluster that stops sending stays `Failed` until its newest row is a day
-old. The cluster template creates no alert.
+old. After that, the cluster is not in the result. The cluster template
+creates no alert.
 
 ## Dashboard
 
@@ -132,13 +179,34 @@ To use it:
    query URI. The two data sources are the logs and metrics databases; change
    their `database` values if you renamed them.
 2. Open [Azure Data Explorer dashboards](https://dataexplorer.azure.com/dashboards)
-   in the tenant of the Kusto cluster, choose **New dashboard**, then
+   in the tenant of the Kusto cluster. Choose **New dashboard**, then
    **File** > **Replace dashboard with file**, and save it.
 3. Choose your clusters in the **Cluster** parameter, and save that as the
    default.
 
 Readers of the dashboard need the `Viewer` role on the logs and metrics
 databases. It does not read the Agent logs database.
+
+## Alerts
+
+CetiRun installs no alert rules. The directory
+[`app/cetirun-operator/observability`]({{< repo "app/cetirun-operator/observability/README.md" >}})
+has example Prometheus rules for the Sandbox status metrics of the Operator,
+with `promtool` tests. Adapt the rules as their README shows, then load them
+into your own Prometheus that scrapes the Operator. The rules alert when a
+scrape target is missing or down, when the collection of the metrics fails, and
+when an Agent reports `EnforcementLost`.
+
+Also watch these signals of the platform:
+
+- The ready replicas of the Sandbox admission server. Its webhooks refuse
+  writes when it is not available.
+- The `Ready` and `IngressReady` conditions of the Agents.
+- The errors and the spend of the AI Gateway.
+- The expiry of the certificates. Refer to
+  [Certificates and credentials](../certificates/).
+- The use of the HOME volumes and of the AI Gateway database.
+- The node counts of the node pools, compared with their maximum counts.
 
 ## Prerequisites
 
@@ -149,7 +217,8 @@ databases. It does not read the Agent logs database.
 - A user-assigned managed identity for the ingestor, with a federated
   credential for the subject
   `system:serviceaccount:<platform namespace>:cetirun-adx-mon-ingestor` and
-  the cluster's OIDC issuer.
+  the cluster's OIDC issuer. The `observabilityNamespace` parameter of the
+  cluster template sets this namespace. Keep it equal to `platform.namespace`.
 - The roles `User` and `Ingestor` for that identity on each of the three
   databases. The ingestor creates the tables and its own functions when data
   first arrives. It needs no `Admin` role.
@@ -160,6 +229,18 @@ databases. It does not read the Agent logs database.
   role. If you prepare the databases yourself, run for each function:
   `.add function prom_increase admins ('aadapp=<ingestor-client-id>;<tenant-id>')`.
   Without the role, only the first CetiRun cluster's ingestor starts.
+- If you prepare the databases yourself, also run the scripts in
+  `infra/cluster/modules/adx/`, each in its database:
+  - `cetirun-logs.kql` in the logs database
+  - `cetirun-metrics.kql`, `cetirun-health.kql`, and `adxmon-functions.kql` in
+    the metrics database
+  - `cetirun-agents.kql` in the Agent logs database
+  - `cetirun-content.kql` in `CetiRunContent`, if the AI Gateway keeps its
+    content in Azure Data Explorer
+
+  Before you run them, replace `__LOGS_DATABASE__` in `cetirun-health.kql`
+  and `cetirun-agents.kql` with the name of the logs database. Also set the
+  ingestion batching policy of each database. The template sets 30 seconds.
 - Outbound HTTPS from the platform namespace to the Kusto cluster, its
   `ingest-` endpoint, the Azure Storage endpoints of ADX ingestion, and Entra
   ID.
@@ -188,9 +269,16 @@ can share one Kusto cluster. `make deploy` does not call Azure: it does not
 examine the Kusto cluster or the roles of the identity. The ingestor examines
 them when it starts, and stops if a database is missing.
 
-To use the chart without `make deploy`, set the same values under
-`cetirun-observability` in the platform values, or install
-`app/cetirun-observability/chart` in the platform namespace.
+To use the chart without `make deploy`, set `cetirun-observability.enabled:
+true` in the platform values. Also set `clusterName`, `adx.endpoint`,
+`adx.databases`, and `ingestor.clientId` under `cetirun-observability`. You can
+also install `app/cetirun-observability/chart` in the platform namespace.
+
+The chart generates the TLS certificate of the ingestor with a Helm `lookup`,
+and it keeps that certificate. A tool that renders without access to the
+cluster, for example `helm template`, generates a new certificate each time.
+The collectors then refuse the ingestor until they restart. With such a tool,
+set `ingestor.tls.secretName` to a Secret that you supply.
 
 ## Data loss and limits
 
@@ -200,11 +288,12 @@ To use the chart without `make deploy`, set the same values under
 - Delivery is at least once: a row can appear twice.
 - ADX replaces a dynamic value larger than 1 MB with null. A very long log
   line can lose its body.
-- Data reaches ADX about 30 to 60 seconds after the log line or the scrape,
-  with the template's ingestion batching of 30 seconds.
+- Data reaches ADX some time after the log line or the scrape. The collector,
+  the ingestor, and ADX each collect data for up to 30 seconds before they
+  send it.
 - When the collector first starts on a node, it also reads the container log
-  files that the node already has, back to the oldest file that the node
-  keeps. It records its position in `collector.hostPath`, so a new collector
+  files that the node already has. It reads back to the oldest file that the
+  node keeps. It records its position in `collector.hostPath`, so a new collector
   Pod continues from there.
 - ADX-Mon does not collect Kubernetes events itself. The telemetry program
   writes them; by default, warnings and events about CetiRun resources and
@@ -216,7 +305,9 @@ CetiRun does not use Container Insights or Azure Monitor managed Prometheus.
 The cluster template turns both off, also on a cluster that an earlier
 template created with them. [Infrastructure](../infrastructure/#identity-images-and-collection)
 lists the workspaces and data collection rules of an earlier template, which a
-deployment does not delete.
+deployment does not delete. It also shows how to upgrade a platform whose
+installed release still holds the AI Gateway's PodMonitor of managed
+Prometheus.
 
 On Kata node pools with the node image `AKSAzureLinux-V3katagen2-202610.30.1`
 or later, Container Insights and managed Prometheus collect nothing from those

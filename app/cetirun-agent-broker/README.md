@@ -7,7 +7,7 @@ repositories and permissions. There are no business-level AgentGrants and no
 per-tool permissions. There is also no prerequisite check of Azure RBAC.
 
 We recommend that platform administrators start with the
-[Agent Identity setup guide](../../site/content/en/docs/operations/agent-identity.md)
+[Prepare Agent connections guide](../../site/content/en/docs/operations/agent-identity.md)
 for encryption, federation, certificates, provider registrations, and
 deployment order. This README describes the component contracts after those
 prerequisites.
@@ -383,8 +383,8 @@ workload credential issuance.
 The Operator cleanup endpoint deletes validated records with
 UID/resourceVersion preconditions before the Agent finalizer is released.
 Namespace/Agent garbage collection also owns their lifetime. Personal
-credentials are kept when any individual Agent is deleted. Unsupported
-runtimes, for example Sandbox, do not receive Broker Secret access.
+credentials are kept when any individual Agent is deleted. Sandbox Agents
+receive Broker Secret access only when native Connections is enabled for them.
 
 ## Audit
 

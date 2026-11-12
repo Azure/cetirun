@@ -4,9 +4,9 @@ description: "Use the platform deployment to prepare Azure Public IP DNS or cust
 weight: 25
 ---
 
-Use the optional `publicTLS` section of the normal CetiRun environment file
-when an AKS managed Istio ingress needs one public hostname and an automatically
-renewed certificate. The platform deployment configures DNS, checks or installs
+Use the optional `publicTLS` section of the normal CetiRun environment file for
+one public hostname with a certificate that renews automatically. This section
+works with the ingress of AKS managed Istio. The platform deployment configures DNS, checks or installs
 the separately managed cert-manager controller, and renders the HTTP-01
 resources from the `cetirun-platform` umbrella chart. There is no separate
 public-ingress chart or release.
@@ -15,7 +15,7 @@ This path supports one exact hostname and HTTP-01 only. It does not create
 wildcard names or certificates, DNS-01 records, a CDN/proxy configuration,
 Entra applications, Broker/MCP trust, admission certificates, models, or
 runtimes. The CetiRun Istio chart still owns the HTTPS port-443 Gateway and
-authentication; the umbrella chart adds the separate port-80 Gateway API
+authentication. The umbrella chart adds the separate port-80 Gateway API
 listener, redirect, ACME Issuers, and Certificates.
 
 ## Prerequisites
@@ -28,11 +28,28 @@ listener, redirect, ACME Issuers, and Certificates.
   label mode, permission to read and update the exact ingress Public IP.
 - Helm, kubectl, OpenSSL, Python 3 with PyYAML, and Azure CLI for Azure DNS
   mode. Install mode also needs the pinned cert-manager archive prepared
-  separately; deployment never downloads a floating chart. This mode uses
-  Helm's default Secret storage driver and rejects other `HELM_DRIVER` values.
+  separately; deployment never downloads a floating chart.
+- Helm's default Secret storage driver. With `publicTLS`, `make deploy`
+  refuses every other `HELM_DRIVER` value, in all `certManager` modes.
 - An Entra Web application callback for the final hostname:
   `https://<domain>/oauth2/callback`. Configure it after Azure reports the
   actual FQDN and before public Portal sign-in.
+- Let's Encrypt as the certificate authority. The Issuers use the staging and
+  the production ACME directories of Let's Encrypt, and cert-manager registers
+  an ACME account for each of them. Before you use this mode, review the
+  subscriber agreement and the rate limits of Let's Encrypt. Repeated tests
+  against the production directory can reach these limits. If the domain has
+  CAA records, they must allow `letsencrypt.org`. `acme.email` is the contact
+  address of the ACME accounts.
+- HTTPS access from the workstation to the public DNS resolvers
+  `https://dns.google/resolve` and `https://cloudflare-dns.com/dns-query`. The
+  deployment asks both resolvers, not the DNS of your network. Both must
+  return only the IPv4 address of the ingress, and no AAAA record.
+- For `make deploy-verify`, HTTP and HTTPS access from the workstation to the
+  public hostname.
+- Pull access to the cert-manager images in `quay.io`. The deployment accepts
+  no other registry for them. Refer to
+  [Private registries and restricted networks](../artifacts/#private-registries-and-restricted-networks).
 
 The normal platform requirements remain in effect. In particular, Agent
 Identity, Broker/MCP trust, admission certificates, provider registrations, and
@@ -101,13 +118,24 @@ helm pull oci://quay.io/jetstack/charts/cert-manager \
 The expected archive and image digests are recorded in
 [`infra/cert-manager/images.lock.json`]({{< repo "infra/cert-manager/images.lock.json" >}}).
 
-If the first controller installation fails before its startup hooks run, the
-installer can recover only its own recorded attempt with the same pinned
-archive, values, and rendered resources. It verifies retained resource ownership
-and contents before using `helm install --replace`, which reruns the original
-post-install checks. A successful recovery requires the stored Helm hook results
-and retained resource identities to match. An uncertain replacement is inspected
-without submitting another replacement; other failed releases require separate
+If the first installation of cert-manager fails, correct the cause. Then run
+`make deploy` again with the same archive and configuration. The deployment
+finds its own failed attempt in its receipt in `stateDirectory`, and it
+installs the controller again with `helm install --replace`. It does this only
+if the resources that the failed release left and the stored Helm records
+match that attempt.
+
+If the run stops with a message that contains `recover it separately` or
+`before retrying`, the deployment cannot confirm the earlier attempt.
+Examine the release and the receipt before you run it again:
+
+```bash
+helm status cert-manager -n cert-manager
+helm history cert-manager -n cert-manager
+```
+
+Do not delete the release or the receipt to force a retry. A failed
+cert-manager release that this deployment did not install needs a separate
 recovery.
 
 ## Deploy and verify
@@ -137,23 +165,30 @@ Istio, Broker, and the complete platform. The production certificate writes
 `cetirun-tls` in `istio.ingressNamespace`; cert-manager owns its private key
 and renews it.
 
-The deployment holds a private receipt in `stateDirectory` for the target,
-service, Public IP, and controller archive. It can recover an interrupted
-certificate-only installation only after it recognizes the latest Helm revision
-as exactly that restricted resource set. A deployed or failed full platform
-revision is always treated as full: it is never upgraded with certificate-only
-values. Enabling this mode on an existing full release, disabling it after use,
-or changing its hostname or solver identity requires a separately reviewed
-migration; the deployment refuses all of those changes.
+The deployment keeps a private receipt in `stateDirectory`. The receipt
+records the target, the ingress Service, the Public IP, and the controller
+archive. Use the same `stateDirectory` for all runs against one target, keep it
+private, and do not edit it.
 
-Use one deployment writer per target. The `stateDirectory` lock covers local
-preparation through the full deployment. Certificate-only Helm values also pin
-the expected next revision: a competing full deployment causes a render refusal
-or a revision storage conflict before any application resources can be removed.
-Azure DNS writes check Public IP
-identity and drift before and after the update, but do not provide a distributed
-lock against other Azure writers. If a write has an uncertain result, inspect
-the private receipt and actual Azure/Helm state before retrying.
+If a run stops during the certificate-only installation, run `make deploy`
+again. The deployment continues only if the latest Helm revision of the
+platform is exactly the certificate-only resource set. It never upgrades a
+full platform revision with certificate-only values. These changes need a
+separately reviewed migration, and the deployment refuses them:
+
+- `publicTLS` on for a full platform release that exists
+- `publicTLS` off after it was on
+- A change of the hostname or of the solver identity
+
+Run only one deployment at a time for a target. A lock file in
+`stateDirectory` stops a second run that uses the same directory, with the
+message `Another ingress preparation is using this stateDirectory`. The lock
+does not stop a run from another workstation. A competing full deployment
+causes a render refusal or a Helm revision conflict before it removes
+application resources. The deployment examines the Public IP before and after
+it writes the DNS label, but it does not lock out other Azure writers. If a
+write has an uncertain result, examine the receipt, the Public IP, and the Helm
+releases before you run the deployment again.
 
 After the Portal is installed and the Entra callback is registered, verify the
 public endpoint without writing resources:
@@ -162,11 +197,19 @@ public endpoint without writing resources:
 make deploy-verify DEPLOY_CONFIG=/absolute/path/environment.yaml
 ```
 
-It checks public DNS, Gateway/HTTPRoute and Issuer readiness, certificate
-renewal and the served certificate, HTTP-to-HTTPS redirection, the exact OAuth
-callback with S256 PKCE, an unauthenticated Portal API response, and Portal
-health/readiness. It does not perform an interactive sign-in, MFA, a model
-request, an Agent run, or an internal mTLS test.
+It checks these items:
+
+- Public DNS
+- The readiness of the Gateway, the HTTPRoute, and the Issuers
+- The renewal of the certificate, and the certificate that the ingress serves
+- The redirect from HTTP to HTTPS
+- The exact OAuth callback with S256 PKCE, and the redirect to Microsoft
+  sign-in at `login.microsoftonline.com`
+- The response of the Portal API without authentication, and the health and
+  readiness of the Portal
+
+It does not perform an interactive sign-in, MFA, a model request, an Agent run,
+or an internal mTLS test.
 
 ## Existing certificates and retirement
 
@@ -177,17 +220,17 @@ There is no automatic ownership migration.
 
 ### Migrate an existing external-certificate deployment
 
-Use a reviewed migration procedure for an installed full platform. Do not run
-the certificate-only bootstrap against that release or remove the ownership
+This migration has no command. Plan it as a separately reviewed change, and
+test it in a separate environment first. Do not run the certificate-only
+bootstrap against an installed full platform, and do not remove the ownership
 checks to make it pass. A hostname change requires a short interruption and a
 new browser sign-in.
 
-There is no executable migration command in the deployment helper. Review
-the complete values and manifest from the same installed Helm revision before
-following this procedure. Offline rendering alone cannot prove a TLS-only
-change: bundled database and Gateway Secrets use server-side `lookup` and
-generate replacement values when lookup is unavailable, while CetiAdmin has
-lookup-dependent resources and lifecycle hooks. Do not ignore Secret or
+Review the complete values and manifest from the same installed Helm revision
+before following this procedure. Offline rendering alone cannot prove a
+TLS-only change. The bundled database and Gateway Secrets use server-side
+`lookup`, and they generate replacement values when lookup is unavailable.
+CetiAdmin also has lookup-dependent resources and lifecycle hooks. Do not ignore Secret or
 non-TLS differences to obtain a clean comparison, and do not bypass the hooks.
 The migration must preserve those retained values and satisfy the normal
 lifecycle checks before either full-release upgrade.
@@ -241,8 +284,14 @@ Helm rollback alone does not restore certificate contents or external callbacks.
 
 Keep the ACME Gateway, HTTPRoute, Issuers, Certificates, and cert-manager
 controller while the hostname needs renewal. A later retirement needs a
-separately authorized migration: move or stop Portal traffic, remove the DNS
-record or Public IP label after checking consumers, and explicitly remove the
-managed Certificate, Issuer, ACME account Secret, and TLS Secret. Do not remove
+separately authorized migration:
+
+1. Move or stop Portal traffic.
+2. Make sure that nothing else uses the DNS record or the Public IP label. Then
+   remove them.
+3. Explicitly remove the managed Certificate, Issuer, ACME account Secret, and
+   TLS Secret.
+
+Do not remove
 the shared ingress Service, Public IP, or cert-manager controller as an
 implicit cleanup action.

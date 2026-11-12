@@ -1,5 +1,8 @@
 # Disposable User-pool deletion qualification
 
+> **Experiment.** This document is not part of a supported installation. Do
+> not use it to operate CetiRun.
+
 This Linux-only command sends a real, conditional AKS **whole-pool DELETE**.
 It is restricted to a newly reserved, single-use User pool that contains one VM
 and has autoscaling disabled. The cluster must have exactly one untouched
@@ -10,7 +13,8 @@ must keep the task-owned cluster isolated from unrelated users and workloads
 for the entire experiment. A run tag is ownership correlation, not admission
 isolation. This command does not establish that isolation or supply a
 `CheckQuiesced` provider, pre-start/data-plane validation, an execution permit,
-or trusted post-start observation. Production startup stays held. Any pilot
+or trusted post-start observation. This receipt does not authorize any Agent
+to start. Any pilot
 with Agent workloads must have separately qualified admission/start
 coordination and writer-history registration, and this receipt cannot
 substitute for them.
@@ -178,8 +182,8 @@ experiment must establish all of these:
 - No-overlap/data-continuity results across response loss and controller
   restart
 
-If this offline slice passes, that is not full M4 qualification or permission
-to start workloads.
+If these offline tests pass, that does not qualify the experiment, and it does
+not permit any workload to start.
 
 ## Explicit workflow
 

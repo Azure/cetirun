@@ -318,5 +318,20 @@ class CompiledMonitoringTests(unittest.TestCase):
         self.assertIs(clusters[0]["properties"]["azureMonitorProfile"]["metrics"]["enabled"], False)
 
 
+class ManagedPrometheusStandInTests(unittest.TestCase):
+    def test_stand_in_serves_the_podmonitor_api_of_earlier_platform_releases(self):
+        import yaml
+
+        definition = yaml.safe_load((ROOT / "infra/cluster/managed-prometheus-podmonitor-crd.yaml").read_text())
+        spec = definition["spec"]
+        self.assertEqual((definition["apiVersion"], definition["kind"]), ("apiextensions.k8s.io/v1", "CustomResourceDefinition"))
+        # Earlier Gateway charts rendered a PodMonitor of azmonitoring.coreos.com/v1 in the release namespace.
+        self.assertEqual((spec["group"], spec["names"]["kind"], spec["scope"]), ("azmonitoring.coreos.com", "PodMonitor", "Namespaced"))
+        self.assertEqual(definition["metadata"]["name"], f"{spec['names']['plural']}.{spec['group']}")
+        self.assertEqual([(version["name"], version["served"], version["storage"]) for version in spec["versions"]], [("v1", True, True)])
+        # Helm only maps the earlier object and deletes it, so the stand-in validates nothing.
+        self.assertIs(spec["versions"][0]["schema"]["openAPIV3Schema"]["x-kubernetes-preserve-unknown-fields"], True)
+
+
 if __name__ == "__main__":
     unittest.main()

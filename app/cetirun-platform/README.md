@@ -55,6 +55,26 @@ credentials or qualification.
 
 The file contains these inputs:
 
+| Input | Meaning |
+| --- | --- |
+| `target` | Explicit kubeconfig context, its cluster name and HTTPS API server exactly as in the kubeconfig, and the `kube-system` namespace UID that you get independently |
+| `release` | Registry with any repository prefix, release version, full source Git SHA, and optionally `excludeImages` for declared optional images. Omitted registry/version use the public MCR prefix and source Runtime Chart version. `make deploy` checks only the format of the Git SHA. Run it from the commit that built the artifacts |
+| `domain`, `identityRealm`, `ownerAlias` | Public hostname, Portal Chat identity realm, and the Portal administrator alias of the real platform owner |
+| `publicTLS` | Optional Azure Public IP DNS or custom-DNS HTTP-01 certificate configuration. It derives the Helm release from `platform`, and the ingress namespace from `istio` |
+| `identity` | Entra tenant, Portal, blueprint, authorization, and encryption client IDs, and the Key Vault key URL. Use the URL without a key version, for example `https://<vault>.vault.azure.net/keys/<key>`, so that new records use a rotated version |
+| `istio` | Separate release/namespace, the managed control plane and ingress identities that exist, mesh ConfigMap, and Istio Chart values |
+| `broker` | Separate credential namespace/release and Broker Chart values, for example, references to TLS Secrets that exist and references to provider credential Secrets. The helper stops if a provider Secret that the file names does not exist. Remove the providers that you do not register |
+| `platform` | Platform release/namespace and umbrella values, for example, admission, provider credentials, model deployments, and qualified Custom images |
+| `platform.values.cetirun-operator.cetiadmin` | CetiAdmin owner assignment, initial budget, exact API access, optional migration source, and runtime options |
+| `sharedSkills` | Necessary. The shared Skills storage fields that exist in the runtime chart: storage class, resource group, account, and container. The helper sets `skills.shared: true` for all Agents. It examines only that the StorageClass exists, so provision the Blob NFS account and container first. Refer to [Storage](../../site/content/en/docs/operations/storage.md#shared-skills-storage-for-make-deploy) |
+| `skillMarketplace` | Optional. The Git repository of the [Skill Marketplace](#skill-marketplace), its credentials Secret, and its Blob NFS container |
+| `observability` | The ADX-Mon collection of logs, events, and metrics: the name of this CetiRun cluster in every row, the query URI of the Kusto cluster, its logs, metrics, and Agent logs databases, and the client ID of the ingestor's managed identity. See [Monitoring and logs](../../site/content/en/docs/operations/observability.md) |
+
+[Values that make deploy sets](../../site/content/en/docs/getting-started/platform.md#values-that-make-deploy-sets)
+lists the Helm values that `make deploy` sets itself.
+
+#### Override release coordinates for a test build
+
 For a test release, `REGISTRY` and `VERSION` environment variables or Make
 command-line assignments override only the release coordinates in memory.
 They do not rewrite the environment file. Without explicit overrides, the
@@ -67,21 +87,6 @@ and digest pins are not cleared; conflicting coordinated values fail validation.
 REGISTRY=registry.example.com/team/test VERSION=0.1.1-dev.1 \
   make deploy-plan DEPLOY_CONFIG=/path/to/environment.yaml
 ```
-
-| Input | Meaning |
-| --- | --- |
-| `target` | Explicit kubeconfig context, its cluster name and HTTPS API server exactly as in the kubeconfig, and the `kube-system` namespace UID that you get independently |
-| `release` | Registry with any repository prefix, release version, full source Git SHA, and optionally `excludeImages` for declared optional images. Omitted registry/version use the public MCR prefix and source Runtime Chart version |
-| `domain`, `identityRealm`, `ownerAlias` | Public hostname, Portal Chat identity realm, and the Portal administrator alias of the real platform owner |
-| `publicTLS` | Optional Azure Public IP DNS or custom-DNS HTTP-01 certificate configuration. It derives the Helm release from `platform`, and the ingress namespace from `istio` |
-| `identity` | Entra tenant, Portal, blueprint, authorization, and encryption client IDs, and the Key Vault key URL. Use the URL without a key version, for example `https://<vault>.vault.azure.net/keys/<key>`, so that new records use a rotated version |
-| `istio` | Separate release/namespace, the managed control plane and ingress identities that exist, mesh ConfigMap, and Istio Chart values |
-| `broker` | Separate credential namespace/release and Broker Chart values, for example, references to TLS Secrets that exist and references to provider credential Secrets. The helper stops if a provider Secret that the file names does not exist. Remove the providers that you do not register |
-| `platform` | Platform release/namespace and umbrella values, for example, admission, provider credentials, model deployments, and qualified Custom images |
-| `platform.values.cetirun-operator.cetiadmin` | CetiAdmin owner assignment, initial budget, exact API access, optional migration source, and runtime options |
-| `sharedSkills` | Necessary. The shared Skills storage fields that exist in the runtime chart: storage class, resource group, account, and container. The helper sets `skills.shared: true` for all Agents. It examines only that the StorageClass exists, so provision the Blob NFS account and container first. Refer to [Storage](../../site/content/en/docs/operations/storage.md#shared-skills-storage-for-make-deploy) |
-| `skillMarketplace` | Optional. The Git repository of the [Skill Marketplace](#skill-marketplace), its credentials Secret, and its Blob NFS container |
-| `observability` | The ADX-Mon collection of logs, events, and metrics: the name of this CetiRun cluster in every row, the query URI of the Kusto cluster, its logs, metrics, and Agent logs databases, and the client ID of the ingestor's managed identity. See [Observability with ADX-Mon](../../site/content/en/docs/operations/observability.md) |
 
 The managed Istio control plane, ingress workload, DNS, cloud identity
 federation/permissions, storage classes, referenced Secrets, and the Azure
@@ -104,11 +109,11 @@ release is never replaced with certificate-only values. Existing externally
 supplied certificates and Key Vault workflows remain supported when
 `publicTLS` is absent.
 
-When `publicTLS` is enabled, `target.kubeconfig` is required and every command
-uses that file with `target.context`; the shell `KUBECONFIG` is ignored. For
-other deployments, read the target values from the context after making sure it
-selects the intended cluster. The server must be the same string as in the
-kubeconfig, with its port if it has one:
+If you set `target.kubeconfig`, every command uses that file with
+`target.context`, and the shell `KUBECONFIG` is ignored. With `publicTLS`,
+`target.kubeconfig` is required. Read the target values from the context after
+making sure it selects the intended cluster. The server must be the same string
+as in the kubeconfig, with its port if it has one:
 
 ```bash
 kubectl config view --minify --context <context> \
@@ -210,7 +215,7 @@ After the Portal is available, `make deploy-verify` performs the read-only
 public DNS, Gateway, certificate, redirect, Portal readiness, and OAuth redirect
 checks when `publicTLS` is enabled. It does not complete an interactive sign-in.
 
-This command must also have kubectl, OpenSSL, and Docker buildx for read-only
+`make deploy` must also have kubectl, OpenSSL, and Docker buildx for read-only
 artifact inspection. Their normal authentication must be configured before you
 run the command. Before its first persistent write, the command examines
 release ownership, the necessary Secret key names, storage references, and
@@ -339,7 +344,9 @@ admission enforcer or rewrite labels on an excluded namespace.
 At the end, a server-side dry-run of a Team creation examines the served
 admission path. This dry-run does not store a Team. If a read, render, upgrade,
 rollout, or dry-run fails, the helper returns a nonzero exit status. There is
-no automatic rollback or ownership transfer.
+no automatic rollback or ownership transfer. Refer to
+[When make deploy fails](../../site/content/en/docs/operations/troubleshooting.md#when-make-deploy-fails)
+and [Upgrade CetiRun](../../site/content/en/docs/operations/upgrade.md).
 
 An upgrade must keep the current admission administrators, Team assignments,
 Pod and strict validation settings, coordination authority, and active native
@@ -729,7 +736,9 @@ the selected gateway workload. This workload can run in a namespace other than
 the namespace of its Gateway resource. Also set
 `cetirun-operator.cetirun.helmValues.networkPolicy.istioIngressNamespace` to
 the namespace of that gateway workload. If the value is not that namespace,
-the instance NetworkPolicies block ingress traffic.
+the instance NetworkPolicies block ingress traffic. `make deploy` sets these
+values from its `istio` inputs: the Gateway `cetirun-gateway` in
+`istio.ingressNamespace`, and `istio.ingressServiceAccount`.
 
 Helm upgrades the CRD templates with this release. For compatible changes, a
 separate CRD apply script is not necessary. The
@@ -745,19 +754,16 @@ For CRDs that were previously unmanaged, and for ownership transfers across
 releases, a separately reviewed handover is still necessary. This chart does
 not forcibly adopt them.
 
-For a different Gateway resource, set `cetirun-operator.istioGateway` and
-`cetirun-portal.istio.gateway`. For its workload identity, set
-`cetirun-portal.istio.gatewayNamespace` and `gatewayServiceAccount`, as the
-command above shows. `make deploy` sets these values from its `istio` inputs:
-the Gateway `cetirun-gateway` in `istio.ingressNamespace`, and
-`istio.ingressServiceAccount`.
-
 To install in a namespace other than `cetirun-system`, set both
 `cetirun-operator.namespace` and `cetirun-portal.aiGateway.catalogNamespace` to
 that namespace. The operator publishes the shared models in its own namespace,
 and the Portal reads them from there. `make deploy` sets both values from
 `platform.namespace`. The chart refuses a Portal that looks for the models in a
 different namespace.
+
+Another namespace has limits in the Portal, and a cluster holds only one
+CetiRun installation. Refer to
+[Environments and namespaces](../../site/content/en/docs/getting-started/platform.md#environments-and-namespaces).
 
 When you use the umbrella, configure the separate Istio release to reach the
 co-located Portal before you install it:
@@ -972,7 +978,7 @@ cetirun-ai-gateway:
         # Must support the Responses API: agents' tool calls are sent there.
         api_version: "2025-04-01-preview"
       model_info:
-        # The price; or set input_cost_per_token and output_cost_per_token.
+        # The price; or set input_cost_per_token and output_cost_per_token in litellm_params, not in model_info.
         base_model: azure/gpt-4o
 ```
 
@@ -989,9 +995,9 @@ operator applies a changed model list after the rollout ends.
 Shared models are optional for a direct install of this chart. `make deploy`
 must have them. Its default routing mode requires `auto`; explicit
 `modelRouting.mode: direct` requires callable shared models without a classifier. Without shared models, OpenClaw
-Agents use their owners' GitHub Copilot. With
+and Hermes Agents use their owners' GitHub Copilot. With
 `cetirun-operator.aiGateway.copilotProxy.enabled` disabled, the Portal creates
-no OpenClaw Agent until a shared model is offered.
+no Agent until a shared model is offered.
 The Gateway's health checks do not probe the Agents' GitHub Copilot routes
 because each probe is a real call on the owner's Copilot allowance.
 `cetirun-operator.aiGateway.copilotProxy.healthChecks.enabled` enables their

@@ -1,15 +1,15 @@
 ---
-title: "Identity provider setup"
-description: "Register GitHub and Google providers for Agent Identity connections."
+title: "Register GitHub and Google providers"
+description: "Register the GitHub and Google providers that Agent connections use."
 weight: 35
 ---
 
 Use this page to prepare the external providers that owner-scoped Agent
-Identity connections use. Follow [Agent Identity setup](../agent-identity/)
+connections use. Follow [Prepare Agent connections](../agent-identity/)
 through its encryption and namespace preparation. Then use this page at the
 provider registration step, before you deploy the Broker. For Entra
 applications and Azure or Microsoft delegated identities,
-use [Entra Agent Identity setup](../entra-agent-identity/).
+use [Prepare Microsoft Entra Agent Identity](../entra-agent-identity/).
 
 The provider clients below are for Agent connections. They are separate from
 the Portal login application and its `https://portal.example.com/oauth2/callback`
@@ -34,7 +34,7 @@ installation is the platform-wide maximum. Then every Agent binding selects
 repositories and the allowed permission level. GitHub actions run as the App
 bot.
 
-Follow the complete [shared GitHub App registration guide](../../guides/github-app/)
+Follow the complete [shared GitHub App registration guide](../../guides/github-app/#register-the-platform-app)
 to register the App, create its client secret and RSA key, install it, and
 configure `providers.github.app`. That guide is the source for the necessary
 callback and setup URLs, App permissions, key rotation, and the platform trust
@@ -96,8 +96,7 @@ environment file.
 
 ### Broker overlay
 
-After the Secret exists, apply this non-secret overlay to the Agent Identity
-Broker release:
+After the Secret exists, apply this non-secret overlay to the Broker release:
 
 ```yaml
 providers:
@@ -113,11 +112,9 @@ are shown only to make the mapping explicit. This configuration does not
 enable or change the optional shared GitHub App.
 
 The chart injects these values into the Broker process as
-`GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET`. Kubernetes does not
-refresh environment variables in a running container. After you install or
-update the Secret or this overlay, restart the Broker Deployment through the
-approved rollout process. Before you offer sign-in, wait until its `/readyz`
-probe and all replicas are ready.
+`GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET`. Before you offer
+sign-in, make sure that the Broker runs with them. Refer to
+[Restart the Broker](#restart-the-broker).
 
 To make sure that the setup works, open an Agent's **Identities**. Select
 **Add identity → GitHub → Other access methods → Personal account**. Complete
@@ -196,7 +193,7 @@ kubectl --namespace cetirun-credentials create secret generic google-oauth \
 
 ### Broker overlay
 
-Apply these non-secret values to the Agent Identity Broker release:
+Apply these non-secret values to the Broker release:
 
 ```yaml
 providers:
@@ -207,10 +204,9 @@ providers:
 ```
 
 The chart exposes the configured keys as `GOOGLE_OAUTH_CLIENT_ID` and
-`GOOGLE_OAUTH_CLIENT_SECRET`. After a client credential or overlay change,
-restart the Broker Deployment. Then wait for the rollout and the `/readyz` probe
-to complete. If you mount the Secret in a different location, that mount does
-not configure the Broker.
+`GOOGLE_OAUTH_CLIENT_SECRET`. If you mount the Secret in a different location,
+that mount does not configure the Broker. Before you offer sign-in, refer to
+[Restart the Broker](#restart-the-broker).
 
 To make sure that the setup works, use **Identities → Add identity → Google**.
 Finish the consent in the popup. Select Gmail, Calendar, or both. Then select
@@ -222,12 +218,35 @@ If an `invalid_grant` is recorded, the user must sign in again. For a provider
 for reauthentication. Addition of another Agent binding does not repair
 expired or revoked provider authorization.
 
+## Restart the Broker
+
+The Broker reads the provider client credentials from environment variables
+when it starts. Kubernetes does not refresh environment variables in a running
+container:
+
+- A change to a Broker overlay changes the Broker Pods. The next `make deploy`
+  run or Helm upgrade replaces them. A restart is not necessary.
+- A change to only a provider Secret does not replace the Pods, even after
+  `make deploy`. Restart the Broker.
+
+The commands use the default Broker namespace. After `make deploy` applies a
+Broker overlay change, run only the second command:
+
+```bash
+kubectl rollout restart deployment/cetirun-agent-broker -n cetirun-credentials
+kubectl rollout status deployment/cetirun-agent-broker -n cetirun-credentials
+```
+
+Before you offer sign-in, wait until the rollout is complete and all replicas
+are ready.
+
 ## Rotation, refresh, and removal
 
 Rotate an OAuth client secret at the provider. Then update the local file and
 the Kubernetes Secret for that client secret through the approved secret
-workflow. Restart the Broker Deployment. Before you retire any prior provider
-credential, make sure that a new connection works. Keep the provider client ID
+workflow. After that, [restart the Broker](#restart-the-broker).
+Before you retire any prior provider credential, make sure that a new
+connection works. Keep the provider client ID
 stable unless the provider's rotation procedure makes a new client necessary.
 If you use a new client, a new consent flow is necessary.
 

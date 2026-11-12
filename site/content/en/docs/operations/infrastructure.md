@@ -42,10 +42,19 @@ value.
 | Agent pool | `Standard_D16s_v6`, 15–150 nodes, AzureLinux |
 | Agent2 pool | `Standard_D32s_v6`, 3–10 nodes, AzureLinux |
 | Managed Istio revision | Empty; AKS selects its default revision |
+| Managed Istio traffic redirection | `InitContainers`. Kata VM-isolated Agent Pods do not start with CNI chaining |
 | Availability zones | `1`, `2`, `3` on all three pools |
 | Networking | Azure CNI overlay, Cilium, load-balancer outbound |
 | Pod / Service / DNS ranges | `10.244.0.0/16`, `172.16.0.0/16`, `172.16.0.10` |
 | Monitoring | ADX-Mon into a new Kusto cluster (`adxMode: create`); Container Insights and managed Prometheus off |
+| Automatic upgrades | `patch` channel for Kubernetes, `NodeImage` channel for the node OS |
+| Add-ons | Key Vault Secrets Provider, with rotation of the mounted secrets every 2 minutes |
+
+With the automatic upgrade channels, AKS installs Kubernetes patch versions
+and new node images without a manual step. An upgrade drains each node, so the
+Agent Pods on that node start again on another node. The template configures
+no maintenance window. To control the time of these upgrades, configure a
+maintenance window for the cluster.
 
 The cluster template defaults to Kubernetes 1.37, the minimum for Sandbox and
 CetiAdmin admission. The cluster helper checks the effective `kubernetesVersion`
@@ -106,7 +115,6 @@ param clusterName = 'example-cluster'
 param dnsPrefix = 'example-cluster'
 param nodeResourceGroup = 'example-rg-nodes'
 param kubernetesVersion = '1.37'
-param istioRevision = 'asm-example'
 param systemNodePoolVmSize = 'Standard_D4ds_v6'
 param agentNodePoolVmSize = 'Standard_D8ds_v6'
 param agent2NodePoolVmSize = 'Standard_D8ds_v6'
@@ -266,10 +274,11 @@ receives. Use these values for the admission administrators of `make deploy`.
 admin credentials instead. Use them only in an explicitly authorized bootstrap
 environment, not as a fallback for an Azure RBAC failure.
 
-When `publicTLS` is enabled, `make deploy` uses the required
-`target.kubeconfig` and `target.context`; it does not use the shell
-`KUBECONFIG`. Other deployments use the kubeconfig of the shell. In either
-case, read the `target` values from the intended context:
+If you set `target.kubeconfig`, `make deploy` uses that file for every command
+and ignores the shell `KUBECONFIG`. Without it, `make deploy` uses the
+kubeconfig of the shell. With `publicTLS`, `target.kubeconfig` is necessary.
+Every command uses the context in `target.context`. Read the `target` values
+from the intended context:
 
 ```bash
 kubectl config view --minify \
@@ -289,7 +298,7 @@ kubectl get namespace kube-system -o jsonpath='{.metadata.uid}{"\n"}'
 If you only provision the cluster, that step does not publish images, create
 all Entra registrations, issue TLS certificates, or prepare end-user provider
 accounts. Complete the [platform checklist](../../getting-started/platform/).
-For Agent connections, follow [Agent Identity setup](../agent-identity/). Use
+For Agent connections, follow [Prepare Agent connections](../agent-identity/). Use
 it for the encryption identity and Key Vault key, provider applications,
 certificates, and the coordinated Broker/MCP/Portal configuration.
 
@@ -341,6 +350,31 @@ that its parameters turned off. A parameter file that still sets
 `logAnalyticsWorkspaceId` does not compile with this template, so the helper
 stops before any Azure call. Remove these parameters from the file.
 
+A platform that an earlier version installed can hold the AI Gateway's
+PodMonitor of managed Prometheus. This PodMonitor uses the API
+`azmonitoring.coreos.com/v1`, which goes away when the template turns managed
+Prometheus off. Before Helm upgrades a release, it builds the objects of the
+installed release, so each upgrade of such a platform fails. `make deploy`
+stops before it changes the cluster, and it names the release and the
+PodMonitor.
+
+To continue, create a stand-in definition of the API, run `make deploy`, and
+then delete the definition. The upgrade removes the PodMonitor from the
+release, so later upgrades need no stand-in. **Connected, mutating:**
+
+```bash
+kubectl create -f infra/cluster/managed-prometheus-podmonitor-crd.yaml
+kubectl wait --for=condition=Established \
+  customresourcedefinition/podmonitors.azmonitoring.coreos.com
+make deploy DEPLOY_CONFIG=/absolute/path/environment.yaml
+kubectl delete -f infra/cluster/managed-prometheus-podmonitor-crd.yaml
+```
+
+If the create command fails because the definition exists, stop. In this
+case, the cluster serves the API, and the definition belongs to another tool.
+A standalone AI Gateway release that an earlier chart installed with this
+PodMonitor needs the same steps around its `helm upgrade`.
+
 If you turn Container Insights on yourself, examine its collection, its access
 roles, and its costs first. By default, the add-on copies the environment
 variables of every container into the `ContainerInventory` table one time each
@@ -391,10 +425,10 @@ example, is not offered in every region.
 
 With `create` or `existing`, the template also creates these resources:
 
-- The databases `CetiRunLogs`, `CetiRunMetrics` and `CetiRunAgents`, with the
-  retention of `adxLogsRetentionDays`, `adxMetricsRetentionDays` and
-  `adxAgentLogsRetentionDays`, 7 days in the hot cache, and 30 seconds of
-  ingestion batching.
+- The databases `CetiRunLogs`, `CetiRunMetrics` and `CetiRunAgents`. Their
+  retention is `adxLogsRetentionDays`, `adxMetricsRetentionDays` and
+  `adxAgentLogsRetentionDays`. The hot cache keeps 7 days, or the retention
+  when it is shorter. Ingestion batching is 30 seconds.
 - The query functions in `infra/cluster/modules/adx/*.kql`.
 - The user-assigned managed identity `<clusterName>-adx-ingestor` in the
   cluster resource group, with a federated credential for the ingestor's
@@ -422,8 +456,9 @@ Explorer" in the
 [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}).
 
 The default SKU, `Dev(No SLA)_Standard_E2a_v4`, has one engine node and no SLA.
-Use it for evaluation. A cluster with no ingestion or queries for five days
-stops, and you must start it again. The outputs `adxClusterUri` and
+Use it for evaluation. The template enables auto-stop on a Kusto cluster that
+it creates. Such a cluster stops after five days without ingestion or queries,
+and you must start it again. The outputs `adxClusterUri` and
 `adxIngestorClientId` are the inputs of the `observability` block of the
 `make deploy` environment file.
 

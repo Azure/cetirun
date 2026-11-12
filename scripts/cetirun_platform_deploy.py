@@ -1623,6 +1623,52 @@ class Deployment:
             raise ValueError("Retained PostgreSQL identity or storage changed during deployment")
         self.retained_database_pin = copy.deepcopy(snapshot)
 
+    def installed_objects(self, name):
+        """API version, kind and name of each object of the installed release that helm upgrade builds first: the
+        deployed revision, or the latest one when none is deployed. The manifest holds rendered Secrets, so only
+        these three fields leave this function."""
+        section = self.config[name]
+        history = json.loads(self.helm("history", section["release"], "--namespace", section["namespace"],
+                                       "--max", "20", "-o", "json") or "[]")
+        if not history:
+            return []
+        deployed = [entry for entry in history if entry.get("status") == "deployed"]
+        revision = (deployed or history)[-1]["revision"]
+        manifest = self.helm("get", "manifest", section["release"], "--namespace", section["namespace"],
+                             "--revision", str(revision))
+        return [(doc["apiVersion"], doc["kind"], (doc.get("metadata") or {}).get("name", ""))
+                for doc in yaml.safe_load_all(manifest) if isinstance(doc, dict) and doc.get("apiVersion") and doc.get("kind")]
+
+    def check_release_apis(self):
+        """Before an upgrade, Helm builds the objects of the installed release. If the cluster no longer serves the
+        API of one of them, every upgrade of that release fails before Helm writes a revision, and its error is
+        withheld here. Turning Azure Monitor managed Prometheus off, for example, removes the API of the AI
+        Gateway's PodMonitor that earlier platform releases hold."""
+        c = self.config
+        names = [name for name in CHARTS if name in self.existing_releases
+                 and (name != "istio" or c["istio"].get("mode", "manage") == "manage")]
+        if not names:
+            return
+        served = set(self.kubectl("api-versions").split())
+        kinds = {}
+        for name in names:
+            missing = []
+            for api, kind, object_name in self.installed_objects(name):
+                if api in served and api not in kinds:
+                    path = f"/apis/{api}" if "/" in api else f"/api/{api}"
+                    kinds[api] = {entry.get("kind") for entry in json.loads(self.kubectl("get", "--raw", path)).get("resources", [])
+                                  if "/" not in entry.get("name", "")}
+                if api not in served or kind not in kinds[api]:
+                    missing.append((api, kind, object_name))
+            if missing:
+                section = c[name]
+                listed = ", ".join(f"{kind} {object_name} ({api})" for api, kind, object_name in missing[:5])
+                hint = ("; turning Azure Monitor managed Prometheus off removes azmonitoring.coreos.com, and the "
+                        "infrastructure documentation shows how to continue"
+                        if any(api.partition("/")[0] == "azmonitoring.coreos.com" for api, _, _ in missing) else "")
+                raise ValueError(f"Helm cannot upgrade {section['namespace']}/{section['release']}: the installed release holds "
+                                 f"{listed}, which this cluster no longer serves{hint}")
+
     def check_kubectl_version(self):
         versions = json.loads(self.kubectl("version", "-o", "json"))
         parsed = {}
@@ -1730,6 +1776,7 @@ class Deployment:
                         and not self.resource("StatefulSet", OBSERVABILITY_INGESTOR, namespace))
                     if not adding_sessions and not adding_observability:
                         raise ValueError(f"Retained Secret {namespace}/{metadata['name']} is missing; refusing regeneration")
+        self.check_release_apis()
         if not self.values["platform"]["cetirun-operator"]["enabled"]:
             if "platform" not in self.existing_releases:
                 raise ValueError("Operator removal requires the existing platform release")

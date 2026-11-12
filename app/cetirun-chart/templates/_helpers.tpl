@@ -255,7 +255,7 @@ Validate Azure Workload Identity prerequisites
 {{- end -}}
 {{- end -}}
 {{- range $gateway.models -}}
-{{- if hasPrefix "openai/" (printf "%v" .id) -}}
+{{- if or (hasPrefix "openai/" (printf "%v" .id)) (hasPrefix "cetirun/" (printf "%v" .id)) -}}
 {{- fail "aiGateway.models ids are Gateway model names without a provider prefix" -}}
 {{- end -}}
 {{- end -}}

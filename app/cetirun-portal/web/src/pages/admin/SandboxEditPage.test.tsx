@@ -53,6 +53,7 @@ it.each([
     await user.type(helperMemory, helperMemoryLimit);
   }
   await user.type(screen.getByRole("textbox", { name: "Name" }), "example");
+  await waitFor(() => expect(screen.getByRole("combobox", { name: "Runtime" })).toBeEnabled());
   await user.selectOptions(screen.getByRole("combobox", { name: "Runtime" }), "gvisor");
   await waitFor(() => expect(screen.getByRole("combobox", { name: "HOME StorageClass" })).toHaveValue("example-csi"));
   await user.click(screen.getByRole("button", { name: "Create" }));
@@ -124,6 +125,7 @@ it.each(["ReadWriteOnce", "ReadWriteOncePod"] as const)("creates an explicit con
   const user = userEvent.setup(); renderPage("/admin/sandboxes/new");
   expect(screen.getByRole("combobox", { name: "Runtime" })).toHaveValue("kata");
   expect(screen.queryByText(/Ordinary containers share/)).not.toBeInTheDocument();
+  await waitFor(() => expect(screen.getByRole("combobox", { name: "Runtime" })).toBeEnabled());
   await user.selectOptions(screen.getByRole("combobox", { name: "Runtime" }), "container");
   expect(screen.getByText(/do not provide Kata VM isolation/)).toBeInTheDocument();
   expect(screen.getByText(/verified handler/)).toBeInTheDocument();
@@ -253,6 +255,7 @@ it("uses only access modes approved for the selected runtime", async () => {
   });
   const user = userEvent.setup(); renderPage("/admin/sandboxes/new");
   await waitFor(() => expect(screen.getByRole("combobox", { name: "HOME StorageClass" })).toHaveValue("example-csi"));
+  await waitFor(() => expect(screen.getByRole("combobox", { name: "Runtime" })).toBeEnabled());
   await user.selectOptions(screen.getByRole("combobox", { name: "Runtime" }), "gvisor");
   const accessMode = screen.getByRole("combobox", { name: "HOME access mode" });
   await waitFor(() => expect(accessMode).toHaveValue("ReadWriteOnce"));
@@ -271,6 +274,46 @@ it("shows an unsupported existing access mode without silently changing it", asy
   expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
   await user.selectOptions(accessMode, "ReadWriteOnce");
   expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+});
+
+it("offers only registered runtimes in a fixed order and defaults to the first one", async () => {
+  vi.mocked(api.getSandboxStorageOptions).mockResolvedValue({ ...storageOptions, homeAccessModes: { container: ["ReadWriteOnce"], gvisor: ["ReadWriteOnce"] } });
+  renderPage("/admin/sandboxes/new");
+  const runtime = screen.getByRole("combobox", { name: "Runtime" });
+  expect(runtime).toBeDisabled();
+  await waitFor(() => expect(runtime).toBeEnabled());
+  await waitFor(() => expect(runtime).toHaveValue("gvisor"));
+  expect(Array.from((runtime as HTMLSelectElement).options).map((option) => option.value)).toEqual(["gvisor", "container"]);
+  expect(screen.queryByText(/not registered/)).not.toBeInTheDocument();
+});
+
+it("keeps the runtime disabled when the storage options fail", async () => {
+  vi.mocked(api.getSandboxStorageOptions).mockRejectedValue(new Error("unavailable"));
+  renderPage("/admin/sandboxes/new");
+  expect(await screen.findByText(/Failed to load approved StorageClasses/)).toBeInTheDocument();
+  expect(screen.getByRole("combobox", { name: "Runtime" })).toBeDisabled();
+});
+
+it("explains when no runtime is registered", async () => {
+  vi.mocked(api.getSandboxStorageOptions).mockResolvedValue({ ...storageOptions, homeAccessModes: {} });
+  renderPage("/admin/sandboxes/new");
+  expect(await screen.findByText(/No Sandbox runtime is registered/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+});
+
+it("keeps an unregistered existing runtime selectable and marks it", async () => {
+  vi.mocked(api.getSandbox).mockResolvedValue({ ...box, type: "container" });
+  vi.mocked(api.getSandboxStorageOptions).mockResolvedValue({ ...storageOptions, homeAccessModes: { kata: ["ReadWriteOncePod"] } });
+  const user = userEvent.setup(); renderPage("/admin/sandboxes/example/edit");
+  const runtime = await screen.findByRole("combobox", { name: "Runtime" });
+  await waitFor(() => expect(runtime).toBeEnabled());
+  expect(runtime).toHaveValue("container");
+  expect(screen.getByRole("option", { name: "Container (runc, shared node kernel) (not registered)" })).toBeInTheDocument();
+  expect(screen.queryByRole("option", { name: /gVisor/ })).not.toBeInTheDocument();
+  expect(screen.getByText(/runtime is not registered/)).toBeInTheDocument();
+  await user.selectOptions(runtime, "kata");
+  await user.selectOptions(runtime, "container");
+  expect(runtime).toHaveValue("container");
 });
 
 it("deletes the version selected for confirmation even if the list refreshes", async () => {

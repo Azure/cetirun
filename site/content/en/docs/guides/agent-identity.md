@@ -12,11 +12,9 @@ connected user. GitHub App connections also let each Agent select repositories
 and permissions that narrow its installation token. CetiRun binds an Agent to a
 Connection and to selected services.
 
-Hermes and OpenClaw connect natively. Governed common-executor workloads must
-have the explicit [native Connections configuration]({{< repo "app/cetirun-connections-mcp/README.md" >}}#governed-native-workloads).
-Custom must have an approved Sandbox image that implements the
-[governed Custom client contract]({{< repo "app/cetirun-connections-mcp/README.md" >}}#governed-custom-workloads),
-and explicit runtime allowlists in Operator, Broker, and Portal.
+Hermes and OpenClaw connect natively. Custom must have an approved Sandbox
+image that implements the
+[governed Custom client contract]({{< repo "app/cetirun-connections-mcp/README.md" >}}#governed-custom-workloads).
 Custom without a Sandbox and retained single-start Sandbox lifetimes are not
 supported. When OpenClaw is unavailable, use a qualified Hermes runtime.
 
@@ -24,16 +22,8 @@ Microsoft Entra Agent Identity is necessary for independent Azure access and
 for the Azure/Microsoft delegated flow. GitHub supports personal OAuth and
 shared App connections. Google uses personal connections.
 
-For a policy-governed Agent, directory identity readiness is not the aggregate
-`PolicyApplied`. The Operator also must get a current readback from the
-credential service, bound to the owner and to the identity. Requested or
-desired revisions are not evidence. Native workload authorization also
-verifies the current Pod and the protected common-executor sources. A stored
-restriction alone is not sufficient. Generic Entra workload projection and the
-Pod-bound workload proof of Connections stay separate.
-
 Platform administrators prepare these capabilities with
-[Agent Identity setup](../../operations/agent-identity/). The steps that follow
+[Prepare Agent connections](../../operations/agent-identity/). The steps that follow
 are for users of an environment that is already configured.
 
 ## Independent Azure access
@@ -254,87 +244,16 @@ Personal OAuth Connections belong to their Portal owner. They stay encrypted in
 the Broker credential namespace. Each Agent must have an explicit
 ConnectionBinding. Another Agent with the same owner does not inherit it.
 
-The namespace of the Agent stores the bindings, the independent Azure
-Connections, and the credential-free personal-connection references. These
-records have immutable Agent owner references. The deletion of an Agent removes
-those records, but keeps the owner-managed personal credentials.
-
 For accounts with multiple services, use **Manage access**, and then select
 **Save access**. To remove the association, use **Remove access**. The removal
 of access from the Agent page revokes only the binding of that Agent. It keeps
 the personal account connection and the bindings of other Agents. From the
 Agent page, you cannot remove the connection for the full account.
 
-Each issuance examines the live Agent state, the owner, the enabled binding,
-and the service. After it gets the credential, it examines the revisions again.
-You cannot recall a request that was already sent. This contract has no
-migration or compatibility workflow for the earlier AgentGrant model.
-
 Execution bearer credentials stay in Broker/MCP. They never go into Agent
 workloads. This does not filter other secrets that an authorized resource API
 returns, for example resource access keys. The provider permissions decide that
 access.
 
-MCP has no Kubernetes Secret API permissions and no operation-record
-store. Broker has namespace-wide Secret permissions only in its own namespace
-and in the allowed ordinary Agent namespaces. Labels do not give Kubernetes
-RBAC isolation.
-
-The platform audit records the Agent UID and the stable executor account ID or
-principal. It also records the connection/binding revisions, the service, the
-HTTP method, and the validated target path. It also records the duration, the
-stage, and the started/completed outcome. The same MCP correlation ID goes to
-Broker and to the upstream request. When they are available, the audit also
-records the provider status/request IDs.
-
-The audit does not include queries, headers, credentials, or request/response
-bodies. Paths can identify resources or mailboxes. Because of this, we
-recommend that you restrict audit access. If there is no completion, or if the
-result is
-`execution_unknown`, examine the provider state before you try again. These
-logs are not an execution ledger. Broker also records identity, OAuth, binding,
-and account-management events, with verified owner/target IDs and storage
-outcomes.
-
-## Deployment reliability
-
-The default value of the Broker chart settings
-`identityModes.azureAgent.enabled` and
-`identityModes.microsoftDelegated.enabled` is `true`. If only independent Azure
-and personal GitHub/Google are necessary, disable the second setting. Then the
-chart does not include the Entra Auth SDK container. The Broker readiness does
-not call the SDK. SDK failures do not block unrelated provider code paths.
-
-When the SDK is enabled, it stays in the same Pod and has the same operational
-fate. If you disable a mode, CetiRun blocks its use but does not delete the
-saved connections. Key Vault configuration is still necessary for encrypted
-personal credentials.
-
-MCP and Broker authenticate workloads with these items: live
-Pod/ServiceAccount checks, a namespace Agent owner reference, and a named Agent
-GET with UID verification. There is no workload fallback to a global Agent
-list. The other management inventory scans are paginated. If a scan is
-incomplete, it fails and does not return the incomplete results.
-
-Abandoned and completed OAuth transactions are swept at startup and every five
-minutes. A sweep removes only the transactions that expired more than one hour
-before. The sweep skips corrupt records. It does not sweep Connections, account
-indexes, or binding tombstones.
-
-Broker/MCP reload the mounted TLS certificates, keys, and trust bundles every
-five seconds. If a replacement is not valid, the valid previous material stays
-in use. With expired leaf material, new handshakes or outbound requests fail.
-
-Do a CA rollover in three stages. First, distribute old+new trust to every
-peer. Then rotate the leaf certificates. Then remove the old trust. Allow time
-for the Secret projection and reload delays.
-
-Requests that already started can finish. A change of trust does not
-immediately revoke established connections.
-
-For the identity flags, see the [component configuration](https://github.com/Azure/cetirun/tree/main/app/cetirun-agent-broker).
-For the TLS mounts and trust boundaries, see the [MCP configuration](https://github.com/Azure/cetirun/tree/main/app/cetirun-connections-mcp).
-
-Local automated tests use synthetic providers. A deployment still must have
-explicit live qualification for its identity, OAuth configuration, and native
-runtime.
+For the storage of these records and the platform audit, platform
+administrators refer to [Prepare Agent connections](../../operations/agent-identity/#records-and-audit).

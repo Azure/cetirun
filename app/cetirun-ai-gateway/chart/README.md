@@ -131,7 +131,7 @@ Agents without a policy then lose that model until the copy is removed. A
 policy-bound Agent whose AgentPolicy allows the model stops: the Operator blocks
 its key until the Gateway offers the model again. The same occurs when a policy
 allows a model that is removed from `models`. See
-[Choose a model](../../../site/content/en/docs/guides/models.md#runtime-configuration).
+[When model changes reach Agents](../../../site/content/en/docs/operations/ai-gateway.md#when-model-changes-reach-agents).
 
 Two identical entries render the same deployment ID. If the Gateway lists this
 ID twice, the Operator does not trust the group.
@@ -358,7 +358,8 @@ are matched in any letter case.
 The console examines neither prefix. As a result, do not add models under
 these prefixes in the console. The operator does not include such shared models
 in the model list that it configures for Agents. It does the same for names
-under `openai/`, which the agent chart refuses as a provider prefix. It also
+under `openai/` and `cetirun/`, which the agent chart refuses as provider
+prefixes. It also
 does the same for names with whitespace or with more than 256 characters.
 Shared models under other provider prefixes are listed like any other.
 
@@ -400,9 +401,25 @@ another OpenAI-compatible endpoint. `base_model` is not a substitute for this
 setting. Neither setting is necessary for a deployment that has the name of its
 model, for example `azure/gpt-5.4-nano` or `openai/gpt-5.4-nano`.
 
+The Gateway's guard removes the reasoning effort from a request when LiteLLM
+identifies no deployment of the model as a reasoning model. A model that does
+not reason, such as `gpt-4.1-mini`, then answers the request instead of the
+400. This also applies to a router's tier. Refer to
+[The guard callback](#the-guard-callback).
+
 The chart does not set LiteLLM's `drop_params`. If it is set, each 400 becomes
 a request that is sent without the reasoning effort, and nothing tells the
 client.
+
+LiteLLM also reports for each deployment if its model reasons, as
+`supports_reasoning` in `/model/info`. It takes this value in the same way as
+`supports_vision` (refer to [Images](#images)). With `operatorIntegration`, the
+CetiRun operator reads this value. OpenClaw then offers reasoning levels, and
+sends a reasoning effort, only for the models that reason. Refer to
+[Serving CetiRun Agents](#serving-cetirun-agents). An `azure/` deployment under
+a name of your own needs `base_model` for this too. With only
+`supports_reasoning: true`, OpenClaw sends the effort on Chat Completions, and
+the guard removes it. The model then reasons at its default effort.
 
 ### Images
 
@@ -416,8 +433,8 @@ OpenAI-compatible endpoint.
 
 With `operatorIntegration`, the CetiRun operator reads this value. OpenClaw and
 Hermes then send images with a request to the models that accept them. For the
-other models, OpenClaw uses its own model catalog, and Hermes has a model
-describe each image first. Refer to
+other models, OpenClaw sends only text, and another model that accepts images
+describes each image. Hermes has a model describe each image first. Refer to
 [Serving CetiRun Agents](#serving-cetirun-agents).
 
 ## Budgets and unpriced models
@@ -466,15 +483,22 @@ models:
 
 **Declare prices explicitly**, when LiteLLM does not know the model, or when
 your contract price differs from the list price. It is your task to keep these
-figures current:
+figures current. Put explicit prices in `litellm_params`:
 
 ```yaml
-    model_info:
+    litellm_params:
+      model: azure/my-gpt4-prod
       input_cost_per_token: 0.0000025
       output_cost_per_token: 0.00001
 ```
 
 If you do neither, the model is refused.
+
+A price in `litellm_params` works for every model: for ordinary models, for
+routers, for a free model with the price `0`, and for `cost-based-routing`. A
+price in `model_info` prices only an ordinary model, and only when it is above
+zero. The CetiRun operator also counts a deployment as priced only by these
+rules.
 
 ### Check what LiteLLM actually holds
 
@@ -2033,6 +2057,31 @@ result, a request with images can go to any of these models. A model that does
 not accept images can refuse the request. Agents do not send images to a router
 whose configuration the operator cannot read completely.
 
+The operator configures OpenClaw to offer reasoning levels for a model, and to
+send a reasoning effort, by the rules for images. It reads
+`supports_reasoning` ([Reasoning models](#reasoning-models)). Every shared
+deployment of the name, and the Agent's own Copilot route under the name, must
+reason. For a router, every model of its tiers, its default model, and its
+context compaction model must reason. The operator logs the routers configured
+in the Gateway whose models only partly reason. OpenClaw offers no reasoning
+levels for a router whose configuration the operator cannot read completely.
+
+A Copilot route reasons when the price table entry that it is billed as reports
+`supports_reasoning`, and its model is a Claude or GPT model. The Agent's
+Copilot proxy uses LiteLLM's `github_copilot` provider, which takes a reasoning
+effort only for Claude and GPT models. For the other models, such as Gemini and
+Grok, it refuses the request with a 400 (`UnsupportedParamsError`), also when
+the table says that they reason. For each Team router, the Team status lists
+the tiers that do not reason (`status.modelRouters[].nonReasoningModels`).
+Hermes does not read this information. It sends its own reasoning effort to
+each model.
+
+Under one Gateway model name, deployments can differ in reasoning support. The
+guard keeps the reasoning parameters when any candidate deployment reasons.
+LiteLLM can then still answer 400 when it picks a deployment that does not
+reason. Do not put such models under one name. By the rules above, OpenClaw
+sends no reasoning settings for such a name.
+
 LiteLLM validates a key against the requested model only. A fallback that is
 configured for the Gateway in `router_settings` or in the console is selected
 after that validation. Without the setting, LiteLLM tries the fallback without
@@ -2209,6 +2258,24 @@ these actions:
   a warning for each request that it changes. The table decides, so a wrong
   entry lets `none` through. Refer to
   [Prices are not pinned to the image by default](#known-gaps).
+- It removes `reasoning_effort` from a Chat Completions request, and the
+  `reasoning` object from a Responses API request, when no deployment that can
+  serve the request reasons. LiteLLM decides with its own
+  `get_supported_openai_params`: a deployment does not reason when the list
+  for its model, provider, and `base_model` does not include
+  `reasoning_effort`. Otherwise LiteLLM refuses the request with a 400
+  (`UnsupportedParamsError`). For example, an Agent sends a reasoning effort to
+  a router, because the router is one model in its catalog. On a test cluster,
+  a router sent such a request to a tier with `gpt-4.1-mini`, and the request
+  failed.
+
+  The guard does not change the request when one of the deployments reasons,
+  because that deployment can serve the request. It also does not change the
+  request for a GitHub Copilot route, or when LiteLLM does not know the model.
+  The Gateway logs a warning for each request that it changes. An Azure
+  deployment of a reasoning model under a name of your own needs `base_model`,
+  as [Reasoning models](#reasoning-models) tells. Without it, the guard removes
+  the effort, and the model reasons at its default effort.
 - It lets a request fail over from the deployment that its key is kept on.
   Refer to [A key stays on its deployment](#a-key-stays-on-its-deployment).
 - It removes fields that Azure OpenAI refuses from the items of a Responses
@@ -3123,6 +3190,17 @@ cluster serves the `monitoring.coreos.com/v1` API, the chart creates a
 PodMonitor of that API. If the cluster does not serve it, the chart creates no
 PodMonitor. As a result, an install does not fail on a cluster without the
 Prometheus Operator. The cetirun-platform chart creates no PodMonitor.
+
+A release that an earlier chart installed with the PodMonitor of Azure Monitor
+managed Prometheus (`azmonitoring.coreos.com/v1`) loses that PodMonitor with
+its next upgrade. Upgrade such a release before you turn managed Prometheus
+off. When managed Prometheus is off, that API goes away, and each upgrade of
+the release fails until the cluster serves the API again. In this case, create
+the stand-in definition in
+[`infra/cluster/managed-prometheus-podmonitor-crd.yaml`](../../../infra/cluster/managed-prometheus-podmonitor-crd.yaml),
+upgrade the release, and delete the definition, as
+[Infrastructure](../../../site/content/en/docs/operations/infrastructure.md#identity-images-and-collection)
+shows.
 
 Counters lose the increments that a label set makes before its first scrape.
 Counters also start again from zero when a pod restarts. As a result, use the

@@ -447,6 +447,10 @@ const (
 	// aiGatewayChartVisionValue lists the models the Agent can send images
 	// to; older charts do not declare it, and would reject it.
 	aiGatewayChartVisionValue = "visionModels"
+	// aiGatewayChartReasoningValue lists the models the Agent can set a
+	// reasoning effort for; older charts do not declare it, and would reject
+	// it.
+	aiGatewayChartReasoningValue = "reasoningModels"
 )
 
 // chartValuePaths is the part of a prepared release that reports the values
@@ -1436,7 +1440,22 @@ func (r *AgentReconciler) applyCopilotChartValues(values map[string]any, instanc
 // (aiGatewayModelEntries). The list is empty rather than absent when none
 // does, which keeps the release's values in one form.
 func (r *AgentReconciler) applyAIGatewayVisionModels(values map[string]any, instance *cetirunv1alpha1.Agent, prepared chartValuePaths) {
-	if !prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartVisionValue) {
+	r.applyAIGatewayModelIDs(values, instance, prepared, aiGatewayChartVisionValue, func(entry aiGatewayModelEntry) bool { return entry.Vision })
+}
+
+// applyAIGatewayReasoningModels tells a chart that takes it which of the
+// Agent's models reason, so the harness offers reasoning levels for them and
+// sends the reasoning effort the owner picks, by the rule
+// applyAIGatewayVisionModels applies to images.
+func (r *AgentReconciler) applyAIGatewayReasoningModels(values map[string]any, instance *cetirunv1alpha1.Agent, prepared chartValuePaths) {
+	r.applyAIGatewayModelIDs(values, instance, prepared, aiGatewayChartReasoningValue, func(entry aiGatewayModelEntry) bool { return entry.Reasoning })
+}
+
+// applyAIGatewayModelIDs sets the chart value aiGateway.<value> to the sorted
+// IDs of the Agent's models that pick selects, when the chart declares the
+// value.
+func (r *AgentReconciler) applyAIGatewayModelIDs(values map[string]any, instance *cetirunv1alpha1.Agent, prepared chartValuePaths, value string, pick func(aiGatewayModelEntry) bool) {
+	if !prepared.SupportsValuePath(aiGatewayChartValue, value) {
 		return
 	}
 	gateway, _ := values[aiGatewayChartValue].(map[string]any)
@@ -1446,16 +1465,16 @@ func (r *AgentReconciler) applyAIGatewayVisionModels(values map[string]any, inst
 	entries, _, _ := r.aiGatewayModelEntries(instance)
 	ids := []string{}
 	for _, entry := range entries {
-		if entry.Vision {
+		if pick(entry) {
 			ids = append(ids, entry.ID)
 		}
 	}
 	slices.Sort(ids)
-	vision := make([]any, 0, len(ids))
+	list := make([]any, 0, len(ids))
 	for _, id := range slices.Compact(ids) {
-		vision = append(vision, id)
+		list = append(list, id)
 	}
-	gateway[aiGatewayChartVisionValue] = vision
+	gateway[value] = list
 }
 
 // applyCopilotResponsesModels tells the proxy which registered models need
@@ -1573,9 +1592,12 @@ func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) str
 			for _, route := range copilotRoutes(status.Copilot) {
 				part := route.Model + "=" + route.Name
 				// A route that accepts images lets the Agent send them under
-				// its name.
+				// its name, and one that reasons lets it set an effort.
 				if route.Vision {
 					part += ":vision"
+				}
+				if route.Reasoning {
+					part += ":reasoning"
 				}
 				routes = append(routes, part)
 			}
@@ -1613,14 +1635,21 @@ func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) str
 		// Which models accept images reaches the Agent's configuration too,
 		// with a chart that takes it. A router's value follows from those of
 		// the models it uses (fillRouterVision), so it changes with them.
-		var vision []string
+		var vision, reasoning []string
 		for _, model := range shared {
 			if model.Vision {
 				vision = append(vision, model.Name)
 			}
+			// The same for the models that reason (fillRouterReasoning).
+			if model.Reasoning {
+				reasoning = append(reasoning, model.Name)
+			}
 		}
 		if len(vision) > 0 {
 			parts = append(parts, "vision", strings.Join(vision, ","))
+		}
+		if len(reasoning) > 0 {
+			parts = append(parts, "reasoning", strings.Join(reasoning, ","))
 		}
 		// The limits of each router configured in the Gateway that the Agent
 		// is configured with, lowered by the Agent's Copilot routes under its
@@ -1645,6 +1674,10 @@ func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) str
 			// The routers that accept images, but not for this Agent.
 			if visionFolds := r.aiGatewayRouterVisionFolds(entitled, routes); len(visionFolds) > 0 {
 				parts = append(parts, "gateway-router-vision", strings.Join(slices.Sorted(maps.Keys(visionFolds)), ","))
+			}
+			// The routers that reason, but not for this Agent.
+			if reasoningFolds := r.aiGatewayRouterReasoningFolds(entitled, routes); len(reasoningFolds) > 0 {
+				parts = append(parts, "gateway-router-reasoning", strings.Join(slices.Sorted(maps.Keys(reasoningFolds)), ","))
 			}
 		}
 	}
