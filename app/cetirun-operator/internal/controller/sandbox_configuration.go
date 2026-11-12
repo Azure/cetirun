@@ -204,7 +204,7 @@ func (r *TeamReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 		compatibility, compatibilityErr := r.assessCompatibility(ctx, team, now)
 		now = configurationNow(r.Now)
 		if compatibilityErr != nil {
-			compatibility = r.unknownCompatibility(team, now)
+			compatibility = r.unknownCompatibility(team, now, compatibilityErr)
 			observeErr = errors.Join(observeErr, compatibilityErr)
 		}
 		team.Status.Compatibility = retainTeamCompatibility(before.Status.Compatibility, compatibility, now)
@@ -307,28 +307,28 @@ func (r *TeamReconciler) assessCompatibility(ctx context.Context, team *api.Team
 		resources.Sandboxes[box.Name] = box
 	}
 	if r.Source == nil {
-		return r.unknownCompatibility(team, now), nil
+		return r.unknownCompatibility(team, now, nil), nil
 	}
 	snapshot, err := r.Source.Snapshot(ctx)
 	if err != nil {
-		return r.unknownCompatibility(team, now), nil
+		return r.unknownCompatibility(team, now, err), nil
 	}
 	// Capture the assessment time after Snapshot: a synchronous source may have
 	// observed its inventory between the caller's previous clock read and now.
 	now = configurationNow(r.Now)
 	if err := configurationSnapshotTime(snapshot.ObservedAt, now, r.MaxSnapshotAge); err != nil {
-		return r.unknownCompatibility(team, now), nil
+		return r.unknownCompatibility(team, now, err), nil
 	}
 	report := sandbox.TeamCompatibilityReport(team, resources, snapshot.Registrations, r.NativeExecution)
 	if err := r.assessNativeCompatibility(ctx, &report, resources, snapshot); err != nil {
 		if errors.Is(err, sandboxpolicy.ErrUnavailable) {
-			return r.unknownCompatibility(team, now), nil
+			return r.unknownCompatibility(team, now, err), nil
 		}
 		return nil, err
 	}
 	report.CheckedAt, report.ValidUntil = metav1.NewTime(now), metav1.NewTime(now.Add(teamCompatibilityValidity))
 	if err := r.verifyCompatibilityInputs(ctx, team, resources, snapshot, report); err != nil {
-		return r.unknownCompatibility(team, now), nil
+		return r.unknownCompatibility(team, now, err), nil
 	}
 	return &report, nil
 }
@@ -463,13 +463,15 @@ func (r *TeamReconciler) verifyCompatibilityInputs(ctx context.Context, team *ap
 	return nil
 }
 
-func (r *TeamReconciler) unknownCompatibility(team *api.Team, now time.Time) *api.TeamCompatibilityStatus {
+// unknownCompatibility reports that compatibility cannot be verified. It adds
+// only a fixed explanation of cause, never values from the registration.
+func (r *TeamReconciler) unknownCompatibility(team *api.Team, now time.Time, cause error) *api.TeamCompatibilityStatus {
 	if !team.Spec.PolicyConfigured() {
 		return nil
 	}
 	report := &api.TeamCompatibilityStatus{
 		State: api.CompatibilityUnknown, Reason: "DependenciesUnavailable",
-		Message:   "Current platform compatibility cannot be verified.",
+		Message:   configurationErrorMessage("Current platform compatibility cannot be verified", cause, nil),
 		Team:      api.CompatibilityReference{Name: team.Name, UID: string(team.UID), Generation: team.Generation},
 		Policy:    api.CompatibilityReference{Name: team.Spec.AgentPolicyRef},
 		CheckedAt: metav1.NewTime(now), ValidUntil: metav1.NewTime(now.Add(teamCompatibilityValidity)),
@@ -583,7 +585,8 @@ func assessSandboxPrerequisites(ctx context.Context, reader client.Reader, objec
 	}
 	snapshot, err := configurationSnapshot(ctx, source, clock, maxAge)
 	if err != nil {
-		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable", "Current platform prerequisite state is unavailable."), time.Time{}, err
+		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable",
+			configurationErrorMessage("Current platform prerequisite state is unavailable", err, nil)), time.Time{}, err
 	}
 	registration, exists := snapshot.Registrations[spec.Type]
 	if !exists || sandbox.CheckExecutionProfile(registration.Capabilities, nativeExecution) != nil ||
@@ -643,7 +646,8 @@ func (r *AgentPolicyReconciler) assess(ctx context.Context, reader client.Reader
 	}
 	snapshot, err := configurationSnapshot(ctx, r.Source, r.Now, r.MaxSnapshotAge)
 	if err != nil {
-		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable", "Current platform support inventory is unavailable."), time.Time{}, err
+		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable",
+			configurationErrorMessage("Current platform support inventory is unavailable", err, nil)), time.Time{}, err
 	}
 	keys := make([]api.SandboxType, 0, len(snapshot.Registrations))
 	for key := range snapshot.Registrations {
@@ -750,8 +754,10 @@ func configurationErrorCondition(err error) metav1.Condition {
 }
 
 // configurationErrorMessage adds the fixed explanation of a classified
-// failure. Only constant text from the policy compiler is shown; names, CIDRs
-// and other values from the policy or the registration never are.
+// failure. Only constant text from the policy compiler or the platform
+// registration loader is shown; names, CIDRs and other values from the policy
+// or the registration never are. A nil sentinel accepts every class, for
+// example for a platform snapshot that cannot be used.
 func configurationErrorMessage(summary string, err, sentinel error) string {
 	if detail := sandboxpolicy.PublicDetail(err, sentinel); detail != "" {
 		return summary + ": " + detail + "."

@@ -424,6 +424,12 @@ aiGateway:
   # Empty means the Gateway named cetirun-ai-gateway in the operator namespace,
   # where the platform chart installs it.
   url: ""
+  # -- Namespaces of the AI Gateway Pods that native Sandbox egress selects by
+  # the protected label sandbox.cetirun.microsoft.com/peer. With native
+  # execution on, an admission policy in these namespaces lets only the
+  # ReplicaSet controller create Pods with that label and refuses changes to
+  # it on existing Pods. Empty means the operator namespace.
+  peerNamespaces: []
   # -- Secret in the operator namespace that holds the Gateway master key. A
   # Gateway installed separately must run in the operator namespace, or its
   # master key Secret must be copied there.

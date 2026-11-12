@@ -25,6 +25,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/telemetry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -227,8 +228,12 @@ func (r *AgentReconciler) verifyTeamAcceptance(ctx context.Context, team *api.Te
 	if accepted == nil {
 		return policyDependency("Team acceptance observation is unavailable")
 	}
-	if accepted.ObservedGeneration != team.Generation || accepted.Status == metav1.ConditionUnknown {
-		return policyDependency("Team acceptance observation is unavailable for generation %d", team.Generation)
+	if accepted.ObservedGeneration != team.Generation {
+		return policyDependency("Team acceptance observation is unavailable for generation %d; the last observation is for generation %d: %s",
+			team.Generation, accepted.ObservedGeneration, conditionSummary(accepted))
+	}
+	if accepted.Status == metav1.ConditionUnknown {
+		return policyDependency("Team acceptance observation is unavailable for generation %d: %s", team.Generation, conditionSummary(accepted))
 	}
 	if accepted.Status == metav1.ConditionFalse {
 		return fmt.Errorf("Team policy assignment is not accepted")
@@ -260,7 +265,7 @@ func (r *AgentReconciler) verifyPolicyAcceptance(ctx context.Context, policy *ap
 			return policyDependency("reassess pending AgentPolicy: %w", err)
 		}
 		if condition.Status != metav1.ConditionTrue {
-			return policyDependency("AgentPolicy observation is pending for generation %d: %s", policy.Generation, condition.Reason)
+			return policyDependency("AgentPolicy observation is pending for generation %d: %s", policy.Generation, conditionSummary(&condition))
 		}
 		if err := configurationSnapshotTime(observedAt, configurationNow(config.Now), config.MaxSnapshotAge); err != nil {
 			return policyDependency("reassess pending AgentPolicy freshness: %w", err)
@@ -270,22 +275,44 @@ func (r *AgentReconciler) verifyPolicyAcceptance(ctx context.Context, policy *ap
 	if accepted == nil {
 		return policyDependency("AgentPolicy acceptance observation is unavailable")
 	}
-	if accepted.ObservedGeneration != policy.Generation || accepted.Status == metav1.ConditionUnknown {
-		return policyDependency("AgentPolicy acceptance observation is unavailable for generation %d", policy.Generation)
+	if accepted.ObservedGeneration != policy.Generation {
+		return policyDependency("AgentPolicy acceptance observation is unavailable for generation %d; the last observation is for generation %d: %s",
+			policy.Generation, accepted.ObservedGeneration, conditionSummary(accepted))
+	}
+	if accepted.Status == metav1.ConditionUnknown {
+		// For example, the platform registration cannot be used. The condition
+		// message has the fixed reason.
+		return policyDependency("AgentPolicy acceptance observation is unavailable for generation %d: %s", policy.Generation, conditionSummary(accepted))
 	}
 	if accepted.Status == metav1.ConditionFalse {
 		if accepted.Reason == policyRegistrationIncompatibleReason {
 			// Only the platform registration changed since this generation was
 			// accepted: block the key and stop compute, but keep the key so the
 			// Agent recovers when the registration is corrected.
-			return policyDependency("effective AgentPolicy is not accepted: %s: %s", accepted.Reason, accepted.Message)
+			return policyDependency("effective AgentPolicy is not accepted: %s", conditionSummary(accepted))
 		}
-		return fmt.Errorf("effective AgentPolicy is not accepted: %s: %s", accepted.Reason, accepted.Message)
+		return fmt.Errorf("effective AgentPolicy is not accepted: %s", conditionSummary(accepted))
 	}
 	if accepted.Status != metav1.ConditionTrue {
 		return policyDependency("AgentPolicy acceptance observation has an unrecognized status")
 	}
 	return nil
+}
+
+// maxConditionSummary bounds the Team or AgentPolicy condition text that an
+// Agent condition repeats. Status messages have a size limit.
+const maxConditionSummary = 1024
+
+// conditionSummary returns the reason and message of a Team or AgentPolicy
+// condition, so that the Agent shows why it waits or is denied. Their
+// controllers write fixed text and object names there, never registration or
+// policy values.
+func conditionSummary(condition *metav1.Condition) string {
+	summary := condition.Reason
+	if condition.Message != "" {
+		summary += ": " + condition.Message
+	}
+	return telemetry.Clip(summary, maxConditionSummary)
 }
 
 func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (*policyResolution, error) {

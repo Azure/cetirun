@@ -119,6 +119,15 @@ config_mount="$(awk '/^            - name: config$/ { n = 4 } n > 0 { print; n--
 assert_contains "mountPath: /etc/litellm/config.yaml$" "the configuration is mounted as a file" "${config_mount}"
 assert_contains "subPath: config.yaml$" "the configuration file is mounted with subPath" "${config_mount}"
 assert_absent "mountPath: /etc/litellm$" "the configuration directory is not mounted" "${gateway_deployment}"
+# Sandbox peer selectors trust a protected label that only the Gateway Pods
+# carry. It stays out of the immutable Deployment selector and off PostgreSQL
+# and Valkey.
+pod_labels="$(awk '/^  template:$/ { t = 1 } t && /^      labels:$/ { l = 1; next } l && /^    spec:$/ { exit } l { print }' <<< "${gateway_deployment}")"
+assert_contains "sandbox.cetirun.microsoft.com/peer: ai-gateway$" "the Gateway Pods carry the protected peer label" "${pod_labels}"
+selector="$(awk '/^  selector:$/ { s = 1; next } s && /^  template:$/ { exit } s { print }' <<< "${gateway_deployment}")"
+assert_absent "sandbox.cetirun.microsoft.com/peer" "the protected peer label is not in the Deployment selector" "${selector}"
+assert_absent "sandbox.cetirun.microsoft.com/peer" "PostgreSQL and Valkey do not carry the protected peer label" \
+  "$(render -s templates/postgresql.yaml -s templates/valkey.yaml)"
 
 # Names are read from the rendered objects rather than rebuilt here: the chart
 # shortens long names, and uses the release name alone when it already

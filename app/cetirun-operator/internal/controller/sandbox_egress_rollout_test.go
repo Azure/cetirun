@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -24,7 +25,7 @@ func configureRolloutStableEgress(t *testing.T) func(*AgentReconciler, client.Cl
 				platform.Topology.DNS[0].PodSelector = map[string]string{"k8s-app": "kube-dns"}
 				platform.Topology.Gateway[0].Peer.PodSelector = map[string]string{
 					"app.kubernetes.io/name": "cetirun-ai-gateway", "app.kubernetes.io/component": "gateway",
-					"app.kubernetes.io/instance": "example",
+					"app.kubernetes.io/instance": "example", sandboxpolicy.PeerLabel: sandboxpolicy.PeerAIGateway,
 				}
 				document.Platforms[backend] = platform
 			}
@@ -64,7 +65,7 @@ func TestReconciledSandboxEgressRolloutDoesNotRestartAgent(t *testing.T) {
 					{"dns", "kube-system", map[string]string{"k8s-app": "kube-dns"}},
 					{"gateway", f.r.OperatorNamespace, map[string]string{
 						"app.kubernetes.io/name": "cetirun-ai-gateway", "app.kubernetes.io/component": "gateway",
-						"app.kubernetes.io/instance": "example",
+						"app.kubernetes.io/instance": "example", sandboxpolicy.PeerLabel: sandboxpolicy.PeerAIGateway,
 					}},
 				} {
 					for generation := range 3 {

@@ -5,6 +5,8 @@ package ingressmtls
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -120,5 +122,49 @@ func TestDesktopRegistrationPreservesDesktopDisabledApprovals(t *testing.T) {
 	ports := (Plan{Binding: binding}).Ports()
 	if len(ports) != 4 || ports[3] != (Port{Name: "novnc", Backend: 6080, TLS: DesktopPort}) {
 		t.Fatal("explicit desktop approval did not add its TLS-only surface")
+	}
+}
+
+func TestReferenceVersionIsOptional(t *testing.T) {
+	legacy := Reference{Namespace: "gateway-space", Name: "client-tls", UID: "client-uid", ResourceVersion: "7"}
+	uidOnly := Reference{Namespace: "gateway-space", Name: "client-tls", UID: "client-uid"}
+	for _, ref := range []Reference{legacy, uidOnly} {
+		if err := ref.Validate(); err != nil {
+			t.Fatal("valid reference refused:", err)
+		}
+	}
+	raw, err := json.Marshal(uidOnly)
+	if err != nil || strings.Contains(string(raw), "resourceVersion") {
+		t.Fatal("UID-only reference serialized a version:", string(raw))
+	}
+	var decoded Reference
+	if err := json.Unmarshal([]byte(`{"namespace":"gateway-space","name":"client-tls","uid":"client-uid"}`), &decoded); err != nil || decoded != uidOnly {
+		t.Fatal("registration without resourceVersion did not decode as UID-only:", err)
+	}
+	for _, bad := range []Reference{
+		{Namespace: "gateway-space", Name: "client-tls"},
+		{Namespace: "gateway-space", Name: "client-tls", UID: "client-uid", ResourceVersion: " 7"},
+	} {
+		if bad.Validate() == nil {
+			t.Fatal("invalid reference accepted:", bad)
+		}
+	}
+	if !legacy.Matches("client-uid", "7") || legacy.Matches("client-uid", "8") || legacy.Matches("other", "7") {
+		t.Fatal("version-pinned reference lost its strict match")
+	}
+	if !uidOnly.Matches("client-uid", "8") || uidOnly.Matches("other", "8") || uidOnly.Matches("", "") {
+		t.Fatal("UID-only reference did not match by UID alone")
+	}
+}
+
+func TestStaleApprovalNamesTheObject(t *testing.T) {
+	err := Reference{Namespace: "gateway-space", Name: "client-tls", UID: "client-uid"}.Stale("Secret", "the object was replaced")
+	if !errors.Is(fmt.Errorf("wrapped: %w", err), ErrApprovalStale) {
+		t.Fatal("stale approval is not ErrApprovalStale")
+	}
+	var stale *StaleError
+	if !errors.As(err, &stale) || stale.Kind != "Secret" || stale.Namespace != "gateway-space" || stale.Name != "client-tls" ||
+		!strings.Contains(err.Error(), "Secret gateway-space/client-tls") {
+		t.Fatal("stale approval does not name its object:", err)
 	}
 }

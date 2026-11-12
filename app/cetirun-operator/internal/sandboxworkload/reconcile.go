@@ -59,8 +59,8 @@ func (e ReconcileExpectation) approvedChatTLSControl(object unstructured.Unstruc
 	registered := false
 	for _, client := range plan.ChatClients {
 		if client.Secret.Namespace == object.GetNamespace() && slices.ContainsFunc(e.Sources, func(source SourceReference) bool {
-			return source.APIVersion == "v1" && source.Kind == "Secret" && source.Namespace == client.Secret.Namespace &&
-				source.Name == client.Secret.Name && source.UID == client.Secret.UID && source.ResourceVersion == client.Secret.ResourceVersion
+			return source.APIVersion == "v1" && source.Kind == "Secret" &&
+				source.MatchesApproval(client.Secret.Namespace, client.Secret.Name, client.Secret.UID, client.Secret.ResourceVersion)
 		}) {
 			registered = true
 		}
@@ -196,8 +196,8 @@ func (e ReconcileExpectation) Validate() error {
 				kind, apiVersion = "Gateway", "networking.istio.io/v1beta1"
 			}
 			if !slices.ContainsFunc(e.Sources, func(source SourceReference) bool {
-				return source.APIVersion == apiVersion && source.Kind == kind && source.Namespace == ref.Namespace &&
-					source.Name == ref.Name && source.UID == ref.UID && source.ResourceVersion == ref.ResourceVersion
+				return source.APIVersion == apiVersion && source.Kind == kind &&
+					source.MatchesApproval(ref.Namespace, ref.Name, ref.UID, ref.ResourceVersion)
 			}) {
 				return fmt.Errorf("Custom ingress plan omits an approved source identity")
 			}

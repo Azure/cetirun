@@ -84,11 +84,11 @@ func (s *KubernetesSource) Snapshot(ctx context.Context) (Snapshot, error) {
 	empty := Snapshot{}
 	if s == nil || s.APIReader == nil || len(validation.IsDNS1123Label(s.Namespace)) != 0 ||
 		len(validation.IsDNS1123Subdomain(s.Name)) != 0 {
-		return empty, fmt.Errorf("%w: an authoritative reader and explicit valid configuration namespace/name are required", sandboxpolicy.ErrUnavailable)
+		return empty, sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "an authoritative reader and explicit valid configuration namespace/name are required")
 	}
 	observedAt := configurationNow(s.Now)
 	if observedAt.IsZero() {
-		return empty, fmt.Errorf("%w: configuration observation time is required", sandboxpolicy.ErrUnavailable)
+		return empty, sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "configuration observation time is required")
 	}
 	cm, err := s.readConfiguration(ctx)
 	if err != nil {
@@ -109,7 +109,7 @@ func (s *KubernetesSource) Snapshot(ctx context.Context) (Snapshot, error) {
 			return empty, err
 		}
 		if object.UID != pin.UID || object.Handler != pin.Handler {
-			return empty, fmt.Errorf("%w: RuntimeClass no longer matches its configured UID/handler", sandboxpolicy.ErrUnavailable)
+			return empty, sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "RuntimeClass no longer matches its configured UID/handler")
 		}
 		if err := addSandboxPlatformSource(sources, sandboxSource(object, nodev1.SchemeGroupVersion.String(), "RuntimeClass")); err != nil {
 			return empty, err
@@ -122,7 +122,7 @@ func (s *KubernetesSource) Snapshot(ctx context.Context) (Snapshot, error) {
 			return empty, err
 		}
 		if object.UID != pin.UID || object.Provisioner != pin.Provisioner {
-			return empty, fmt.Errorf("%w: StorageClass no longer matches its configured UID/provisioner", sandboxpolicy.ErrUnavailable)
+			return empty, sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "StorageClass no longer matches its configured UID/provisioner")
 		}
 		if err := addSandboxPlatformSource(sources, sandboxSource(object, storagev1.SchemeGroupVersion.String(), "StorageClass")); err != nil {
 			return empty, err
@@ -142,7 +142,7 @@ func (s *KubernetesSource) Snapshot(ctx context.Context) (Snapshot, error) {
 			return empty, err
 		}
 		if sandboxSource(object, source.APIVersion, source.Kind) != source {
-			return empty, fmt.Errorf("%w: platform dependency changed during capture", ErrSourceChanged)
+			return empty, sandboxpolicy.ControlFailure(ErrSourceChanged, "platform dependency changed during capture")
 		}
 	}
 	current, err := s.readConfiguration(ctx)
@@ -151,7 +151,7 @@ func (s *KubernetesSource) Snapshot(ctx context.Context) (Snapshot, error) {
 	}
 	if current.UID != cm.UID || current.ResourceVersion != cm.ResourceVersion ||
 		current.Data[ConfigurationKey] != cm.Data[ConfigurationKey] {
-		return empty, fmt.Errorf("%w: platform configuration changed during capture", ErrSourceChanged)
+		return empty, sandboxpolicy.ControlFailure(ErrSourceChanged, "platform configuration changed during capture")
 	}
 	encoded, err := json.Marshal(struct {
 		Version       string
@@ -180,7 +180,7 @@ func (s *KubernetesSource) readConfiguration(ctx context.Context) (*corev1.Confi
 	}
 	for _, owner := range cm.OwnerReferences {
 		if owner.Kind == "Agent" {
-			return nil, fmt.Errorf("%w: Agent-owned platform configuration is not trusted", sandboxpolicy.ErrOwnership)
+			return nil, sandboxpolicy.ControlFailure(sandboxpolicy.ErrOwnership, "Agent-owned platform configuration is not trusted")
 		}
 	}
 	for _, key := range []string{
@@ -190,13 +190,13 @@ func (s *KubernetesSource) readConfiguration(ctx context.Context) (*corev1.Confi
 		_, label := cm.Labels[key]
 		_, annotation := cm.Annotations[key]
 		if label || annotation {
-			return nil, fmt.Errorf("%w: Agent-derived platform configuration is not trusted", sandboxpolicy.ErrOwnership)
+			return nil, sandboxpolicy.ControlFailure(sandboxpolicy.ErrOwnership, "Agent-derived platform configuration is not trusted")
 		}
 	}
 	_, present := cm.Data[ConfigurationKey]
 	_, binary := cm.BinaryData[ConfigurationKey]
 	if !present || binary {
-		return nil, fmt.Errorf("%w: platform.json must be supplied as ConfigMap text data", sandboxpolicy.ErrUnavailable)
+		return nil, sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "platform.json must be supplied as ConfigMap text data")
 	}
 	return cm, nil
 }
@@ -207,7 +207,7 @@ func readSandboxPlatformObject(ctx context.Context, reader client.Reader, key cl
 	}
 	if client.ObjectKeyFromObject(object) != key || object.GetUID() == "" || object.GetResourceVersion() == "" ||
 		!object.GetDeletionTimestamp().IsZero() {
-		return fmt.Errorf("%w: platform configuration requires persisted, non-terminating objects at the configured names", sandboxpolicy.ErrUnavailable)
+		return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "platform configuration requires persisted, non-terminating objects at the configured names")
 	}
 	return nil
 }
@@ -215,7 +215,7 @@ func readSandboxPlatformObject(ctx context.Context, reader client.Reader, key cl
 func decodeSandboxPlatformConfiguration(raw string) (Configuration, error) {
 	var document Configuration
 	if len(raw) == 0 || len(raw) > MaxConfigurationBytes || !utf8.ValidString(raw) {
-		return document, fmt.Errorf("%w: platform.json must be nonempty UTF-8 JSON of at most 512 KiB", sandboxpolicy.ErrUnavailable)
+		return document, sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "platform.json must be nonempty UTF-8 JSON of at most 512 KiB")
 	}
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	depth, tokens := 0, 0
@@ -225,7 +225,7 @@ func decodeSandboxPlatformConfiguration(raw string) (Configuration, error) {
 			break
 		}
 		if err != nil || token == nil {
-			return document, fmt.Errorf("%w: malformed or null platform JSON", sandboxpolicy.ErrUnavailable)
+			return document, sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "malformed or null platform JSON")
 		}
 		tokens++
 		if delimiter, ok := token.(json.Delim); ok {
@@ -237,13 +237,13 @@ func decodeSandboxPlatformConfiguration(raw string) (Configuration, error) {
 			}
 		}
 		if depth > maxSandboxPlatformJSONDepth || tokens > maxSandboxPlatformJSONTokens {
-			return document, fmt.Errorf("%w: platform JSON nesting or token budget exceeded", sandboxpolicy.ErrUnavailable)
+			return document, sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "platform JSON nesting or token budget exceeded")
 		}
 	}
 	// Decoder diagnostics can contain configuration payloads; do not return them.
 	problems, err := strictjson.UnmarshalStrict([]byte(raw), &document, strictjson.DisallowDuplicateFields, strictjson.DisallowUnknownFields)
 	if err != nil || len(problems) != 0 {
-		return document, fmt.Errorf("%w: malformed, unknown or duplicate platform JSON fields", sandboxpolicy.ErrUnavailable)
+		return document, sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "malformed, unknown or duplicate platform JSON fields")
 	}
 	if err := validateSandboxPlatformConfiguration(document); err != nil {
 		return document, err
@@ -254,34 +254,37 @@ func decodeSandboxPlatformConfiguration(raw string) (Configuration, error) {
 func validateSandboxPlatformConfiguration(document Configuration) error {
 	if document.Version != "v1" || document.Registrations == nil || document.Platforms == nil ||
 		document.RuntimeClasses == nil || document.StorageClasses == nil {
-		return fmt.Errorf("%w: platform version v1 and all four inventory maps are required", sandboxpolicy.ErrUnavailable)
+		return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "platform version v1 and all four inventory maps are required")
 	}
 	roleNames := map[string]struct{}{}
-	for kind, registration := range document.Registrations {
+	// A fixed order reports the same failure on every attempt.
+	for _, kind := range slices.Sorted(maps.Keys(document.Registrations)) {
+		registration := document.Registrations[kind]
 		if kind != api.SandboxKata && kind != api.SandboxGVisor && kind != api.SandboxContainer {
-			return fmt.Errorf("%w: unsupported Sandbox registration key", sandboxpolicy.ErrUnsupportedControl)
+			return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnsupportedControl, "unsupported Sandbox registration key")
 		}
 		capabilities := registration.Capabilities
 		if len(sandbox.CheckRuntimeCapabilities(kind, capabilities)) != 0 {
-			return fmt.Errorf("%w: unsupported Sandbox capability profile", sandboxpolicy.ErrUnsupportedControl)
+			return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnsupportedControl, "unsupported Sandbox capability profile")
 		}
 		_, runtimeExists := document.RuntimeClasses[capabilities.RuntimeClassName]
 		if !runtimeExists || !sandboxPlatformValue(capabilities.Revision) ||
 			(capabilities.RequirePerContainerResourceLimits && !capabilities.PerContainerResourceLimits) {
-			return fmt.Errorf("%w: registration requires a revision, pinned RuntimeClass and consistent resource controls", sandboxpolicy.ErrUnavailable)
+			return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "registration requires a revision, pinned RuntimeClass and consistent resource controls")
 		}
 		for _, mode := range capabilities.HomeAccessModes {
 			if mode != corev1.ReadWriteOnce && mode != corev1.ReadWriteOncePod {
-				return fmt.Errorf("%w: unsupported registered HOME access mode", sandboxpolicy.ErrUnsupportedControl)
+				return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnsupportedControl, "unsupported registered HOME access mode")
 			}
 		}
 		platform, exists := document.Platforms[kind]
 		if !exists {
-			return fmt.Errorf("%w: registration requires a matching platform declaration", sandboxpolicy.ErrUnavailable)
+			return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "registration requires a matching platform declaration")
 		}
 		if err := sandboxpolicy.ValidatePlatform(platform, capabilities); err != nil {
-			// Validators can quote topology values. Preserve the error category,
-			// not payload-bearing diagnostics that callers might log.
+			// Validators can quote topology values. Preserve the error category
+			// and only the fixed explanation that the policy compiler wrote in
+			// code, not payload-bearing diagnostics that callers might log.
 			cause := sandboxpolicy.ErrUnavailable
 			for _, candidate := range []error{sandboxpolicy.ErrUnsupportedControl, sandboxpolicy.ErrConflict, sandboxpolicy.ErrUnapprovedGrant} {
 				if errors.Is(err, candidate) {
@@ -289,7 +292,11 @@ func validateSandboxPlatformConfiguration(document Configuration) error {
 					break
 				}
 			}
-			return fmt.Errorf("%w: invalid Sandbox platform declaration", cause)
+			detail := "invalid Sandbox platform declaration"
+			if reason := sandboxpolicy.PublicDetail(err, cause); reason != "" {
+				detail += ": " + reason
+			}
+			return sandboxpolicy.ControlFailure(cause, detail)
 		}
 		if err := validateSandboxPlatformIdentities(platform, capabilities); err != nil {
 			return err
@@ -299,22 +306,22 @@ func validateSandboxPlatformConfiguration(document Configuration) error {
 		}
 	}
 	if len(document.RuntimeClasses)+len(document.StorageClasses)+len(roleNames)+1 > maxSandboxPlatformObjects {
-		return fmt.Errorf("%w: platform object inventory exceeds 128 objects", sandboxpolicy.ErrUnavailable)
+		return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "platform object inventory exceeds 128 objects")
 	}
 	for kind := range document.Platforms {
 		if _, exists := document.Registrations[kind]; !exists {
-			return fmt.Errorf("%w: platform has no matching Sandbox registration", sandboxpolicy.ErrUnavailable)
+			return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "platform has no matching Sandbox registration")
 		}
 	}
 	for name, pin := range document.RuntimeClasses {
 		if len(validation.IsDNS1123Subdomain(name)) != 0 || !sandboxPlatformUID(pin.UID) ||
 			len(validation.IsDNS1123Label(pin.Handler)) != 0 {
-			return fmt.Errorf("%w: RuntimeClass pins require a valid name, UID and handler", sandboxpolicy.ErrUnavailable)
+			return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "RuntimeClass pins require a valid name, UID and handler")
 		}
 	}
 	for name, pin := range document.StorageClasses {
 		if len(validation.IsDNS1123Subdomain(name)) != 0 || !sandboxPlatformUID(pin.UID) || !sandboxPlatformValue(pin.Provisioner) {
-			return fmt.Errorf("%w: StorageClass pins require a valid name, UID and provisioner", sandboxpolicy.ErrUnavailable)
+			return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "StorageClass pins require a valid name, UID and provisioner")
 		}
 	}
 	return nil
@@ -325,22 +332,22 @@ func validateSandboxPlatformIdentities(platform sandboxpolicy.Platform, capabili
 		return err
 	}
 	if len(platform.Grants) != 0 && !capabilities.KubernetesAccess {
-		return fmt.Errorf("%w: grants require declared Kubernetes access support", sandboxpolicy.ErrUnapprovedGrant)
+		return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnapprovedGrant, "grants require declared Kubernetes access support")
 	}
 	for _, identity := range platform.Identities {
 		if identity.Kubernetes && !capabilities.KubernetesAccess {
-			return fmt.Errorf("%w: identity approval requires declared Kubernetes access support", sandboxpolicy.ErrUnapprovedGrant)
+			return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnapprovedGrant, "identity approval requires declared Kubernetes access support")
 		}
 		if identity.Entra != nil && !capabilities.EntraID {
-			return fmt.Errorf("%w: Entra identity approval requires declared support", sandboxpolicy.ErrUnapprovedGrant)
+			return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnapprovedGrant, "Entra identity approval requires declared support")
 		}
 	}
 	if platform.TokenExpirationSeconds != 0 && (platform.TokenExpirationSeconds < 600 || platform.TokenExpirationSeconds > 3600) {
-		return fmt.Errorf("%w: token lifetime must be between 600 and 3600 seconds", sandboxpolicy.ErrUnapprovedGrant)
+		return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnapprovedGrant, "token lifetime must be between 600 and 3600 seconds")
 	}
 	if platform.KubernetesAudience != "" || len(platform.Grants) != 0 || len(platform.Identities) != 0 {
 		if !sandboxPlatformValue(platform.KubernetesAudience) || platform.KubernetesAudience == sandboxpolicy.EntraAudience {
-			return fmt.Errorf("%w: a distinct approved Kubernetes API audience is required", sandboxpolicy.ErrUnapprovedGrant)
+			return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnapprovedGrant, "a distinct approved Kubernetes API audience is required")
 		}
 	}
 	return nil
@@ -353,7 +360,7 @@ func validateSandboxPlatformGrants(grants []sandboxpolicy.ApprovedGrant, roleNam
 			grant.RoleRef.APIGroup != rbacv1.GroupName || grant.RoleRef.Kind != "ClusterRole" ||
 			grant.RoleRef.Name == "" || len(pathvalidation.IsValidPathSegmentName(grant.RoleRef.Name)) != 0 ||
 			(grant.Namespace != "" && len(validation.IsDNS1123Label(grant.Namespace)) != 0) {
-			return fmt.Errorf("%w: grants require complete policy, ClusterRole UID/version/rules and scope pins", sandboxpolicy.ErrUnapprovedGrant)
+			return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnapprovedGrant, "grants require complete policy, ClusterRole UID/version/rules and scope pins")
 		}
 		roleNames[grant.RoleRef.Name] = struct{}{}
 	}
@@ -363,16 +370,16 @@ func validateSandboxPlatformGrants(grants []sandboxpolicy.ApprovedGrant, roleNam
 func addSandboxPlatformSource(sources map[string]sandboxworkload.SourceReference, source sandboxworkload.SourceReference) error {
 	key := sandboxSourceKey(source)
 	if !source.ValidIdentity() {
-		return fmt.Errorf("%w: platform dependency identity is incomplete", sandboxpolicy.ErrUnavailable)
+		return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "platform dependency identity is incomplete")
 	}
 	if previous, exists := sources[key]; exists {
 		if previous != source {
-			return fmt.Errorf("%w: platform dependency pins disagree", sandboxpolicy.ErrUnavailable)
+			return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "platform dependency pins disagree")
 		}
 		return nil
 	}
 	if len(sources) == maxSandboxPlatformObjects {
-		return fmt.Errorf("%w: platform object inventory exceeds 128 objects", sandboxpolicy.ErrUnavailable)
+		return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "platform object inventory exceeds 128 objects")
 	}
 	sources[key] = source
 	return nil

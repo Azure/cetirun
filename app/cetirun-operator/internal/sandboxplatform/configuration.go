@@ -6,7 +6,6 @@ package sandboxplatform
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"k8s.io/apimachinery/pkg/types"
@@ -55,7 +54,7 @@ func CheckFreshness(observedAt, now time.Time, maxAge time.Duration) error {
 		maxAge = 30 * time.Second
 	}
 	if now.IsZero() || observedAt.IsZero() || observedAt.After(now) || now.Sub(observedAt) >= maxAge {
-		return fmt.Errorf("%w: platform snapshot is stale or incomplete", sandboxpolicy.ErrUnavailable)
+		return sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnavailable, "platform snapshot is stale or incomplete")
 	}
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -22,7 +23,7 @@ func rolloutEgressFixture() CompileInput {
 	input.Platform.Topology.DNS[0].PodSelector = map[string]string{"k8s-app": "kube-dns"}
 	input.Platform.Topology.Gateway[0].Peer.PodSelector = map[string]string{
 		"app.kubernetes.io/name": "cetirun-ai-gateway", "app.kubernetes.io/component": "gateway",
-		"app.kubernetes.io/instance": "example",
+		"app.kubernetes.io/instance": "example", PeerLabel: PeerAIGateway,
 	}
 	input.Platform.Topology.Gateway[0].Ports = []api.AgentPolicyPort{{Port: 4000, Protocol: corev1.ProtocolTCP}}
 	return input
@@ -110,6 +111,7 @@ func TestNativeServiceSelectorsRetainComplementaryDenies(t *testing.T) {
 		{"Gateway wrong namespace", Peer{Namespace: "tenant", PodSelector: gateway.PodSelector}, 4000, corev1.ProtocolTCP, false},
 		{"Gateway missing component", Peer{Namespace: gateway.Namespace, PodSelector: map[string]string{"app.kubernetes.io/name": "cetirun-ai-gateway", "app.kubernetes.io/instance": "example"}}, 4000, corev1.ProtocolTCP, false},
 		{"Gateway different release", Peer{Namespace: gateway.Namespace, PodSelector: map[string]string{"app.kubernetes.io/name": "cetirun-ai-gateway", "app.kubernetes.io/component": "gateway", "app.kubernetes.io/instance": "other"}}, 4000, corev1.ProtocolTCP, false},
+		{"Gateway chart labels without the protected label", Peer{Namespace: gateway.Namespace, PodSelector: map[string]string{"app.kubernetes.io/name": "cetirun-ai-gateway", "app.kubernetes.io/component": "gateway", "app.kubernetes.io/instance": "example"}}, 4000, corev1.ProtocolTCP, false},
 		{"Gateway old peer label only", Peer{Namespace: gateway.Namespace, UID: gateway.UID}, 4000, corev1.ProtocolTCP, false},
 		{"legacy DNS", input.Platform.Topology.DNS[1], 53, corev1.ProtocolUDP, true},
 		{"legacy Gateway", input.Platform.Topology.Gateway[1].Peer, 4000, corev1.ProtocolTCP, true},
@@ -187,6 +189,10 @@ func TestNativeServiceSelectorRegistrationValidation(t *testing.T) {
 		"API selector": func(i *CompileInput) {
 			i.Platform.Topology.KubernetesAPI = []Destination{i.Platform.Topology.Gateway[0]}
 		},
+		"Gateway without a protected label": func(i *CompileInput) { delete(i.Platform.Topology.Gateway[0].Peer.PodSelector, PeerLabel) },
+		"Gateway protected prefix only in a value": func(i *CompileInput) {
+			i.Platform.Topology.Gateway[0].Peer.PodSelector = map[string]string{"app": "sandbox.cetirun.microsoft.com"}
+		},
 		"proxy CIDRs on egress": func(i *CompileInput) { i.Platform.Topology.Gateway[0].TrustedProxyCIDRs = []string{"10.244.0.0/16"} },
 		"inconsistent UID": func(i *CompileInput) {
 			peer := i.Platform.Topology.DNS[0]
@@ -260,12 +266,49 @@ func TestNativeServiceSelectorExpansionIsBounded(t *testing.T) {
 		input.Platform.Topology.Gateway = append(input.Platform.Topology.Gateway, Destination{
 			Peer: Peer{
 				Name: fmt.Sprintf("gateway-%d", i), Namespace: fmt.Sprintf("platform-%d", i), UID: types.UID(fmt.Sprintf("gateway-uid-%d", i)),
-				IPs: []string{fmt.Sprintf("10.96.1.%d", i+1)}, PodSelector: map[string]string{fmt.Sprintf("gateway-%d", i): "model"},
+				IPs: []string{fmt.Sprintf("10.96.1.%d", i+1)}, PodSelector: map[string]string{PeerLabel: fmt.Sprintf("gateway-%d", i)},
 			},
 			Ports: []api.AgentPolicyPort{{Port: 4000, Protocol: corev1.ProtocolTCP}},
 		})
 	}
 	if plan, err := Compile(input); !errors.Is(err, ErrConflict) || plan != nil {
 		t.Fatalf("selector expansion must reject excess rather than omit denies: %v", err)
+	}
+}
+
+func TestNativeGatewaySelectorRequiresProtectedLabel(t *testing.T) {
+	input := rolloutEgressFixture()
+	if err := ValidatePlatform(input.Platform, input.Resolution.Capabilities); err != nil {
+		t.Fatal("a Gateway selector with the protected label was refused:", err)
+	}
+	// Other labels with the same prefix are not reserved by the admission
+	// policy, so they cannot replace the protected peer label.
+	input.Platform.Topology.Gateway[0].Peer.PodSelector = map[string]string{"sandbox.cetirun.microsoft.com/peer-uid": "e2e-ai-gateway"}
+	if err := ValidatePlatform(input.Platform, input.Resolution.Capabilities); !errors.Is(err, ErrUnsupportedControl) {
+		t.Fatal("a Gateway selector without the protected peer label was accepted:", err)
+	}
+	input = rolloutEgressFixture()
+	delete(input.Platform.Topology.Gateway[0].Peer.PodSelector, PeerLabel)
+	if err := ValidatePlatform(input.Platform, input.Resolution.Capabilities); !errors.Is(err, ErrUnsupportedControl) {
+		t.Fatal("a Gateway selector without a protected label was accepted:", err)
+	}
+	// The refusal has a fixed reason that status can show. It never quotes the
+	// registered selector.
+	input.Platform.Topology.Gateway[0].Peer.PodSelector = map[string]string{"selector-canary.example.com/key": "value-canary-5d1f"}
+	err := ValidatePlatform(input.Platform, input.Resolution.Capabilities)
+	want := "a selector-bound AI Gateway peer must select the protected " + PeerLabel + " Pod label"
+	if detail := PublicDetail(err, ErrUnsupportedControl); detail != want || PublicDetail(err, nil) != want {
+		t.Fatalf("the refusal has no fixed public reason: %q", detail)
+	}
+	if strings.Contains(err.Error(), "canary") {
+		t.Fatalf("the refusal quoted the registered selector: %v", err)
+	}
+	// DNS selectors select platform-managed Pods that CetiRun cannot label.
+	input = rolloutEgressFixture()
+	if _, found := input.Platform.Topology.DNS[0].PodSelector[PeerLabel]; found {
+		t.Fatal("fixture DNS selector unexpectedly uses the protected label")
+	}
+	if err := ValidatePlatform(input.Platform, input.Resolution.Capabilities); err != nil {
+		t.Fatal("a DNS selector without a protected label was refused:", err)
 	}
 }

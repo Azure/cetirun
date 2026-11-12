@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 )
@@ -127,7 +128,14 @@ func appliedMatches(agent *api.Agent, expected sandbox.ExecutionIdentity) bool {
 }
 
 func sandboxStatusFailure(err error) (metav1.ConditionStatus, string, string) {
+	var stale *ingressmtls.StaleError
 	switch {
+	case errors.As(err, &stale):
+		return metav1.ConditionFalse, "IngressMTLSApprovalStale", fmt.Sprintf(
+			"The mTLS approval for %s %s/%s is stale (%s); register its current identity in the Sandbox platform configuration.",
+			stale.Kind, stale.Namespace, stale.Name, stale.Detail)
+	case errors.Is(err, ingressmtls.ErrApprovalStale):
+		return metav1.ConditionFalse, "IngressMTLSApprovalStale", "An mTLS approval is stale; register the current object identities in the Sandbox platform configuration."
 	case errors.Is(err, sandbox.ErrObservationUnavailable):
 		return metav1.ConditionUnknown, "ObservationUnavailable", "Fresh evidence for the current binding and execution identity is unavailable."
 	case errors.Is(err, sandboxpolicy.ErrUnavailable):

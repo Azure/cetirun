@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"strings"
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -153,7 +154,7 @@ func TestCommonChatRequiresCurrentOwnedExecution(t *testing.T) {
 			mutate(agent, objects, &expected)
 			writeCommonChatExpectation(t, state, expected)
 			target, err := NewClient(newFakeClient(objects...)).ResolveChat(context.Background(), agent, chattest.Caller)
-			if err != nil || target.Available != (name == "current") {
+			if err != nil || target.Available != strings.HasPrefix(name, "current") {
 				t.Fatalf("available=%v reason=%s err=%v", target.Available, target.Reason, err)
 			}
 		})
@@ -226,6 +227,16 @@ func TestCommonChatMTLSRequiresCurrentTLSPath(t *testing.T) {
 		"missing client source":  func(_ []client.Object, e *commonChatExpectation) { e.Sources = e.Sources[:1] },
 		"changed client UID":     func(_ []client.Object, e *commonChatExpectation) { e.Sources[1].UID = "other" },
 		"changed client version": func(_ []client.Object, e *commonChatExpectation) { e.Sources[1].ResourceVersion = "11" },
+		"current UID-only approval": func(_ []client.Object, e *commonChatExpectation) {
+			e.CustomIngressTLS.ChatClients[0].Secret.ResourceVersion = ""
+			e.Sources[1].ResourceVersion, e.Sources[1].ImmutableSecret = "", true
+		},
+		"UID-only approval of a version-pinned source": func(_ []client.Object, e *commonChatExpectation) {
+			e.CustomIngressTLS.ChatClients[0].Secret.ResourceVersion = ""
+		},
+		"versioned approval of a UID-pinned source": func(_ []client.Object, e *commonChatExpectation) {
+			e.Sources[1].ResourceVersion, e.Sources[1].ImmutableSecret = "", true
+		},
 		"plaintext named target": func(o []client.Object, _ *commonChatExpectation) {
 			o[4].(*corev1.Service).Spec.Ports[0].TargetPort = intstr.FromString("http")
 		},
@@ -262,7 +273,7 @@ func TestCommonChatMTLSRequiresCurrentTLSPath(t *testing.T) {
 			mutate(objects, &expected)
 			writeCommonChatExpectation(t, state, expected)
 			target, err := NewClient(newFakeClient(objects...)).ResolveChat(context.Background(), agent, chattest.Caller)
-			if err != nil || target.Available != (name == "current") {
+			if err != nil || target.Available != strings.HasPrefix(name, "current") {
 				t.Fatalf("available=%v reason=%s err=%v", target.Available, target.Reason, err)
 			}
 			if target.Available && target.BaseURL != "http://"+expected.CustomIngressTLS.ServiceHost+":8080" {
