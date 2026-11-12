@@ -794,10 +794,18 @@ of the policy. Reason `PolicyAccepted` means that the platform supports the
 controls of the policy and its requested role approvals. It does not assess
 Sandbox compatibility, HOME access, or per-Agent enforcement. Other reasons are
 `InvalidConfiguration`, `UnsupportedControl`, `UnapprovedGrant`,
-`PolicyConflict`, `PrerequisitesUnavailable`, and `Terminating`. If the
-operator knows a fixed reason, the message names it, for example a rule budget
-that the policy exceeds. The message contains only text from the operator
-code, without values from the policy or the registration.
+`PolicyConflict`, `RegistrationIncompatible`, `PrerequisitesUnavailable`, and
+`Terminating`.
+
+`RegistrationIncompatible` means that the operator accepted the current
+generation (`acceptedGeneration`), but the current platform registration
+cannot enforce it. The operator then holds the Agents that use the policy and
+blocks their AI Gateway keys, without revoking them. The Agents recover when
+you correct the registration, or when the operator accepts a corrected policy.
+
+If the operator knows a fixed reason, the message names it, for example a rule
+budget that the policy exceeds. The message contains only text from the
+operator code, without values from the policy or the registration.
 
 ### Identity and network controls
 
