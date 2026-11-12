@@ -19,8 +19,9 @@ In the Portal, first create an **Agent Policy** and a **Sandbox** under
 **Admin**. A Sandbox selects these items:
 
 - The isolation type, which the form labels **Runtime**: Kata (the default) or
-  Container. The form also offers gVisor, but Sandbox execution does not
-  support it, and the Portal does not save a gVisor Sandbox.
+  Container. The form lists only the runtimes that the platform registered, and
+  it saves a Sandbox only for a registered runtime. Sandbox execution does not
+  support gVisor.
 - CPU, memory, and ephemeral-storage requests and limits for the Agent and
   each helper
 - A HOME StorageClass and size
@@ -347,8 +348,10 @@ keys of the Team's Agents. It does not change the Policy's Gateway projection. I
 restarts an Agent only when the model configuration of the Agent changes. For
 example, this occurs when a router is added, or when the limits of its tiers
 change, as described in
-[Choose a model](../models/#smart-routing-models). Other Team changes, such as
-its context or its skills, restart the Team's running Sandbox Agents one time.
+[Choose a model](../models/#smart-routing-models). A change to the tiers that
+changes if the Agent sends images or a reasoning effort to the router also
+restarts the Agent. Other Team changes, such as its context or its skills,
+restart the Team's running Sandbox Agents one time.
 
 Without a LiteLLM license, LiteLLM limits some router features to a single
 router per Gateway. These features are:

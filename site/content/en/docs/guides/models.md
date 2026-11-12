@@ -103,34 +103,15 @@ For the other models:
 OpenClaw offers its reasoning levels for the models that reason. It sends the
 level that the owner selects as the reasoning effort of each request. The
 default level is `medium`. The operator reads from the Gateway which models
-reason (`supports_reasoning`). Refer to the Gateway chart's
-[Reasoning models]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#reasoning-models)
-section.
-
-The operator uses the same rules as for images:
-
-- A model reasons only when every deployment of its name reasons.
-- When the instance's own Copilot route has the same name, that route must
-  also reason.
-- A smart-routing model reasons only when every model that it sends requests
-  to reasons. For a Team's router, the Team page shows the tier models that do
-  not reason.
-
-A GitHub Copilot model reasons only when the Gateway's price table says so and
-it is a Claude or GPT model. The Copilot proxy refuses a reasoning effort for
-the other models, such as Gemini and Grok.
+reason. For the rules, platform administrators refer to
+[Reasoning](../../operations/ai-gateway/#reasoning).
 
 For the other models, OpenClaw offers only the level `off`, and it sends no
-reasoning effort. A model that reasons then uses its default effort.
+reasoning effort. A model that reasons then uses its default effort. For
+example, this occurs for a router when one of its tier models does not reason.
 
-Hermes does not use this information. It sends its own reasoning effort to each
-model. The Gateway removes the effort from a request when no deployment that
-can answer the request reasons.
-
-The instance's configuration lists the models that reason
-(`aiGateway.reasoningModels` of the runtime chart). A runtime chart without
-this value configures OpenClaw as before. The instance takes the value when you
-upgrade it to a chart that has it.
+Hermes sends its own reasoning effort to each model. The Gateway removes the
+effort from a request when no deployment that can answer the request reasons.
 
 ### When the budget runs out
 

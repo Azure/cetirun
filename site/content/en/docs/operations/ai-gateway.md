@@ -115,8 +115,9 @@ prefixes are compared in any letter case.
 
 The console does not examine these prefixes. Do not add models with these
 prefixes in the console. The operator does not give Agents a shared model
-with one of these names. It also does not give them a name that starts with
-`openai/`, a name with whitespace, or a name with more than 256 characters.
+with one of these names. It also does not give them a shared model whose name
+starts with `openai/` or `cetirun/`, contains whitespace, or has more than 256
+characters.
 
 ### Models that you add in the console
 
@@ -186,6 +187,35 @@ The configuration of an Agent lists the models that accept images
 value sends images as before. An Agent gets the value when you upgrade it to a
 chart that has the value.
 
+### Reasoning
+
+The operator reads from the AI Gateway if a model reasons
+(`supports_reasoning`). OpenClaw offers reasoning levels, and sends a reasoning
+effort, only for the models that reason. The AI Gateway removes the reasoning
+effort from a request when LiteLLM knows that no deployment that can answer the
+request takes it. This also applies to the requests that a router sends to its
+tiers.
+
+A model that reasons under a name that is not in the LiteLLM price table needs
+one more setting. Set `model_info.base_model` on an `azure/` deployment, or
+`model_info.supports_reasoning: true` on an `openai/` deployment. Refer to the
+chart README's
+[Reasoning models]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#reasoning-models).
+
+As with images, a model reasons only when every deployment of its name reasons.
+When the Copilot route of an Agent has the same name, that route must also
+reason. A router reasons only when every model that it sends requests to
+reasons.
+
+A GitHub Copilot model reasons only when the LiteLLM price table says so and it
+is a Claude or GPT model. The Copilot proxy refuses a reasoning effort for the
+other models, such as Gemini and Grok.
+
+The configuration of an Agent lists the models that reason
+(`aiGateway.reasoningModels` of the agent chart). Hermes does not read this
+value. An agent chart without this value configures OpenClaw as before. An
+Agent gets the value when you upgrade it to a chart that has the value.
+
 ### When model changes reach Agents
 
 A change to the models replaces the Pods of the AI Gateway. Each AI Gateway Pod keeps
@@ -200,6 +230,7 @@ the affected Agents:
 - adds or removes a shared model
 - changes the limits of a shared model
 - changes if a shared model accepts images
+- changes if a shared model reasons
 - changes if a shared model is offered, through its price or the AI Gateway's
   setting
 

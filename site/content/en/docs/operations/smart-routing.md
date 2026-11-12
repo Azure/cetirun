@@ -255,7 +255,7 @@ requests to accepts images. Refer to [Images](../ai-gateway/#images).
 
 In the same way, OpenClaw offers reasoning levels for a router only when every
 model that the router sends requests to reasons. Refer to
-[Reasoning](../../guides/models/#reasoning). For a Team's router, the Team's
+[Reasoning](../ai-gateway/#reasoning). For a Team's router, the Team's
 `status.modelRouters[].nonReasoningModels` lists the tier models that do not
 reason. The Team page in the Portal shows them with the router.
 

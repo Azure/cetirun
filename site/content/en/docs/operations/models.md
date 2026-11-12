@@ -206,15 +206,24 @@ credentials do not go to the browser or to the Agent workload.
 OpenClaw and Hermes receive their model list and their virtual key from the
 AI Gateway configuration at each start:
 
+- OpenClaw writes the AI Gateway provider as `cetirun` in
+  `~/.openclaw/openclaw.json`, so its model references are `cetirun/<model>`.
 - Hermes writes the AI Gateway provider as `cetirun-gateway` in
   `~/.hermes/config.yaml`. It reads the key from `CETIRUN_GATEWAY_API_KEY`.
-  The key is in no HOME file.
+- Neither file holds the key.
 - OpenClaw also sends short internal tasks to a utility model, for example
   session titles and activity summaries. With the AI Gateway, the utility model of
   an Agent is its default model. These calls count against the key like other
   calls.
 - A model that the AI Gateway no longer serves disappears from the configuration
   of the Agent.
+
+Earlier agent charts wrote the AI Gateway provider of OpenClaw as `openai`. At
+each start, OpenClaw renames the models under `openai` that it counts as
+retired, for example `gpt-4.1-mini`. The Agent then requested a model that the
+AI Gateway does not have. An OpenClaw Agent restarts one time when you upgrade
+it to a chart that writes `cetirun`. A session that names a model under
+`openai/` then returns to the default model of the Agent.
 
 A Custom image selects a model from the models of the AI Gateway, through its own
 configuration or chat UI. Code in a Custom image can make its own outbound
@@ -225,4 +234,5 @@ Sources: [model access]({{< repo "app/cetirun-operator/internal/controller/ai_ga
 [default model]({{< repo "app/cetirun-operator/internal/controller/ai_gateway_copilot.go" >}}),
 [Copilot model names]({{< repo "app/cetirun-operator/internal/controller/ai_gateway_copilot_merge.go" >}}),
 [shared-model catalog]({{< repo "app/cetirun-operator/internal/controller/ai_gateway_catalog.go" >}}),
-and [AI Gateway routers]({{< repo "app/cetirun-operator/internal/controller/ai_gateway_shared_routers.go" >}}).
+[AI Gateway routers]({{< repo "app/cetirun-operator/internal/controller/ai_gateway_shared_routers.go" >}}),
+and [OpenClaw configuration]({{< repo "app/cetirun-chart/agents/openclaw/config/native.tpl" >}}).
