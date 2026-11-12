@@ -655,7 +655,7 @@ These audit resources do not enforce AgentPolicy. Guest-external network
 controls and approved Pod-local visible-SNI capture belong to each Agent's
 common Sandbox execution pipeline.
 
-The agent NetworkPolicy allows external IPv4 egress, except to blocked ranges.
+The Agent NetworkPolicy allows external IPv4 egress, except to blocked ranges.
 It does not restrict all external traffic to HTTPS. Each `allowedInternalCIDRs`
 entry is a separate allow rule, so it opens its CIDR on the listed ports even
 inside the blocked ranges. The list is empty by default.

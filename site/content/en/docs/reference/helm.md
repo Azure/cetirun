@@ -389,9 +389,9 @@ Sources: [OpenClaw helpers]({{< repo "app/cetirun-chart/templates/agents/opencla
 | `tailscale.hostname`, `tailscale.serve` | `cetirun`, `false`. The operator enables Serve for Tailscale instances. |
 
 NetworkPolicy allows gateway ingress. Gateway ingress is selected by namespace,
-not by an individual gateway pod. By default, inside the cluster the Agent can
-reach only the DNS Pods, istiod on port 15012, and the platform services that
-it uses, such as the AI Gateway. This relies on the Pod, Service, and node
+not by an individual gateway pod. By default, inside the cluster, the Agent
+reaches only the DNS Pods, istiod on port 15012, and the platform services
+that it uses. This relies on the Pod, Service, and node
 ranges of the cluster being inside `blockedCIDRs`, as in the infrastructure
 template. Other egress can go to any IPv4 address outside `blockedCIDRs`, on
 any port. The policy is not HTTPS-only.
@@ -399,6 +399,12 @@ any port. The policy is not HTTPS-only.
 Each `allowedInternalCIDRs` entry is a separate allow rule, so it opens its
 CIDR on the listed ports even inside `blockedCIDRs`. Add an entry only for an
 internal destination that you approve.
+
+With `make deploy`, set `allowedInternalCIDRs` and `blockedCIDRs` in the
+environment file under
+`platform.values.cetirun-operator.cetirun.helmValues.networkPolicy`. Both are
+lists, so a value that you set replaces the full default list. When you change
+`blockedCIDRs`, keep the default ranges in it.
 
 `execRestriction` renders `admissionregistration.k8s.io/v1` policy and binding
 resources. It does not examine the availability of the cluster API.
