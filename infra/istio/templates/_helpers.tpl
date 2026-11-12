@@ -70,6 +70,42 @@ Lua-safe domain pattern (dots escaped as %.).
 {{- toJson $settings -}}
 {{- end }}
 
+{{/* Preserve availability defaults with old values, including --reuse-values. */}}
+{{- define "cetirun-istio.availabilitySettings" -}}
+{{- $spread := list (dict "maxSkew" 1 "topologyKey" "kubernetes.io/hostname" "whenUnsatisfiable" "ScheduleAnyway" "matchLabelKeys" (list "pod-template-hash") "labelSelector" (dict "matchLabels" (dict "app" "oauth2-proxy"))) -}}
+{{- $settings := dict "pdbEnabled" true "topologySpreadConstraints" $spread -}}
+{{- $budget := .Values.oauth2Proxy.podDisruptionBudget -}}
+{{- if not (kindIs "invalid" $budget) -}}
+{{- if not (kindIs "map" $budget) -}}
+{{- fail "oauth2Proxy.podDisruptionBudget must be an object" -}}
+{{- end -}}
+{{- range $key, $_ := $budget -}}
+{{- if ne $key "enabled" -}}
+{{- fail (printf "oauth2Proxy.podDisruptionBudget.%s is not supported" $key) -}}
+{{- end -}}
+{{- end -}}
+{{- if hasKey $budget "enabled" -}}
+{{- if not (kindIs "bool" $budget.enabled) -}}
+{{- fail "oauth2Proxy.podDisruptionBudget.enabled must be a boolean" -}}
+{{- end -}}
+{{- $_ := set $settings "pdbEnabled" $budget.enabled -}}
+{{- end -}}
+{{- end -}}
+{{- $value := .Values.oauth2Proxy.topologySpreadConstraints -}}
+{{- if not (kindIs "invalid" $value) -}}
+{{- if not (kindIs "slice" $value) -}}
+{{- fail "oauth2Proxy.topologySpreadConstraints must be a list" -}}
+{{- end -}}
+{{- range $index, $constraint := $value -}}
+{{- if not (kindIs "map" $constraint) -}}
+{{- fail (printf "oauth2Proxy.topologySpreadConstraints[%d] must be an object" $index) -}}
+{{- end -}}
+{{- end -}}
+{{- $_ := set $settings "topologySpreadConstraints" $value -}}
+{{- end -}}
+{{- toJson $settings -}}
+{{- end }}
+
 {{/* Restrict the unauthenticated OAuth callback to the supported endpoint. */}}
 {{- define "cetirun-istio.validateOAuthCallback" -}}
 {{- if and .Values.authPolicy.oauthCallbackPath (ne .Values.authPolicy.oauthCallbackPath "/api/v1/connections/callback") -}}

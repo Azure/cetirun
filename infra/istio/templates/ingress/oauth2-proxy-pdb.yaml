@@ -1,0 +1,16 @@
+{{- $availability := include "cetirun-istio.availabilitySettings" . | fromJson -}}
+{{- if and $availability.pdbEnabled (gt (int .Values.oauth2Proxy.replicas) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: oauth2-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cetirun-istio.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app: oauth2-proxy
+{{- end }}

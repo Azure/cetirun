@@ -53,12 +53,20 @@ not create that listener or its challenge route.
 | `oauth2Proxy.logging.request` | `true` | Enables OAuth2 Proxy request logs. |
 | `oauth2Proxy.logging.auth` | `true` | Enables OAuth2 Proxy authentication logs. |
 | `oauth2Proxy.logging.standard` | `true` | Enables OAuth2 Proxy standard logs. These logs also contain diagnostic errors. |
+| `oauth2Proxy.podDisruptionBudget.enabled` | `true` | Creates a PodDisruptionBudget only with multiple replicas, with `maxUnavailable: 1` and `unhealthyPodEvictionPolicy: AlwaysAllow`. Only `enabled` is configurable. |
+| `oauth2Proxy.topologySpreadConstraints` | Soft hostname spread per rollout revision | Replaces the scheduler's default spreading. Supply a complete constraint list, or `[]` in a values file / `--set-json` to remove it. |
 | `cookieSecretLegacyNamespace` | `istio-system` | Reads the legacy cookie Secret only if the release namespace does not have one. An empty string disables this fallback. |
 
 The host and logging switches accept YAML booleans, not strings. The legacy
 namespace must be a valid Kubernetes namespace or an empty string. If an older
 release does not have an option, that option keeps the default above. This is
 also true with `--reuse-values`.
+
+Omitted or `null` availability blocks keep their defaults. Disable the budget
+with `enabled: false` and placement with an empty list; plain Helm `--set` does
+not parse `[]` as a list. For external releases, existing budgets, single-node
+drains, and session-store limitations, refer to
+[authentication availability](../../site/content/en/docs/operations/istio.md#authentication-availability-during-node-maintenance).
 
 For an apex-only deployment that makes session cookies necessary and disables
 OAuth2 Proxy logs, the values file of the environment can contain:
