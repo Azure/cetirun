@@ -24,6 +24,9 @@ and side effects.
 - [Public DNS and TLS](public-ingress/) — configure one public hostname and automatic certificate through the platform deployment
 - [Policy-bound Teams](policy-teams/) — the cluster, admission and platform registration that Sandbox Agents must have
 - [Agent Identity setup](agent-identity/) — encryption, workload trust, certificates, provider registrations and rollout
+- [Installation checklist](install-checklist/) — all installation steps in their order, with a check for each step
+- [Plan capacity and cost](capacity/) — Agent resources, node counts, and the defaults that drive cost
+- [Publish images and charts](artifacts/) — registry access, private registries, and restricted networks
 
 ## Configuration
 
@@ -31,12 +34,16 @@ and side effects.
 - [Configure a team](../guides/teams/) — team context, provider defaults, and skills
 - [Smart routing](smart-routing/) — routers, classifiers, and where requests went
 - [Skill Marketplace](skill-marketplace/) — approved skills from one Git repository for the Agents of policy-bound Teams
-- [Observability with ADX-Mon](observability/) — logs, Kubernetes events and metrics in Azure Data Explorer
+- [Monitoring and logs](observability/) — metrics, logs, and alerts, and their collection into Azure Data Explorer with ADX-Mon
 - [Storage](storage/)
 - [Istio authentication and egress](istio/)
 - [Entra Agent Identity setup](entra-agent-identity/) — Blueprint, federation and Azure/Microsoft authorization
 - [Identity provider setup](identity-providers/) — GitHub App, GitHub OAuth and Google OAuth
 - [CetiAdmin](cetiadmin/) — the operations Agent that the operator installs by default, its access, and how to disable it
+- [Upgrade CetiRun](upgrade/) — upgrade the platform and the Agents, and the limits of a rollback
+- [Make and restore backups](backup-restore/) — the data and Secrets that need a backup
+- [Certificates and credentials](certificates/) — the source, renewal, and checks of each credential
+- [Uninstall CetiRun](uninstall/) — the removal order, and the objects that stay
 
 ## Troubleshooting
 

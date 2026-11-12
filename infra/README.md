@@ -4,7 +4,7 @@ Before you deploy, read
 [Infrastructure](../site/content/en/docs/operations/infrastructure.md) and the
 [platform checklist](../site/content/en/docs/getting-started/platform.md).
 
-[Agent Identity setup](../site/content/en/docs/operations/agent-identity.md)
+[Prepare Agent connections](../site/content/en/docs/operations/agent-identity.md)
 gives information about the other resources that are necessary for Agent
 connections: Key Vault, workload federation, certificates, and provider
 registrations. The infrastructure templates do not create these resources.
@@ -13,12 +13,14 @@ registrations. The infrastructure templates do not create these resources.
 | --- | --- |
 | `cluster/` | AKS Bicep, node pools, identity, CSI, and monitoring configuration |
 | `storage/` | Shared Azure Blob NFS Bicep and subnet-aware deployment helper |
-| `istio/` | Shared authentication, routing, security headers, and egress policy |
+| `istio/` | Shared authentication, routing, security headers, and egress audit logging |
 | `cert-manager/` | Pinned upstream cert-manager controller support files for optional public DNS and HTTP-01 TLS |
 
 Deployment scripts change cloud resources and can change the local Kubernetes
-configuration. Supply reviewed parameters that are specific to the environment.
-Default parameter files and registry access are possibly not available.
+configuration. The repository does not include parameter files. Write your own
+reviewed `.bicepparam` files for the environment, outside the repository. For
+the images and charts, refer to
+[Publish images and charts](../site/content/en/docs/operations/artifacts.md).
 
 For one HTTPS hostname on an existing managed Istio ingress, configure the
 optional `publicTLS` section in the same environment file that you pass to

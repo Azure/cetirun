@@ -64,8 +64,9 @@ which they signed out.
 The chart does not issue or renew certificates. The helper can read supplied
 PEM files, decode PFX content, read a PFX file, or download a certificate from
 Key Vault, in that order. The helper parses PFX content with an empty password.
-The helper has no input for a PFX password. Issuance and renewal are still
-operator responsibilities.
+The helper has no input for a PFX password. You are responsible for the
+issuance and the renewal of the certificate. Refer to
+[Certificates and credentials](../certificates/).
 
 The [Gateway template]({{< repo "infra/istio/templates/ingress/gateway.yaml" >}})
 always declares HTTPS on port 443 with `credentialName: cetirun-tls`. By
@@ -88,7 +89,7 @@ the variables of earlier ones.
 The `az ad` commands and the `az rest` requests to Microsoft Graph use the
 tenant of the active subscription of the Azure CLI. Before you run them, make
 sure that this tenant is the deployment tenant. Refer to
-[Agent Identity setup](../agent-identity/#1-prepare-access-and-record-the-coordinates).
+[Prepare Agent connections](../agent-identity/#1-prepare-access-and-record-the-coordinates).
 
 ```bash
 SUBSCRIPTION_ID=your-subscription-id
@@ -343,9 +344,9 @@ helm template cetirun-istio infra/istio --namespace cetirun-istio \
 This command does not validate identity, TLS, Secrets that already exist, or
 the managed mesh configuration. Do not apply this rendered example.
 
-**Connected, mutating:** for an installation without `make deploy`, platform
-operators can install the local chart with a separately prepared private values
-file:
+**Connected, mutating:** for an installation without `make deploy`,
+administrators can install the local chart with a separately prepared private
+values file:
 
 ```bash
 helm upgrade --install cetirun-istio infra/istio \
@@ -473,12 +474,15 @@ By default, OAuth2 Proxy uses Entra's `preferred_username` as its email claim.
 It is not certain that local tenant users receive an `email` claim. But the
 tenant-facing UPN stays available for Portal identity headers. Set
 `oauth2Proxy.emailClaim: email` only when you know that every allowed user in
-the tenant receives that claim. Without Agent Identity and Tools, Portal ownership
-and administrator checks use the alias derived from these trusted identity
-headers, and the ingress ownership endpoint accepts the owner's alias or email.
-Providers must assign the claims, keep their local parts unique among allowed
-users, and prevent users from changing them. For custom issuers and the supported
-OIDC configuration, see [cloud and OIDC parameters]({{< repo "infra/istio/README.md" >}}#cloud-and-oidc-parameters).
+the tenant receives that claim.
+
+Portal administrator checks always use the alias derived from these trusted
+identity headers. Without Agent Identity and
+Tools, Portal ownership checks also use this alias, and the ingress ownership
+endpoint accepts the owner's alias or email. Providers must assign the claims,
+keep their local parts unique among all users who can sign in, and prevent
+users from changing them. Do not put guest accounts in the allowed groups. For
+custom issuers and the supported OIDC configuration, see [cloud and OIDC parameters]({{< repo "infra/istio/README.md" >}}#cloud-and-oidc-parameters).
 
 Agent Identity and Tools require additional Entra ID-token verification and use
 verified tenant and object IDs for Agent authorization. Generic OIDC does not
@@ -499,7 +503,7 @@ Blueprint and the OIDC scopes `openid`, `profile`, and `offline_access`. Entra's
 uses. `openid` alone does not guarantee that claim. Do not replace the
 object-ID check with a username or email fallback. For the consent to these
 scopes, refer to
-[Entra Agent Identity setup](../entra-agent-identity/#add-microsoft-delegated-access-when-needed).
+[Prepare Microsoft Entra Agent Identity](../entra-agent-identity/#add-microsoft-delegated-access-when-needed).
 
 For authenticated Portal routes, OAuth2 Proxy returns its validated ID token in
 the internal `Authorization` header. The gateway filter first removes any
@@ -594,7 +598,7 @@ AAD authentication, instance ownership checks, and the removal of platform
 credentials stay in effect. The gateway also keeps HSTS, `nosniff`,
 Referrer-Policy, and the configured X-Frame-Options header. Applications must
 set a CSP that is correct for their scripts, API calls, workers, and embedded
-content. Platform operators do not keep per-application resource allowlists.
+content. Administrators do not keep per-application resource allowlists.
 
 Path prefixes do not isolate browser origins. An Agent UI on the Portal's origin
 can make same-origin requests with the visitor's platform session. The
@@ -723,3 +727,5 @@ external authorization provider from the managed ConfigMap. For an older kept
 blacklist, the explicit cleanup above is necessary. Make an explicit plan for
 the resources that are left and for the effect on shared access. Do not remove a
 shared provider without a review.
+
+To remove the whole installation, follow [Uninstall CetiRun](../uninstall/).

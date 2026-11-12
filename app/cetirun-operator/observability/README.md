@@ -1,13 +1,15 @@
 # Opt-in Sandbox reported-status alerts
 
-These standalone Prometheus rule examples use only the public
+This directory has example Prometheus rules for the Sandbox status metrics of
+the Operator, with `promtool` tests. The rules use only the public
 [reported-status metrics contract](../README.md#sandbox-reported-status-metrics),
-the [collector](../internal/controller/sandbox_metrics.go), and the
-scrape-generated `up` metric from Prometheus. Nothing loads or deploys them
-automatically. They add no scraper, listener, Service, CRD, `PrometheusRule`,
-chart integration, or default CI check. Configure authorized scrapes and rule
-loads separately. The operator's metrics endpoint is plaintext and
-unauthenticated.
+the [collector](../internal/controller/sandbox_metrics.go), and the `up`
+metric that Prometheus makes for each scrape. Load them into a Prometheus that
+already scrapes the Operator. The Operator chart does not install the rules or
+a scrape configuration, and CI does not run their tests. The metrics port of
+the Operator uses plain HTTP without authentication. For the other signals of
+CetiRun, refer to
+[Monitoring and logs](../../../site/content/en/docs/operations/observability.md).
 
 **Cached reports are not live enforcement signals.** Each operator replica
 reports an independently cached, non-atomic view of the same population. A
@@ -31,7 +33,7 @@ into an authorized Prometheus installation that already exists:
 - Keep those identity labels identical across all three metrics. Other labels
   can differ. The joins explicitly use the identity tuple. But the alerts keep
   the other labels of their source series. For reported loss, these other
-  labels include `runtime`, `class`, `status`, and `reason`. Do not add
+  labels are `runtime`, `status`, and `reason`. Do not add
   per-Agent or per-object labels.
 - Extra labels can distinguish independent populations or monitoring sources.
   If they do, add them to the checks for necessary labels and to **every join
