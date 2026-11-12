@@ -190,7 +190,10 @@ databases of the ADX-Mon collection. It also needs the ingestor's managed
 identity, with its roles and federated credential. By default, the cluster
 template creates them. Its outputs `adxClusterUri` and `adxIngestorClientId`
 give `observability.adx.endpoint` and `observability.ingestorClientId` of the
-environment file. Refer to the prerequisites in
+environment file. With `adxContent`, the template also creates the database of
+the AI Gateway's prompts and responses: its outputs `adxContentDatabase` and
+`adxContentClientId` give the optional `observability.content` block. Refer to
+the prerequisites in
 [Monitoring and logs](../../operations/observability/#prerequisites).
 
 ## 2. Configure authentication and storage

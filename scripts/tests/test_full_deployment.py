@@ -1699,6 +1699,8 @@ OBSERVABILITY = {
 # Synthetic alerter inputs: a public example domain and a synthetic client ID.
 ALERTER = {"endpoint": "https://alerts.example.com", "clientId": "66666666-6666-6666-6666-666666666666",
            "destination": "example-team"}
+# Synthetic content input: a synthetic client ID.
+CONTENT = {"clientId": "77777777-7777-7777-7777-777777777777"}
 
 
 class ObservabilityTests(DeploymentFixture, unittest.TestCase):
@@ -1710,6 +1712,11 @@ class ObservabilityTests(DeploymentFixture, unittest.TestCase):
     def alerter_config(self):
         config = self.observability_config()
         config["observability"]["alerter"] = copy.deepcopy(ALERTER)
+        return config
+
+    def content_config(self):
+        config = self.observability_config()
+        config["observability"]["content"] = copy.deepcopy(CONTENT)
         return config
 
     def refused(self, config, message):
@@ -1794,6 +1801,45 @@ class ObservabilityTests(DeploymentFixture, unittest.TestCase):
         for changes, message in cases:
             with self.subTest(changes=list(changes), message=message):
                 config = self.alerter_config()
+                for path, value in changes.items():
+                    if value is DELETE:
+                        parent, key = path.rsplit(".", 1)
+                        DEPLOY.get_value(config, parent).pop(key)
+                    else:
+                        DEPLOY.set_value(config, path, value)
+                self.refused(config, message)
+
+    def test_gateway_content_stays_in_the_spend_log_without_its_block(self):
+        _, values = self.configure(self.observability_config())
+        self.assertFalse(DEPLOY.get_value(values["platform"], "cetirun-ai-gateway.content.enabled"))
+
+    def test_content_block_sends_the_gateway_content_to_its_own_database(self):
+        _, values = self.configure(self.content_config())
+        content = values["platform"]["cetirun-ai-gateway"]["content"]
+        # The cluster name and the Kusto cluster are those of the collection.
+        self.assertEqual((content["enabled"], content["clusterName"], content["clientId"]),
+                         (True, OBSERVABILITY["clusterName"], CONTENT["clientId"]))
+        self.assertEqual(content["adx"], {"endpoint": OBSERVABILITY["adx"]["endpoint"], "database": "CetiRunContent"})
+        config = self.content_config()
+        config["observability"]["content"]["database"] = "ExampleContent"
+        _, values = self.configure(config)
+        self.assertEqual(values["platform"]["cetirun-ai-gateway"]["content"]["adx"]["database"], "ExampleContent")
+
+    def test_invalid_content_inputs_are_refused_before_tools(self):
+        cases = [
+            ({"observability.content": None}, r"observability\.content must be a mapping"),
+            ({"observability.content.clientId": DELETE}, r"observability\.content\.clientId is required"),
+            ({"observability.content.clientId": "example-client"}, "managed identity with which the AI Gateway writes"),
+            ({"observability.content.database": "Example-Content"}, "database name of letters and digits"),
+            ({"observability.content.database": "CetiRunLogs"}, "must be a database of its own"),
+            ({"observability.content.enabled": True},
+             r"observability\.content\.enabled is not supported; set other chart values under platform\.values\.cetirun-ai-gateway"),
+            ({"platform.values.cetirun-ai-gateway.content.clientId": "88888888-8888-8888-8888-888888888888"},
+             r"cetirun-ai-gateway\.content\.clientId conflicts with the complete deployment inputs"),
+        ]
+        for changes, message in cases:
+            with self.subTest(changes=list(changes), message=message):
+                config = self.content_config()
                 for path, value in changes.items():
                     if value is DELETE:
                         parent, key = path.rsplit(".", 1)

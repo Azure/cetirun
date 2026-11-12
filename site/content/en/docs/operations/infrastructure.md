@@ -450,9 +450,10 @@ Gateway prompts and responses:
 - The role `Viewer` for the principals in `adxContentViewers`. Every prompt and
   response is in this database: keep the list short.
 
-The outputs `adxContentDatabase` and `adxContentClientId` are the AI Gateway's
-`content.adx.database` and `content.clientId`; see "Content in Azure Data
-Explorer" in the
+The outputs `adxContentDatabase` and `adxContentClientId` are
+`observability.content.database` and `observability.content.clientId` of the
+`make deploy` environment file: the AI Gateway's `content.adx.database` and
+`content.clientId`. See "Content in Azure Data Explorer" in the
 [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}).
 
 The logs database also gets the materialized view `GatewayDailyUsage`: the AI

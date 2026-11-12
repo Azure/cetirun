@@ -72,6 +72,7 @@ CETIADMIN_WRITER_FIELDS = {
 # The Operator reads customRuntime strictly and stops at startup on a field it does not know.
 OPERATOR_VALUES = ROOT / "app/cetirun-operator/chart/values.yaml"
 OBSERVABILITY_VALUES = ROOT / "app/cetirun-observability/chart/values.yaml"
+AI_GATEWAY_VALUES = ROOT / "app/cetirun-ai-gateway/chart/values.yaml"
 REMOVED_CUSTOM_FIELDS = {"agentManagedModel", "gatewayImages"}
 # An error names a failed command by its tool, its operands and these options. Other option
 # values can be templates or local files. Tool output can hold rendered Secrets, so it is not shown.
@@ -114,16 +115,18 @@ SKILL_MARKETPLACE_FIELDS = {
 SKILL_MARKETPLACE_SECRET_KEYS = {"none": (), "token": ("token",), "ssh": ("ssh-privatekey", "known_hosts")}
 # The ADX-Mon collection of logs, events and metrics into Azure Data Explorer,
 # CetiRun's only observability path. The top-level observability block of the
-# environment file is required; its alerter block is optional. make deploy does
-# not call Azure: the Kusto cluster, its databases and the identities exist
-# before the deployment.
+# environment file is required; its alerter block and its content block, which
+# sends the AI Gateway's prompts and responses to a database of their own, are
+# optional. make deploy does not call Azure: the Kusto cluster, its databases and
+# the identities exist before the deployment.
 OBSERVABILITY = "cetirun-observability"
 OBSERVABILITY_INGESTOR = "cetirun-adx-mon-ingestor"
 OBSERVABILITY_FIELDS = {
-    "observability": ("clusterName", "adx", "ingestorClientId", "alerter"),
+    "observability": ("clusterName", "adx", "ingestorClientId", "alerter", "content"),
     "observability.adx": ("endpoint", "databases"),
     "observability.adx.databases": ("logs", "metrics", "agentLogs"),
     "observability.alerter": ("endpoint", "clientId", "destination"),
+    "observability.content": ("clientId", "database"),
 }
 GUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 SCP_URL = re.compile(r"[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^/\s]\S*")
@@ -302,7 +305,7 @@ def skill_marketplace(config, platform):
 
 
 def observability(config):
-    """Platform values of the ADX-Mon collection, from its own input block."""
+    """Platform values of the ADX-Mon collection and of the AI Gateway's content, from their input block."""
     switch = f"{OBSERVABILITY}.enabled"
     if "observability" not in config:
         raise ValueError("observability is required: ADX-Mon collects the platform's and the Agents' logs, events and "
@@ -311,11 +314,13 @@ def observability(config):
     adx = mapping(block.get("adx", {}), "observability.adx")
     databases = mapping(adx.get("databases", {}), "observability.adx.databases")
     alerter = mapping(block.get("alerter", {}), "observability.alerter")
+    content = mapping(block.get("content", {}), "observability.content")
     for name, section in (("observability", block), ("observability.adx", adx), ("observability.adx.databases", databases),
-                          ("observability.alerter", alerter)):
+                          ("observability.alerter", alerter), ("observability.content", content)):
         unknown = sorted(map(str, set(section) - set(OBSERVABILITY_FIELDS[name])))
         if unknown:
-            raise ValueError(f"{name}.{unknown[0]} is not supported; set other chart values under platform.values.{OBSERVABILITY}")
+            chart = "cetirun-ai-gateway" if name == "observability.content" else OBSERVABILITY
+            raise ValueError(f"{name}.{unknown[0]} is not supported; set other chart values under platform.values.{chart}")
     cluster = required(config, "observability.clusterName")
     if not re.fullmatch(DNS_LABEL, cluster):
         raise ValueError("observability.clusterName must be a DNS label: every row names this CetiRun cluster with it")
@@ -350,6 +355,23 @@ def observability(config):
             raise ValueError("observability.alerter.destination must be a string")
         values.update({f"{OBSERVABILITY}.alerter.endpoint": receiver, f"{OBSERVABILITY}.alerter.clientId": alerter_client,
                        f"{OBSERVABILITY}.alerter.destination": destination})
+    if "content" in block:
+        # The AI Gateway's prompts and responses, in the same Kusto cluster. The
+        # spend log in PostgreSQL then keeps none.
+        content_client = required(config, "observability.content.clientId")
+        if not re.fullmatch(GUID, content_client):
+            raise ValueError("observability.content.clientId must be the client ID of the managed identity with which the "
+                             "AI Gateway writes its content")
+        database = content.get("database", yaml_file(AI_GATEWAY_VALUES)["content"]["adx"]["database"])
+        if not isinstance(database, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,99}", database):
+            raise ValueError("observability.content.database must be a database name of letters and digits")
+        if database in names.values():
+            raise ValueError("observability.content.database must be a database of its own: it holds every prompt and "
+                             "response, and needs readers of its own")
+        values.update({"cetirun-ai-gateway.content.enabled": True, "cetirun-ai-gateway.content.clusterName": cluster,
+                       "cetirun-ai-gateway.content.clientId": content_client,
+                       "cetirun-ai-gateway.content.adx.endpoint": endpoint,
+                       "cetirun-ai-gateway.content.adx.database": database})
     return values
 
 
