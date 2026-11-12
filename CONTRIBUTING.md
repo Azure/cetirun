@@ -72,9 +72,10 @@ sensitive material.
    behavior changes, update the documentation and examples that users see.
 4. When necessary, regenerate checked-in artifacts from their source. Follow
    the [generated-file guidance](DEVELOPMENT.md#generated-files-and-dependencies).
-5. Run the checks for the affected components. Record the exact commands, the
-   results, and anything that you did not run. Include dependencies or
-   environment access that you did not have.
+5. Run the checks for the affected components. To find them, refer to
+   [Checks for each change](DEVELOPMENT.md#checks-for-each-change). Record the
+   exact commands, the results, and anything that you did not run. Include
+   dependencies or environment access that you did not have.
 6. Examine the full diff for unintended files and sensitive data.
 7. Open a pull request against `main` with the template. Explain the problem,
    the approach, the related issue, and the compatibility or operational

@@ -41,7 +41,7 @@ interruption. A model response that reaches its output-token limit keeps
 `finish_reason: length`. It is not a successfully completed answer.
 
 For the platform rules beyond this example, see the
-[Custom Agent contract](../../docs/agent-harness-contract.md).
+[Custom runtime contract](../../site/content/en/docs/reference/agent-harness.md#custom-runtime).
 
 ## Code map
 
@@ -219,9 +219,11 @@ that already exists is not necessary. The default context includes
 On AKS, `default` uses Azure Disk with `WaitForFirstConsumer`. The scheduling
 of the Pod starts the binding. For Ready, both a Bound HOME and a ready workload
 are necessary. The claim must match the configured storage profile. A change to
-that profile does not migrate or resize a HOME that already exists. Storage
-handoff and CSI/mesh qualification follow the
-[Custom example](../custom-agent/README.md#platform-integration).
+that profile does not migrate or resize a HOME that already exists. For the
+storage handoff and the qualification steps, refer to
+[Image, storage and model access](../../site/content/en/docs/reference/agent-harness.md#image-storage-and-model-access)
+and [Lifecycle](../../site/content/en/docs/reference/agent-harness.md#lifecycle)
+in the Agent Harness reference.
 
 Create a new Agent. Replace the owner, digest, and Chart version:
 

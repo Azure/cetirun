@@ -7,7 +7,8 @@ tools, CLIs, or subagents are executed.
 
 ## Run and Validate
 
-Requires macOS or Linux and Python 3.11+. Uses only the Python standard library:
+Requires macOS or Linux and Python 3.11+. Uses only the Python standard library.
+Run these commands from `examples/coding-agents/examples/coding-runtime/`:
 
 ```bash
 make test check

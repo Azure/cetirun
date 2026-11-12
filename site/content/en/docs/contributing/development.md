@@ -1,30 +1,41 @@
 ---
-title: "Development"
-description: "Find the component that you want to change and prepare a local development environment."
+title: "Prepare a development environment"
+linkTitle: "Development"
+description: "Install the tools for the component that you change, download its dependencies, and find its checks."
 weight: 10
 ---
 
-Select the component that you want to work on. Then follow
-[DEVELOPMENT.md]({{< repo "DEVELOPMENT.md" >}}) for its toolchain,
-dependency setup, and build commands.
+[DEVELOPMENT.md]({{< repo "DEVELOPMENT.md" >}}) is the developer guide. Use
+it for the commands in these steps.
 
-| Component | Source |
-| --- | --- |
-| Kubernetes operator and custom resources | [Operator]({{< repo "app/cetirun-operator" "tree" >}}) |
-| Portal backend and web interface | [Portal]({{< repo "app/cetirun-portal" "tree" >}}) |
-| Runtime images and Helm chart | [Runtime chart]({{< repo "app/cetirun-chart" "tree" >}}) |
-| Infrastructure and shared services | [Infrastructure]({{< repo "infra" "tree" >}}) |
+1. Find the component that you want to change in the
+   [repository layout]({{< repo "DEVELOPMENT.md" >}}#repository-layout). For
+   what each component does, refer to [Architecture](../../concepts/architecture/).
+2. Install the tools for that component. Refer to
+   [Tools and dependencies]({{< repo "DEVELOPMENT.md" >}}#tools-and-dependencies).
+3. Download the Go, npm, and site dependencies one time. This step needs
+   network access. The checks after it run offline.
+4. Find the checks for the paths that you change. Refer to
+   [Checks for each change]({{< repo "DEVELOPMENT.md" >}}#checks-for-each-change)
+   and [Run local checks](../../getting-started/local-checks/).
 
-Keep the operator and portal modules in the same checkout. The portal uses a
-local Go module replacement for the operator. Build the frontend before you
-build the complete portal binary, so that the binary embeds the real web
+Keep all Go modules in one checkout. The Operator, the Portal, the Agent
+Identity Broker, and Connections MCP use local `replace` directives for the
+shared `app/internal` packages. `app/internal`, the Portal, and the Broker also
+replace the Operator module for its API types. Build the Portal frontend before
+you build the complete Portal binary, so that the binary embeds the real web
 assets.
 
-Use [Testing](../../getting-started/local-checks/) to select the local checks
-for your change. For site work, follow [Documentation](../site/). A separately
-authorized environment is necessary for deployment scripts and live
-integrations. They are not part of the local development checks.
+To start the Portal or the Operator on your workstation, refer to
+[Run components locally]({{< repo "DEVELOPMENT.md" >}}#run-components-locally).
+These processes connect to the cluster of your current kubeconfig context. To
+add a new agent type, refer to
+[Add an agent integration]({{< repo "DEVELOPMENT.md" >}}#add-an-agent-integration).
 
-Before you open a pull request, follow the
-[contribution rules](../) and the generated-file guidance in
-[DEVELOPMENT.md]({{< repo "DEVELOPMENT.md" >}}).
+Deployment scripts and live integration tests need a separately authorized
+environment. They are not part of the local checks. Refer to
+[Integration and E2E tests]({{< repo "DEVELOPMENT.md" >}}#integration-and-e2e-tests).
+For site work, follow [Contribute to documentation](../site/).
+
+Before you open a pull request, follow the [contribution rules](../) and the
+[generated-file guidance]({{< repo "DEVELOPMENT.md" >}}#generated-files-and-dependencies).

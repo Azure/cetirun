@@ -1,5 +1,6 @@
 ---
-title: "Testing"
+title: "Run local checks"
+linkTitle: "Testing"
 description: "Run component, chart, and documentation checks that do not connect to a cluster."
 weight: 20
 ---
@@ -38,63 +39,61 @@ not apply this output to a cluster.
 
 ## Check the documentation
 
+After you change documentation, run the offline documentation gate:
+
 ```bash
-make -C site check
-make -C site serve
+make docs-check
 ```
 
-The first run installs pinned site dependencies and can access package
-registries. If these dependencies are already installed, use `make docs-check`
-for the repository's offline documentation gate. Or use `make -C site test` to
-run only the standard-library validator tests.
-
-Refer to the [site contributor guide](../../contributing/site/) for the pinned
-tool versions, an override for an installed Hugo, and the local preview
-address.
+It runs the validator tests, builds the site, and validates links, navigation,
+and content. Before the first run, install the site dependencies with
+`make -C site build`. That step needs network access. For the setup, the
+overrides, and the preview, refer to
+[Contribute to documentation](../../contributing/site/).
 
 ## Validate application and infrastructure changes
 
-The root [Makefile]({{< repo "Makefile" >}}) and
-[validation runner]({{< repo "scripts/ci/validate.py" >}}) give these commands:
+The root [Makefile]({{< repo "Makefile" >}}) gives these commands. Most of them
+are gates of the [validation runner]({{< repo "scripts/ci/validate.py" >}}):
 
 | Command | Scope |
 | --- | --- |
-| `make test` | Go, frontend, auth/runtime, CI helper, and script tests |
-| `make lint` | License headers, Python syntax, Go vet, frontend types, all five charts, Bicep, shell, and selected workflows |
+| `make test` | Python CI helper and script tests, auth and runtime tests, Go tests of every module, Portal frontend tests, and the Memory Context native test |
+| `make lint` | Release version and inventory checks, license headers, Python syntax, Go vet, the Portal TypeScript check, `make chart-check`, Bicep, shell scripts, and the validation workflows |
 | `make check` | `make lint` and `make test`. Documentation is separate. |
-| `make chart-check` | Runtime chart for both agents, operator, Portal, Istio, and platform charts, plus runtime/platform/Istio render regressions |
+| `make chart-check` | Lint and render of every first-party chart, both runtime chart variants, and the render regression scripts |
 | `make docs-check` | Site tests, build, links, and content checks |
 
-Install these prerequisites separately:
+For the full list of what each gate runs, refer to
+[Root gates]({{< repo "DEVELOPMENT.md" >}}#root-gates) in the developer guide.
 
-- The Go version in [`.go-version`]({{< repo ".go-version" >}})
-- Node.js 24 and the frontend's locked npm dependencies
-- The Python packages in
-  [`scripts/ci/requirements.txt`]({{< repo "scripts/ci/requirements.txt" >}})
-- Helm, Bicep, ShellCheck, and actionlint
+Install the prerequisites first: the Go version in
+[`.go-version`]({{< repo ".go-version" >}}), Node.js 24, Python 3.11 or later
+with the packages in
+[`scripts/ci/requirements.txt`]({{< repo "scripts/ci/requirements.txt" >}}),
+and the tools in [`scripts/ci/tools.json`]({{< repo "scripts/ci/tools.json" >}}).
+For the commands, refer to
+[Tools and dependencies]({{< repo "DEVELOPMENT.md" >}}#tools-and-dependencies).
+`make license-check` and `make python-check` need only Python. The other
+Python gates also need the packages in `scripts/ci/requirements.txt`.
 
-These gates fail if a tool or a dependency is not installed. They do not log in
-to Azure or run deployment scripts. The
-[developer guide]({{< repo "DEVELOPMENT.md" >}}) describes how to prepare the
-components.
+The gates run offline on your workstation, without an Azure login or
+deployment scripts. A missing tool or dependency fails the gate. Image CVE
+scans, `govulncheck`, CodeQL, and dependency review run only in CI.
 
-For example, only Python's standard library is necessary for these narrower
-checks:
-
-```bash
-make license-check ci-test python-check
-python3 scripts/check-license-headers.py --root .
-python3 scripts/ci/validate.py --help
-```
-
-Workflow lint covers an explicit validation-workflow list, not every workflow.
-Image CVE scans and dependency review are separate CI jobs, not part of
-`make check`. If the Portal frontend is not built, Go tests use a disposable
-embed fixture. When you change the Portal, run the frontend build separately to
-validate the production bundle.
+To find the checks for the paths that you changed, including a check of one Go
+module, refer to
+[Checks for each change]({{< repo "DEVELOPMENT.md" >}}#checks-for-each-change).
+To find the local command for a CI job, refer to
+[CI jobs and local commands]({{< repo "DEVELOPMENT.md" >}}#ci-jobs-and-local-commands).
 
 ## Integration testing
 
-Use an authorized test environment to examine RuntimeClass availability,
-storage provisioning, image access, Istio authentication, provider entitlement,
-and Tailscale connectivity. A local render does not test these integrations.
+A local render does not test RuntimeClass availability, storage provisioning,
+image access, Istio authentication, provider entitlement, or Tailscale
+connectivity. These tests need a live environment.
+
+Maintainers run integration and E2E tests in an authorized environment. Run
+them only with explicit authorization for the target environment. For the
+tests and their inputs, refer to
+[Integration and E2E tests]({{< repo "DEVELOPMENT.md" >}}#integration-and-e2e-tests).

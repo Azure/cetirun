@@ -9,7 +9,7 @@ spec:
   sandboxRef: native-example
   agent:
     type: openclaw
-    image: registry.example.com/cetirun:0.1.1
+    image: registry.example.com/openclaw-gateway:0.1.1
     username: vibe
     port: 18789
   user:

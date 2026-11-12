@@ -18,7 +18,9 @@ Gateway contract.
 Do not refresh this fixture from changed output to make a regression pass.
 Python 3 and Git are necessary, and the commit must already be present
 locally. To reproduce the fixture from the public source commit, run this
-script at the repository root:
+script at the repository root. The script writes the archive to a temporary
+directory. Then it compares the archive with the expected SHA-256 and with the
+checked-in fixture. It does not change the fixture.
 
 ```bash
 python3 - <<'PY'
@@ -28,31 +30,36 @@ import io
 import pathlib
 import subprocess
 import tarfile
+import tempfile
 
 revision = 'cfdf7c5550484b7290eb268a8ffb76f9b87058c3'
+expected = 'b4916f6e804d0d56cc137799934fce17eebc6b70b87ef0d38680a319f39a79e2'
 root = 'app/cetirun-chart/'
+fixture = pathlib.Path(
+    'app/cetirun-operator/internal/controller/testdata/legacy-held-chart-cfdf7c55.tgz'
+)
 entries = subprocess.check_output(
     ['git', 'ls-tree', '-r', '-z', revision, '--', root]
 ).split(b'\0')
-archive = pathlib.Path(
-    'app/cetirun-operator/internal/controller/testdata/legacy-held-chart-cfdf7c55.tgz'
-)
-with archive.open('wb') as output:
-    with gzip.GzipFile(filename='', mode='wb', fileobj=output, mtime=0) as compressed:
-        with tarfile.open(fileobj=compressed, mode='w', format=tarfile.USTAR_FORMAT) as tar:
-            for entry in entries:
-                if not entry:
-                    continue
-                metadata, path = entry.decode().split('\t', 1)
-                mode, kind, sha = metadata.split()
-                assert kind == 'blob' and mode in ('100644', '100755')
-                data = subprocess.check_output(['git', 'cat-file', 'blob', sha])
-                info = tarfile.TarInfo('cetirun/' + path.removeprefix(root))
-                info.mode = int(mode, 8) & 0o777
-                info.size = len(data)
-                tar.addfile(info, io.BytesIO(data))
-assert hashlib.sha256(archive.read_bytes()).hexdigest() == (
-    'b4916f6e804d0d56cc137799934fce17eebc6b70b87ef0d38680a319f39a79e2'
-)
+with tempfile.TemporaryDirectory() as directory:
+    archive = pathlib.Path(directory) / fixture.name
+    with archive.open('wb') as output:
+        with gzip.GzipFile(filename='', mode='wb', fileobj=output, mtime=0) as compressed:
+            with tarfile.open(fileobj=compressed, mode='w', format=tarfile.USTAR_FORMAT) as tar:
+                for entry in entries:
+                    if not entry:
+                        continue
+                    metadata, path = entry.decode().split('\t', 1)
+                    mode, kind, sha = metadata.split()
+                    assert kind == 'blob' and mode in ('100644', '100755')
+                    data = subprocess.check_output(['git', 'cat-file', 'blob', sha])
+                    info = tarfile.TarInfo('cetirun/' + path.removeprefix(root))
+                    info.mode = int(mode, 8) & 0o777
+                    info.size = len(data)
+                    tar.addfile(info, io.BytesIO(data))
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    assert digest == expected, f'unexpected SHA-256: {digest}'
+    assert archive.read_bytes() == fixture.read_bytes(), 'the checked-in fixture differs'
+print(f'Reproduced {fixture}')
 PY
 ```

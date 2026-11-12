@@ -3,16 +3,15 @@
 The npm tarballs that `supplements.json` lists do not contain their upstream
 license file. The generator uses these upstream copies only for the listed
 package versions. Before the generator includes a copy, it makes sure that the
-SHA-256 of the copy is correct. The Fluent UI and Embla LICENSE files are
-byte-for-byte copies. A final newline was added to the Fluent UI NOTICE. In the
-Rollup license, the trailing whitespace and the final newline were normalized.
+SHA-256 of the copy is correct. The Fluent UI LICENSE and NOTICE files and the
+Embla LICENSE file are byte-for-byte copies. In the Rollup license, the
+trailing whitespace and the final newline were normalized.
 
-The Fluent UI source revision is the public npm `gitHead` for
-`@fluentui/react-icons@2.0.343`. This value was verified on 2026-10-06. The
-integrity of the npm tarball was verified, and the tarball contains no license
-or notice files. For this package, the upstream LICENSE is unchanged. After a
-final newline is added, the upstream NOTICE is the same as the stored copy.
-Both source URLs refer to the commit of that version.
+The Fluent UI source revision is the public npm `gitHead` of the
+`@fluentui/react-icons` version in `supplements.json`. The npm tarball of that
+version matches the integrity in the lock file and contains no license or
+notice files. The stored LICENSE and NOTICE have the same SHA-256 as the
+upstream files at that revision. Both source URLs refer to that commit.
 
 The Embla and Rollup source revisions are the public npm `gitHead` values for
 `embla-carousel@8.6.0`, `embla-carousel-autoplay@8.6.0`,

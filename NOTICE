@@ -22,7 +22,8 @@ relicense the official binaries or authorize hosting or redistribution. The
 build defaults ACCEPT_VSCODE_SERVER_LICENSE_TERMS to true and retains the
 server notices.
 Copilot and user-installed extensions remain subject to their own service and
-license terms. This example is not included in platform publishing targets.
+license terms. Platform publishing targets include this image as
+cetirun-vscode by default.
 
 The Portal frontend build generates THIRD_PARTY_LICENSES.txt from its installed
 production dependency graph, using
