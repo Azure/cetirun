@@ -780,6 +780,7 @@ breaks a rule, the controller sets `Accepted` to `False` with reason
 
 | Field | Type | Default | Validation | Description |
 | --- | --- | --- | --- | --- |
+| `acceptedGeneration` | integer |  | Minimum 0. | AcceptedGeneration is the latest metadata.generation that the operator accepted. It keeps that acceptance across later transient or registration-only failures of the same generation, so that the operator can tell a refusal caused only by the platform registration from a definitive refusal. It never permits execution: an Agent runs only when the Accepted condition is True for the current generation. |
 | `conditions` | []Condition |  | Unique by `type`. | Condition `Accepted` for the configuration of the policy. |
 | `observedGeneration` | integer |  | Minimum 0. | Last generation that the controller assessed. |
 
