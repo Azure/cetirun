@@ -301,8 +301,9 @@ initialization continues. Other built-in paths keep 30 failures, for example
 retained single-start OpenClaw and Hermes. An explicit positive integer
 overrides either default. This also applies to `30`.
 
-Liveness/readiness checks and their timings stay unchanged. The renders of
-standard OpenClaw Agents and held Hermes Agents keep their HTTP probes.
+Liveness/readiness checks and their timings stay unchanged. Standard OpenClaw
+Agents keep their HTTP probes. Hermes Agents and OpenClaw Sandbox Agents use
+exec probes.
 
 The startup probe starts after init containers finish. It is not a deadline for
 doctor or credential retirement. It does not extend the acceptance bound of a

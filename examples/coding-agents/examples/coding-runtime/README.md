@@ -144,8 +144,8 @@ loopback requirement for mTLS.
 directly**. Fill in an existing Team, Sandbox, user, compatible chart, and an
 approved production image digest. The production image must be a separate
 implementation with AI Gateway integration; do not present this mock as a model
-runtime. The Custom CRD does not accept arbitrary command or environment
-overrides. Build a separate image for each runtime, or let the image's own
+runtime. The `Agent` resource of a Custom Agent does not accept arbitrary
+command or environment overrides. Build a separate image for each runtime, or let the image's own
 entrypoint select its runtime.
 
 During the original validation, Docker builds were not run because the local
