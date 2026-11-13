@@ -90,8 +90,17 @@ class HermesSessionLogTests(unittest.TestCase):
             self.plugin.register(context)
         return context
 
-    # The keyword arguments of Hermes 0.22.7: agent/turn_finalizer.py and model_tools.py.
-    def turn(self, context, **overrides):
+    # The keyword arguments of Hermes 0.22.7: agent/turn_context.py, agent/turn_finalizer.py, and model_tools.py.
+    def start(self, context, **overrides):
+        arguments = dict(
+            session_id="session-1", task_id="task-1", turn_id="turn-1", user_message=f"deploy with key {SECRET}",
+            conversation_history=[{"role": "system", "content": "system prompt marker"}], is_first_turn=True,
+            model="gpt-test", platform="api_server", parent_session_id="", sender_id="",
+        )
+        arguments.update(overrides)
+        return [hook(**arguments) for hook in context.hooks["pre_llm_call"]]
+
+    def finish(self, context, **overrides):
         arguments = dict(
             session_id="session-1", task_id="task-1", turn_id="turn-1",
             user_message=f"deploy with key {SECRET}", assistant_response="Deployed.",
@@ -101,6 +110,11 @@ class HermesSessionLogTests(unittest.TestCase):
         arguments.update(overrides)
         for hook in context.hooks["post_llm_call"]:
             hook(**arguments)
+
+    def turn(self, context, **overrides):
+        """A turn as Hermes runs it: its start, then its end."""
+        self.start(context, **{key: value for key, value in overrides.items() if key != "assistant_response"})
+        self.finish(context, **overrides)
 
     def tool(self, context, **overrides):
         arguments = dict(
@@ -112,23 +126,25 @@ class HermesSessionLogTests(unittest.TestCase):
         for hook in context.hooks["post_tool_call"]:
             hook(**arguments)
 
-    def test_records_of_a_turn_and_a_tool_call(self):
+    def test_records_of_a_turn_with_a_tool_call(self):
         context = self.register()
-        self.assertEqual(sorted(context.hooks), ["post_llm_call", "post_tool_call"])
+        self.assertEqual(sorted(context.hooks), ["post_llm_call", "post_tool_call", "pre_llm_call"])
+        self.assertEqual(self.start(context), [None], "the plugin adds no context to the turn")
         self.tool(context)
-        self.turn(context)
+        self.finish(context)
         records = read_records(self.log / "hermes.jsonl")
         self.assertEqual([record["id"] for record in records], [
-            "hermes:session-1:call-1:call", "hermes:session-1:call-1:result",
-            "hermes:session-1:turn-1:user", "hermes:session-1:turn-1:assistant",
+            "hermes:session-1:turn-1:user", "hermes:session-1:call-1:call",
+            "hermes:session-1:call-1:result", "hermes:session-1:turn-1:assistant",
         ])
-        call, result, user, assistant = records
+        user, call, result, assistant = records
         self.assertEqual([call["kind"], call["tool"], call["toolCallId"], call["runId"]], ["tool_call", "terminal", "call-1", "turn-1"])
         self.assertEqual(json.loads(call["content"]), {"command": "login --token sk-syn...0000"})
         self.assertEqual([result["kind"], result["status"], result["isError"], result["content"]],
                          ["tool_result", "ok", False, '{"output": "pod-a Running"}'])
         self.assertEqual([user["kind"], user["channel"], user["content"]], ["user", "api_server", "deploy with key sk-syn...0000"])
         self.assertEqual([assistant["kind"], assistant["model"], assistant["content"]], ["assistant", "gpt-test", "Deployed."])
+        self.assertEqual([record["ts"] for record in records], sorted(record["ts"] for record in records))
         for record in records:
             self.assertEqual([record["v"], record["runtime"], record["sessionId"], record["truncated"]], [1, "hermes", "session-1", False])
             self.assertTrue(record["ts"].endswith("Z"))
@@ -150,6 +166,20 @@ class HermesSessionLogTests(unittest.TestCase):
         for record in (call, result):
             self.assertNotIn("toolCallId", record)
             self.assertNotIn("runId", record)
+
+    def test_the_end_of_a_turn_writes_an_input_whose_start_was_not_seen(self):
+        context = self.register()
+        self.finish(context)
+        self.turn(context, turn_id="turn-2")
+        self.finish(context, turn_id="", user_message="no turn id")
+        records = read_records(self.log / "hermes.jsonl")
+        self.assertEqual([record["id"] for record in records[:4]], [
+            "hermes:session-1:turn-1:user", "hermes:session-1:turn-1:assistant",
+            "hermes:session-1:turn-2:user", "hermes:session-1:turn-2:assistant",
+        ])
+        self.assertEqual([record["kind"] for record in records[4:]], ["user", "assistant"])
+        self.assertEqual(records[4]["id"].rsplit(":", 1)[0], records[5]["id"].rsplit(":", 1)[0])
+        self.assertEqual(records[4]["content"], "no turn id")
 
     def test_a_multimodal_message_keeps_its_text(self):
         context = self.register()
@@ -194,9 +224,10 @@ class HermesSessionLogTests(unittest.TestCase):
 
         exporter = self.plugin.Exporter(self.log, broken)
         with self.assertLogs(self.plugin.logger, level="WARNING") as logs:
+            self.assertIsNone(exporter.on_turn_start(session_id="session-1", turn_id="turn-1", user_message="hello"))
             exporter.on_llm(session_id="session-1", turn_id="turn-1", user_message="hello")
             exporter.on_tool(session_id="session-1", tool_name="terminal", args={}, result="", tool_call_id="call-1")
-        self.assertEqual(len(logs.records), 2)
+        self.assertEqual(len(logs.records), 3)
         self.assertFalse((self.log / "hermes.jsonl").exists())
 
     def test_no_hooks_without_hermes_redaction(self):

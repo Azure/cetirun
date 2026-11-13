@@ -3,14 +3,16 @@
 
 """CetiRun session log for Hermes.
 
-The post_llm_call and post_tool_call hooks give the user input, the assistant
-output, and the tool calls and results of each turn. The plugin appends one
-JSON record for each to /home/vibe/.hermes/cetirun-session-log/hermes.jsonl,
-which the agent chart's logger copies to the container log. The records have
-the format of the OpenClaw plugin, and the same line and file limits. The
-chart enables the plugin with logger.enabled.
+The pre_llm_call, post_llm_call, and post_tool_call hooks give the user
+input, the assistant output, and the tool calls and results of each turn. The
+plugin appends one JSON record for each to
+/home/vibe/.hermes/cetirun-session-log/hermes.jsonl, which the agent chart's
+logger copies to the container log. The records have the format of the
+OpenClaw plugin, and the same line and file limits. The chart enables the
+plugin with logger.enabled.
 """
 
+import collections
 import json
 import logging
 import os
@@ -30,6 +32,8 @@ RECORD_VERSION = 1
 # The container runtime splits longer log lines.
 MAX_LINE_BYTES = 16000
 MAX_FILE_BYTES = 8 * 1024 * 1024
+# Turns whose start was written and whose end has not come yet.
+MAX_OPEN_TURNS = 1024
 # The logger container mounts /home/vibe/.hermes. A Hermes profile has its own
 # HERMES_HOME below it, so the directory does not follow HERMES_HOME.
 LOG_DIR = Path("/home/vibe/.hermes/cetirun-session-log")
@@ -140,9 +144,12 @@ class LogFile:
 class Exporter:
     """Records of the turns and tool calls that Hermes reports to its hooks.
 
-    A record id comes from the session and the turn or tool call, so a record
-    that the logger copies twice is easy to remove. The conversation history
-    that post_llm_call also gives is not copied.
+    The user input of a turn is written when the turn starts (pre_llm_call),
+    and its answer when the turn ends (post_llm_call), which also writes the
+    input of a turn whose start was not seen. A record id comes from the
+    session and the turn or tool call, so a record that the logger copies
+    twice is easy to remove. The conversation history that both turn hooks
+    also give is not copied.
     """
 
     def __init__(self, directory, redact, now=_now, max_file_bytes=MAX_FILE_BYTES, max_line_bytes=MAX_LINE_BYTES):
@@ -150,6 +157,8 @@ class Exporter:
         self.redact = redact
         self.now = now
         self.max_line_bytes = max_line_bytes
+        self._started = collections.OrderedDict()
+        self._started_lock = threading.Lock()
 
     def _record(self, session_id, kind, key, run_id=None, platform=None, **fields):
         record = {
@@ -170,16 +179,34 @@ class Exporter:
     def _write(self, records):
         self.output.append([encode_record(record, self.max_line_bytes) for record in records])
 
+    def _user(self, session_id, turn, turn_id, platform, user_message):
+        return self._record(session_id, "user", f"{turn}:user", turn_id, platform,
+                            content=self.redact(_message_text(user_message)))
+
+    def on_turn_start(self, session_id=None, turn_id=None, user_message=None, platform=None, **_):
+        """pre_llm_call: write the user input. Returns no context for the turn."""
+        try:
+            if session_id and turn_id and user_message:
+                self._write([self._user(session_id, turn_id, turn_id, platform, user_message)])
+                with self._started_lock:
+                    self._started[(session_id, turn_id)] = True
+                    while len(self._started) > MAX_OPEN_TURNS:
+                        self._started.popitem(last=False)
+        except Exception:
+            logger.warning("cetirun-session-log: a user input was not exported", exc_info=True)
+        return None
+
     def on_llm(self, session_id=None, turn_id=None, user_message=None, assistant_response=None, model=None,
                platform=None, **_):
         try:
             if not session_id:
                 return
+            with self._started_lock:
+                started = self._started.pop((session_id, turn_id), False) if turn_id else False
             turn = turn_id or uuid.uuid4().hex
             records = []
-            if user_message:
-                records.append(self._record(session_id, "user", f"{turn}:user", turn_id, platform,
-                                            content=self.redact(_message_text(user_message))))
+            if user_message and not started:
+                records.append(self._user(session_id, turn, turn_id, platform, user_message))
             if assistant_response:
                 extra = {"model": model} if isinstance(model, str) and model else {}
                 records.append(self._record(session_id, "assistant", f"{turn}:assistant", turn_id, platform, **extra,
@@ -218,5 +245,6 @@ def register(ctx):
         # Mask also when Hermes's own redaction setting is off, and the credentials in URLs.
         lambda text: redact_sensitive_text(text, force=True, redact_url_credentials=True),
     )
+    ctx.register_hook("pre_llm_call", exporter.on_turn_start)
     ctx.register_hook("post_llm_call", exporter.on_llm)
     ctx.register_hook("post_tool_call", exporter.on_tool)
