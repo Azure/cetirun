@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -81,6 +82,11 @@ const (
 	teamCompatibilityRenewalLead = 5 * time.Second
 	teamCompatibilityInterval    = 15 * time.Second
 )
+
+// configurationUnavailableRequeue is the retry interval of an AgentPolicy or a
+// Sandbox whose platform prerequisites are unavailable, for example while the
+// platform registration cannot be read or used.
+const configurationUnavailableRequeue = 30 * time.Second
 
 func (r *SandboxReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Client == nil {
@@ -532,13 +538,14 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 	condition.LastTransitionTime = metav1.NewTime(now)
 	apimeta.SetStatusCondition(&object.Status.Conditions, condition)
 	object.Status.ObservedGeneration = object.Generation
-	if !reflect.DeepEqual(before.Status, object.Status) {
+	changed := !reflect.DeepEqual(before.Status, object.Status)
+	if changed {
 		if err := r.Status().Patch(ctx, object, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 			return ctrl.Result{}, errors.Join(observeErr, fmt.Errorf("update Sandbox prerequisite status: %w", err))
 		}
 	}
 	if observeErr != nil {
-		return ctrl.Result{}, observeErr
+		return configurationUnavailableResult(ctx, "Sandbox", condition, observeErr, changed)
 	}
 	return ctrl.Result{RequeueAfter: configurationRefresh(r.MaxSnapshotAge, now, observedAt)}, nil
 }
@@ -569,16 +576,38 @@ func (r *AgentPolicyReconciler) Reconcile(ctx context.Context, request ctrl.Requ
 		// permits execution, and it is never cleared or lowered.
 		object.Status.AcceptedGeneration = object.Generation
 	}
-	if !reflect.DeepEqual(before.Status, object.Status) {
+	changed := !reflect.DeepEqual(before.Status, object.Status)
+	if changed {
 		if err := r.Status().Patch(ctx, object, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 			return ctrl.Result{}, errors.Join(observeErr, fmt.Errorf("update AgentPolicy configuration status: %w", err))
 		}
 		emitSandboxPolicyTransition(ctx, before, object)
 	}
 	if observeErr != nil {
-		return ctrl.Result{}, observeErr
+		return configurationUnavailableResult(ctx, "AgentPolicy", condition, observeErr, changed)
 	}
 	return ctrl.Result{RequeueAfter: configurationRefresh(r.MaxSnapshotAge, now, observedAt)}, nil
+}
+
+// configurationUnavailableResult ends a pass whose assessment failed, after the
+// status shows the failure. A failure only of unavailable platform
+// prerequisites, with the condition Unknown and the reason
+// PrerequisitesUnavailable, is not a reconcile error. It retries after
+// configurationUnavailableRequeue: the error rate limiter can delay the next
+// assessment by about 17 minutes, also after the registration is corrected.
+// The pass logs the cause at Info level when it changed the status, and at
+// V(1) when it did not. Every other error is returned as it is.
+func configurationUnavailableResult(ctx context.Context, kind string, condition metav1.Condition, cause error, statusChanged bool) (ctrl.Result, error) {
+	if condition.Status != metav1.ConditionUnknown || condition.Reason != "PrerequisitesUnavailable" {
+		return ctrl.Result{}, cause
+	}
+	logger := log.FromContext(ctx)
+	if !statusChanged {
+		logger = logger.V(1)
+	}
+	logger.Info(kind+" waits for platform prerequisites; retrying periodically",
+		"reason", cause.Error(), "requeueAfter", configurationUnavailableRequeue)
+	return ctrl.Result{RequeueAfter: configurationUnavailableRequeue}, nil
 }
 
 func assessSandboxPrerequisites(ctx context.Context, reader client.Reader, object *api.Sandbox,
@@ -801,7 +830,8 @@ func configurationNow(clock func() time.Time) time.Time {
 }
 
 // Successful assessments refresh in [1/2, 5/8] of the snapshot's remaining
-// lifetime. Errors use controller-runtime backoff, not this periodic requeue.
+// lifetime. Unavailable prerequisites retry after
+// configurationUnavailableRequeue; other errors use controller-runtime backoff.
 func configurationRefresh(maxAge time.Duration, now, observedAt time.Time) time.Duration {
 	if maxAge <= 0 {
 		maxAge = 30 * time.Second

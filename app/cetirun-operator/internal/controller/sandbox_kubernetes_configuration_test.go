@@ -278,15 +278,18 @@ func TestKubernetesSandboxConfigurationSourceScopesRoleFailuresToRequestedGrants
 				Client: cached, APIReader: reader, Source: source, Now: source.Now,
 			}
 			for _, requested := range []*api.AgentPolicy{normal, other, policy} {
-				result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(requested)})
+				logCtx, logged := captureConfigurationRetries()
+				result, err := reconciler.Reconcile(logCtx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(requested)})
 				status, reason := metav1.ConditionTrue, "PolicyAccepted"
 				if requested == policy {
 					status, reason = metav1.ConditionFalse, "UnapprovedGrant"
 				}
 				if requested == policy && change == "read failure" {
 					status, reason = metav1.ConditionUnknown, "PrerequisitesUnavailable"
-					if !errors.Is(err, failure) || !errors.Is(err, sandboxpolicy.ErrUnavailable) || result.RequeueAfter != 0 {
-						t.Fatalf("requested role failure lost its cause or backoff: %+v, %v", result, err)
+					// The read failure retries periodically. Its log line keeps the cause.
+					if err != nil || result.RequeueAfter != unavailableConfigurationRequeue || len(logged.lines) != 1 ||
+						!strings.Contains(logged.lines[0], failure.Error()) {
+						t.Fatalf("requested role failure lost its cause or did not retry periodically: %+v, %v, %q", result, err, logged.lines)
 					}
 				} else if err != nil || result.RequeueAfter <= 0 {
 					t.Fatalf("policy %s was affected by an unrelated role or lost its refresh: %+v, %v", requested.Name, result, err)
@@ -1060,7 +1063,7 @@ func TestKubernetesSandboxConfigurationSourceBounds(t *testing.T) {
 
 // TestKubernetesPlatformFailureReasonReachesStatus checks that a platform
 // registration that cannot be used gives its fixed reason to the AgentPolicy,
-// Sandbox and Team status and to the reconcile error, never the registered
+// Sandbox and Team status and to the retry log line, never the registered
 // values.
 func TestKubernetesPlatformFailureReasonReachesStatus(t *testing.T) {
 	const canary = "value-canary-5d1f"
@@ -1145,11 +1148,14 @@ func TestKubernetesPlatformFailureReasonReachesStatus(t *testing.T) {
 			now := func() time.Time { return snapshot.ObservedAt }
 
 			policies := &controller.AgentPolicyReconciler{Client: kube, APIReader: kube, Source: source, Now: now, NativeExecution: true}
-			_, err := policies.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
-			if !errors.Is(err, tc.class) {
-				t.Fatalf("AgentPolicy reconcile lost the failure: %v", err)
+			// An unusable registration retries periodically. The retry log line,
+			// like the status, carries only the fixed reason.
+			logCtx, logged := captureConfigurationRetries()
+			result, err := policies.Reconcile(logCtx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
+			if err != nil || result.RequeueAfter != unavailableConfigurationRequeue || len(logged.lines) != 1 {
+				t.Fatalf("AgentPolicy reconcile did not retry periodically: %+v, %v", result, err)
 			}
-			fixedReasonOnly("AgentPolicy reconcile error", err.Error())
+			fixedReasonOnly("AgentPolicy retry log", logged.lines[0])
 			if err := kube.Get(ctx, client.ObjectKeyFromObject(policy), policy); err != nil {
 				t.Fatal(err)
 			}
@@ -1160,9 +1166,11 @@ func TestKubernetesPlatformFailureReasonReachesStatus(t *testing.T) {
 			}
 
 			boxes := &controller.SandboxReconciler{Client: kube, APIReader: kube, Source: source, Now: now, NativeExecution: true}
-			if _, err := boxes.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(box)}); !errors.Is(err, tc.class) {
-				t.Fatalf("Sandbox reconcile lost the failure: %v", err)
+			if result, err := boxes.Reconcile(logCtx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(box)}); err != nil ||
+				result.RequeueAfter != unavailableConfigurationRequeue || len(logged.lines) != 2 {
+				t.Fatalf("Sandbox reconcile did not retry periodically: %+v, %v", result, err)
 			}
+			fixedReasonOnly("Sandbox retry log", logged.lines[1])
 			if err := kube.Get(ctx, client.ObjectKeyFromObject(box), box); err != nil {
 				t.Fatal(err)
 			}
@@ -1189,8 +1197,8 @@ func TestKubernetesPlatformFailureReasonReachesStatus(t *testing.T) {
 
 // TestKubernetesPlatformReadFailureReachesStatus checks that a platform
 // dependency that cannot be read gives a fixed reason to the AgentPolicy,
-// Sandbox and Team status. The API error names the object: only the reconcile
-// errors, which the operator logs, keep it.
+// Sandbox and Team status. The API error names the object: only the operator
+// log keeps it, in the retry log line.
 func TestKubernetesPlatformReadFailureReachesStatus(t *testing.T) {
 	const canary = "value-canary-5d1f"
 	const reason = "a platform dependency could not be read"
@@ -1235,8 +1243,16 @@ func TestKubernetesPlatformReadFailureReachesStatus(t *testing.T) {
 	}
 
 	policies := &controller.AgentPolicyReconciler{Client: kube, APIReader: kube, Source: source, Now: now, NativeExecution: true}
-	_, err := policies.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
-	readFailure("AgentPolicy reconcile error", err)
+	logCtx, logged := captureConfigurationRetries()
+	retryLogged := func(what string, result ctrl.Result, err error, lines int) {
+		t.Helper()
+		if err != nil || result.RequeueAfter != unavailableConfigurationRequeue || len(logged.lines) != lines ||
+			!strings.Contains(logged.lines[lines-1], canary) {
+			t.Fatalf("%s did not retry periodically with the API error in its log line: %+v, %v, %q", what, result, err, logged.lines)
+		}
+	}
+	result, err := policies.Reconcile(logCtx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
+	retryLogged("AgentPolicy reconcile", result, err, 1)
 	if err := kube.Get(ctx, client.ObjectKeyFromObject(policy), policy); err != nil {
 		t.Fatal(err)
 	}
@@ -1247,8 +1263,8 @@ func TestKubernetesPlatformReadFailureReachesStatus(t *testing.T) {
 	fixedReasonOnly("AgentPolicy status", accepted.Message, "Current platform support inventory is unavailable: "+reason+".")
 
 	boxes := &controller.SandboxReconciler{Client: kube, APIReader: kube, Source: source, Now: now, NativeExecution: true}
-	_, err = boxes.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(box)})
-	readFailure("Sandbox reconcile error", err)
+	result, err = boxes.Reconcile(logCtx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(box)})
+	retryLogged("Sandbox reconcile", result, err, 2)
 	if err := kube.Get(ctx, client.ObjectKeyFromObject(box), box); err != nil {
 		t.Fatal(err)
 	}

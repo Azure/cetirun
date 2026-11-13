@@ -6,8 +6,11 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 )
@@ -84,6 +87,35 @@ func TestConfigurationSnapshotValidatesAfterCapture(t *testing.T) {
 				}
 			} else if err != nil || !snapshot.ObservedAt.Equal(observed) {
 				t.Fatalf("fresh observation was not preserved: snapshot=%+v, err=%v", snapshot, err)
+			}
+		})
+	}
+}
+
+// TestConfigurationUnavailableResultRetriesOnlyUnavailablePrerequisites checks
+// the classification: only an Unknown condition with the reason
+// PrerequisitesUnavailable retries periodically. Every other condition keeps
+// its error for the error rate limiter.
+func TestConfigurationUnavailableResultRetriesOnlyUnavailablePrerequisites(t *testing.T) {
+	cause := fmt.Errorf("%w: synthetic outage", sandboxpolicy.ErrUnavailable)
+	for _, tc := range []struct {
+		name      string
+		condition metav1.Condition
+		retry     bool
+	}{
+		{"unavailable prerequisites", metav1.Condition{Status: metav1.ConditionUnknown, Reason: "PrerequisitesUnavailable"}, true},
+		{"other unknown reason", metav1.Condition{Status: metav1.ConditionUnknown, Reason: "DependenciesUnavailable"}, false},
+		{"refusal", metav1.Condition{Status: metav1.ConditionFalse, Reason: "PrerequisitesUnavailable"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, changed := range []bool{true, false} {
+				result, err := configurationUnavailableResult(context.Background(), "AgentPolicy", tc.condition, cause, changed)
+				if tc.retry && (err != nil || result.RequeueAfter != configurationUnavailableRequeue) {
+					t.Fatalf("unavailable prerequisites did not retry periodically: result=%+v err=%v", result, err)
+				}
+				if !tc.retry && (!errors.Is(err, cause) || result.RequeueAfter != 0) {
+					t.Fatalf("another failure lost its error: result=%+v err=%v", result, err)
+				}
 			}
 		})
 	}

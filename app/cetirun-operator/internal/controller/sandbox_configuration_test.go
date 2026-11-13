@@ -301,8 +301,10 @@ func TestSandboxConfigurationStableTransitionsAndSourceFreshness(t *testing.T) {
 		t.Fatal("unchanged prerequisite status fabricated a transition or write")
 	}
 	now = now.Add(time.Minute)
-	if _, err := r.Reconcile(context.Background(), request); !errors.Is(err, sandboxpolicy.ErrUnavailable) {
-		t.Fatal("stale platform snapshot must not remain Ready", err)
+	// Lost freshness and an absent source are not Ready. They retry
+	// periodically, without a reconcile error.
+	if result, err := r.Reconcile(context.Background(), request); err != nil || result.RequeueAfter != unavailableConfigurationRequeue {
+		t.Fatal("stale platform snapshot did not retry periodically", result, err)
 	}
 	if err := c.Get(context.Background(), request.NamespacedName, second); err != nil {
 		t.Fatal(err)
@@ -312,8 +314,14 @@ func TestSandboxConfigurationStableTransitionsAndSourceFreshness(t *testing.T) {
 		t.Fatal("lost prerequisite freshness did not produce a truthful transition")
 	}
 	r.Source = nil
-	if _, err := r.Reconcile(context.Background(), request); !errors.Is(err, sandboxpolicy.ErrUnavailable) {
-		t.Fatal("an absent production source must not imply readiness", err)
+	if result, err := r.Reconcile(context.Background(), request); err != nil || result.RequeueAfter != unavailableConfigurationRequeue {
+		t.Fatal("an absent production source did not retry periodically", result, err)
+	}
+	if err := c.Get(context.Background(), request.NamespacedName, second); err != nil {
+		t.Fatal(err)
+	}
+	if second.Status.Conditions[0].Status != metav1.ConditionUnknown {
+		t.Fatal("an absent production source implied readiness")
 	}
 }
 
@@ -351,10 +359,10 @@ func TestAgentPolicyAcceptedIsConfigurationOnly(t *testing.T) {
 				Source: controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) { return snapshot, nil }),
 			}
 			request := ctrl.Request{NamespacedName: types.NamespacedName{Name: policy.Name}}
-			_, err := r.Reconcile(context.Background(), request)
+			result, err := r.Reconcile(context.Background(), request)
 			if tc.name == "unavailable topology" {
-				if !errors.Is(err, sandboxpolicy.ErrUnavailable) {
-					t.Fatal("unavailable topology must retain retryable classification", err)
+				if err != nil || result.RequeueAfter != unavailableConfigurationRequeue {
+					t.Fatal("unavailable topology did not retry periodically", result, err)
 				}
 			} else if err != nil {
 				t.Fatal(err)
@@ -795,8 +803,12 @@ func TestConfigurationReadFailureAndStatusFailureAreNotSuccess(t *testing.T) {
 		Source: controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) { return snapshot, nil }),
 	}
 	request := ctrl.Request{NamespacedName: types.NamespacedName{Name: object.Name}}
-	if _, err := r.Reconcile(context.Background(), request); !errors.Is(err, failure) {
-		t.Fatal("prerequisite read failure was hidden", err)
+	// A prerequisite read failure retries periodically. The operator log, not
+	// the reconcile error, keeps its cause.
+	ctx, logged := captureConfigurationRetries()
+	if result, err := r.Reconcile(ctx, request); err != nil || result.RequeueAfter != unavailableConfigurationRequeue ||
+		logged.info["Sandbox"] != 1 || !strings.Contains(logged.lines[0], failure.Error()) {
+		t.Fatal("prerequisite read failure was hidden or did not retry periodically", result, err, logged.lines)
 	}
 	current := &api.Sandbox{}
 	if err := base.Get(context.Background(), request.NamespacedName, current); err != nil {
@@ -838,9 +850,13 @@ func TestAgentPolicyConfigurationPreservesRegistrationFailureCauses(t *testing.T
 				Client: c, Now: func() time.Time { return snapshot.ObservedAt },
 				Source: controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) { return snapshot, nil }),
 			}
-			result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
-			if !errors.Is(err, sandboxpolicy.ErrUnavailable) || !errors.Is(err, sandboxpolicy.ErrUnsupportedControl) || result.RequeueAfter != 0 {
-				t.Fatalf("registration failure order lost causes or bypassed backoff: %+v, %v", result, err)
+			ctx, logged := captureConfigurationRetries()
+			result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
+			// The failure retries periodically. Its log line keeps both causes.
+			if err != nil || result.RequeueAfter != unavailableConfigurationRequeue || len(logged.lines) != 1 ||
+				!strings.Contains(logged.lines[0], sandboxpolicy.ErrUnavailable.Error()) ||
+				!strings.Contains(logged.lines[0], sandboxpolicy.ErrUnsupportedControl.Error()) {
+				t.Fatalf("registration failure order lost causes or did not retry periodically: %+v, %v, %q", result, err, logged.lines)
 			}
 			if err := c.Get(context.Background(), client.ObjectKeyFromObject(policy), policy); err != nil {
 				t.Fatal(err)
@@ -914,10 +930,13 @@ func TestAgentPolicyConfigurationVerifiesAuthoritativeRoleObservations(t *testin
 				Client: cached, APIReader: reader, Now: func() time.Time { return snapshot.ObservedAt },
 				Source: controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) { return snapshot, nil }),
 			}
-			result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
+			ctx, logged := captureConfigurationRetries()
+			result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
 			if tc.name == "read failure" {
-				if !errors.Is(err, sandboxpolicy.ErrUnavailable) || !errors.Is(err, failure) || result.RequeueAfter != 0 {
-					t.Fatalf("read failure lost causes/backoff: %+v, %v", result, err)
+				// The read failure retries periodically. Its log line keeps the cause.
+				if err != nil || result.RequeueAfter != unavailableConfigurationRequeue || len(logged.lines) != 1 ||
+					!strings.Contains(logged.lines[0], failure.Error()) {
+					t.Fatalf("read failure lost its cause or did not retry periodically: %+v, %v, %q", result, err, logged.lines)
 				}
 			} else if err != nil || result.RequeueAfter <= 0 {
 				t.Fatalf("configuration assessment: %+v, %v", result, err)
@@ -1029,8 +1048,8 @@ func TestConfigurationSnapshotMustRemainFreshThroughAssessment(t *testing.T) {
 				r := &controller.AgentPolicyReconciler{Client: c, Source: source, Now: func() time.Time { return now }}
 				result, err = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
 			}
-			if !errors.Is(err, sandboxpolicy.ErrUnavailable) || result.RequeueAfter != 0 {
-				t.Fatalf("expired evidence became periodic success: %+v, %v", result, err)
+			if err != nil || result.RequeueAfter != unavailableConfigurationRequeue {
+				t.Fatalf("expired evidence did not retry as unavailable: %+v, %v", result, err)
 			}
 			if err := c.Get(context.Background(), client.ObjectKeyFromObject(object), object); err != nil {
 				t.Fatal(err)

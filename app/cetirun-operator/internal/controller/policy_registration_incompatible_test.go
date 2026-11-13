@@ -5,7 +5,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -15,12 +14,14 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
+	"github.com/go-logr/logr/funcr"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const selectorBackendDetail = "blocked Pod CIDRs cannot be enforced on selector-bound service backends"
@@ -235,15 +236,21 @@ func TestUnusableRegistrationShowsItsReason(t *testing.T) {
 	}
 	policyKey := client.ObjectKey{Name: team.Spec.AgentPolicyRef}
 	policy := &api.AgentPolicy{}
-	assess := func() (*metav1.Condition, error) {
+	var retries []string
+	logged := log.IntoContext(ctx, funcr.New(func(_, args string) {
+		if strings.Contains(args, "AgentPolicy waits for platform prerequisites") {
+			retries = append(retries, args)
+		}
+	}, funcr.Options{}))
+	assess := func() (*metav1.Condition, ctrl.Result, error) {
 		t.Helper()
-		_, err := policyController.Reconcile(ctx, ctrl.Request{NamespacedName: policyKey})
+		result, err := policyController.Reconcile(logged, ctrl.Request{NamespacedName: policyKey})
 		if getErr := f.kube.Get(ctx, policyKey, policy); getErr != nil {
 			t.Fatal(getErr)
 		}
-		return apimeta.FindStatusCondition(policy.Status.Conditions, api.ConditionAgentPolicyAccepted), err
+		return apimeta.FindStatusCondition(policy.Status.Conditions, api.ConditionAgentPolicyAccepted), result, err
 	}
-	if accepted, err := assess(); err != nil || accepted == nil || accepted.Status != metav1.ConditionTrue {
+	if accepted, _, err := assess(); err != nil || accepted == nil || accepted.Status != metav1.ConditionTrue {
 		t.Fatalf("the fixture policy was not accepted: %+v, %v", accepted, err)
 	}
 	settleReadyForTest(t, f)
@@ -258,9 +265,12 @@ func TestUnusableRegistrationShowsItsReason(t *testing.T) {
 	}
 
 	gatewaySelector(map[string]string{"app.kubernetes.io/instance": canary})
-	accepted, err := assess()
-	if !errors.Is(err, sandboxpolicy.ErrUnsupportedControl) || !strings.Contains(err.Error(), reason) || strings.Contains(err.Error(), canary) {
-		t.Fatalf("the AgentPolicy reconcile error does not carry only the fixed reason: %v", err)
+	accepted, result, err := assess()
+	// The unusable registration is a periodic retry. Its log line, like the
+	// status, carries only the fixed reason.
+	if err != nil || result.RequeueAfter != configurationUnavailableRequeue || len(retries) != 1 ||
+		!strings.Contains(retries[0], reason) || strings.Contains(retries[0], canary) {
+		t.Fatalf("the AgentPolicy retry does not log only the fixed reason: result=%+v err=%v log=%q", result, err, retries)
 	}
 	if accepted == nil || accepted.Status != metav1.ConditionUnknown || accepted.Reason != "PrerequisitesUnavailable" ||
 		accepted.Message != "Current platform support inventory is unavailable: "+reason+"." {
@@ -287,7 +297,7 @@ func TestUnusableRegistrationShowsItsReason(t *testing.T) {
 	}
 
 	gatewaySelector(nil)
-	if accepted, err := assess(); err != nil || accepted == nil || accepted.Status != metav1.ConditionTrue {
+	if accepted, _, err := assess(); err != nil || accepted == nil || accepted.Status != metav1.ConditionTrue {
 		t.Fatalf("the corrected registration did not accept the policy: %+v, %v", accepted, err)
 	}
 	settleReadyForTest(t, f)
