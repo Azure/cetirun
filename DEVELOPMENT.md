@@ -1115,7 +1115,7 @@ This section is for maintainers. Contributors do not publish artifacts.
 ### Release steps
 
 1. Run `make set-version VERSION=X.Y.Z` on a branch. This command needs Helm.
-2. Run `make check`.
+2. Run `make check` and `make docs-check`.
 3. Open a pull request with the version change. After approval, merge it into
    `main`.
 4. With release authorization, push the tag `vX.Y.Z` on the merged commit.
@@ -1128,7 +1128,9 @@ and Portal defaults, the Go module references to the Operator, and the npm
 package versions. For the exact files, read `set_version()` in
 [`scripts/cetirun-version.py`](scripts/cetirun-version.py). Then the target
 runs `helm dependency update --skip-refresh app/cetirun-platform`, which writes
-`app/cetirun-platform/Chart.lock`, and checks the versions again.
+`app/cetirun-platform/Chart.lock`. It also refreshes the generated Reference
+tables with `site/scripts/reference_tables.py --write` and checks the versions
+again.
 
 Component GitHub workflows also start on tags, for example `operator-v*` and
 `hermes-v*`. They push to the registry in the `ACR_REGISTRY` repository
