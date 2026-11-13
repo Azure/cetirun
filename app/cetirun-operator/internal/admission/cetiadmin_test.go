@@ -149,6 +149,42 @@ func adminRequest(t *testing.T, operation admissionv1.Operation, group, kind, re
 	return request
 }
 
+func TestCetiAdminNamespaceBootstrapKeepsSelectorOperatorOwned(t *testing.T) {
+	f := newCetiAdminFixture(t)
+	portal := authenticationv1.UserInfo{Username: "system:serviceaccount:test:portal", Groups: []string{"system:authenticated"}}
+	operator := authenticationv1.UserInfo{Username: testController, Groups: []string{"system:authenticated"}}
+	bootstrap := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-new-agent", UID: "namespace-uid"}}
+	managed := bootstrap.DeepCopy()
+	managed.Labels = map[string]string{"app.kubernetes.io/managed-by": "cetirun-operator"}
+	bound := managed.DeepCopy()
+	bound.OwnerReferences = []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: "new-agent", UID: "agent-uid"}}
+	for _, tc := range []struct {
+		name      string
+		operation admissionv1.Operation
+		next, old client.Object
+		actor     authenticationv1.UserInfo
+		allowed   bool
+	}{
+		{"Portal precreates namespace", admissionv1.Create, bootstrap, nil, portal, true},
+		{"Portal cannot create managed namespace", admissionv1.Create, managed, nil, portal, false},
+		{"Operator takes over namespace", admissionv1.Update, managed, bootstrap, operator, true},
+		{"Portal cannot add selector", admissionv1.Update, managed, bootstrap, portal, false},
+		{"Portal cannot remove selector", admissionv1.Update, bootstrap, managed, portal, false},
+		{"Portal binds owner after Operator labeling", admissionv1.Update, bound, managed, portal, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := adminRequest(t, tc.operation, "", "Namespace", "namespaces", tc.next, tc.old, tc.actor)
+			response := f.guard.Validate(context.Background(), request)
+			if response.Allowed != tc.allowed {
+				t.Fatalf("allowed = %v, want %v: %v", response.Allowed, tc.allowed, response.Result)
+			}
+			if !tc.allowed && (response.Result == nil || !strings.Contains(response.Result.Message, "managed namespace admission selector")) {
+				t.Fatalf("request was denied for the wrong reason: %v", response.Result)
+			}
+		})
+	}
+}
+
 func TestCetiAdminRollbackRestoresIntentWithoutStartingPods(t *testing.T) {
 	f := newCetiAdminFixture(t)
 	f.updateTarget(t, func(a *api.Agent) {

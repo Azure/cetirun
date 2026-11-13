@@ -5,12 +5,14 @@ package kube
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -275,6 +277,66 @@ func TestCreateInstance_WithBothSecrets(t *testing.T) {
 	}
 	if ns.Labels["app.kubernetes.io/instance"] != "bob" {
 		t.Errorf("namespace label app.kubernetes.io/instance = %q, want %q", ns.Labels["app.kubernetes.io/instance"], "bob")
+	}
+}
+
+func TestCreateInstanceSecretsLeaveNamespaceManagementToOperator(t *testing.T) {
+	for _, harness := range []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes} {
+		for _, tc := range []struct {
+			name, gatewayToken, tailscaleAuthKey string
+		}{
+			{name: "no credentials"},
+			{name: "gateway token", gatewayToken: "dummy-token"},
+			{name: "tailscale key", tailscaleAuthKey: "dummy-tailscale-key"},
+			{name: "both", gatewayToken: "dummy-token", tailscaleAuthKey: "dummy-tailscale-key"},
+		} {
+			t.Run(string(harness)+"/"+tc.name, func(t *testing.T) {
+				ctx := context.Background()
+				storage := newFakeClient()
+				guarded := interceptor.NewClient(storage.(client.WithWatch), interceptor.Funcs{
+					Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+						if ns, ok := obj.(*corev1.Namespace); ok && ns.Labels["app.kubernetes.io/managed-by"] == "cetirun-operator" {
+							return apierrors.NewForbidden(corev1.SchemeGroupVersion.WithResource("namespaces").GroupResource(), ns.Name,
+								fmt.Errorf("only the Operator changes the managed namespace admission selector"))
+						}
+						return c.Create(ctx, obj, opts...)
+					},
+				})
+				portal := NewClient(guarded)
+				agent, err := portal.CreateInstance(ctx, "alice", "Alice", "example-team", "alice@example.com", "alice-example",
+					cetirunv1alpha1.HarnessSpec{Type: harness}, tc.gatewayToken, tc.tailscaleAuthKey, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				ns := &corev1.Namespace{}
+				err = storage.Get(ctx, client.ObjectKey{Name: "cetirun-alice-example"}, ns)
+				if tc.gatewayToken == "" && tc.tailscaleAuthKey == "" {
+					if !apierrors.IsNotFound(err) {
+						t.Fatalf("creation without credentials should leave namespace creation to the Operator: %v", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if ns.Labels["app.kubernetes.io/managed-by"] != "" || len(ns.OwnerReferences) != 1 || ns.OwnerReferences[0].UID != agent.UID {
+					t.Fatal("Portal must bind the new Agent UID without setting the Operator's admission selector")
+				}
+				if tc.gatewayToken != "" {
+					if token, err := portal.GetGatewayToken(ctx, ns.Name, agent.Spec.GatewayTokenSecretRef); err != nil || token != tc.gatewayToken {
+						t.Fatalf("Gateway Token was not preserved: %v", err)
+					}
+				}
+				if tc.tailscaleAuthKey != "" {
+					if agent.Spec.Tailscale == nil {
+						t.Fatal("Tailscale configuration was not recorded")
+					}
+					if key, err := portal.GetTailscaleAuthKey(ctx, ns.Name, agent.Spec.Tailscale.AuthKeySecretRef); err != nil || key != tc.tailscaleAuthKey {
+						t.Fatalf("Tailscale Auth Key was not preserved: %v", err)
+					}
+				}
+			})
+		}
 	}
 }
 
