@@ -5,6 +5,7 @@
 
 import importlib.util
 import json
+import logging
 import os
 import shutil
 import stat
@@ -71,6 +72,11 @@ class SessionLogNodeTests(unittest.TestCase):
 
 class HermesSessionLogTests(unittest.TestCase):
     def setUp(self):
+        # main() of hermes-runtime.py, which another test calls, turns logging
+        # off for the whole process.
+        previous = logging.root.manager.disable
+        logging.disable(logging.NOTSET)
+        self.addCleanup(logging.disable, previous)
         self.plugin = load_hermes_plugin()
         self.directory = Path(tempfile.mkdtemp(prefix="cetirun-session-log-"))
         self.addCleanup(shutil.rmtree, self.directory, True)
