@@ -235,8 +235,12 @@ Before the first deployment, also review these settings:
   the `sharedSkills` fields, as
   [Shared skills storage for `make deploy`](../../operations/storage/#shared-skills-storage-for-make-deploy)
   shows.
-- **Internal network exceptions:** review `networkPolicy.allowedInternalCIDRs`
-  rather than inherit its environment-specific exception.
+- **Internal network exceptions:** `networkPolicy.allowedInternalCIDRs` is
+  empty by default. Add an entry only for an internal destination that you
+  approve. In the environment file, set the Agent network values under
+  `platform.values.cetirun-operator.cetirun.helmValues.networkPolicy`. A list
+  that you set replaces the full default list, so keep the default ranges when
+  you change `blockedCIDRs`.
 - **npm registry:** runtime npm skills install from the public npm registry.
   To use your approved registry, refer to
   [Shared skills mounts](../../operations/storage/#shared-skills-mounts).

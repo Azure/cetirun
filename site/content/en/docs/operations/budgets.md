@@ -47,12 +47,19 @@ refused for up to ten minutes after the reset time.
 ## When the budget runs out
 
 When the spend reaches the budget, the AI Gateway refuses each request of the key
-with HTTP 402 and `Budget has been exceeded!`. The requests to the GitHub
-Copilot models of the Agent stop too. The Agents do not say that the CetiRun
-budget is used up:
+with HTTP 402. The requests to the GitHub Copilot models of the Agent stop
+too. The message of the AI Gateway starts with `CetiRun AI Gateway:`. It says
+that the budget of the Agent is spent, when the budget resets, and that a
+CetiRun administrator can raise it. When the budget of the AI Gateway team of
+the Agent is spent, the message names the Team instead. The Agents show this
+in different ways:
 
-- OpenClaw reports a billing error of its model provider.
-- Hermes says to add credits with the provider.
+- Hermes shows the message. Then it adds its own advice to add credits with
+  the provider, which does not apply to the AI Gateway.
+- OpenClaw shows a shorter message: the Agent is out of budget on the AI
+  Gateway, and a CetiRun administrator can raise the budget. The message omits
+  the date of the reset. OpenClaw keeps using the key after the refusal, so its
+  next request goes to the AI Gateway again.
 
 To restore an Agent before the reset, do one of these steps:
 

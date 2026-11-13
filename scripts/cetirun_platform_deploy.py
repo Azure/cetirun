@@ -951,13 +951,13 @@ class Deployment:
         # Tags and chart versions are mutable and are checked on every preflight.
         self.verified_image_digests = set()
 
-    def run(self, command, *, env=None, input_text=None):
+    def run(self, command, *, env=None, input_text=None, allowed_exits=()):
         if env is None and self.config["target"].get("kubeconfig"):
             env = {**os.environ, "KUBECONFIG": self.config["target"]["kubeconfig"]}
             if self.config.get("publicTLS", {}).get("enabled"):
                 env["HELM_DRIVER"] = "secret"
         result = subprocess.run(command, cwd=ROOT, env=env, input=input_text, text=True, capture_output=True)
-        if result.returncode:
+        if result.returncode and result.returncode not in allowed_exits:
             # Name the step, but do not echo Helm-rendered Secrets or external tool response bodies.
             # Only the offline render reports the chart's own refusal.
             refusals = CHART_REFUSAL.findall(result.stderr or "") if list(map(str, command[:2])) == ["helm", "template"] else []
@@ -1336,7 +1336,8 @@ class Deployment:
         ingress = self.scratch / "ingress-public.pem"
         ingress.write_text(self.public_certificate(c["istio"]["ingressNamespace"], "cetirun-tls", "tls.crt"))
         self.run(["openssl", "x509", "-in", str(ingress), "-noout", "-checkend", "0"])
-        checked = self.run(["openssl", "x509", "-in", str(ingress), "-noout", "-checkhost", c["domain"]])
+        # When the host does not match, OpenSSL 3.0 exits 0 and OpenSSL 3.5 exits 1. Both print the result line.
+        checked = self.run(["openssl", "x509", "-in", str(ingress), "-noout", "-checkhost", c["domain"]], allowed_exits=(1,))
         if f"Hostname {c['domain']} does match certificate" not in checked.splitlines():
             raise ValueError("The ingress certificate does not cover the configured domain")
         starts = self.run(["openssl", "x509", "-in", str(ingress), "-noout", "-startdate"])

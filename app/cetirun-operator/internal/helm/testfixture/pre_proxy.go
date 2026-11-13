@@ -526,6 +526,30 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 		},
 		"values.schema.json": {
 			{`"pattern": "^([0-9./]+|[0-9a-fA-F:]+/[0-9]{1,3})$"`, `"pattern": "^[0-9./]+$"`},
+			// The DNS Pod labels and the current egress defaults came later.
+			{`                "dnsPodLabels": {
+                    "type": "object",
+                    "description": "Labels of the DNS Pods in dnsNamespace that receive DNS traffic (TCP/UDP 53). Labels with an empty value are ignored, so set a default key to \"\" to drop it. Without labels, every Pod in dnsNamespace receives it.",
+                    "additionalProperties": {
+                        "type": "string"
+                    },
+                    "default": {
+                        "k8s-app": "kube-dns"
+                    }
+                },
+`, ""},
+			{`"description": "Internal destinations to allow despite blockedCIDRs. Each entry is a CIDR and its ports, and adds one egress allow rule.",`,
+				`"description": "Internal IPs/CIDRs to explicitly allow despite blockedCIDRs. Each entry specifies a CIDR and a list of ports.",`},
+			{`"description": "CIDR to allow (e.g., 192.0.2.10/32)",`, `"description": "CIDR to allow (e.g., 10.230.0.4/32)",`},
+			{`"description": "Ranges excluded from the public egress rule. The DNS, platform service and allowedInternalCIDRs rules are separate allow rules.",`,
+				`"description": "CIDRs to block from external egress (kube-dns and gateway are allowed via namespace selectors regardless)",`},
+			{`                        "192.168.0.0/16",
+                        "100.64.0.0/10",
+                        "169.254.0.0/16",
+                        "168.63.129.16/32"
+`, `                        "192.168.0.0/16",
+                        "169.254.169.254/32"
+`},
 			{`"type": ["integer", "null"],
                     "minimum": 1,
                     "default": null,
