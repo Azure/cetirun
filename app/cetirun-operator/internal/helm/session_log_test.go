@@ -35,11 +35,16 @@ func sessionLogRegistered(t *testing.T, typ string, native map[string]any) bool 
 
 func TestSessionLogPluginFollowsTheLogger(t *testing.T) {
 	for _, typ := range []string{"openclaw", "hermes"} {
-		for _, enabled := range []bool{true, false} {
-			t.Run(fmt.Sprintf("%s logger %t", typ, enabled), func(t *testing.T) {
+		// nil leaves logger out of the values: the chart's default turns it on.
+		for _, setting := range []any{nil, true, false} {
+			enabled := setting == nil || setting == true
+			t.Run(fmt.Sprintf("%s logger %v", typ, setting), func(t *testing.T) {
 				chrt := testChart(t)
 				input := sampleInput(typ, "openai", false)
-				input["logger"] = map[string]any{"enabled": enabled}
+				delete(input, "logger")
+				if setting != nil {
+					input["logger"] = map[string]any{"enabled": setting}
+				}
 				prepared, err := PrepareChart(chrt, input)
 				if err != nil {
 					t.Fatal(err)
