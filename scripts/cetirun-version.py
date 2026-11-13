@@ -130,11 +130,15 @@ def set_version(version):
             1,
             1,
         )
-    replace(
-        ROOT / "app/cetirun-memory-context/assets/adapters/openclaw/package.json",
-        r'^  "version": "[^"]+",$',
-        f'  "version": "{version}",',
-    )
+    for relative in (
+        "app/cetirun-memory-context/assets/adapters/openclaw/package.json",
+        "app/cetirun-chart/agents/openclaw/plugins/cetirun-session-log/package.json",
+    ):
+        replace(
+            ROOT / relative,
+            r'^  "version": "[^"]+",$',
+            f'  "version": "{version}",',
+        )
     for path, content in PENDING_UPDATES.items():
         path.write_text(content)
 
@@ -165,6 +169,7 @@ def check_version(version):
 
     expected_text = {
         "app/cetirun-memory-context/assets/adapters/openclaw/package.json": f'"version": "{version}"',
+        "app/cetirun-chart/agents/openclaw/plugins/cetirun-session-log/package.json": f'"version": "{version}"',
         "app/cetirun-operator/chart/values.yaml": f'version: "{version}"',
         "app/cetirun-operator/cmd/main.go": f'"chart-version", "{version}"',
         "app/cetirun-operator/deploy/deploy.sh": f"VERSION:-{version}",

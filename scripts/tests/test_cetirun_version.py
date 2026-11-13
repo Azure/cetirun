@@ -46,6 +46,7 @@ REJECTED_VERSIONS = (
 
 VERSION_FILES = (
     "app/cetirun-memory-context/assets/adapters/openclaw/package.json",
+    "app/cetirun-chart/agents/openclaw/plugins/cetirun-session-log/package.json",
     "app/cetirun-chart/Chart.yaml",
     "app/cetirun-operator/chart/Chart.yaml",
     "app/cetirun-portal/chart/Chart.yaml",
