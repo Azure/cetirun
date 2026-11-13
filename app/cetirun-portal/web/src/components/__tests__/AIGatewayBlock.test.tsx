@@ -181,6 +181,24 @@ describe("AIGatewayBlock", () => {
     expect(api.pollCopilotLogin).toHaveBeenCalledTimes(2);
   });
 
+  it("distinguishes proxy outages from an incomplete sign-in", () => {
+    renderBlock(instance({
+      models: [], copilot: { phase: "Starting", reason: "ProxyStarting", models: [] },
+    }));
+    expect(screen.getByText(/Check its workload; signing in again will not restore it/)).toBeInTheDocument();
+    expect(screen.queryByText("Sign in to GitHub Copilot to add your Copilot models.")).not.toBeInTheDocument();
+    expect(api.startCopilotLogin).not.toHaveBeenCalled();
+    // Keep an intentional account change available without presenting it as recovery.
+    expect(screen.getByRole("button", { name: "Sign in again" })).toBeEnabled();
+  });
+
+  it("identifies a sign-in still being completed", () => {
+    renderBlock(instance({ models: [], copilot: { phase: "Starting", reason: "SignInCompleting", models: [] } }));
+    expect(screen.getByText("Completing your GitHub Copilot sign-in...")).toBeInTheDocument();
+    expect(screen.queryByText(/Check its workload/)).not.toBeInTheDocument();
+    expect(api.startCopilotLogin).not.toHaveBeenCalled();
+  });
+
   it("shows models left out for lack of a price", () => {
     renderBlock(instance({ copilot: { phase: "Ready", models: ["gpt-5.5"], unpriced: ["mystery-model"] } }));
     expect(screen.getByText(/no price for them: mystery-model/)).toBeInTheDocument();

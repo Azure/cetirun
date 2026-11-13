@@ -507,7 +507,8 @@ kubectl logs -n cetirun-system -c gateway --since=15m --tail=-1 \
 | The Agent page lists a GitHub Copilot model as not offered | The AI Gateway has no price for the model, or a shared model with the same name is another model | Refer to [Model access](../models/#names-of-github-copilot-models) |
 | A router shows `the router is not registered in the AI Gateway yet` | The operator has not registered the Team router | Wait about two minutes. Then examine `status.modelRouters` of the Team |
 | Copilot phase `SignInRequired`, or Copilot reason `SignInIncomplete` | The owner has not completed the GitHub Copilot sign-in | The owner signs in again on the Agent page |
-| Copilot reason `ProxyStarting` | The Copilot proxy of the Agent is not ready yet | Wait a few minutes |
+| Copilot reason `ProxyStarting` | The Copilot proxy is starting or has lost readiness; registered routes and credentials are retained | Check the proxy Deployment and Pod events. Restore a missing Deployment from the Agent's current Helm release. Signing in again does not repair the workload |
+| Copilot reason `SignInCompleting` | The Portal is completing the current sign-in | Wait for that sign-in to finish; do not start another |
 | Copilot reason `NotAllowedRouteRemovalFailed` or `PolicyCheckUnavailable` | The operator cannot remove a Copilot route that the Agent Policy no longer allows, or it cannot read the models or prices of the AI Gateway | Shared models continue to work. The operator tries again about every 15 seconds. Examine the AI Gateway |
 | `AIGatewayReady` is `False` with the reason `KeySecretLost` | The Secret of the key is lost | Refer to [Virtual keys](#virtual-keys) |
 | `AIGatewayModelsLimited` event | The Agent can use more models than its configuration can list | Refer to [Model access](../models/#limits) |
