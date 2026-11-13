@@ -138,6 +138,19 @@ also needs the admission server, even when `sandboxAdmission.enabled` is
 `false`. [CetiAdmin values](../../reference/helm/#cetiadmin-values) lists the
 inputs of the admission server.
 
+Owner access also needs Portal ID-token verification. For separate chart
+installations, configure the Portal's `agentIdentity.tenantId` and
+`agentIdentity.portalClientId`, even if Agent Identity and Agent Tools are off.
+The tenant must match `cetiadmin.owner.tenantID`. Opening the Agent UI also
+requires the Portal's `istio.internalAuthMTLS` and the separate Istio chart's
+`portalAuth.mtls` configuration. `make deploy` supplies these settings; the
+platform chart rejects an incompatible bundled CetiAdmin/Portal configuration.
+
+The API audience is cluster-specific. Replace the example placeholder with an
+audience accepted by the target API server. Neither its DNS address nor an OIDC
+issuer URL is a portable default. The configuration and verification steps are
+in the [platform configuration example]({{< repo "app/cetirun-platform/README.md" >}}#configure-cetiadmin).
+
 ## Disable CetiAdmin
 
 For a new installation, disable CetiAdmin in the environment file before the
@@ -176,7 +189,10 @@ For an installation that has CetiAdmin, do these steps:
 
 The operator removes the access of CetiAdmin and stops its Agent. It keeps the
 Agent, its HOME, and its installation records, so that you can enable
-CetiAdmin again. Before you remove the operator, disable CetiAdmin. Refer to
+CetiAdmin again. After shutdown is confirmed, the installation controller stops
+its periodic retries. Relevant resource changes can still trigger a check, and
+Helm's check and stop hooks still verify safe shutdown during upgrades and
+removal. Before you remove the operator, disable CetiAdmin. Refer to
 [Disable CetiAdmin before removing the Operator]({{< repo "app/cetirun-platform/README.md" >}}#disable-cetiadmin-before-removing-the-operator).
 
 To install the operator chart directly without CetiAdmin, set

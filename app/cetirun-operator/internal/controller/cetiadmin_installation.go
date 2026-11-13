@@ -163,7 +163,8 @@ func (r *CetiAdminReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (re
 	}
 	defer func() {
 		if reconcileErr != nil && state != nil {
-			reconcileErr = errors.Join(reconcileErr, r.deactivate(ctx, object, state, "ReconcileFailed"))
+			_, deactivateErr := r.deactivate(ctx, object, state, "ReconcileFailed")
+			reconcileErr = errors.Join(reconcileErr, deactivateErr)
 		} else if state != nil && state.CanRun() {
 			reconcileErr = r.reconcileDiagnosticAccess(ctx, state)
 		}
@@ -171,7 +172,8 @@ func (r *CetiAdminReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (re
 	source := &corev1.ConfigMap{}
 	if err := r.reader().Get(ctx, r.Source, source); err != nil {
 		if state != nil {
-			return result, errors.Join(client.IgnoreNotFound(err), r.deactivate(ctx, object, state, "InstallationSourceMissing"))
+			_, deactivateErr := r.deactivate(ctx, object, state, "InstallationSourceMissing")
+			return result, errors.Join(client.IgnoreNotFound(err), deactivateErr)
 		}
 		return result, client.IgnoreNotFound(err)
 	}
@@ -204,13 +206,14 @@ func (r *CetiAdminReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (re
 		return result, r.saveState(ctx, object, state)
 	}
 	if !config.Enabled || source.DeletionTimestamp != nil {
-		if err := r.deactivate(ctx, object, state, "Disabled"); err != nil {
+		stopped, err := r.deactivate(ctx, object, state, "Disabled")
+		if err != nil {
 			return result, err
 		}
-		if state.Phase == cetiadmin.PhaseDisabled && state.Source.UID == source.UID {
+		if stopped && state.Source.UID == source.UID {
 			state.Configuration, state.ConfigHash = config, installationConfigHash(config)
 			state.OperatorImage, state.RuntimeVersion = r.OperatorImage, r.ChartVersion
-			return result, r.saveState(ctx, object, state)
+			return ctrl.Result{}, r.saveState(ctx, object, state)
 		}
 		return result, nil
 	}
@@ -218,7 +221,7 @@ func (r *CetiAdminReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (re
 		return result, fmt.Errorf("retainedAgentUID does not match the recorded Agent")
 	}
 	if state.Source.UID != source.UID {
-		if err := r.deactivate(ctx, object, state, "InstallationSourceReplaced"); err != nil {
+		if _, err := r.deactivate(ctx, object, state, "InstallationSourceReplaced"); err != nil {
 			return result, err
 		}
 		if state.Phase != cetiadmin.PhaseDisabled {
@@ -257,10 +260,11 @@ func (r *CetiAdminReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (re
 		}
 	}
 	if state.Phase == cetiadmin.PhaseStopping {
-		return result, r.deactivate(ctx, object, state, state.Reason)
+		_, err := r.deactivate(ctx, object, state, state.Reason)
+		return result, err
 	}
 	if state.ConfigHash != installationConfigHash(config) || state.OperatorImage != r.OperatorImage || state.RuntimeVersion != r.ChartVersion {
-		if err := r.deactivate(ctx, object, state, "ConfigurationChanging"); err != nil {
+		if _, err := r.deactivate(ctx, object, state, "ConfigurationChanging"); err != nil {
 			return result, err
 		}
 		if state.Phase != cetiadmin.PhaseDisabled {
@@ -284,7 +288,8 @@ func (r *CetiAdminReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (re
 			if err := r.validateRetainedObjects(ctx, state); err != nil {
 				return result, err
 			}
-			return result, r.deactivate(ctx, object, state, "UserSuspended")
+			_, err := r.deactivate(ctx, object, state, "UserSuspended")
+			return result, err
 		}
 	}
 	if state.Phase == cetiadmin.PhaseDisabled || state.Phase == cetiadmin.PhaseBlocked {
@@ -312,7 +317,8 @@ func (r *CetiAdminReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (re
 		return result, err
 	}
 	if state.Bootstrapped && observed.Agent.Spec.Suspended {
-		return result, r.deactivate(ctx, object, state, "UserSuspended")
+		_, err := r.deactivate(ctx, object, state, "UserSuspended")
+		return result, err
 	}
 	binding, err := cetiadmin.ResolveBinding(config, &state.Record, observed)
 	if err != nil {
@@ -937,7 +943,7 @@ func (r *CetiAdminReconciler) BindingForAgent(ctx context.Context, agent *api.Ag
 	return binding, true, nil
 }
 
-func (r *CetiAdminReconciler) deactivate(ctx context.Context, checkpoint *corev1.ConfigMap, state *cetiadmin.Installation, reason string) error {
+func (r *CetiAdminReconciler) deactivate(ctx context.Context, checkpoint *corev1.ConfigMap, state *cetiadmin.Installation, reason string) (bool, error) {
 	state.Hold, state.Reason = true, reason
 	if state.Phase != cetiadmin.PhaseDisabled {
 		state.Phase = cetiadmin.PhaseStopping
@@ -957,21 +963,22 @@ func (r *CetiAdminReconciler) deactivate(ctx context.Context, checkpoint *corev1
 	}
 	stopped, err := r.stop(ctx, state.Record)
 	if err != nil || !stopped || revokeErr != nil {
-		return errors.Join(saveErr, revokeErr, err)
+		return false, errors.Join(saveErr, revokeErr, err)
 	}
 	if err := cetiadmin.CheckMaintenanceResolved(ctx, r.reader()); err != nil {
-		return errors.Join(saveErr, err)
+		return false, errors.Join(saveErr, err)
 	}
 	state.Phase = cetiadmin.PhaseDisabled
 	current, readErr := r.checkpointObject(ctx, state)
 	if readErr != nil {
-		return errors.Join(saveErr, readErr)
+		return false, errors.Join(saveErr, readErr)
 	}
 	finalErr := r.saveState(ctx, current, state)
 	if finalErr == nil {
 		*checkpoint = *current
 	}
-	return errors.Join(saveErr, finalErr)
+	err = errors.Join(saveErr, finalErr)
+	return err == nil, err
 }
 
 func (r *CetiAdminReconciler) stop(ctx context.Context, record cetiadmin.Record) (bool, error) {
