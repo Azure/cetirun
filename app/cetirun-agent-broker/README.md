@@ -1,4 +1,4 @@
-# CetiRun Agent Connection Broker
+# CetiRun Agent Identity Broker
 
 The Broker manages owner-scoped Connections and explicit per-Agent connection
 bindings. Azure RBAC and provider permissions are the authorities for resource
@@ -295,7 +295,7 @@ selected. Only explicit confirmation creates an Agent binding.
 The key of a conditional account index contains the owner tenant/object IDs,
 the provider, and the provider-verified stable account ID. Concurrent logins
 select one Connection ID, and healthy repeat logins keep credentials and
-bindings. Reauthorization keeps the old credentials until a successful sign-in
+bindings. **Sign in again** keeps the old credentials until a successful sign-in
 to the same account. An explicit refresh `invalid_grant` marks sign-in as
 required, but transport failures do not. Old duplicate Connections keep their
 IDs, and `canonicalConnectionId` is projected for selection.
@@ -360,7 +360,7 @@ There is no migration command or compatibility reader for the previous grant
 model.
 
 The Broker resolves the workload namespace from the live Agent state and
-examines its Agent owner reference. Ordinary Custom Agents retain their
+examines its Agent owner reference. Standard Custom Agents retain their
 separate namespace lifecycle: their Broker records require the matching
 immutable Custom ownership receipt in the Operator namespace, the exact
 Agent/namespace UIDs, and the namespace UID annotation. The Broker receives a
@@ -374,7 +374,7 @@ Management inventory scans use pages of 50 Agents, with a 1 MiB response limit
 for each page. A failed, oversized, or repeated page causes the entire scan to
 fail. The scan does not return partial results.
 
-The Operator supplies Broker Secret RBAC in ordinary managed and ordinary
+The Operator supplies Broker Secret RBAC in standard managed and standard
 Custom Agent namespaces. This is namespace-wide Secret access, not label-scoped
 isolation. Records are never mounted in Agent workloads. Custom receipt proof
 permits record storage and finalizer cleanup only; it does not enable Custom

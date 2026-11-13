@@ -1,9 +1,9 @@
 # CetiRun Portal
 
 The Portal is the web application of CetiRun. Users create and manage their
-Agents in it. Administrators manage Teams, Sandboxes, and Agent Policies in
-it. The Portal has a Go backend and a React and TypeScript frontend. The
-platform chart installs it with `make deploy`.
+Agents in it. Portal administrators manage Teams, Sandboxes, and
+Agent Policies in it. The Portal has a Go backend and a React and TypeScript
+frontend. The platform chart installs it with `make deploy`.
 
 | Path | Contents |
 | --- | --- |

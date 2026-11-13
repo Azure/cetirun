@@ -1,6 +1,6 @@
 ---
 title: "Istio authentication and egress"
-description: "Operate the shared gateway, OAuth2 Proxy, ownership checks, and egress policy."
+description: "Operate the shared ingress gateway, OAuth2 Proxy, ownership checks, and egress policy."
 weight: 30
 ---
 
@@ -41,15 +41,15 @@ headers, and mesh-wide egress resources.
    `system:serviceaccount:cetirun-istio:oauth2-proxy`, and its audience is
    `api://AzureADTokenExchange`.
 5. Configure the apex to refer to the ingress address. Add wildcard DNS only
-   for subdomain services that you configure. The portal, instance UI, and
+   for subdomain services that you configure. The Portal, Agent UI, and
    OAuth routes use the apex. For one exact hostname, use
    [Public DNS and TLS](../public-ingress/) and configure `publicTLS` to
    prepare Azure Public IP DNS or verify a user-managed record during
    deployment.
 6. Supply a certificate that covers the actual names. These names include the
    apex. Optional `publicTLS` in the normal platform deployment can issue and
-   renew the external Gateway certificate with HTTP-01; existing certificate
-   workflows remain supported.
+   renew the certificate of the external ingress gateway with HTTP-01.
+   Existing certificate workflows remain supported.
 
 The [OAuth2 Proxy deployment]({{< repo "infra/istio/templates/ingress/oauth2-proxy-deployment.yaml" >}})
 sets the apex callback. Its
@@ -68,12 +68,12 @@ The helper has no input for a PFX password. You are responsible for the
 issuance and the renewal of the certificate. Refer to
 [Certificates and credentials](../certificates/).
 
-The [Gateway template]({{< repo "infra/istio/templates/ingress/gateway.yaml" >}})
+The [`Gateway` template]({{< repo "infra/istio/templates/ingress/gateway.yaml" >}})
 always declares HTTPS on port 443 with `credentialName: cetirun-tls`. By
 default, `tls.enabled` is false. This value prevents the creation of the TLS
-Secret. It does **not** prevent HTTPS. Supply `cetirun-tls` in the gateway
-namespace out of band, or set `tls.enabled: true` with the certificate and key.
-A render without that Secret is not a usable TLS deployment.
+Secret. It does **not** prevent HTTPS. Supply `cetirun-tls` in the ingress
+gateway namespace out of band, or set `tls.enabled: true` with the certificate
+and key. A render without that Secret is not a usable TLS deployment.
 
 `make deploy` refuses the certificate and key in values. With `make deploy`,
 supply the Secret out of band.
@@ -216,9 +216,9 @@ az rest --method post \
     audiences: ["api://AzureADTokenExchange"]}')" --output none
 ```
 
-### Supply the Gateway certificate
+### Supply the ingress gateway certificate
 
-The Gateway reads its certificate from the `cetirun-tls` Secret in the gateway
+The ingress gateway reads its certificate from the `cetirun-tls` Secret in its
 namespace, `aks-istio-ingress` by default. The Secret has the keys `tls.crt`
 and `tls.key`.
 
@@ -231,8 +231,8 @@ port-443 Gateway. It sets this chart's `tls.enabled: false` and platform
 not support wildcard certificates, DNS-01, certificate ownership migration, or
 an arbitrary proxy/CDN in front of the ingress.
 
-The CetiRun Gateway listens only on HTTPS port 443. As a result, an ACME
-HTTP-01 challenge through this Gateway fails. For a domain whose DNS you
+The Istio `Gateway` of CetiRun listens only on HTTPS port 443. As a result, an
+ACME HTTP-01 challenge through it fails. For a domain whose DNS you
 control outside the `publicTLS` path, use DNS-01 validation, or a certificate
 from the CA of your organization.
 
@@ -345,8 +345,8 @@ This command does not validate identity, TLS, Secrets that already exist, or
 the managed mesh configuration. Do not apply this rendered example.
 
 **Connected, mutating:** for an installation without `make deploy`,
-administrators can install the local chart with a separately prepared private
-values file:
+platform administrators can install the local chart with a separately prepared
+private values file:
 
 ```bash
 helm upgrade --install cetirun-istio infra/istio \
@@ -587,7 +587,7 @@ It uses `preferred_username` instead only for app registrations where the
 optional claim is not enabled. The authorization request does not force an
 account picker, so Entra can reuse the hinted Portal session. The hint selects
 a sign-in session, and it is never an authorization key. The callback must
-still match the verified tenant and object IDs of the instance owner. As a
+still match the verified tenant and object IDs of the Agent owner. As a
 result, if you enable the claim, this does not relax owner isolation.
 
 The Agent authorization client requests the `access_agent` scope of the
@@ -599,18 +599,18 @@ scopes, refer to
 [Prepare Microsoft Entra Agent Identity](../entra-agent-identity/#add-microsoft-delegated-access-when-needed).
 
 For authenticated Portal routes, OAuth2 Proxy returns its validated ID token in
-the internal `Authorization` header. The gateway filter first removes any
-client-supplied `X-CetiRun-Portal-ID-Token`. Then it moves the validated token
-to that header only for the Portal, and it removes `Authorization`. Agent
+the internal `Authorization` header. The ingress gateway filter first removes
+any client-supplied `X-CetiRun-Portal-ID-Token`. Then it moves the validated
+token to that header only for the Portal, and it removes `Authorization`. Agent
 routes receive neither the Portal ID token nor its authorization header. Before
 the Portal uses the token for Agent authorization ownership, it verifies the
 token signature, issuer, audience, tenant, object ID, and timestamps.
 
-Native Agent UIs, such as the OpenClaw Control UI, authenticate some of their
+Agent UIs, such as the OpenClaw Control UI, authenticate some of their
 own HTTP requests with an `Authorization` header that ext-auth replaces. Before
 ext-auth, the security headers filter records the value from the browser in
-the request's dynamic metadata. This metadata never leaves the gateway. After
-the ownership check, the ownership filter restores the value on owned
+the request's dynamic metadata. This metadata never leaves the ingress gateway.
+After the ownership check, the ownership filter restores the value on owned
 `/ui/<instance>/` routes, unless OAuth2 Proxy accepted that same credential as
 the user's identity. The native Agent API routes below continue to accept only
 their dedicated header. On other owned Agent routes, such as the Terminal and
@@ -622,10 +622,10 @@ credentials below applies.
 When you upgrade an older shared Istio ConfigMap, this step is necessary. Helm
 cannot change that AKS-managed ConfigMap.
 
-The ownership filter extracts the instance from `/ui/<instance>/`, or from the
-first path segment for other instance services. Then it calls the portal's
+The ownership filter extracts the Agent name from `/ui/<instance>/`, or from
+the first path segment for other Agent services. Then it calls the portal's
 internal ownership endpoint. Before it forwards a normal or webhook request to
-an instance workload, it removes the `_cetirun_oauth2` Portal session cookie
+an Agent workload, it removes the `_cetirun_oauth2` Portal session cookie
 (with chunk suffixes). It also removes the sign-in (CSRF) cookies of OAuth2
 Proxy, but it keeps the cookies that the Agent UI owns.
 
@@ -637,13 +637,13 @@ Model sign-in uses the Portal and AI Gateway. Hermes native API clients carry
 `API_SERVER_KEY` in `X-CetiRun-Agent-API-Key`. After the ownership check, the
 filter converts it to a bearer credential only for the owned
 `/ui/<instance>/v1/models` and `/ui/<instance>/v1/chat/completions` routes (and
-their legacy instance-subdomain forms). Transport headers are removed from
+their legacy subdomain forms). Transport headers are removed from
 unrelated routes.
 
-Portal port 8080 uses strict mTLS and gateway service-account identity.
-Identity-bound Agent ownership also requires mTLS on port 8081. The Gateway's
-dedicated TLS cluster sends the signed Portal ID token to the internal
-ownership endpoint, where Portal checks the recorded tenant and object IDs.
+Portal port 8080 uses strict mTLS and ingress gateway service-account identity.
+Identity-bound Agent ownership also requires mTLS on port 8081. The ingress
+gateway's dedicated TLS cluster sends the signed Portal ID token to the internal
+ownership endpoint. There, Portal checks the recorded tenant and object IDs.
 An owner's display alias or email can change without changing ownership.
 The token is never forwarded to the Agent.
 
@@ -652,19 +652,22 @@ deployments must set `portalAuth.mtls.enabled: true` and an exact
 `portalAuth.mtls.serverIdentity`, such as
 `spiffe://cluster.local/ns/cetirun-portal/sa/cetirun-portal`, in the Istio chart,
 and `istio.internalAuthMTLS: true` in the Portal chart. Use the actual Portal
-namespace and service account. SDS supplies the mesh client certificate and
-CA; the TLS cluster verifies that exact Portal identity, and Portal permits
-only the configured Gateway service account. NetworkPolicy remains enforced.
+namespace and service account.
+
+SDS supplies the mesh client certificate and CA. The TLS cluster verifies that
+exact Portal identity, and Portal permits only the configured ingress gateway
+service account. NetworkPolicy remains enforced.
 
 For an upgrade, enable Portal's strict internal policy first, then deploy the
 Istio TLS cluster, then update the Portal backend. Native Agent access can be
 briefly unavailable between these steps; Portal port 8080 remains available.
 The TLS cluster has a distinct name so partial xDS propagation fails closed.
-Preserve the TLS settings when rolling back the backend. Chart defaults keep
-the older plaintext alias-only transport for standalone compatibility; that
-mode never forwards ID tokens and cannot authorize identity-bound Agents with
-the updated backend. A configured Entra tenant and Portal client are required
-for bound ownership even when Agent Identity and Agent Tools are disabled.
+Preserve the TLS settings when you return the backend to an earlier version.
+Chart defaults keep the older plaintext alias-only transport for standalone
+compatibility; that mode never forwards ID tokens and cannot authorize
+identity-bound Agents with the updated backend. A configured Entra tenant and
+Portal client are required for bound ownership even when Agent Identity and
+Agent Tools are disabled.
 
 Sources: [ownership filter]({{< repo "infra/istio/templates/ingress/envoy-filter-alias.yaml" >}}),
 [portal peer authentication]({{< repo "app/cetirun-portal/chart/templates/peer-authentication.yaml" >}}),
@@ -672,26 +675,27 @@ and [portal NetworkPolicy]({{< repo "app/cetirun-portal/chart/templates/network-
 The operator owns per-instance VirtualServices, not this shared chart.
 
 Portal `admins.aliases` enables administrative APIs. It is not blanket
-authorization to read another user's instance. The Istio helper passes
+authorization to read another user's Agent. The Istio helper passes
 `authPolicy.adminAliases`, but no Istio template uses it. Configure the
-portal's reviewed admin list separately. If you run only the Istio helper, this
-does not grant portal admin access.
+reviewed list of Portal administrators separately. If you run only the Istio
+helper, this does not grant Portal administrator access.
 
 ### Agent UI content security policy
 
 Applications served below `/ui/<instance>/` own their Content Security Policy
-(CSP). The gateway keeps their `Content-Security-Policy` and
+(CSP). The ingress gateway keeps their `Content-Security-Policy` and
 `Content-Security-Policy-Report-Only` response headers, with dynamic nonces and
-hashes. If the application does not set a CSP, the gateway does not supply a
-fallback CSP. Other routes keep the platform policy. The bare `/ui/<instance>`
-redirect also keeps it. This is a response-header rule, not an authentication
-exemption.
+hashes. If the application does not set a CSP, the ingress gateway does not
+supply a fallback CSP. Other routes keep the platform policy. The bare
+`/ui/<instance>` redirect also keeps it. This is a response-header rule, not an
+authentication exemption.
 
-AAD authentication, instance ownership checks, and the removal of platform
-credentials stay in effect. The gateway also keeps HSTS, `nosniff`,
+AAD authentication, Agent ownership checks, and the removal of platform
+credentials stay in effect. The ingress gateway also keeps HSTS, `nosniff`,
 Referrer-Policy, and the configured X-Frame-Options header. Applications must
 set a CSP that is correct for their scripts, API calls, workers, and embedded
-content. Administrators do not keep per-application resource allowlists.
+content. Platform administrators do not keep per-application resource
+allowlists.
 
 Path prefixes do not isolate browser origins. An Agent UI on the Portal's origin
 can make same-origin requests with the visitor's platform session. The
@@ -744,7 +748,7 @@ The chart adds ServiceEntries and access logging in the
 Istio root namespace. Access logging is enabled by default and can include
 destination names. A ServiceEntry list alone does not create an egress
 allowlist. The chart does not implement a complete outbound allowlist.
-These audit resources do not enforce AgentPolicy. Guest-external network
+These audit resources do not enforce Agent Policies. Guest-external network
 controls and approved Pod-local visible-SNI capture belong to each Agent's
 common Sandbox execution pipeline.
 
@@ -765,7 +769,7 @@ Do not use `--reuse-values` from an older release. Upgrade with
 `--reset-values -f <reviewed-values.yaml>`. Keep the necessary TLS/OIDC, owner,
 routing, header, and logging configuration.
 
-Before you remove the old enforcement, qualify the necessary AgentPolicy
+Before you remove the old enforcement, qualify the necessary Agent Policy
 network outcomes on your supported runtime profiles. The old filter has the
 `helm.sh/resource-policy: keep` annotation. As a result, if you remove its
 template, this does not prove that the filter is gone. If you uninstall the
@@ -809,12 +813,12 @@ kubectl get envoyfilter -n aks-istio-ingress
 kubectl get pods -n cetirun-istio
 ```
 
-For diagnosis, examine the specific shared ConfigMap revision and gateway
-listeners with `istioctl`. Review OAuth2 Proxy logs privately. Helm values can
-contain certificate or cookie material. For this reason, do not copy them into
-reports.
+For diagnosis, examine the specific shared ConfigMap revision and ingress
+gateway listeners with `istioctl`. Review OAuth2 Proxy logs privately. Helm
+values can contain certificate or cookie material. For this reason, do not copy
+them into reports.
 
-An upgrade can affect every instance. Before you apply changed values and the
+An upgrade can affect every Agent. Before you apply changed values and the
 external authorization patch, review them. A Helm uninstall does not remove the
 external authorization provider from the managed ConfigMap. For an older kept
 blacklist, the explicit cleanup above is necessary. Make an explicit plan for

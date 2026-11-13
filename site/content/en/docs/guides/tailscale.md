@@ -23,7 +23,7 @@ continues to work.
 ## Before you begin
 
 - Make sure that your deployment allows Tailscale. If the Agent form has no
-  **Tailscale Auth Key (optional)** field, ask your administrator.
+  **Tailscale Auth Key (optional)** field, ask your platform administrator.
 - Get access to a tailnet, and install the Tailscale client on your device.
 - An Agent of a policy-bound Team runs in a Sandbox. Tailscale is not
   available in this Sandbox.
@@ -88,7 +88,7 @@ Do not make the Agent public to avoid a tailnet problem. If someone sees
 your key, replace it in **Edit Agent**, and ask your tailnet administrator to
 revoke the old key.
 
-## Administrator tasks
+## Platform administrator tasks
 
 ### Enable Tailscale in the portal
 
@@ -121,9 +121,9 @@ kubectl patch agents.cetirun.microsoft.com alice --type=merge \
   -p '{"spec":{"tailscale":{"authKeySecretRef":"tailscale-auth"}}}'
 ```
 
-For a new Agent, an authorized platform operator must create its
-`cetirun-<agent-name>` namespace before the Secret. The platform operator must
-then add this block under the Agent's `spec`:
+For a new Agent, an authorized platform administrator must create its
+`cetirun-<agent-name>` namespace before the Secret. The platform administrator
+must then add this block under the Agent's `spec`:
 
 ```yaml
 tailscale:

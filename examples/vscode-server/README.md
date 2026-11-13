@@ -43,16 +43,16 @@ refer to the
 Deploy an approved image by digest.
 
 The `runtime-source` stage gives mode `0644` to copied JavaScript modules and
-mode `0755` to application directories. It also makes the bundled Gateway
+mode `0755` to application directories. It also makes the bundled AI Gateway
 extension readable and traversable, and it keeps executable scripts executable.
 The build tests these files as UID/GID `1024:1024`. It also tests the installed
 extension copy in the final stage. HOME and user credentials are not changed.
 
 ## Deploy
 
-Use Operator, CRD, runtime chart, and Portal versions that match and have Custom
-Web UI support. Custom provisioning is enabled by default; an administrator
-approves the image digest:
+Use Operator, CRD, agent chart, and Portal versions that match and have Custom
+Web UI support. Custom provisioning is enabled by default; a
+platform administrator approves the image digest:
 
 ```yaml
 cetirun-operator:
@@ -85,24 +85,24 @@ editor at `/ui/vscode-example/`. Platform Desktop and Terminal are disabled
 because VS Code has its own terminal. The image runs as UID/GID 1024 with
 `HOME=/home/vibe`. Let the platform provision its namespace and storage.
 
-Every approved Custom image gets the Gateway binding. The Operator injects
-`OPENAI_BASE_URL` and the instance's Secret-backed
+Every approved Custom image gets the AI Gateway binding. The Operator injects
+`OPENAI_BASE_URL` and the Agent's Secret-backed
 `OPENAI_API_KEY`. The manifest enables shared models and disables the optional
-Gateway Copilot upstream.
+AI Gateway Copilot upstream.
 
 ## Use
 
 1. Wait until the Agent is Ready. Then select **Web UI** in the Portal.
 2. When VS Code asks, trust your workspace. Then the bundled
    **CetiRun AI Gateway** configuration extension finds the models that the
-   instance's Virtual Key allows. It adds a native **Custom Endpoint** group.
+   Agent's Virtual Key allows. It adds a native **Custom Endpoint** group.
    Setup enables the bundled Copilot extension without a sign-in and without
    enrollment in a Copilot plan. Workspace trust and tool approval prompts
    still apply.
 3. Open Chat. If you already have a saved model preference, select a model
    under **CetiRun AI Gateway**. New profiles use the first model in the sorted
-   catalog as the default. Utility tasks also use a Gateway model. Use the local
-   Chat Agent workflow, not a cloud-hosted coding agent.
+   catalog as the default. Utility tasks also use an AI Gateway model. Use the
+   local Chat Agent workflow, not a cloud-hosted coding agent.
 4. Work in `$HOME/workspace`. Keep the browser site data. BYOK configuration
    and Secret Storage belong to the active VS Code browser profile, not only to
    the PVC.
@@ -112,7 +112,7 @@ read-only `$HOME/.agents` instructions and Skills to Copilot. Examine
 **Chat: Open Customizations** for the selected harness. Project instructions
 stay separate.
 
-## Gateway configuration and limits
+## AI Gateway configuration and limits
 
 The extension uses the pinned VS Code command `lm.migrateLanguageModelsProviderGroup`
 to store the Virtual Key in native Secret Storage. `chatLanguageModels.json`
@@ -123,9 +123,9 @@ owner. An explicit `chat.aiDisabled` or legacy `chat.disableAIFeatures` setting
 stops automatic configuration, and it does not enable AI features again.
 
 Discovery uses `GET /v1/models`. Copilot sends model requests directly to the
-Gateway's `POST /v1/chat/completions`. The configuration extension does not
+AI Gateway's `POST /v1/chat/completions`. The configuration extension does not
 proxy chat traffic. Discovery has a timeout and a catalog-size limit, and it
-rejects redirects. It removes unresolved Gateway access-group names from the
+rejects redirects. It removes unresolved AI Gateway access-group names from the
 model list.
 
 The demo is for models that support streaming Chat Completions and tool calls,
@@ -141,7 +141,7 @@ The extension refreshes its untouched model group and defaults when the catalog
 or the injected key changes. It does this on startup or with
 **CetiRun: Configure AI Gateway Models**. A Secret-backed environment variable
 changes only after the container is restarted. The extension keeps other model
-groups, comments, and explicit user settings. If you edit the Gateway group
+groups, comments, and explicit user settings. If you edit the AI Gateway group
 yourself, it becomes user-managed and automatic refresh stops.
 
 To return to managed configuration, remove that group in
@@ -149,10 +149,10 @@ To return to managed configuration, remove that group in
 Before you do these steps, save the dirty model configuration.
 
 Empty catalogs, denied requests, and invalid configuration report a setup
-warning. They do not enable a GitHub login fallback. Partial Gateway environment
-bindings cause startup to fail. Platform model access uses the Gateway. This
-example does not manage browser credentials or configuration that already
-exist. For a different mode, use a separate profile.
+warning. They do not enable a GitHub login fallback. Partial AI Gateway
+environment bindings cause startup to fail. Platform model access uses the
+AI Gateway. This example does not manage browser credentials or configuration
+that already exist. For a different mode, use a separate profile.
 
 BYOK covers Chat, local Agent workflows, and utility tasks. It does **not**
 supply GitHub's inline code completions, semantic search, or features that
@@ -177,14 +177,14 @@ python3 -B -m unittest discover -s scripts/tests -p test_vscode_example.py -v
 ```
 
 The tests use loopback servers, synthetic credentials, and a simulated VS Code
-API. They cover Gateway discovery, native configuration handoff, secret
+API. They cover AI Gateway discovery, native configuration handoff, secret
 references, restart/key refresh, user-file preservation, and the Web IDE proxy
 that already exists. They do not start VS Code or validate a real Copilot
 request.
 
 Qualify an approved image separately with a signed-out browser profile and a
-native Agent tool task. Make sure that the Gateway request metadata matches. Do
-this check again after a restart and after a key rotation. A separate
+native Agent tool task. Make sure that the AI Gateway request metadata matches.
+Do this check again after a restart and after a key rotation. A separate
 authorization is necessary for deployment and for live model calls.
 
 The shared [source-permission suite](../pi-agent/README.md#source-permissions)

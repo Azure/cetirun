@@ -57,9 +57,10 @@ into an authorized Prometheus installation that already exists:
   cannot detect the complete disappearance of these targets. If you remove a
   target deliberately, update the expectations.
 - Keep both metric families when you scrape or relabel. A successful
-  collection with no population series means an empty or legacy-only
-  population **only under that contract**. With these signals, a filter that
-  removes only `cetirun_sandbox_agents` looks the same as an empty population.
+  collection with no population series means an empty population, or a
+  population of only standard Agents, **only under that contract**. With these
+  signals, a filter that removes only `cetirun_sandbox_agents` looks the same
+  as an empty population.
 - Review the routing, severity, and time settings with the owners of the
   deployment. Every example uses `severity: warning`, a one-minute evaluation
   interval, and a continuous `for: 5m` debounce. Five minutes is illustrative.
@@ -86,7 +87,7 @@ identifiers.
 | `CetiRunSandboxScrapeFailed` | `up=0`: the scrape failed. Inspect the scrape error of the target and the approved connectivity or access path. Do not interpret the status samples that are left as current. |
 | `CetiRunSandboxCollectionMetricMissing` | `up=1` but the collection gauge is absent for that identity. Examine the target selection, the endpoint and version, disabled metrics, and relabel or filter rules. Population counts are unavailable, not zero. |
 | `CetiRunSandboxCollectionUnavailable` | `up=1` and collection success is `0`. Startup or cache initialization, synchronization, or cached reads are unavailable or failed. The counts are omitted. Inspect the operator health, trusted logs, and authorized API connectivity and RBAC. |
-| `up=1`, collection success `1`, no population series | An empty or legacy-only reported population, if there is no metric filter. No failure alert. This is not evidence that every intended Agent was discovered or that enforcement is current. |
+| `up=1`, collection success `1`, no population series | An empty reported population, or one of only standard Agents, if there is no metric filter. No failure alert. This is not evidence that every intended Agent was discovered or that enforcement is current. |
 | Held, suspended or deleting reports | `SandboxPrepared`, `SandboxPreparationPending`, and `EnforcementPending` are not automatically failures. Prepared still means a held preparation with zero replicas. `Suspended`, `Deleting`, and `InstanceDeleting` are intentional lifecycle categories. These examples do not alert on them. |
 | Other non-ready or unknown reports | Inspect the current status and the response guidance in the public contract. Absent, stale, or malformed conditions and other reasons are not automatically enforcement loss. No generic non-ready ratio alert or failure alert is supplied. |
 | `CetiRunSandboxReportedEnforcementLost` | A populated group has `status=False` or `Unknown`, `reason=EnforcementLost`, and a count **greater than zero**. That same identity also has `up=1` and collection success `1`. Use trusted status, trusted logs, and the qualified response procedure to investigate the affected control. A `True` report with that reason does not meet this rule. |

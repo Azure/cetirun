@@ -22,6 +22,11 @@ difference, refer to
 [Run local checks](content/en/docs/getting-started/local-checks.md). The
 preview URL is `http://localhost:1313/cetirun/`.
 
+The site check also checks the writing style of the pages. To list the style
+findings of each page, run `python3 site/scripts/check_site.py --style-report`.
+For the rule levels and sentence case, refer to
+[Style checks](content/en/docs/contributing/site.md#style-checks).
+
 Prerequisites: Make, Go 1.27.4 (the same version as the repository's
 `.go-version`), C/C++ build tools for Hugo extended, Node.js 24 with npm, and
 Python 3.11 or later. `HUGO_VERSION` in [`Makefile`](Makefile) pins Hugo

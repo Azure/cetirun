@@ -30,25 +30,25 @@ runtimes. Native session files remain in each runtime's HOME. Adapter-managed
 Copilot sessions live in `$HOME/.cetirun/coding-runtime/copilot-sessions`; existing
 user `.copilot` sessions are neither migrated nor deleted.
 
-### Gateway and model selection
+### AI Gateway and model selection
 
 Model access requires the platform-injected `OPENAI_BASE_URL` and an
 `OPENAI_API_KEY` containing the **per-Agent Virtual Key**. `/v1/models` reads the
-Gateway catalog authorized for that key. An unavailable model, an authorization
-failure or a Gateway error does not produce a fabricated catalog or trigger a
-fallback to a personal account or direct provider API.
+AI Gateway catalog authorized for that key. An unavailable model, an authorization
+failure or an AI Gateway error does not produce a fabricated catalog. It also does
+not trigger a fallback to a personal account or direct provider API.
 
-| Runtime | Gateway integration |
+| Runtime | AI Gateway integration |
 | --- | --- |
-| Copilot | Environment-based Gateway configuration using the OpenAI Responses protocol and the exact authorized model ID. |
-| Claude Code | Anthropic Messages protocol. A trailing `/v1` is removed from the Gateway base URL to avoid duplicate paths; model and subagent aliases use the same authorized model. |
+| Copilot | Environment-based AI Gateway configuration using the OpenAI Responses protocol and the exact authorized model ID. |
+| Claude Code | Anthropic Messages protocol. A trailing `/v1` is removed from the AI Gateway base URL to avoid duplicate paths; model and subagent aliases use the same authorized model. |
 | Codex | An explicit `cetirun` provider using the Responses protocol. `env_key` references the Virtual Key without requiring a personal OpenAI login. |
 
 HTTP and `coding-tui` share the launch preparation in [native.py](native.py).
 Copilot uses a separate temporary `COPILOT_HOME`, `settings.json` and
 `COPILOT_PROVIDERS_CONFIG`. Existing provider settings are not used for routing,
 and user configuration is not deleted or overwritten. The temporary provider
-JSON is an empty registry with no keys. The Gateway Virtual Key is passed only
+JSON is an empty registry with no keys. The AI Gateway Virtual Key is passed only
 through the child process environment, not adapter configuration files or argv.
 
 Temporary configuration files use mode `0600` under a `0700` directory and are
@@ -150,8 +150,8 @@ The page does not implement the CetiRun Web UI prefix contract. Keep
 `webUI: false`; setting `webUI: true` does not make it compatible.
 
 A persistent HOME is not an isolation boundary. Filesystem and network isolation
-must come from the approved CetiRun Sandbox and Policy. Tool permissions support
-coding and testing without `--yolo` or
+must come from the approved CetiRun Sandbox and Agent Policy. Tool permissions
+support coding and testing without `--yolo` or
 `--dangerously-bypass-approvals-and-sandbox`. Do not share a writable HOME or
 checkout between runtimes.
 
@@ -204,9 +204,10 @@ done
 ```
 
 [tests/native_probe.py](tests/native_probe.py) checks the actual model request for
-Gateway routing, user-task forwarding, primary platform instructions, skill
-discovery, disabled Memory and propagation of the no-capture MCP environment.
-The synthetic Gateway returns an error before inference. The Memory helper is
+AI Gateway routing, user-task forwarding, primary platform instructions and skill
+discovery. It also checks disabled Memory and propagation of the no-capture MCP
+environment.
+The synthetic AI Gateway returns an error before inference. The Memory helper is
 also a fixture: it does not access a real private store. These probes do not make
 billable provider calls.
 
@@ -263,17 +264,17 @@ A deployment needs separate acceptance checks for:
 
 Compatibility must be tested for each configured provider path. Claude Code with
 a third-party model over Anthropic Messages is a compatibility path, not a claim
-of official Claude model support. Codex may require the Gateway to translate
+of official Claude model support. Codex may require the AI Gateway to translate
 Responses requests to the provider's protocol. Copilot's configured model must
 also satisfy any required GitHub authorization. A different model cannot stand in
 for the requested one during acceptance.
 
-Confirm that provider terms permit the intended Gateway and automation usage.
+Confirm that provider terms permit the intended AI Gateway and automation usage.
 Interactive subscription entitlements must not be assumed to permit shared or
-application-backend access. Gateway USD budget and spend estimates are management
-values, not a replacement for provider billing or credit quotas. Validate the
-loaded pricing configuration separately; recorded reference prices do not prove
-that budget enforcement is active.
+application-backend access. AI Gateway USD budget and spend estimates are
+management values, not a replacement for provider billing or credit quotas.
+Validate the loaded pricing configuration separately; recorded reference prices do
+not prove that budget enforcement is active.
 
 Keep environment-specific deployment files, credentials, billing inputs,
 certificate rotation records and live verification logs outside Git. This README
