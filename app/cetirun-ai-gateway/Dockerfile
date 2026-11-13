@@ -87,7 +87,10 @@ COPY cetirun_ai_gateway /opt/cetirun-ai-gateway/python/cetirun_ai_gateway
 # upgrade that moves what they build on fails the build, not the proxy's start.
 # It also checks that the guard replaced each LiteLLM function it replaces, and
 # calls each replacement the way LiteLLM calls that function: LiteLLM 1.108.3
-# called two of them by other names or with other arguments.
+# called two of them by other names or with other arguments. The next check
+# gives LiteLLM's error for a spent budget the guard's message and lets LiteLLM
+# turn it into the response a caller gets, as the proxy does after the
+# failure hook: the response must carry that message and keep the error type.
 RUN chmod 0755 /usr/local/bin/cetirun-ai-gateway && \
     test "$(id -un 65532)" = nonroot && \
     cp "$(python -c 'import litellm_proxy_extras, os; print(os.path.dirname(litellm_proxy_extras.__file__))')/schema.prisma" /app/schema.prisma && \
@@ -98,6 +101,7 @@ RUN chmod 0755 /usr/local/bin/cetirun-ai-gateway && \
     python -c "from prisma.client import BINARY_PATHS; paths = list(BINARY_PATHS.query_engine.values()); assert paths and all(p.startswith('/opt/prisma/') for p in paths), paths" && \
     python -c "import importlib.util, sys; sys.exit(importlib.util.find_spec('litellm_enterprise') is not None)" && \
     LITELLM_LOCAL_MODEL_COST_MAP=True python -c "import litellm; from litellm.integrations.custom_logger import CustomLogger; from cetirun_ai_gateway.request_log import handler; from cetirun_ai_gateway.guard import handler as guard; assert isinstance(handler, CustomLogger) and isinstance(guard, CustomLogger); assert callable(litellm.logging_callback_manager.add_litellm_callback); from litellm.proxy.proxy_cli import run_server; assert callable(run_server.main); import cetirun_ai_gateway.guard as module; assert all(module.PATCHED.values()), module.PATCHED; checks = module.exercise_patches(); assert all(value is True for value in checks.values()), checks; assert module.refuses_reasoning({'litellm_params': {'model': 'azure/gpt-4.1-mini'}}) and not module.refuses_reasoning({'litellm_params': {'model': 'azure/my-deployment', 'base_model': 'azure/gpt-5'}}); assert litellm.expose_router_debug_in_errors is False" && \
+    LITELLM_LOCAL_MODEL_COST_MAP=True python -c "import litellm; from litellm.proxy.auth.auth_exception_handler import _as_proxy_exception; from cetirun_ai_gateway.guard import budget_refusal, replace_message; error = litellm.BudgetExceededError(current_cost=2.5, max_budget=2.0, message='Budget has been exceeded! Key=build-check (sk-...abcd)', entity_type='key'); message = budget_refusal(error, None); assert message and message.startswith('CetiRun AI Gateway: this key has spent 2.50 USD of its 2.00 USD budget. '), message; replace_message(error, message); refusal = _as_proxy_exception(error); assert (refusal.message, refusal.type, refusal.code) == (message, 'budget_exceeded', str(error.status_code)), refusal.to_dict()" && \
     LITELLM_LOCAL_MODEL_COST_MAP=True python -c "from litellm.integrations.additional_logging_utils import AdditionalLoggingUtils; from cetirun_ai_gateway.content import ContentLog; assert issubclass(ContentLog, AdditionalLoggingUtils); from azure.identity import WorkloadIdentityCredential; from azure.kusto.data import ClientRequestProperties, KustoClient, KustoConnectionStringBuilder; from azure.kusto.data.data_format import DataFormat; from azure.kusto.ingest import IngestionProperties, QueuedIngestClient; assert DataFormat.MULTIJSON"
 
 USER 65532:65532

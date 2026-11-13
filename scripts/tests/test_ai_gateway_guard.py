@@ -15,6 +15,7 @@ import asyncio
 import base64
 import collections
 import copy
+import datetime
 import importlib.util
 import json
 import logging
@@ -37,11 +38,13 @@ class CustomLogger:
 class Key:
     """Stands in for LiteLLM's UserAPIKeyAuth, the key object the proxy authenticated."""
 
-    def __init__(self, models, team_id=None, key_alias=None, token=None):
+    def __init__(self, models, team_id=None, key_alias=None, token=None, max_budget=None, budget_reset_at=None):
         self.models = models
         self.team_id = team_id
         self.key_alias = key_alias
         self.token = token
+        self.max_budget = max_budget
+        self.budget_reset_at = budget_reset_at
 
 
 class HTTPException(Exception):
@@ -156,6 +159,30 @@ class ProviderError(Exception):
         self.message = message
         self.status_code = 429
         super().__init__(message)
+
+
+class BudgetExceededError(Exception):
+    """Shaped like LiteLLM 1.108.3's: the amounts, the budget found spent and the message, which is
+    also the only argument. The status is the proxy's budget_exceeded_status_code."""
+
+    def __init__(self, current_cost, max_budget, message=None, entity_type=None, entity_id=None):
+        self.current_cost = current_cost
+        self.max_budget = max_budget
+        self.status_code = 402
+        self.entity_type = entity_type
+        self.entity_id = entity_id
+        self.message = message or f"Budget has been exceeded! Current cost: {current_cost}, Max budget: {max_budget}"
+        super().__init__(self.message)
+
+
+UTC = datetime.timezone.utc
+# The key of an Agent with a monthly budget, as the operator creates it, and
+# LiteLLM's refusal once the key has spent it.
+BUDGET_RESET = datetime.datetime(2099, 12, 1, tzinfo=UTC)
+AGENT_KEY = Key(["cetirun-model-aaaa"], team_id="cetirun-team-synthetic", key_alias="cetirun-synthetic-agent-0000",
+                token="synthetic-hashed-token", max_budget=10.0, budget_reset_at=BUDGET_RESET)
+KEY_BUDGET_MESSAGE = ("Budget has been exceeded! Key=cetirun-synthetic-agent-0000 (sk-...ab12) "
+                      "Current cost: 10.0213, Max budget: 10.0")
 
 
 class LoggingObject:
@@ -1815,6 +1842,122 @@ class GuardTest(unittest.TestCase):
                 error = ProviderError(message)
                 asyncio.run(self.guard.async_post_call_failure_hook({}, error, None))
                 self.assertEqual((str(error), error.message), (message, message))
+
+    # ----- a spent budget -----
+
+    def budget_refused(self, error, caller, litellm_has_class=True):
+        """The error after the failure hook, with LiteLLM's BudgetExceededError known to the guard."""
+        if litellm_has_class:
+            self.module.litellm.BudgetExceededError = BudgetExceededError
+        self.assertIsNone(asyncio.run(self.guard.async_post_call_failure_hook({}, error, caller)))
+        return error
+
+    def test_a_spent_agent_budget_names_the_agent_its_reset_and_the_administrator(self):
+        error = self.budget_refused(BudgetExceededError(10.0213, 10.0, KEY_BUDGET_MESSAGE, "key", "synthetic-hashed-token"),
+                                    AGENT_KEY)
+        expected = ("CetiRun AI Gateway: this Agent has spent 10.02 USD of its 10.00 USD budget. The Gateway refuses "
+                    "its model requests until the budget resets on 2099-12-01 00:00 UTC. A CetiRun administrator can "
+                    "raise the budget sooner.")
+        # LiteLLM answers with the error's message and, from the error, its status and the type budget_exceeded.
+        self.assertEqual((error.message, str(error), error.args), (expected, expected, (expected,)))
+        self.assertIsInstance(error, BudgetExceededError)
+        self.assertEqual((error.status_code, error.entity_type, error.current_cost, error.max_budget),
+                         (402, "key", 10.0213, 10.0))
+        for secret in ("cetirun-synthetic-agent-0000", "sk-", "ab12", "synthetic-hashed-token"):
+            self.assertNotIn(secret, error.message)
+
+    def test_a_team_budget_names_the_team_and_every_other_budget_the_one_that_applies(self):
+        user_key = Key(["gpt-5"], key_alias="console-key", max_budget=50.0, budget_reset_at=BUDGET_RESET)
+        cases = (
+            (BudgetExceededError(250.5, 250.0, "Budget has been exceeded! Team=cetirun-team-synthetic Current cost: "
+                                 "250.5, Max budget: 250.0", "team", "cetirun-team-synthetic"), AGENT_KEY,
+             "CetiRun AI Gateway: the Team of this Agent has spent 250.50 USD of its 250.00 USD budget. The Gateway "
+             "refuses the model requests of the Team's Agents. A CetiRun administrator can raise the budget."),
+            (BudgetExceededError(250.5, 250.0, entity_type="team"), user_key,
+             "CetiRun AI Gateway: the team of this key has spent 250.50 USD of its 250.00 USD budget. The Gateway "
+             "refuses the model requests of the team's keys. A CetiRun administrator can raise the budget."),
+            (BudgetExceededError(5.5, 5.0, "ExceededBudget: User=alice over budget. Spend=5.5, Budget=5.0", "user",
+                                 "alice"), AGENT_KEY,
+             "CetiRun AI Gateway: a budget that applies to this Agent is used up: 5.50 USD spent of 5.00 USD. The "
+             "Gateway refuses its model requests. A CetiRun administrator can raise the budget."),
+            (BudgetExceededError(1200.0, 1000.0, entity_type="proxy"), None,
+             "CetiRun AI Gateway: a budget that applies to this key is used up: 1200.00 USD spent of 1000.00 USD. "
+             "The Gateway refuses its model requests. A CetiRun administrator can raise the budget."),
+        )
+        for error, caller, expected in cases:
+            with self.subTest(entity=error.entity_type, caller=getattr(caller, "key_alias", None)):
+                self.assertEqual(self.budget_refused(error, caller).message, expected)
+                self.assertNotIn("alice", expected)
+
+    def test_the_reset_is_named_only_when_the_keys_own_budget_resets_ahead(self):
+        now = datetime.datetime(2099, 11, 20, 12, 30, tzinfo=UTC)
+        later = datetime.timezone(datetime.timedelta(hours=8))
+        cases = (
+            # LiteLLM's key object can carry the reset without a zone; it is UTC.
+            (Key(AGENT_KEY.models, max_budget=10.0, budget_reset_at=datetime.datetime(2099, 12, 1)), 10.0,
+             "2099-12-01 00:00 UTC"),
+            (Key(AGENT_KEY.models, max_budget=10.0, budget_reset_at=datetime.datetime(2099, 12, 1, 8, tzinfo=later)),
+             10.0, "2099-12-01 00:00 UTC"),
+            # Due already: LiteLLM's reset job has not run yet.
+            (Key(AGENT_KEY.models, max_budget=10.0, budget_reset_at=now - datetime.timedelta(minutes=3)), 10.0, None),
+            # A window of the key's budget_limits, with its own reset.
+            (Key(AGENT_KEY.models, max_budget=10.0, budget_reset_at=BUDGET_RESET), 2.0, None),
+            # No reset period, or no key.
+            (Key(AGENT_KEY.models, max_budget=10.0), 10.0, None),
+            (Key(AGENT_KEY.models, budget_reset_at=BUDGET_RESET), 10.0, None),
+            (None, 10.0, None),
+        )
+        for caller, refused_budget, reset in cases:
+            with self.subTest(reset=getattr(caller, "budget_reset_at", None), refused_budget=refused_budget):
+                self.module.litellm.BudgetExceededError = BudgetExceededError
+                message = self.module.budget_refusal(BudgetExceededError(10.5, refused_budget, entity_type="key"),
+                                                     caller, now)
+                if reset is None:
+                    self.assertNotIn("resets", message)
+                    self.assertTrue(message.endswith("A CetiRun administrator can raise the budget."))
+                else:
+                    self.assertIn(f"until the budget resets on {reset}. ", message)
+                    self.assertTrue(message.endswith("A CetiRun administrator can raise the budget sooner."))
+
+    def test_small_budgets_keep_their_cents_and_missing_amounts_are_left_out(self):
+        for spent, budget, expected in ((0.0102, 0.01, "has spent 0.0102 USD of its 0.01 USD budget"),
+                                        (0.5, 0.1, "has spent 0.50 USD of its 0.10 USD budget"),
+                                        (0.0, 0.0, "has spent 0.00 USD of its 0.00 USD budget"),
+                                        (1.0, 1.0, "has spent 1.00 USD of its 1.00 USD budget"),
+                                        (None, 10.0, "has used up its budget"),
+                                        (float("nan"), 10.0, "has used up its budget"),
+                                        (10.5, float("inf"), "has used up its budget"),
+                                        (True, 10.0, "has used up its budget")):
+            with self.subTest(spent=spent, budget=budget):
+                error = self.budget_refused(BudgetExceededError(spent, budget, entity_type="key"), AGENT_KEY)
+                self.assertTrue(error.message.startswith(f"CetiRun AI Gateway: this Agent {expected}. "), error.message)
+
+    def test_the_message_does_not_read_as_a_temporary_limit(self):
+        # OpenClaw 2026.9.6 takes a 402 for a rate limit and retries it when the
+        # text names a periodic limit with a reset, a usage or rate limit, a
+        # quota, or a retry; Hermes 0.22.7 when it names a usage limit or a
+        # quota next to a wait or a reset. Hermes shows the first 300 characters.
+        words = ("limit", "quota", "retry", "try again", "wait", "temporar", "cooldown", "daily", "weekly", "monthly",
+                 "resets in", "reset in", "resets at", "rate limit", "rate_limit", "too many", "exceed", "max",
+                 "overflow", "expired", "auth", "402", "payment", "credit", "billing", "balance", "error",
+                 "unavailable", "timeout", "timed out", "not found", "invalid")
+        now = datetime.datetime(2099, 11, 20, tzinfo=UTC)
+        self.module.litellm.BudgetExceededError = BudgetExceededError
+        for caller in (AGENT_KEY, Key(["gpt-5"], max_budget=99999.99, budget_reset_at=BUDGET_RESET), None):
+            for entity in ("key", "team", "user", "team_member", "end_user", "organization", None):
+                error = BudgetExceededError(123456.789, 99999.99, entity_type=entity)
+                message = self.module.budget_refusal(error, caller, now)
+                with self.subTest(message=message):
+                    self.assertLessEqual(len(message), 300)
+                    self.assertFalse([word for word in words if word in message.lower()])
+
+    def test_without_litellms_budget_error_nothing_is_replaced(self):
+        error = self.budget_refused(BudgetExceededError(10.0213, 10.0, KEY_BUDGET_MESSAGE, "key"), AGENT_KEY,
+                                    litellm_has_class=False)
+        self.assertEqual((error.message, str(error)), (KEY_BUDGET_MESSAGE, KEY_BUDGET_MESSAGE))
+        # Other errors carrying the same words are not LiteLLM's refusal.
+        error = self.budget_refused(ProviderError(KEY_BUDGET_MESSAGE), AGENT_KEY)
+        self.assertEqual((error.message, str(error)), (KEY_BUDGET_MESSAGE, KEY_BUDGET_MESSAGE))
 
     # ----- the model listing of keys the operator issued -----
 

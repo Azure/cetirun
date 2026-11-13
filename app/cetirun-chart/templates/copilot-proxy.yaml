@@ -188,15 +188,7 @@ spec:
         - protocol: TCP
           port: 4000
   egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dnsNamespace }}
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
+    {{- include "cetirun.networkPolicy.dnsEgress" . | nindent 4 }}
     - to:
         - namespaceSelector:
             matchLabels:

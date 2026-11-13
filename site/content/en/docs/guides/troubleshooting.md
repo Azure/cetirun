@@ -126,10 +126,14 @@ missing. The section does not show while the Agent is suspended.
 ## The Agent reports a billing or credits error
 
 The Agent used its monthly model budget, and the AI Gateway refuses its model
-requests. OpenClaw then reports a billing error of its model provider, and
-Hermes tells you to add credits. The portal does not show the budget or the
-spend. Ask your administrator to raise the budget, or wait until it resets on
-the first day of the month (UTC). For the details, refer to
+requests. Hermes shows the message of the AI Gateway, which starts with
+`CetiRun AI Gateway:` and gives the date of the reset. Hermes then tells you to
+add credits with the provider, but this does not apply to the AI Gateway.
+OpenClaw says that the Agent is out of budget on the CetiRun AI Gateway.
+
+The portal does not show the budget or the spend. Ask your administrator to
+raise the budget, or wait until it resets on the first day of the month (UTC).
+For the details, refer to
 [When the budget runs out](../models/#when-the-budget-runs-out).
 
 If the Agent Policy of your Team sets request limits, the **Models** section
