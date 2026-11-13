@@ -16,6 +16,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/agentconfig"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/auth"
@@ -438,7 +439,7 @@ func (h *InstanceHandler) GetInstanceStatusByName(w http.ResponseWriter, r *http
 
 // InternalAuth handles GET /internal/auth
 // Called by the Istio EnvoyFilter Lua script to verify instance ownership.
-// Returns 200 OK if the caller owns the instance, 403 Forbidden otherwise.
+// Returns 200 for an owner, 403 for denied access, or 503 if lookup is unavailable.
 // Not behind auth middleware: the gateway forwards the verified OAuth2 Proxy
 // ID token only to this internal endpoint. Older unbound Agents retain the
 // alias/email comparison used before owner identity annotations existed.
@@ -454,7 +455,11 @@ func (h *InstanceHandler) InternalAuth(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	instance, err := h.Kube.GetInstanceByName(ctx, instanceName)
 	if err != nil {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+		} else {
+			http.Error(w, "access verification unavailable", http.StatusServiceUnavailable)
+		}
 		return
 	}
 	ownerTenant := instance.Annotations[cetirunv1alpha1.AnnotationOwnerTenantID]

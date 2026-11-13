@@ -39,6 +39,11 @@ value for the standalone helper is `cetirun-portal`. `PORTAL_AUTH_SERVICE` and `
 set custom service locations. Refer to the
 [ownership endpoint configuration](../../site/content/en/docs/operations/istio.md#portal-ownership-endpoint).
 
+The ownership check returns a generic `403 Forbidden: access denied` for
+authentication or ownership rejection. An unavailable ownership service or an
+unexpected response returns `503` instead. Neither case forwards the request
+to the Agent or exposes the internal response, user identity, or instance name.
+
 ## Ingress configuration
 
 The Gateway serves HTTPS on port 443. Every authentication policy rule and all
