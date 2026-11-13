@@ -91,7 +91,7 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&chartRepoURL, "chart-repo-url", "oci://mcr.microsoft.com/aks/ai-runtime/cetirun/helm/cetirun",
 		"OCI registry URL for the CetiRun Helm chart.")
-	flag.StringVar(&chartVersion, "chart-version", "0.1.1",
+	flag.StringVar(&chartVersion, "chart-version", "0.1.2",
 		"Version of the CetiRun Helm chart to deploy.")
 	flag.StringVar(&domainSuffix, "domain-suffix", "", "Base domain suffix for instance access URLs.")
 	flag.StringVar(&istioGateway, "istio-gateway", controller.DefaultIstioGateway,

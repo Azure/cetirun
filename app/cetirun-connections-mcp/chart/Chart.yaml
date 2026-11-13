@@ -2,5 +2,5 @@ apiVersion: v2
 name: cetirun-connections-mcp
 description: Workload-authenticated MCP for Azure Agent Identity REST requests
 type: application
-version: 0.1.1
-appVersion: "0.1.1"
+version: 0.1.2
+appVersion: "0.1.2"

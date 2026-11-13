@@ -64,6 +64,7 @@ set-version:
 	@command -v helm >/dev/null 2>&1 || { echo "helm is required" >&2; exit 1; }
 	$(PYTHON) -B scripts/cetirun-version.py set "$(VERSION)"
 	helm dependency update --skip-refresh app/cetirun-platform
+	$(PYTHON) -B site/scripts/reference_tables.py --write
 	$(PYTHON) -B scripts/cetirun-version.py check "$(VERSION)"
 
 artifact-check:
