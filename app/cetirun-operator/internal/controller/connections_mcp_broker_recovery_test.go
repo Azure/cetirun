@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"helm.sh/helm/v3/pkg/chart/loader"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -73,6 +74,10 @@ func TestReconcileConnectionsMCPBrokerRecoversMissingNamespaceFromSteadyState(t 
 }
 
 func TestReconcileBuiltinRegistryMigrationRequiresExplicitImagePin(t *testing.T) {
+	chrt, err := loader.Load("../../../cetirun-chart")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, kind := range []api.AgentType{api.AgentTypeOpenClaw, api.AgentTypeHermes} {
 		for _, migration := range []struct{ old, target string }{
 			{"cetirun.azurecr.io", "mcr.microsoft.com/aks/ai-runtime/cetirun"},
@@ -85,7 +90,7 @@ func TestReconcileBuiltinRegistryMigrationRequiresExplicitImagePin(t *testing.T)
 					if kind == api.AgentTypeOpenClaw {
 						instance.Spec.Agent.Port = ptr.To[int32](18789)
 					}
-					image := migration.old + "/" + string(kind) + "-gateway:0.1.1"
+					image := migration.old + "/" + string(kind) + "-gateway:" + chrt.Metadata.AppVersion
 					instance.Spec.Agent.Image = ptr.To(image)
 					reconciler, kube := newConnectionsMCPBrokerRecoveryReconciler(t, instance)
 					reconciler.ChartRegistry = migration.old
@@ -101,7 +106,7 @@ func TestReconcileBuiltinRegistryMigrationRequiresExplicitImagePin(t *testing.T)
 						if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), current); err != nil {
 							t.Fatal(err)
 						}
-						image = migration.target + "/" + string(kind) + "-gateway:0.1.1"
+						image = migration.target + "/" + string(kind) + "-gateway:" + chrt.Metadata.AppVersion
 						current.Spec.Agent.Image = ptr.To(image)
 						current.Generation++
 						if err := kube.Update(context.Background(), current); err != nil {
@@ -347,6 +352,8 @@ func newConnectionsMCPBrokerRecoveryReconciler(t *testing.T, objects ...client.O
 }
 
 func connectionsMCPBrokerRecoveryAgent(phase string) *api.Agent {
+	chrt, err := loader.Load("../../../cetirun-chart")
+	utilruntime.Must(err)
 	return &api.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "broker-recovery", UID: "broker-recovery-agent", Generation: 3,
@@ -354,7 +361,9 @@ func connectionsMCPBrokerRecoveryAgent(phase string) *api.Agent {
 		},
 		Spec: api.AgentSpec{
 			Agent: api.HarnessSpec{
-				Type: api.AgentTypeHermes, Image: ptr.To("mcr.microsoft.com/aks/ai-runtime/cetirun/hermes-gateway:0.1.1"), Port: ptr.To[int32](8642),
+				Type:  api.AgentTypeHermes,
+				Image: ptr.To("mcr.microsoft.com/aks/ai-runtime/cetirun/hermes-gateway:" + chrt.Metadata.AppVersion),
+				Port:  ptr.To[int32](8642),
 			},
 			User:                  api.UserSpec{Alias: "broker-recovery", DisplayName: "Broker Recovery"},
 			GatewayTokenSecretRef: "gateway-token",

@@ -213,6 +213,8 @@ func testScheme() *runtime.Scheme {
 // so the reconciler does not spend a loop adding it. Runtime pins describe a
 // previously prepared Agent; pinning itself is tested separately.
 func newCR(alias string, phase string, conditions []metav1.Condition, generation int64, observedGen int64, observedHash string) *cetirunv1alpha1.Agent {
+	chrt, err := loader.Load("../../../cetirun-chart")
+	utilruntime.Must(err)
 	cr := &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       alias,
@@ -223,7 +225,8 @@ func newCR(alias string, phase string, conditions []metav1.Condition, generation
 		Spec: cetirunv1alpha1.AgentSpec{
 			Agent: cetirunv1alpha1.HarnessSpec{
 				Type:  cetirunv1alpha1.AgentTypeOpenClaw,
-				Image: ptr.To("mcr.microsoft.com/aks/ai-runtime/cetirun/openclaw-gateway:0.1.1"), Port: ptr.To[int32](18789),
+				Image: ptr.To("mcr.microsoft.com/aks/ai-runtime/cetirun/openclaw-gateway:" + chrt.Metadata.AppVersion),
+				Port:  ptr.To[int32](18789),
 			},
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       alias,
