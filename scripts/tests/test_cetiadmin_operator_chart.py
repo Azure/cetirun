@@ -458,14 +458,36 @@ class CetiAdminOperatorChartTests(unittest.TestCase):
             operator = self.values()
             operator["sandboxAdmission"]["portalServiceAccount"] = "cetirun-portal"
             inputs = {"istio": {"enabled": True}, "cetirun-operator": copy.deepcopy(operator),
-                      "cetirun-portal": {"istio": {"host": "portal.example.com"}, "aiGateway": {"catalogNamespace": NAMESPACE},
-                                         "agentIdentity": {"tenantId": "11111111-1111-1111-1111-111111111111",
-                                                           "portalClientId": "22222222-2222-2222-2222-222222222222"}}}
+                      "cetirun-portal": {"istio": {"host": "portal.example.com"},
+                                         "agentIdentity": {"tenantId": operator["cetiadmin"]["owner"]["tenantID"],
+                                                           "portalClientId": "33333333-3333-3333-3333-333333333333"},
+                                         "aiGateway": {"catalogNamespace": NAMESPACE}}}
             direct, umbrella = self.render(operator), self.render(inputs, chart=chart)
             for key, obj in direct.items():
                 if "cetiadmin" in key[1]:
                     self.assertEqual(obj, umbrella[key])
             self.assertEqual(self.env(direct, ADMISSION), self.env(umbrella, ADMISSION))
+            for section, field, value, message in (
+                ("agentIdentity", "tenantId", "", "agentIdentity.tenantId"),
+                ("agentIdentity", "portalClientId", "", "agentIdentity.portalClientId"),
+                ("agentIdentity", "tenantId", "44444444-4444-4444-4444-444444444444", "must match"),
+                ("istio", "internalAuthMTLS", False, "internalAuthMTLS=true"),
+            ):
+                with self.subTest(section=section, field=field, value=value):
+                    invalid = copy.deepcopy(inputs)
+                    invalid["cetirun-portal"][section][field] = value
+                    rejected = self.helm(invalid, chart=chart)
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertIn(message, rejected.stderr)
+            disabled = copy.deepcopy(inputs)
+            disabled["cetirun-operator"]["cetiadmin"]["enabled"] = False
+            disabled["cetirun-portal"]["agentIdentity"] = {}
+            disabled["cetirun-portal"]["istio"]["internalAuthMTLS"] = False
+            self.render(disabled, chart=chart)
+            without_portal = copy.deepcopy(inputs)
+            without_portal["cetirun-portal"] = {"enabled": False}
+            without_portal["cetirun-operator"]["sandboxAdmission"]["portalServiceAccount"] = ""
+            self.render(without_portal, chart=chart)
 
 
 if __name__ == "__main__":
