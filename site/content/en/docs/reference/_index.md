@@ -17,7 +17,7 @@ Find the exact fields, defaults, endpoints, and command options of CetiRun.
 - [Chart values](chart-values/) — every value and default of the agent,
   platform, operator, and Portal charts
 - [Portal API](portal-api/) — Portal administration pages and HTTP endpoints
-- [Examples](examples/) — example Custom Agents and native Sandbox walkthroughs
+- [Examples](examples/) — example Custom Agents and Sandbox Agent walkthroughs
 
 For installation steps, follow
 [Install CetiRun](../getting-started/platform/). For user tasks, use the

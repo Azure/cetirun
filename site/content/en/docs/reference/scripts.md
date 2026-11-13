@@ -30,7 +30,7 @@ releases, and deployments. Run `make help` for the short list.
 | Variable | Default and effect |
 | --- | --- |
 | `REGISTRY` | The release registry of the source metadata, which is a pull address. Publication needs an explicit writable registry |
-| `VERSION` | The version of the runtime chart. `make set-version` changes it in the sources |
+| `VERSION` | The version of the agent chart. `make set-version` changes it in the sources |
 | `GIT_SHA` | The current commit. The release builds record it |
 | `FORCE_PUBLISH` | `false`. `true` allows a publication to replace version tags that exist |
 | `VERIFY_PULL` | `true`. The release targets refuse another value |
@@ -38,8 +38,10 @@ releases, and deployments. Run `make help` for the short list.
 | `DEPLOY_CONFIG` | The environment file of the deployment targets. Necessary for them |
 
 For the deployment targets, `VERSION` and `REGISTRY` on the `make` command line
-become `--version` and `--registry` of the platform helper. For the steps of an
-installation, see [Install CetiRun](../../getting-started/platform/).
+become `--version` and `--registry` of the platform helper.
+[Deployment commands](../../getting-started/platform/#deployment-commands)
+lists these targets. For the steps of an installation, see
+[Install CetiRun](../../getting-started/platform/).
 
 ## Validation and license helpers
 
@@ -228,8 +230,8 @@ Kubernetes, or change another registry.
   See [Istio](../../operations/istio/).
 - `scripts/cetirun-platform-deploy.sh`, which `make deploy` runs: examine the
   target cluster, references, certificates, and published artifacts. Then
-  install the CetiRun Istio, Broker, and platform releases, and wait for their
-  workloads.
+  install the CetiRun Istio, Agent Identity Broker, and platform releases, and
+  wait for their workloads.
 - `app/cetirun-operator/deploy/deploy.sh`: examine StorageClass/gateway
   prerequisites, then install the operator chart with its packaged CRDs.
 - `app/cetirun-portal/deploy/deploy.sh`: portal namespace injection and Helm.
@@ -237,11 +239,13 @@ Kubernetes, or change another registry.
 Operator deployment inputs include `REGISTRY`, `VERSION`, `CHART_VERSION`, `NAMESPACE`,
 `RELEASE_NAME`, `LOCAL_CHART`, `IMAGE_REPO`, `IMAGE_TAG`, `IMAGE_DIGEST`,
 `DOMAIN`, `CETIRUN_REPO_URL`, `CETIRUN_CHART_VERSION`, and `HELM_SET_ARGS`.
-`ISTIO_GATEWAY` selects the Gateway resource as `namespace/name`.
-`ISTIO_INGRESS_NAMESPACE` selects the gateway workload namespace for agent
-NetworkPolicies.
+`ISTIO_GATEWAY` selects the Istio `Gateway` resource as `namespace/name`.
+`ISTIO_INGRESS_NAMESPACE` selects the namespace of the ingress gateway workload
+for the NetworkPolicies of the Agents.
 
-Portal deployment also uses `ISTIO_HOST`, `ISTIO_REV`, `NOTICE_BANNER`,
+Portal deployment requires `ISTIO_HOST`, `ENTRA_TENANT_ID`, and
+`PORTAL_OIDC_CLIENT_ID` before any cluster calls. It passes the identity inputs
+to the Chart and enables internal ownership mTLS. It also uses `ISTIO_REV`, `NOTICE_BANNER`,
 `ADMIN_ALIASES`, and `MAX_INSTANCES_PER_USER`. The default registry prefix is
 `mcr.microsoft.com/aks/ai-runtime/cetirun`. `VERSION` selects both the chart
 and image version unless a component-specific override is explicit. Configure
@@ -392,7 +396,7 @@ python3 -B scripts/sandbox-platform-qualify.py network-smoke \
 ```
 
 These fixtures have no workload credentials, host mounts, or host networking.
-They are not governed Agent Pods, and they do not bypass protected-Pod
+They are not Sandbox Agent Pods, and they do not bypass protected-Pod
 admission.
 
 The server receives its primary Pod IP through the Downward API. It binds all

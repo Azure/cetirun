@@ -88,6 +88,11 @@ class SkillMarketplacePlatformTests(unittest.TestCase):
                        env=OFFLINE, check=True, capture_output=True, timeout=60)
 
     def helm(self, values, *, namespace=NAMESPACE, lint=False):
+        values = copy.deepcopy(values)
+        values.setdefault("cetirun-portal", {}).setdefault("agentIdentity", {
+            "tenantId": "11111111-1111-1111-1111-111111111111",
+            "portalClientId": "22222222-2222-2222-2222-222222222222",
+        })
         command = ["helm", "lint", "--strict", str(self.chart)] if lint else [
             "helm", "template", "cetirun-platform", str(self.chart), "--kube-version", "1.37.0"]
         return subprocess.run([*command, "--namespace", namespace, "--values", "-"], input=json.dumps(values),

@@ -7,7 +7,7 @@ webhook exceptions, egress configuration, and warnings about removal.
 `values.yaml` configures the shared chart. `templates/ingress/` contains the
 gateway and authentication resources. `templates/egress/` contains the
 destination and logging controls for all of the mesh. The operator manages the
-VirtualServices for each instance.
+VirtualServices for each Agent.
 
 `make deploy` installs and upgrades this chart. Use `deploy.sh` or a manual Helm
 install only for development or for an installation without `make deploy`. Do
@@ -36,8 +36,18 @@ python3 -m pip install --requirement infra/istio/requirements.txt
 For a direct installation of the platform umbrella, without `make deploy`, set
 `PORTAL_AUTH_NAMESPACE=cetirun-system` before you run `deploy.sh`. The default
 value for the standalone helper is `cetirun-portal`. `PORTAL_AUTH_SERVICE` and `PORTAL_AUTH_CLUSTER_HOST` let you
-set custom service locations. Refer to the
+set custom service locations. Set `PORTAL_AUTH_SERVER_IDENTITY` to the actual
+Portal SPIFFE identity, for example
+`spiffe://cluster.local/ns/cetirun-system/sa/cetirun-portal`. Both Charts default
+to mTLS; the Portal also requires `agentIdentity.tenantId`,
+`agentIdentity.portalClientId`, and `istio.host`. Existing explicit `false`
+values must be updated on both releases. Refer to the
 [ownership endpoint configuration](../../site/content/en/docs/operations/istio.md#portal-ownership-endpoint).
+
+The ownership check returns a generic `403 Forbidden: access denied` for
+authentication or ownership rejection. An unavailable ownership service or an
+unexpected response returns `503` instead. Neither case forwards the request
+to the Agent or exposes the internal response, user identity, or instance name.
 
 ## Ingress configuration
 
@@ -123,9 +133,9 @@ verification. PKCE, secure cookies, session storage and Portal ownership checks
 remain enabled. Bearer-token session bypass remains disabled in OIDC modes.
 
 Use only a provider whose administrators control the login claims. With Agent
-Identity and Tools disabled, Portal API ownership and administrator checks use
-the lowercased local part of `preferred_username`, falling back to the email
-header if it is absent. The ingress ownership check uses the email header, which
+Identity and Tools disabled, Portal API ownership and Portal administrator checks
+use the lowercased local part of `preferred_username`. If it is absent, they use
+the email header. The ingress ownership check uses the email header, which
 comes from `oauth2Proxy.emailClaim` (`preferred_username` by default).
 
 The provider must assign these claims, prevent users from changing them, and
@@ -178,9 +188,9 @@ with `cetirun-portal.features.agentIdentityEnabled=false`,
 `cetirun-portal.features.agentToolsEnabled=false`,
 `cetirun-operator.agentIdentity.enabled=false`, and
 `cetirun-connections-mcp.enabled=false`. These are umbrella values; all four
-already default to false. Do not install the Broker. The full `make deploy` and
-the legacy `infra/istio/deploy.sh` helper still expect the Entra federated-token
-configuration; they do not select
+already default to false. Do not install the Agent Identity Broker. The full
+`make deploy` and the legacy `infra/istio/deploy.sh` helper still expect the
+Entra federated-token configuration; they do not select
 this OIDC path. These settings do not establish live China login, image access,
 or runtime qualification.
 

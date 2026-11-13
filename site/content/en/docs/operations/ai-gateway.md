@@ -5,7 +5,8 @@ weight: 20
 ---
 
 The AI Gateway is the model endpoint of every Agent. It is based on LiteLLM.
-Each Agent sends its model requests to the AI Gateway with its own virtual key.
+Each Agent sends its model requests to the AI Gateway with its own
+[virtual key](../../concepts/glossary/#virtual-key).
 The AI Gateway sends each request to a provider deployment, or to the GitHub
 Copilot proxy of that Agent. It also counts the spend of each key against the
 budget of the key.
@@ -496,18 +497,19 @@ kubectl logs -n cetirun-system -c gateway --since=15m --tail=-1 \
 
 | Symptom or message | Cause | Action |
 | --- | --- | --- |
-| HTTP 402, `Budget has been exceeded!`. OpenClaw reports a billing error of its provider. Hermes says to add credits | The key spent its monthly budget | Raise the budget, or wait for the reset. Refer to [Budgets and spend](../budgets/) |
-| HTTP 429 with a `retry-after` header | A request limit of the Agent Policy | Wait, or raise the limit in the Policy. Refer to [Request limits](../budgets/#request-limits) |
+| HTTP 402, `CetiRun AI Gateway: this Agent has spent ...`. Hermes shows the message and says to add credits. OpenClaw says that the Agent is out of budget on the AI Gateway | The key, or its AI Gateway team, spent its budget | Raise the budget, or wait for the reset. Refer to [Budgets and spend](../budgets/) |
+| HTTP 429 with a `retry-after` header | A request limit of the Agent Policy | Wait, or raise the limit in the Agent Policy. Refer to [Request limits](../budgets/#request-limits) |
 | HTTP 429, `No deployments available` | No deployment of the model is available to the key. For example, all deployments are in cooldown after errors, or only Copilot routes serve the name and the key cannot use them | Examine the provider errors in the request log. Wait for the cooldown to end |
-| HTTP 403, `This key may not use the model <name>.` | A router sent the request to a tier model that the key cannot use, or the key asked for a decision model | Allow the tier model in the Policy of the Agent. Refer to [Smart routing](../smart-routing/) |
+| HTTP 403, `This key may not use the model <name>.` | A router sent the request to a tier model that the key cannot use, or the key asked for a decision model | Allow the tier model in the Agent Policy of the Agent. Refer to [Smart routing](../smart-routing/) |
 | HTTP 400, `The model <name> is a decision model` | A request asked a decision model for a conversation | Use a chat model. Decision models only classify requests for routers |
 | The AI Gateway refuses a model and says to declare pricing | The model has no price, and `blockUnpricedModels` is on | Set a price. Refer to [Set the price of a model](#set-the-price-of-a-model) |
 | The create form says `The AI Gateway has not published its models yet` | The operator has not published the model catalog | Wait a minute. If the message stays, examine the operator log and the AI Gateway rollout |
 | The Agent page lists a GitHub Copilot model as not offered | The AI Gateway has no price for the model, or a shared model with the same name is another model | Refer to [Model access](../models/#names-of-github-copilot-models) |
 | A router shows `the router is not registered in the AI Gateway yet` | The operator has not registered the Team router | Wait about two minutes. Then examine `status.modelRouters` of the Team |
 | Copilot phase `SignInRequired`, or Copilot reason `SignInIncomplete` | The owner has not completed the GitHub Copilot sign-in | The owner signs in again on the Agent page |
-| Copilot reason `ProxyStarting` | The Copilot proxy of the Agent is not ready yet | Wait a few minutes |
-| Copilot reason `NotAllowedRouteRemovalFailed` or `PolicyCheckUnavailable` | The operator cannot remove a Copilot route that the Policy no longer allows, or it cannot read the models or prices of the AI Gateway | Shared models continue to work. The operator tries again about every 15 seconds. Examine the AI Gateway |
+| Copilot reason `ProxyStarting` | The Copilot proxy is starting or has lost readiness; registered routes and credentials are retained | Check the proxy Deployment and Pod events. Restore a missing Deployment from the Agent's current Helm release. Signing in again does not repair the workload |
+| Copilot reason `SignInCompleting` | The Portal is completing the current sign-in | Wait for that sign-in to finish; do not start another |
+| Copilot reason `NotAllowedRouteRemovalFailed` or `PolicyCheckUnavailable` | The operator cannot remove a Copilot route that the Agent Policy no longer allows, or it cannot read the models or prices of the AI Gateway | Shared models continue to work. The operator tries again about every 15 seconds. Examine the AI Gateway |
 | `AIGatewayReady` is `False` with the reason `KeySecretLost` | The Secret of the key is lost | Refer to [Virtual keys](#virtual-keys) |
 | `AIGatewayModelsLimited` event | The Agent can use more models than its configuration can list | Refer to [Model access](../models/#limits) |
 | The models that you added in the console disappeared after a restart | The salt key changed | Restore the salt key. Refer to the chart README's [Upgrade contract]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#upgrade-contract) |

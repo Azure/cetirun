@@ -69,4 +69,4 @@ Each one shows only when some conditions are true:
 | **Tailscale** | The Agent is a Hermes or OpenClaw Agent that is not in a policy-bound Team, and your deployment allows Tailscale. Refer to [Connect Tailscale](../tailscale/#before-you-begin). |
 
 If the conditions are true and you still cannot find the item, ask your
-administrator.
+platform administrator.

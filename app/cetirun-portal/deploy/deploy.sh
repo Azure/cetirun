@@ -20,12 +20,18 @@
 #   IMAGE_REPO           — Override image.repository Helm value
 #   IMAGE_TAG            — Override image.tag Helm value
 #   IMAGE_DIGEST         — Override image.digest Helm value (e.g. "sha256:abc123...")
-#   ISTIO_HOST           — Override istio.host Helm value
+#   ISTIO_HOST           — Required Portal hostname
+#   ENTRA_TENANT_ID       — Required Entra tenant ID for verified owner identity
+#   PORTAL_OIDC_CLIENT_ID — Required Portal application client ID used by ingress
 #   ISTIO_LEGACY_HOST    — Optional legacy hostname to 301-redirect to ISTIO_HOST (e.g. portal.<domain>)
 #   NOTICE_BANNER        — Optional notice banner message shown in the portal UI
 #   MAX_INSTANCES_PER_USER — Max Agents per user (default: 1, 0 = unlimited)
 
 set -euo pipefail
+
+: "${ISTIO_HOST:?ISTIO_HOST must be set to the Portal hostname}"
+: "${ENTRA_TENANT_ID:?ENTRA_TENANT_ID must be set to the Entra tenant ID}"
+: "${PORTAL_OIDC_CLIENT_ID:?PORTAL_OIDC_CLIENT_ID must be set to the Portal application client ID}"
 
 for cmd in kubectl helm; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -92,11 +98,14 @@ fi
 
 # Image repository override (always set to ensure correct registry)
 HELM_ARGS+=(--set "image.repository=${IMAGE_REPO}")
+HELM_ARGS+=(--set "istio.internalAuthMTLS=true"
+  --set-string "istio.host=${ISTIO_HOST}"
+  --set-string "agentIdentity.tenantId=${ENTRA_TENANT_ID}"
+  --set-string "agentIdentity.portalClientId=${PORTAL_OIDC_CLIENT_ID}")
 
 # Optional overrides
 HELM_ARGS+=(--set-string "image.tag=${IMAGE_TAG:-${VERSION:-${CHART_VERSION}}}")
 [ -n "${IMAGE_DIGEST:-}" ]   && HELM_ARGS+=(--set "image.digest=${IMAGE_DIGEST}")
-[ -n "${ISTIO_HOST:-}" ]      && HELM_ARGS+=(--set "istio.host=${ISTIO_HOST}")
 [ -n "${ISTIO_LEGACY_HOST:-}" ] && HELM_ARGS+=(--set "istio.legacyHost=${ISTIO_LEGACY_HOST}")
 [ "${NOTICE_BANNER+x}" = x ]     && HELM_ARGS+=(--set-literal "noticeBanner=${NOTICE_BANNER}")
 [ -n "${MAX_INSTANCES_PER_USER:-}" ] && HELM_ARGS+=(--set "features.maxInstancesPerUser=${MAX_INSTANCES_PER_USER}")

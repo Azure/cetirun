@@ -1,7 +1,7 @@
 # Coding Runtime Examples
 
 These examples adapt three runtimes to the same Custom Chat interface. They do
-not add new built-in CetiRun harnesses. **The default mode is entirely offline**:
+not add new built-in CetiRun agent types. **The default mode is entirely offline**:
 mock review results are fixed synthetic data, not model-generated output. No
 tools, CLIs, or subagents are executed.
 
@@ -117,16 +117,16 @@ role discovery, or completed internal delegation.
 If `OPENAI_BASE_URL` is set or any `CETIRUN_*` environment variable exists, the
 example rejects native mode with `platform_native_not_qualified`. Do not remove
 platform variables to bypass this restriction: these local CLI adapters are
-not a product implementation qualified for the CetiRun Gateway.
+not a product implementation qualified for the CetiRun AI Gateway.
 
 ## Container and Platform Reference
 
 The `Dockerfile` packages only the **offline mock labeled `copilot`**. It does
 not install any real coding CLI. The runtime user is `1024:1024` / `vibe`, the
 application is under `/opt`, and the writable HOME is separate from application
-files. An administrator must supply an approved base image that satisfies the
-CetiRun initialization tool contract and includes Python 3.11+. This example
-does not assume an available official image version or digest.
+files. A platform administrator must supply an approved base image that
+satisfies the CetiRun initialization tool contract and includes Python 3.11+.
+This example does not assume an available official image version or digest.
 
 ```bash
 docker build --build-arg BASE_IMAGE='<approved-cetirun-compatible-base@sha256:digest>' \
@@ -143,14 +143,14 @@ loopback requirement for mTLS.
 `cetirun-agent.yaml.template` is a field reference and **must not be applied
 directly**. Fill in an existing Team, Sandbox, user, compatible chart, and an
 approved production image digest. The production image must be a separate
-implementation with Gateway integration; do not present this mock as a model
-runtime. The Custom CRD does not accept arbitrary command or environment
-overrides. Build a separate image for each runtime, or let the image's own
+implementation with AI Gateway integration; do not present this mock as a model
+runtime. The `Agent` resource of a Custom Agent does not accept arbitrary
+command or environment overrides. Build a separate image for each runtime, or let the image's own
 entrypoint select its runtime.
 
 During the original validation, Docker builds were not run because the local
 Docker daemon was unavailable and no approved base image had been supplied.
-Helm rendering, Portal, AKS, Gateway, model, real OAuth/MCP, and PVC acceptance
+Helm rendering, Portal, AKS, AI Gateway, model, real OAuth/MCP, and PVC acceptance
 checks were not run. Since upstream source was unchanged, its full Go,
 frontend, and root Makefile checks were not run. This example's `make test check`
 covers only this standalone example directory.

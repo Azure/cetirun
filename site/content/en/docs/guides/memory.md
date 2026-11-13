@@ -101,9 +101,9 @@ or OpenClaw. The platform keeps this object when the Agent restarts.
 | OpenClaw | `~/.openclaw/openclaw.json` | `plugins.entries.cetirun-memory-context.config` |
 
 > **Warning:** An error in this file can stop the Agent from starting. Then
-> you cannot open **Terminal**, because the portal enables it only for a
-> **Ready** Agent. You cannot correct the file yourself, and your administrator
-> must correct it.
+> you cannot open **Terminal**, because the Portal enables it only for a
+> **Ready** Agent. You cannot correct the file yourself, and your platform
+> administrator must correct it.
 
 1. Open **Terminal**.
 2. Open the file for your agent type in an editor, for example `nano`.
@@ -112,7 +112,7 @@ or OpenClaw. The platform keeps this object when the Agent restarts.
 4. Save the file.
 5. For OpenClaw, examine the file with `jq empty ~/.openclaw/openclaw.json`.
    If the command shows an error, correct the file.
-6. In the portal, select **Restart Agent**.
+6. In the Portal, select **Restart Agent**.
 
 In these examples, memory in Discord is limited to the direct messages that
 you send. Replace `<your-discord-user-id>` with your Discord user ID, not your
@@ -174,7 +174,7 @@ the CetiRun memory. The `/memory` command of Hermes applies only to these
 files. The Agent does not copy them into the CetiRun memory automatically. To
 add their content, ask the Agent to import them.
 
-For administrators, [Agent Harness](../../reference/agent-harness/#private-memory-context)
+For platform administrators, [Agent Harness](../../reference/agent-harness/#private-memory-context)
 describes the memory component.
 
 Sources: [memory skill]({{< repo "app/cetirun-memory-context/assets/skills/cetirun-memory/SKILL.md" >}}),

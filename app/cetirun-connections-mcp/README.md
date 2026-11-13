@@ -69,8 +69,8 @@ repeats this validation and independently examines the owner-scoped connection
 and Agent binding. Before MCP sends a request, it makes sure that the Broker
 check and issuance responses agree on connection and binding revisions.
 
-For governed Agent Identity acquisition, these responses must also agree on
-these items:
+For the Agent Identity acquisition of a Sandbox Agent, these responses must
+also agree on these items:
 
 - the current credential-policy revision that is read from the authenticated
   Agent
@@ -78,7 +78,7 @@ these items:
 
 A recreated identical record does not reuse an earlier check response. The
 Broker independently validates an owned enforcement record against the live
-Agent, Team and AgentPolicy before and after credential acquisition. If the
+Agent, Team and Agent Policy before and after credential acquisition. If the
 evidence is absent, changed, or unreadable, execution stops. An ARM-only policy
 cannot be used for Graph OBO. This does not create a Connection or authorize a
 provider operation.
@@ -137,7 +137,7 @@ The image, standalone Helm chart, default ServiceAccount, and workload token
 audience use `cetirun-connections-mcp`. The platform umbrella chart enables this
 component through `cetirun-connections-mcp.enabled`.
 
-Configure the Operator and runtime charts through `connectionsMCP`. The Operator
+Configure the Operator and agent charts through `connectionsMCP`. The Operator
 reads `CONNECTIONS_MCP_*` environment variables. Native OpenClaw and Hermes
 clients use `CETIRUN_CONNECTIONS_MCP_URL` and the `cetirun-connections` MCP
 server entry. Workloads mount their proof at
@@ -202,7 +202,7 @@ uses its current **application HTTPS and Pod-proof authentication**. It does not
 add an outer Istio mTLS layer. The chart limits ingress by Agent namespace and
 registers the protected peer selector.
 
-A Service-scoped DestinationRule also makes sure that ordinary meshed Agents do
+A Service-scoped DestinationRule also makes sure that standard meshed Agents do
 not add an incompatible outer mTLS layer. Their application HTTPS and proof are
 still necessary. MCP-to-Broker direct mTLS is still necessary. Other MCP ports
 keep the current mesh restrictions. The default non-native chart configuration
@@ -239,10 +239,11 @@ The [Pi adapter](../../examples/pi-agent/connections-runtime.mjs) initializes
 lazily and exposes the four fixed tools to the real SDK.
 
 For Custom Agent Identity, the directory configuration that already exists,
-policy permission, and current credential-policy readback are also necessary.
-Generic Entra token projection is independent. For GitHub/Google connections,
-neither form of Entra identity is necessary. Explicit bindings and provider
-permissions are still mandatory. No provider token is projected into any Agent.
+Agent Policy permission, and current credential-policy readback are also
+necessary. Generic Entra token projection is independent. For GitHub/Google
+connections, neither form of Entra identity is necessary. Explicit bindings and
+provider permissions are still mandatory. No provider token is projected into
+any Agent.
 
 ## Offline checks
 

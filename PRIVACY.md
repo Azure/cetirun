@@ -22,7 +22,7 @@ component.
 
 | Surface | Data and purpose | Where it can be processed or stored |
 | --- | --- | --- |
-| Portal and sign-in | User alias, preferred username, display name, email claims, group authorization, and Portal administrator status. These items are used to identify users and authorize access. | Browser, OAuth2 Proxy/identity provider, portal request context, and application logs. Agent ownership and profile fields are also stored in Kubernetes resources. |
+| Portal and sign-in | User alias, preferred username, display name, email claims, group authorization, and Portal administrator status. These items are used to identify users and authorize access. | Browser, OAuth2 Proxy/identity provider, Portal request context, and application logs. Agent ownership and profile fields are also stored in Kubernetes resources. |
 | Agent management | Agent and Team names, owner alias, model selection, profile information, configuration, status, events, and resource identifiers | Portal, operator, Kubernetes API objects, Helm release state, and operational logs |
 | Agent activity | Prompts, responses, files, tool arguments/results, session history, and user/team context | Agent process and HOME storage. Configured model, tool, and channel services. The AI Gateway's database, or its Azure Data Explorer content database when `content.enabled` is on, for seven days by default. Possibly container logs. |
 | Authentication material | The OpenClaw gateway token, the Hermes API key, the AI Gateway virtual key, provider credentials, OAuth device-flow state, and optional Tailscale credentials | Kubernetes Secrets, mounted configuration, agent home files, process memory, and the services that authenticate them |
@@ -32,7 +32,7 @@ component.
 | Connections | The external accounts that an owner connects to an Agent, for example GitHub, Google, or Azure, and the encrypted tokens of these accounts | The Agent Identity Broker, in Kubernetes Secrets of the Broker namespace and of the Agent namespace. Connections MCP and the connected services, for each call that the Agent makes. |
 | Portal Chat history | The conversations of an owner with a Custom Agent in Portal Chat | The IndexedDB database `cetirun-portal-chat` in the owner's browser. The Custom Agent. |
 
-The portal does not show only public metadata. For an OpenClaw or Hermes
+The Portal does not show only public metadata. For an OpenClaw or Hermes
 Agent, the authorized Portal API response can include credentials. These are
 the OpenClaw gateway token, the Hermes API key, and a configured Tailscale auth
 key. Treat browser access to an Agent and its API responses as access to
@@ -43,13 +43,13 @@ For the memory controls of an owner, read the
 [Private Memory Context](site/content/en/docs/reference/agent-harness.md#private-memory-context)
 reference.
 
-Source: [portal claims](app/cetirun-portal/internal/auth/claims.go),
+Source: [Portal claims](app/cetirun-portal/internal/auth/claims.go),
 [authentication middleware](app/cetirun-portal/internal/auth/middleware.go),
 [instance handlers](app/cetirun-portal/internal/handler/instance.go),
 [Portal Chat storage](app/cetirun-portal/web/src/chat/store.ts),
 [memory owner access](app/cetirun-memory-context/OWNER_ACCESS.md),
 [Broker](app/cetirun-agent-broker/README.md),
-[instance API types](app/cetirun-operator/api/v1alpha1/agent_types.go),
+[Agent API types](app/cetirun-operator/api/v1alpha1/agent_types.go),
 [agent configuration templates](app/cetirun-chart/templates/agents/openclaw/_runtime.tpl),
 and [Hermes configuration templates](app/cetirun-chart/templates/agents/hermes/_runtime.tpl).
 
@@ -87,7 +87,7 @@ Source: [chart defaults](app/cetirun-chart/values.yaml),
 [session logger](app/cetirun-chart/configs/session-logger.sh),
 [OpenClaw entrypoint](app/cetirun-chart/agents/openclaw/bootstrap/entrypoint.sh),
 [Hermes entrypoint](app/cetirun-chart/agents/hermes/bootstrap/hermes-entrypoint.sh),
-[portal handlers](app/cetirun-portal/internal/handler/instance.go),
+[Portal handlers](app/cetirun-portal/internal/handler/instance.go),
 and [operator reconciliation](app/cetirun-operator/internal/controller/agent_controller.go).
 
 ### AI Gateway request log and metrics
@@ -172,7 +172,7 @@ container output from the node logs and does not copy container environment
 variables.
 
 The chart's telemetry program writes each Agent's namespace, owner alias,
-display name, email, Entra tenant and object IDs, Team and policy into
+display name, email, Entra tenant and object IDs, Team and Agent Policy into
 `CetiRunLogs`. By default, it also writes the warning events and the events
 about CetiRun resources and namespaces. Metrics go to the `CetiRunMetrics`
 database. The AI Gateway's metric labels include key aliases, user IDs, and
@@ -197,7 +197,7 @@ the AI Gateway with its bundled PostgreSQL and Valkey, the GitHub Copilot proxy
 of each OpenClaw and Hermes Agent, and OAuth2 Proxy with its Valkey session
 store. Three other containers keep credentials in their environment but do not
 set the variable. The credentials of the Agent runtime container include the
-Gateway key and the native authentication keys of the Agent. The GitHub
+AI Gateway key and the native authentication keys of the Agent. The GitHub
 Copilot proxy of a Custom Agent keeps its key from the Secret
 `ai-gateway-copilot-proxy`. The Broker keeps the OAuth client secrets of its
 GitHub and Google providers when you configure them. A cluster that runs the
@@ -291,11 +291,11 @@ and [egress settings](infra/istio/values.yaml).
 
 The supplied ingress configuration uses an authentication cookie named
 `_cetirun_oauth2`, with secure transport, SameSite=Lax, and an eight-hour
-expiry. The portal stores the theme preference under `cetirun-theme` in
+expiry. The Portal stores the theme preference under `cetirun-theme` in
 localStorage. Portal Chat keeps the conversations of an owner with a Custom
 Agent in the IndexedDB database `cetirun-portal-chat` of the browser.
-Third-party agent interfaces and visited sites can use their own cookies and
-browser storage. The portal's theme setting is not an inventory of all browser
+Third-party Agent UIs and visited sites can use their own cookies and
+browser storage. The Portal's theme setting is not an inventory of all browser
 state.
 
 The desktop starts Chrome with
@@ -334,7 +334,7 @@ Source: [OAuth2 Proxy configuration](infra/istio/templates/ingress/oauth2-proxy-
 [theme storage](app/cetirun-portal/web/src/context/ThemeContext.tsx),
 [desktop process configuration](app/cetirun-chart/configs/desktop-entrypoint.sh),
 [volume mounts and retention](app/cetirun-chart/templates/statefulset.yaml),
-[instance deletion](app/cetirun-operator/internal/controller/agent_controller.go),
+[Agent deletion](app/cetirun-operator/internal/controller/agent_controller.go),
 and [Azure Data Explorer retention](infra/cluster/modules/adx.bicep).
 
 ## Checklist for platform administrators
@@ -349,7 +349,7 @@ and [Azure Data Explorer retention](infra/cluster/modules/adx.bicep).
 - Check `memoryContext.enabled`, the connections that the Portal offers, and
   `cetiadmin.enabled`. Tell users that Agents keep memory notes, and that a
   reply in a group chat can quote them.
-- Restrict access to the portal, Kubernetes Secrets, HOME volumes, desktop
+- Restrict access to the Portal, Kubernetes Secrets, HOME volumes, desktop
   and terminal endpoints, operational logs, and the Azure Data Explorer
   databases of the logs and metrics. Evaluate administrator roles and
   automation identities as data-access roles.

@@ -15,12 +15,51 @@ import (
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/auth"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 const (
 	internalOwnerTenant = "11111111-1111-1111-1111-111111111111"
 	internalOwnerObject = "22222222-2222-2222-2222-222222222222"
 )
+
+func TestInternalAuthLookupErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{"missing", apierrors.NewNotFound(schema.GroupResource{Resource: "agents"}, "private-instance"), http.StatusForbidden},
+		{"unavailable", errors.New("private backend detail"), http.StatusServiceUnavailable},
+		{"timeout", context.DeadlineExceeded, http.StatusServiceUnavailable},
+		{"storage permissions", apierrors.NewForbidden(schema.GroupResource{Resource: "agents"}, "private-instance", errors.New("private backend detail")), http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			storage := interceptor.NewClient(newFakeClientWith(sampleInstance()).(client.WithWatch), interceptor.Funcs{
+				Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+					return tc.err
+				},
+			})
+			h := &InstanceHandler{Kube: kube.NewClient(storage)}
+			req := httptest.NewRequest(http.MethodGet, "/internal/auth", nil)
+			req.Header.Set("X-Internal-Instance", "private-instance")
+			req.Header.Set("X-Internal-Email", "owner@example.com")
+			w := httptest.NewRecorder()
+			h.InternalAuth(w, req)
+			if w.Code != tc.status {
+				t.Fatalf("status=%d, want %d", w.Code, tc.status)
+			}
+			for _, value := range []string{"private-instance", "private backend detail", "owner@example.com"} {
+				if strings.Contains(w.Body.String(), value) {
+					t.Fatalf("response disclosed %q", value)
+				}
+			}
+		})
+	}
+}
 
 func TestInternalAuthBoundOwnerIdentity(t *testing.T) {
 	ownerIdentity := auth.VerifiedIdentity{TenantID: internalOwnerTenant, ObjectID: internalOwnerObject}

@@ -91,6 +91,24 @@ removes the list from the error's message in place. The status (429), the
 "Try again in N seconds" wording and the retry-after header, which LiteLLM
 derives from the error, stay as they are.
 
+A request refused because a budget is spent (LiteLLM's BudgetExceededError)
+gets the Gateway's own message, replaced in place the same way. LiteLLM's,
+"Budget has been exceeded! Key=<alias> (sk-...<last 4>) Current cost: ...,
+Max budget: ...", showed the key's alias and the end of its secret, and said
+neither whose budget it was nor what to do. The Gateway's names the budget
+that is spent: the calling key's own, which is the Agent's for a key the
+CetiRun operator issued, its team's, or another that applies to it. It gives
+the amounts, when the key's own budget resets if it has a reset period, and
+that a CetiRun administrator can raise the budget. The status
+(budgetExceededStatusCode, 402 by default) and the error type budget_exceeded
+stay. The message names no limit, quota, retry or wait: OpenClaw 2026.9.6
+retries a 402 whose text reads like a periodic limit, as it retries a rate
+limit, and Hermes 0.22.7 one that names a usage limit or a quota next to a
+wait or a reset. Hermes shows the message; OpenClaw shows its own text for a
+billing error instead, which the CetiRun OpenClaw image replaces with one about
+the CetiRun budget (agents/openclaw/compat/apply-gateway-budget.mjs of the
+runtime chart).
+
 Encrypted reasoning without the Gateway's mark is removed from Responses API
 requests while encrypted content affinity is on for the model. A client that
 keeps no state on the provider, such as OpenClaw, sends every earlier
@@ -156,9 +174,11 @@ sight. LiteLLM's own rule decides, read from LiteLLM, and each change is logged.
 """
 
 import base64
+import datetime
 import importlib
 import inspect
 import json
+import math
 import re
 import sys
 
@@ -228,6 +248,11 @@ PROXY_SERVER_MODULE = "litellm.proxy.proxy_server"
 # list it appends: cooldown_list=['<deployment id>', ...].
 NO_DEPLOYMENTS = "No deployments available"
 COOLDOWN_LIST = re.compile(r",?\s*cooldown_list=\[[^\]]*\]")
+
+# The budgets LiteLLM's BudgetExceededError names (entity_type) that the
+# Gateway's message tells apart: the calling key's own and its team's.
+KEY_BUDGET = "key"
+TEAM_BUDGET = "team"
 
 # The marks LiteLLM's encrypted content affinity puts on the items it returns:
 # the producing deployment in the item's ID, and in its encrypted_content.
@@ -1299,6 +1324,82 @@ def remove_cooldown_list(error):
     return changed
 
 
+def finite(amount):
+    """Whether the amount is a finite number."""
+    return isinstance(amount, (int, float)) and not isinstance(amount, bool) and math.isfinite(amount)
+
+
+def usd(amount):
+    """A finite amount of US dollars as the Gateway's message states it: in cents from one dollar
+    up, with up to six places below, so that a small budget does not read as zero."""
+    if abs(amount) >= 1:
+        return f"{amount:.2f}"
+    whole, _, places = f"{amount:.6f}".rstrip("0").partition(".")
+    return f"{whole}.{places.ljust(2, '0')}"
+
+
+def budget_reset(error, caller, now):
+    """When the spent budget resets, or None when that is not known or the reset is already due.
+
+    Only the calling key's own budget carries its reset time on the key LiteLLM hands the hook. A
+    window of the key's budget_limits or another entity's budget resets on its own schedule. LiteLLM
+    applies resets in a job that runs about every ten minutes, so a reset can be due and not yet
+    applied."""
+    if getattr(error, "entity_type", None) != KEY_BUDGET:
+        return None
+    refused, own = getattr(error, "max_budget", None), getattr(caller, "max_budget", None)
+    if not (finite(refused) and finite(own) and math.isclose(refused, own)):
+        return None
+    reset = getattr(caller, "budget_reset_at", None)
+    if not isinstance(reset, datetime.datetime):
+        return None
+    if reset.tzinfo is None:
+        reset = reset.replace(tzinfo=datetime.timezone.utc)
+    reset = reset.astimezone(datetime.timezone.utc)
+    return reset if reset > now else None
+
+
+def budget_refusal(error, caller, now=None):
+    """The Gateway's message for LiteLLM's refusal of a request whose budget is spent, or None for
+    any other error."""
+    refusal = getattr(litellm, "BudgetExceededError", None)
+    if not (isinstance(refusal, type) and isinstance(error, refusal)):
+        return None
+    agent = operator_groups(caller) is not None
+    who = "this Agent" if agent else "this key"
+    spent, budget = getattr(error, "current_cost", None), getattr(error, "max_budget", None)
+    amounts = finite(spent) and finite(budget)
+    entity = getattr(error, "entity_type", None)
+    refused = "its model requests"
+    if entity == TEAM_BUDGET:
+        team = "Team" if agent else "team"
+        spender = f"the {team} of {who}"
+        refused = f"the model requests of the {team}'s {'Agents' if agent else 'keys'}"
+    else:
+        spender = who if entity == KEY_BUDGET else None
+    if spender is None:
+        state = f"a budget that applies to {who} is used up"
+        if amounts:
+            state += f": {usd(spent)} USD spent of {usd(budget)} USD"
+    elif amounts:
+        state = f"{spender} has spent {usd(spent)} USD of its {usd(budget)} USD budget"
+    else:
+        state = f"{spender} has used up its budget"
+    reset = budget_reset(error, caller, now or datetime.datetime.now(datetime.timezone.utc))
+    until = f" until the budget resets on {reset:%Y-%m-%d %H:%M} UTC" if reset else ""
+    return (f"CetiRun AI Gateway: {state}. The Gateway refuses {refused}{until}. "
+            f"A CetiRun administrator can raise the budget{' sooner' if reset else ''}.")
+
+
+def replace_message(error, message):
+    """Give the error this message where LiteLLM reads it: its message and its arguments."""
+    error.args = (message,)
+    try:
+        error.message = message
+    except (AttributeError, TypeError):
+        pass
+
+
 class ModelRefused(HTTPException):
     """The refusal of a model the calling key may not use.
 
@@ -1483,6 +1584,9 @@ class Guard(CustomLogger):
                 "answers only the Decisions API",
                 original_exception.refused_call_type, original_exception.refused_model,
                 getattr(user_api_key_dict, "key_alias", None))
+        message = budget_refusal(original_exception, user_api_key_dict)
+        if message is not None:
+            replace_message(original_exception, message)
         remove_cooldown_list(original_exception)
         return None
 

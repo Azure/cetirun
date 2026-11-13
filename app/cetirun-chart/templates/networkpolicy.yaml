@@ -59,16 +59,8 @@ spec:
         - protocol: TCP
           port: {{ .network.gatewayPort }}
     {{- end }}
-    # 1. DNS — allow kube-dns for name resolution
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dnsNamespace }}
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
+    # 1. DNS — the Pods in dnsNamespace that dnsPodLabels selects
+    {{- include "cetirun.networkPolicy.dnsEgress" . | nindent 4 }}
 
     # 2. Istiod — allow istio-proxy sidecar to reach istiod for mTLS cert signing
     - to:
@@ -119,9 +111,9 @@ spec:
       {{- end }}
     {{- end }}
 
-    # 4. All external (out-of-cluster) egress, blocking internal ranges and IMDS.
-    # IMDS (169.254.169.254/32) is always blocked to prevent credential theft;
-    # workload identity uses federated token exchange and does not need IMDS.
+    # 4. Public egress: every IPv4 address outside blockedCIDRs. The defaults
+    # block the private, shared and link-local ranges, which include IMDS, and
+    # the Azure host address.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0

@@ -38,10 +38,10 @@ Approval occurs in the repository. The worker publishes the content of the
 configured branch or tag. Review the changes to that branch or tag as you
 review code that your Agents run.
 
-The steps on this page are for an administrator of an installation that
-`make deploy` made, as in [Install CetiRun](../../getting-started/platform/).
-The installation must run [policy-bound Teams](../policy-teams/). Do these
-steps:
+The steps on this page are for a platform administrator of an installation
+that `make deploy` made, as in
+[Install CetiRun](../../getting-started/platform/). The installation must run
+[policy-bound Teams](../policy-teams/). Do these steps:
 
 1. [Prepare the storage](#storage).
 2. [Prepare the repository and its credentials](#the-repository-and-its-credentials).
@@ -146,7 +146,7 @@ directory that the commit holds at two paths counts twice, with all the files
 and directories in it. The worker stops at the first path over
 `maxRepositoryObjects`, or when the paths together exceed `maxRepositorySize`.
 
-You cannot change the 64-character name limit, because Team and Policy
+You cannot change the 64-character name limit, because Team and Agent Policy
 validation also use it. Before you increase a size limit, do these checks:
 
 - When an Agent starts, it copies all the skills of its Team into the scratch
@@ -221,7 +221,7 @@ When the Agent starts, its HOME initializer mounts only the subtree of the
 Team of the Agent, read-only. The initializer waits until `CURRENT` names a
 release of the current selection of the Team. Then it copies the skills of
 that release into the context view of the Pod. No Agent container mounts the
-claim. The operator refuses an Agent chart that mounts the claim in another
+claim. The operator refuses an agent chart that mounts the claim in another
 container, or that mounts more than the subtree of the Team.
 
 An OpenClaw or Hermes Agent container receives the copy read-only at
@@ -282,7 +282,7 @@ A Custom Agent of the Skill Marketplace finds the Team skills and the
 platform skills together in `$HOME/.agents/skills`, read-only. The image
 decides how it loads them, and where it keeps personal skills.
 
-If two skills have the same name, the runtime selects one of them. Refer to
+If two skills have the same name, the agent type selects one of them. Refer to
 [Limits](#limits).
 
 ## Prerequisites
@@ -317,7 +317,7 @@ Agents. Refer to [Skill sources of an Agent](#skill-sources-of-an-agent).
 
 NFS 3.0 has no client authentication. The storage service authorizes NFS
 requests only by the network that they come from. Use a storage account that
-only private endpoints can reach, and turn off its public network access. The
+only private endpoints can reach, and disable its public network access. The
 [storage helper](../storage/#private-endpoint) creates such an account with
 these variables:
 
@@ -516,18 +516,19 @@ Remove the `skillMarketplace` block from the environment file, and run
 ## Select the skills of a Team
 
 A Team can select a skill only when its Agent Policy allows that skill. Allow
-the skills in the Policy first. Then select them on the Team.
+the skills in the Agent Policy first. Then select them on the Team.
 
 ### In the Portal
 
-1. Select **Admin → Agent policies**, and open the Policy of the Team. Under
-   **Skill Marketplace skills**, select the skills that the Policy allows. Each
-   selected skill adds its name to **Allowed skills**. The other entries of
-   that list stay. Save the Policy. This change does not restart Agents.
+1. Select **Admin → Agent policies**, and open the Agent Policy of the Team.
+   Under **Skill Marketplace skills**, select the skills that the Agent Policy
+   allows. Each selected skill adds its name to **Allowed skills**. The other
+   entries of that list stay. Save the Agent Policy. This change does not
+   restart Agents.
 2. Select **Admin → Teams**, and open the Team. Under **Skills**, select the
    skills that the Agents of the Team get. **Search skills** finds a skill by
-   its name or its description. A skill that the Policy does not allow shows
-   **Not allowed by the Agent Policy**, and you cannot select it. Leave
+   its name or its description. A skill that the Agent Policy does not allow
+   shows **Not allowed by the Agent Policy**. You cannot select it. Leave
    **npm skill packages, one per line** empty: Sandbox Agents do not install
    `npm:` packages, as [Limits](#limits) describes.
 3. Save the Team. When its skills change, the save restarts the running
@@ -535,12 +536,12 @@ the skills in the Policy first. Then select them on the Team.
 
 The Portal refuses these changes:
 
-- A Team skill that the Policy does not allow.
+- A Team skill that the Agent Policy does not allow.
 - A new Team skill that is not in the catalog. If the worker rejected the
   copy in the repository, the message gives the reason.
 - A Team entry without the `npm:` prefix that is not a skill name.
-- A Policy save that removes a marketplace skill that a Team of this Policy
-  still selects. Remove the skill from the Team first.
+- An Agent Policy save that removes a marketplace skill that a Team of this
+  Agent Policy still selects. Remove the skill from the Team first.
 
 While the catalog is not available, the Team page keeps the selected skills,
 but you cannot add a skill. A selected skill that the catalog no longer has
@@ -593,8 +594,8 @@ versions until it restarts. Refer to
 
 ### With kubectl
 
-This is the same configuration as resources. Apply it as an administrator that
-`sandboxAdmission` names, as
+This is the same configuration as resources. Apply it as an admission
+administrator that `sandboxAdmission` names, as
 [the admission certificate](../policy-teams/#the-admission-certificate) shows:
 
 ```yaml
@@ -641,16 +642,16 @@ spec:
 - The checks of the Portal do not apply to `kubectl`. The worker lists a
   selected name that the catalog does not have as
   [missing](#retained-and-missing-skills).
-- Keep each Team skill in the allowed skills of the Policy. The Sandbox
-  admission webhook refuses a Team that selects a skill that its Policy does
-  not allow, also for a change of the skills alone. It also refuses a Policy
-  change that removes a skill that a Team of the Policy selects. The message
-  names the Team and the skills.
+- Keep each Team skill in the allowed skills of the Agent Policy. The Sandbox
+  admission webhook refuses a Team that selects a skill that its Agent Policy
+  does not allow. This also applies to a change of the skills alone. It also
+  refuses an Agent Policy change that removes a skill that a Team of the Agent
+  Policy selects. The message names the Team and the skills.
 - A Team that was stored before the webhook checked its skills can still
   select such a skill. The operator then denies the Agents of the Team. The
   condition `PolicyResolved` of these Agents is `False`, with reason
   `PolicyDenied` and the message `skill "<name>" is not allowed by policy`.
-  The operator revokes their Gateway keys and stops them.
+  The operator revokes their AI Gateway keys and stops them.
 
 ## When changes take effect
 
@@ -658,11 +659,11 @@ spec:
 | --- | --- |
 | The skills of a Team, in the Portal or with `kubectl` | The worker publishes a release for the new selection when it sees the change. The change restarts the running Sandbox Agents of the Team one time, as each Team change does. Each new Pod waits for the release of the new selection, and then copies it |
 | A new commit on the configured branch or tag | At its next check, the worker publishes a new release for each Team whose selected skills changed. Running Agents keep their copy. Each Agent receives the new versions at its next start |
-| The allowed skills of a Policy | No restart. The allowed skills only limit what Teams and Agents can select |
+| The allowed skills of an Agent Policy | No restart. The allowed skills only limit what Teams and Agents can select |
 
 To give a running Agent the newest versions now, restart it. On the page of
 the Agent, its owner selects **Restart Agent**. Refer to
-[Restart while retaining HOME](../../guides/lifecycle/#restart-while-retaining-home).
+[Restart an Agent](../agent-lifecycle/#restart-an-agent).
 An Agent also receives the newest versions when its Pod starts again for
 another reason.
 
@@ -671,7 +672,7 @@ the Agent completes, it writes the ID of the release that it copied into its
 termination message, `cetirun.skills.release=<id>`. When the current release
 of the Team has another ID for the same selection, **Team skills** on the page
 of the Agent shows a warning. If the owner can restart the Agent, the warning
-has a **Restart Agent** button. An Agent with an earlier Agent chart writes no
+has a **Restart Agent** button. An Agent with an earlier agent chart writes no
 ID, so the Portal shows no warning for it. To read the ID with `kubectl`:
 
 ```bash
@@ -718,7 +719,7 @@ and the Portal shows **Missing**. The Portal does not add such a skill to a
 Team, but `kubectl` can.
 
 Neither state stops the Agents of the Team. To clear a retained or a missing
-skill, remove it from the Team. Then you can remove it from the Policy.
+skill, remove it from the Team. Then you can remove it from the Agent Policy.
 
 ## Limits
 
@@ -734,7 +735,7 @@ skill, remove it from the Team. Then you can remove it from the Policy.
   - Agents of a Team without an Agent Policy, and Agents without a Team. For
     these Agents, the operator does not install entries without the `npm:`
     prefix.
-- **Agent chart version.** An Agent keeps the Agent chart version that it was
+- **Agent chart version.** An Agent keeps the agent chart version that it was
   created with (`spec.helm.version`). These charts cannot give an Agent the
   skills of its Team:
   - A chart from a release before the Skill Marketplace.
@@ -743,12 +744,12 @@ skill, remove it from the Team. Then you can remove it from the Policy.
 
   While the Team of such an Agent selects marketplace skills, the operator
   sets the Agent to `Failed` with `AgentConfigInvalid`. Upgrade its chart, as
-  [Pin and update a chart](../../guides/lifecycle/#pin-and-update-a-chart)
+  [Pin and update a chart](../agent-lifecycle/#pin-and-update-a-chart)
   shows.
 - **No change for each Agent.** `skillOverrides` cannot add or remove a
   marketplace skill. While the Skill Marketplace is on, the operator refuses
-  such an Agent, with or without a policy. The Agent changes to `Failed` with
-  `AgentConfigInvalid` and this message:
+  such an Agent, with or without an Agent Policy. The Agent changes to
+  `Failed` with `AgentConfigInvalid` and this message:
   `skillOverrides cannot add or remove Skill Marketplace skills; select them on the Team`.
   This check does not apply to `npm:` entries in `skillOverrides`.
 - **No npm packages for Sandbox Agents.** The Sandbox Agents of policy-bound
@@ -757,8 +758,8 @@ skill, remove it from the Team. Then you can remove it from the Policy.
   not render the Agent. It reports `SkillsMaterializationPending`, and the Agent
   does not start. To start the Agent, remove the `npm:` entry.
 - **Name conflicts with private skills.** CetiRun does not compare marketplace
-  names with the skills in the HOME of an Agent. The runtime decides which of
-  two skills with the same name it uses. For OpenClaw and Hermes, a private
+  names with the skills in the HOME of an Agent. The agent type decides which
+  of two skills with the same name it uses. For OpenClaw and Hermes, a private
   skill, for example in `$HOME/.agents/skills`, can hide the marketplace skill.
 - **100 entries.** The `skills` of a Team have at most 100 entries, npm
   packages included.

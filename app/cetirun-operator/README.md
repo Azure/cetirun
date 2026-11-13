@@ -1,11 +1,11 @@
 # CetiRun operator
 
 The operator reconciles `Agent`, `Team`, `Sandbox`, and `AgentPolicy` resources
-in `cetirun.microsoft.com/v1alpha1`. Policy assignment and AI Gateway
+in `cetirun.microsoft.com/v1alpha1`. Agent Policy assignment and AI Gateway
 projection are active control-plane contracts. With
 `sandboxSources.nativeExecution`, the common executor runs new policy-bound
 Agents in their Sandbox, and retained single-start lifetimes keep their
-recorded execution contract. Without that setting, policy-bound Agents stay
+recorded execution contract. Without that setting, Sandbox Agents stay
 held at zero replicas.
 
 - [Custom-resource reference](../../site/content/en/docs/reference/crds.md)
@@ -13,7 +13,7 @@ held at zero replicas.
 - [Operator chart configuration](../../site/content/en/docs/reference/helm.md#operator-chart)
 - [Architecture and resource names](../../site/content/en/docs/concepts/architecture.md)
 - [Platform installation prerequisites](../../site/content/en/docs/getting-started/platform.md)
-- [Lifecycle and deletion boundaries](../../site/content/en/docs/guides/lifecycle.md)
+- [Lifecycle and deletion boundaries](../../site/content/en/docs/operations/agent-lifecycle.md)
 
 ## API contract
 
@@ -28,24 +28,24 @@ An Agent is a long-lived environment that a user owns. A Team supplies shared
 configuration, not access to private agent data.
 
 Agents can keep the legacy deployment path. It is not necessary to create a
-Sandbox or an AgentPolicy for this path. To use this path, omit `sandboxRef`.
-Use no Team, or use a Team that has no policy or Sandbox fields. The chart,
-runtime, Gateway, ownership, and admission rules that already exist still
-apply. Compatibility is not a bypass for a requested policy.
+Sandbox or an Agent Policy for this path. To use this path, omit `sandboxRef`.
+Use no Team, or use a Team that has no Agent Policy or Sandbox fields. The
+chart, runtime, AI Gateway, ownership, and admission rules that already exist
+still apply. Compatibility is not a bypass for a requested Agent Policy.
 
-A policy-bound Agent names one Team and one Sandbox that the Team allows. The
-Team's single `agentPolicyRef` selects its policy. This selection does not come
-from the Portal role of the human caller. The effective policy is the
+A Sandbox Agent names one Team and one Sandbox that the Team allows. The
+Team's single `agentPolicyRef` selects its Agent Policy. This selection does
+not come from the Portal role of the human caller. The effective policy is the
 intersection of that administrator-selected `AgentPolicy` and the Agent's
 explicit requests for models, budget, skills, and identity.
 
-For a policy-bound Agent, the Operator resolves the selected Team, Sandbox, and
-policy before it can keep compute or model access. It projects model names and
-a native monthly USD budget to the Agent's own AI Gateway virtual key. It
-compiles the Sandbox, security, and network revision, and records the expected
-Gateway, Sandbox, and credential revisions in the Agent status. Absent,
-rejected, stale, or unreadable evidence fails closed. There is no approval
-resource or separate governance workflow.
+For a Sandbox Agent, the Operator resolves the selected Team, Sandbox, and
+Agent Policy before it can keep compute or model access. It projects model
+names and a native monthly USD budget to the Agent's own AI Gateway virtual
+key. It compiles the Sandbox, security, and network revision, and records the
+expected AI Gateway, Sandbox, and credential revisions in the Agent status.
+Absent, rejected, stale, or unreadable evidence fails closed. There is no
+approval resource or separate governance workflow.
 
 The API replaces `OpenClawInstance` and `OpenClawTeam` with the same group and
 version. The installation of these CRDs does not convert, adopt, or delete
@@ -66,7 +66,7 @@ annotation keeps them when the release is uninstalled. Follow
 pinned generation commands.
 
 `deploy/deploy.sh` is a connected helper that makes changes. It is not a local
-smoke test. If the Gateway is in a separate namespace, configure the
+smoke test. If the ingress gateway is in a separate namespace, configure the
 [Gateway reference and workload namespace](../../site/content/en/docs/reference/helm.md#operator-chart)
 independently.
 
@@ -77,22 +77,22 @@ private home storage, and scratch. `AgentPolicy` describes the selection,
 security, network, ingress, and identity intent. Both configuration resources
 are cluster-scoped.
 
-A policy-enabled Team binds one policy, the allowed Sandboxes, and a creation
-default. An Agent binds a Sandbox. The role of a human administrator does not
-select the workload policy. These bindings exist together with the mandatory
-`spec.agent` Harness configuration.
+A policy-bound Team binds one Agent Policy, the allowed Sandboxes, and a
+creation default. An Agent binds a Sandbox. The role of a human administrator
+does not select the Agent Policy of the workload. These bindings exist together
+with the mandatory `spec.agent` Harness configuration.
 
 The [sandbox package](internal/sandbox/) now supplies these features:
 
 - Pure functions that apply defaults, validate, and normalize deterministically.
   They do not mutate source objects.
-- Cross-resource validation of every Sandbox and policy pair that a Team
+- Cross-resource validation of every Sandbox and Agent Policy pair that a Team
   configures.
-- Single-policy resolution with explicit authorization of the Agent, Team,
-  Sandbox, and AgentPolicy UIDs. A replacement that has the same name must get
-  new authorization.
-- A desired-configuration revision. It excludes metadata, policies that are not
-  selected, changes to the creation default, and unrelated model-access
+- Resolution of the single Agent Policy, with explicit authorization of the
+  Agent, Team, Sandbox, and Agent Policy UIDs. A replacement that has the same
+  name must get new authorization.
+- A desired-configuration revision. It excludes metadata, Agent Policies that
+  are not selected, changes to the creation default, and unrelated model-access
   settings.
 - Qualified-capability checks, and a freshness and identity check for trusted
   observations. Zero-value registrations, absent observations, stale evidence,
@@ -111,12 +111,13 @@ validator examines the input of an adapter, but it does not generate evidence.
 The credential projection for Agent Identity uses two fields that already
 exist: `status.policy.enforcement.credential.desiredRevision` and
 `status.agentIdentity.credentialPolicyRevision`. The second field is written
-only after a typed Broker readback of an actual owned enforcement record
-matches the current references. These are the policy, owner, and canonical
-identity references. The `CredentialPolicyReady` condition separates that
-evidence from the readiness of the directory identity. These actions alone
-cannot complete the aggregate `PolicyApplied`: to request Agent Identity, to
-copy a desired revision, or to get a bearer token.
+only after a typed Agent Identity Broker readback of an actual owned
+enforcement record matches the current references. These are the policy,
+owner, and canonical identity references. The `CredentialPolicyReady`
+condition separates that evidence from the readiness of the directory
+identity. These actions alone cannot complete the aggregate `PolicyApplied`:
+to request Agent Identity, to copy a desired revision, or to get a bearer
+token.
 
 The controller reads before it applies, and it reads again after a successful
 write. Lost replies, invalid readback, and status conflicts do not become
@@ -178,7 +179,7 @@ single-Pod storage lock. Private ownership, one main StatefulSet replica, and
 current Pod admission are still necessary. A change to a Sandbox does not
 convert the access mode of a HOME claim that already exists.
 
-Shared-only, Copilot-only, and mixed model configurations use the Gateway and
+Shared-only, Copilot-only, and mixed model configurations use the AI Gateway and
 the per-Agent Copilot proxy that already exist. The proxy is a separate
 Deployment, not a sidecar. It cannot mount HOME or use the Agent's runtime or
 model credentials. The proxy's optional, controller-owned
@@ -187,40 +188,52 @@ independently of the Agent replica count. Suspension and policy revocation stop
 both components. Creation before login does not grant Copilot model access, and
 the Portal continues to report sign-in required.
 
+After model registration, the Copilot status still follows the proxy's observed
+readiness. If its Deployment is missing, cannot be read, or has no ready replicas,
+the status returns to `Starting` with reason `ProxyStarting`. Registered routes,
+model lists, login Secrets, and the Agent's Virtual Key are retained. The status
+returns to `Ready` when the proxy recovers, without re-registering those routes.
+Readiness checks do not recreate a deleted Deployment. If it is missing, an
+administrator must restore the proxy from the Agent's current Helm release;
+repeating the Copilot sign-in does not restore the workload.
+This status does not prove that GitHub accepts the token or that a model request
+succeeds. Proxy readiness changes do not block approved shared models or restart
+the Agent workload.
+
 Suspension does three actions before the chart or bootstrap prerequisites are
-examined. It blocks a Gateway key that already exists, stops the owned main and
-auxiliary workloads, and withdraws their route. If the Gateway, a component
-stop, or a status write fails, suspension still tries the other shutdown
-operations. A shutdown that is not acknowledged still keeps its source
+examined. It blocks an AI Gateway key that already exists, stops the owned
+main and auxiliary workloads, and withdraws their route. If the AI Gateway, a
+component stop, or a status write fails, suspension still tries the other
+shutdown operations. A shutdown that is not acknowledged still keeps its source
 reservation. Normal Kubernetes stop requests are not physical fencing.
 
-The Portal may also accept a narrow pre-bootstrap pause for a governed common
-Sandbox Agent when it can authoritatively prove that no execution lifetime
+The Portal may also accept a narrow pre-bootstrap pause for a Sandbox Agent
+when it can authoritatively prove that no execution lifetime
 exists: there is no Agent namespace, bootstrap/preparation/grant receipt,
 bootstrap/preparation finalizer, or status evidence of an enforced or ready
 runtime. A hold left by a failed pre-bootstrap prerequisite is permitted when
-all of those no-lifetime proofs still hold. This does not retain HOME or a
-Gateway key because neither exists yet. Any missing, conflicting, or unreadable
-evidence instead leaves the requested suspension `Pending` and never starts
-bootstrap; resume is the explicit intent that lets the controller try
+all of those no-lifetime proofs still hold. This does not retain HOME or an
+AI Gateway key because neither exists yet. Any missing, conflicting, or
+unreadable evidence instead leaves the requested suspension `Pending` and never
+starts bootstrap; resume is the explicit intent that lets the controller try
 provisioning again. A confirmed pause reports the phase `Suspended`, with the
 reason `Suspended` on `Ready`, `PodReady`, `SandboxReady`, and `IngressReady`.
 An incomplete one reports the phase `Pending`, with the reason
 `SuspensionPending` on the same conditions.
 
-The current Gateway reconciliation also removes the per-Agent Copilot token
+The current AI Gateway reconciliation also removes the per-Agent Copilot token
 and proxy-key Secrets during explicit suspension. Suspension keeps HOME and the
-Gateway spend, but it does not keep the Copilot sign-in. The owner must sign in
-again after resume. If the Copilot sign-in must stay available, do not use
+AI Gateway spend, but it does not keep the Copilot sign-in. The owner must sign
+in again after resume. If the Copilot sign-in must stay available, do not use
 explicit suspension for an ordinary chart or image upgrade. Use the normal Agent
 update and reconciliation path. If a coordinated configuration change makes a
 suspension necessary, plan for owner reauthorization.
 
-If policy denial already requested the deletion of the Gateway key, suspension
-retries that revocation. It does not try to block the deleted key. It reports
-`Suspended` only after revocation and shutdown succeed. The policy stays denied,
-and the recorded key identity stays. A resume does not recreate a missing key or
-restore access under a denied policy.
+If policy denial already requested the deletion of the AI Gateway key,
+suspension retries that revocation. It does not try to block the deleted key.
+It reports `Suspended` only after revocation and shutdown succeed. The policy
+stays denied, and the recorded key identity stays. A resume does not recreate a
+missing key or restore access under a denied policy.
 
 Loss of bootstrap or runtime prerequisites also holds a reconciled Agent that
 already runs and is not suspended. The hold blocks its key, stops the owned
@@ -236,9 +249,9 @@ Common helpers and chart components are still subject to runtime, privilege,
 storage, and credential constraints.
 
 Configuration, key, and model updates use normal Helm reconciliation. They keep
-HOME and the current Gateway spend identity. Absent or foreign ownership is not
-repaired through resource adoption or the removal of protection markers. Ready
-and suspended Agents still recheck the current sources and the deployed
+HOME and the current AI Gateway spend identity. Absent or foreign ownership is
+not repaired through resource adoption or the removal of protection markers.
+Ready and suspended Agents still recheck the current sources and the deployed
 controls. Unchanged passes keep their phase and reconcile timestamp between
 periodic refreshes, and they do not generate status-watch loops.
 
@@ -279,7 +292,7 @@ not leave the old HOME writer as an orphan.
 
 Bootstrap receipts that already exist select their recorded lifetime mode. This
 includes checkpoints that were created before the preparation finalizer or the
-Gateway projection. These receipts keep their HOME identity, chart pins, and
+AI Gateway projection. These receipts keep their HOME identity, chart pins, and
 cleanup, even after the new switch is enabled. Version-1 preparation and start
 records also keep their recorded lifecycle. They are not a second
 feature-development path or an automatic conversion of a lifetime that runs.
@@ -292,7 +305,7 @@ updates do **not** establish physical writer fencing, failed-node recovery,
 durable restart requests, or cross-node migration guarantees.
 
 When the optional configuration-coordination authority is configured, these
-lifetimes also reserve their selected Team, Sandbox, and policy. A normal
+lifetimes also reserve their selected Team, Sandbox, and Agent Policy. A normal
 desired-template generation can refresh that reservation only while the selected
 source identities and effective inputs do not change. Shared configuration
 changes stay excluded until suspension or deletion acknowledges controller
@@ -403,15 +416,15 @@ rules include an acknowledged suspension before a change to reserved sources.
 Retained version-1 single-start lifetimes continue to reject internal grants.
 See the
 [internal-egress example](../../examples/native-sandbox/README.md#scoped-internal-egress)
-for the policy shape and the separate rules for live validation.
+for the Agent Policy shape and the separate rules for live validation.
 
 ### Planned healthy-source migration (separate opt-in)
 
 `sandboxSources.plannedMigration: true` enables a platform-administrator
-Kubernetes API for cold moves of common-executor OpenClaw/Hermes Agents. This
-setting must have `nativeExecution`, which selects common reconciliation. The
-default is off. For reader-first rollout, the false setting is omitted from
-the controller configuration.
+Kubernetes API for cold moves of OpenClaw and Hermes Sandbox Agents that the
+common executor runs. This setting must have `nativeExecution`, which selects
+common reconciliation. The default is off. For reader-first rollout, the false
+setting is omitted from the controller configuration.
 
 Upgrade the CRDs, all Operator and admission replicas, and Portal readers before
 you enable new requests. Do not roll back readers or schemas while migration
@@ -422,8 +435,8 @@ This scope must have one bound filesystem CSI `ReadWriteOncePod` or
 `ReadWriteOnce` HOME. There must be no other PVC mounts. The scope also must
 have a CSI driver for which attachment is necessary and a healthy source on a
 different Node. The migration keeps the Agent, namespace, StatefulSet, HOME
-PVC/PV, chart pin, Gateway key, and spend identities. Governed Custom uses the
-same common migration path.
+PVC/PV, chart pin, AI Gateway key, and spend identities. Custom Sandbox Agents
+use the same common migration path.
 
 This feature does not support retained single-start lifetimes, shared-volume
 migration, cross-cluster moves, forced deletion/detach, or unavailable-source
@@ -479,10 +492,11 @@ The controller persists `status.plannedMigration` before side effects:
 
    While incomplete protection prevents scale-down, suspension, withdrawn
    access, changed projections, or unavailable authorization independently
-   block the Gateway key. They also withdraw ingress and apply an all-traffic
-   deny to the exact owned Cilium policy. The Agent/namespace selector of that
-   policy and the captured source/storage identities stay the same. Ordinary
-   reconciliation restores the policy before the destination is used.
+   block the AI Gateway key. They also withdraw ingress and apply an
+   all-traffic deny to the exact owned Cilium policy. The Agent/namespace
+   selector of that policy and the captured source/storage identities stay the
+   same. Ordinary reconciliation restores the policy before the destination is
+   used.
 
    Network write/read-back failures stay explicit and retryable. They are not
    evidence of successful dataplane isolation. The temporary block keeps the
@@ -534,7 +548,7 @@ Suspension keeps the checkpoint and prevents destination start. Resume
 continues the same request. If suspension arrives before the first checkpoint,
 a source that is still ready is captured and protected before it is stopped. A
 rejected migration preflight does not block a suspension that was requested
-independently. An unaccepted request stays available for administrator
+independently. An unaccepted request stays available for platform administrator
 correction or withdrawal. It is not silently cleared.
 
 If an authorization outage holds the source before capture, ordinary
@@ -562,8 +576,8 @@ mutate lifecycle state.
 
 Offline tests use synthetic kubelet/CSI observations and isolated API servers.
 They do not test a live AKS driver, a model, storage durability, or physical
-fencing. See the
-[lifecycle guide](../../site/content/en/docs/guides/lifecycle.md#planned-node-migration).
+fencing. See
+[Planned node migration](../../site/content/en/docs/operations/agent-lifecycle.md#planned-node-migration).
 
 ### Capability registration and retained single-start records
 
@@ -584,12 +598,12 @@ scheduling constraints of the registered RuntimeClass. The separate durable
 placement registry is not supported, and it is rejected.
 
 These earlier execution records support one OpenClaw Agent, a Kata Sandbox with
-ReadWriteOncePod HOME, and shared Gateway model access. This execution uses the
-resources/storage of the selected Sandbox. It also uses the model entitlement
-and budget of the selected AgentPolicy. Per-Agent Gateway keys are projected
-through owned Secrets, not embedded provider credentials. CIDR denies and
-supported TCP/UDP destination-port denies are compiled into the owned Cilium
-policy.
+ReadWriteOncePod HOME, and shared AI Gateway model access. This execution uses
+the resources/storage of the selected Sandbox. It also uses the model
+entitlement and budget of the selected Agent Policy. Per-Agent AI Gateway keys
+are projected through owned Secrets, not embedded provider credentials. CIDR
+denies and supported TCP/UDP destination-port denies are compiled into the
+owned Cilium policy.
 
 These items are rejected before start: FQDN rules, internal-network exceptions,
 mandatory mTLS, Kubernetes/identity grants, Copilot sidecars, desktop,
@@ -612,11 +626,11 @@ deny-precedence, node-traffic, and DNS IP restrictions that already exist.
 Declare `hostResourceLimits`, `guestExternalNetwork`, `denyPrecedence`,
 `nodeTraffic`, and `dnsIPRestrictions` only after you establish those controls.
 These items are still necessary: TCP and UDP, the actual IP families, the
-revisioned complete topology, DNS/Gateway peers, and pinned
+revisioned complete topology, DNS/AI Gateway peers, and pinned
 RuntimeClass/StorageClass identities. Read-only root and ingress support must
-match the selected policy. The configuration harness allow-list supports
-`openclaw` and `hermes`. The earlier single-start executor itself is still
-OpenClaw-only.
+match the selected Agent Policy. The configuration allow-list of agent types
+supports `openclaw` and `hermes`. The earlier single-start executor itself is
+still OpenClaw-only.
 
 For native Kata, `enforcementObservation`, `restrictiveFailure`, and
 per-container guarantee flags must be `false`. Kubernetes access can be
@@ -663,7 +677,7 @@ writers. Lost submission acknowledgements and attempts that were submitted
 before are never rolled back.
 
 Offline tests exercise the compiler, the common render path, source pins,
-final-Pod validation, rotation/holds and cleanup for both harnesses and both
+final-Pod validation, rotation/holds and cleanup for both agent types and both
 HOME modes. Real localhost Envoy tests generate ephemeral certificates and
 cover valid peers, absent/wrong/expired client certificates, wrong server
 CA/SAN, plaintext, certificate loss/readiness, replacement and old-authority
@@ -685,10 +699,11 @@ Custom images in ordinary containers (for example, runc). These containers
 share the node kernel and do not use a Kata VM. Omitted/null types still
 default to `kata`. The current scope of gVisor does not change.
 
-Container must have the same opt-in common executor, AgentPolicy/Team binding,
-current Pod admission, Gateway key/budget/spend process, Cilium compiler, and
-owned HOME lifecycle. It cannot use the held or retained single-start executor.
-There is no separate ungoverned runc deployment path.
+Container must have the same opt-in common executor, Agent Policy and Team
+binding, and current Pod admission. It also must have the same AI Gateway
+key/budget/spend process, Cilium compiler, and owned HOME lifecycle. It cannot
+use the held or retained single-start executor. There is no separate ungoverned
+runc deployment path.
 
 Register it under `registrations.container` and `platforms.container` in the
 trusted `platform.json`. Select `Capabilities.profile: native-single-start`.
@@ -697,10 +712,9 @@ an explicit RuntimeClass whose UID and ordinary-container handler are pinned in
 `runtimeClasses`. `requirePerContainerResourceLimits` can also be `true`.
 
 Do not register a renamed Kata/gVisor class. Do not infer availability from a
-RuntimeClass object. Before the platform owner declares support, the owner must
-validate the configured handler, eligible nodes, resource enforcement, CSI, and
-Cilium. Absent, unavailable, or changed registrations/UIDs/handlers prevent
-execution. There is no fallback to the default runtime of the node.
+RuntimeClass object. Before you declare support, validate the configured
+handler, eligible nodes, resource enforcement, CSI, and Cilium. Absent,
+unavailable, or changed registrations/UIDs/handlers prevent execution. There is no fallback to the default runtime of the node.
 
 Agent and same-Pod helper requests/limits keep their Kubernetes semantics.
 Effective Pod CPU/memory includes regular and init containers. Only the actual
@@ -762,19 +776,19 @@ are still mandatory. See the
 [SCTP usage and qualification boundary](../../examples/native-sandbox/README.md#governed-sctp-egress).
 No Cilium/Kata SCTP dataplane is qualified by offline compilation.
 
-Rules that block mandatory DNS/Gateway destinations or ports are rejected. They
-are not silently removed. Admission examines these conflicts against the
-current topology when a policy is bound to a native Sandbox. It also examines
-them when a referenced policy changes and when an Agent is authorized. An
-unreferenced policy definition alone does not select a platform.
-Capability-only injected registrations cannot authorize native deny rules
-without the topology that matches.
+Rules that block mandatory DNS/AI Gateway destinations or ports are rejected.
+They are not silently removed. Admission examines these conflicts against the
+current topology when an Agent Policy is bound to a native Sandbox. It also
+examines them when a referenced Agent Policy changes and when an Agent is
+authorized. An unreferenced Agent Policy definition alone does not select a
+platform. Capability-only injected registrations cannot authorize native deny
+rules without the topology that matches.
 
 Configure port support before you create consumers. A change to the platform
 inventory is not a live capability upgrade. Public destinations outside the
 deny rules keep the current egress posture.
 
-These controls do not enable live policy rollout. For reserved policy or
+These controls do not enable live policy rollout. For reserved Agent Policy or
 platform changes, use the ordinary stop/change/resume lifecycle. Registration
 and policy revisions are still inputs to current Pod admission. Source drift
 cannot silently authorize the old workload that runs.
@@ -784,8 +798,8 @@ image in `customRuntime.imageUsers`. Before you approve those values, make sure
 that they are the actual values of the immutable image. Both must be positive
 32-bit integers. The Agent UID must be different from UID 1337, which is
 reserved for the capture proxy. No numeric identity is inferred from an Agent
-request or from Gateway image approval. Without capture, Custom continues to
-use its image-owned user.
+request or from the image approval in `customRuntime.approvedImages`. Without
+capture, Custom continues to use its image-owned user.
 
 This applies to Custom HTTP Chat, Web UI, and headless execution on both Kata
 and container. Pin the platform `ttyd.image` for the static probe. This is
@@ -805,8 +819,8 @@ native option in both controller and configuration admission. They cannot
 authorize the default held/external execution path.
 
 Admission examines the option for the selected Sandbox of an Agent, and for all
-referenced Sandboxes when it validates Team policy. An unused native
-registration does not block requests that use qualified Sandboxes. If you
+referenced Sandboxes when it validates the Agent Policy of a Team. An unused
+native registration does not block requests that use qualified Sandboxes. If you
 disable the option, new native authorization/start is blocked. But recorded
 lifetime cleanup is not disabled. No profile qualifies a platform only through a
 declaration of its capabilities.
@@ -847,7 +861,7 @@ is released only after owned namespace cleanup. As a result, early Pod deletion
 cannot lose the record that is necessary for finalization.
 
 Ready must have the current application readiness probe, Node readiness, the
-current Gateway grant, and workload and effective source inputs that match.
+current AI Gateway grant, and workload and effective source inputs that match.
 Native HOME and PVC-backed skills checks pin ownership and storage inputs, not
 PVC resourceVersion. Ordinary delayed binding, status updates, and
 PVC-protection finalization do not block first creation. Changed
@@ -866,18 +880,18 @@ the
 The compiler revision binds the selector, namespace, and trust ranges through
 the canonical topology. The rendered configuration must match the derived list.
 No wildcard or loopback fallback is added. The ingress proxy must overwrite or
-safely rebuild forwarded-client headers. Proxy trust does not bypass Gateway
-authentication, owner authorization, or device authentication.
+safely rebuild forwarded-client headers. Proxy trust does not bypass OpenClaw
+gateway authentication, owner authorization, or device authentication.
 
 The `sandboxWorkload.trustedProxyIPs` hook that already exists carries either
 exact IPs or the explicitly registered Pod CIDRs. This hook is supplied only for
 authenticated native execution. Held and legacy render paths without that hook
 keep their current proxy configuration.
 
-Native Agents that wait for preparation can keep chart pins that are older than
-this hook. For those charts, the protected renderer supplies the exact proxy
-list through the current `openclaw.config.gateway.trustedProxies` value and
-omits the unsupported hook. It keeps the original chart schema and final
+Sandbox Agents that wait for preparation can keep chart pins that are older
+than this hook. For those charts, the protected renderer supplies the exact
+proxy list through the current `openclaw.config.gateway.trustedProxies` value
+and omits the unsupported hook. It keeps the original chart schema and final
 proxy-list validation. It does not rewrite the pin or authorization of the
 Agent. Within the single-policy API contract, the addition of this render
 projection does not change the current `sandbox-controls-v1` digest for inputs
@@ -898,7 +912,7 @@ while the reservation is active or in shutdown. Pod admission and readiness
 recheck the reservation read-only. Ordinary cleanup releases it only after it
 observes quiescence.
 
-Unused Sandbox and unrelated AgentPolicy edits do not become native execution
+Unused Sandbox and unrelated Agent Policy edits do not become native execution
 inputs. After first-Pod admission is released, an unobserved creation outcome
 keeps the reservation held. This is true even if replicas are zero and no Pod is
 listed now. The initial Pod must be observed and must stop through ordinary
@@ -929,7 +943,7 @@ the Agent. Do not try a resume or replay. In-Pod restarts are still Kubernetes
 behavior. This profile does not qualify failure recovery.
 
 Normal deletion keeps the current ownership checks and finalizers. It withdraws
-the route and independently revokes the Gateway grant. It also waits for
+the route and independently revokes the AI Gateway grant. It also waits for
 ordinary workload termination before it removes owned storage/namespace
 resources. A failed cleanup stays visible. If you disable native execution, the
 cleanup obligations that already exist still apply.
@@ -940,7 +954,7 @@ Earlier started native receipts keep their controller-written start marker.
 Non-native or unknown lifetimes still must have their qualified cleanup
 provider.
 
-Keep the operator state namespace, enforced admission, Gateway cleanup
+Keep the operator state namespace, enforced admission, AI Gateway cleanup
 credentials, and any configured coordination authority until the recorded
 lifetimes finish. When you disable native starts, an empty `skillsClaimName`
 without a catalog is still accepted. As a result, that configuration does not
@@ -1000,10 +1014,11 @@ writer tuple is persisted with the coordination ticket and must still match
 before reservation or cleanup. It rechecks sources, but it does not read Secret
 contents or treat Agent status as authorization.
 
-Preparation still validates every allowed Team Sandbox against the Team policy.
-An execution reserves its selected Sandbox and the Team policy. As a result,
-valid changes to an unused Sandbox or to the policy of another Team do not make
-it necessary to stop the execution.
+Preparation still validates every allowed Team Sandbox against the Agent Policy
+of the Team. An execution reserves its selected Sandbox and the Agent Policy of
+the Team. As a result, a valid change to an unused Sandbox does not make it
+necessary to stop the execution. This also applies to a valid change to the
+Agent Policy of another Team.
 
 Non-secret sources use immutable UIDs and effective-input digests. They do not
 treat the original observation resource version as lifetime configuration.
@@ -1049,9 +1064,9 @@ reservation. This also applies when the API still shows the old object.
 `AcquireTeamChange` derives the affected execution selections from an
 authoritative before image and the complete proposed Team mutation. A change to
 only the creation default can coexist with unaffected executions. A change to
-the Team policy or the removal of their Sandbox membership cannot coexist with
-them. A replacement of the Team or a change to shared runtime inputs also cannot
-coexist with them.
+the Agent Policy of the Team or the removal of their Sandbox membership cannot
+coexist with them. A replacement of the Team or a change to shared runtime
+inputs also cannot coexist with them.
 
 Team mutations still serialize with one another. They pin the exact before
 UID/resource version and the full desired mutation digest, and they keep unknown
@@ -1083,7 +1098,7 @@ enablement.
 No concrete production start, observation, routing, or status-commit adapter is
 installed here. Neither a coordination record nor a successful callback
 qualifies one. The controller and admission holds that already exist do not
-change. Live governed Agent execution, model traffic, and platform qualification
+change. Live Sandbox Agent execution, model traffic, and platform qualification
 are still separate integration work, and this work is not complete.
 
 The focused lifecycle tests cover synthetic order, identity/freshness failures,
@@ -1094,7 +1109,7 @@ start agent containers, contact a model service, or qualify a provider.
 
 The [Kubernetes configuration adapter](internal/sandboxcoordination/kubernetes_change.go)
 and the [explicit command](cmd/sandbox-config-change/) submit real Team, Sandbox
-and AgentPolicy updates and deletions through the coordination protocol. They
+and Agent Policy updates and deletions through the coordination protocol. They
 are not a runtime adapter or an execution switch. Creation, Agent changes and
 other execution sources stay outside this command.
 The public [configuration coordination client](configurationcoordination/) is
@@ -1122,9 +1137,9 @@ advance their resource version. Changes that only omit defaulted values are
 also no-op updates. Configuration admission and Kubernetes authorization still
 apply.
 
-Sandbox and AgentPolicy updates make a separate comparison of the effective
+Sandbox and Agent Policy updates make a separate comparison of the effective
 execution digest before and after the proposed write. Typed and unstructured
-AgentPolicy inputs share the same canonical representation of schema-defaulted
+`AgentPolicy` inputs share the same canonical representation of schema-defaulted
 false booleans and empty network arrays. Optional empty grant lists use their
 omitted form. Unknown authoritative fields and explicit control values are still
 part of the digest.
@@ -1258,22 +1273,22 @@ runtime must still have their own integrations.
 
 If coordinated configuration admission is enabled, finalizer-only cleanup uses
 normal authorized API updates, not `sandbox-config-change`. This applies to a
-Team, Sandbox or AgentPolicy that is already marked for deletion. Admission does
-a read-only check of the current source and the UID-pinned authority. It refuses
-cleanup while any recorded execution or change uses that source.
+Team, Sandbox or Agent Policy that is already marked for deletion. Admission
+does a read-only check of the current source and the UID-pinned authority. It
+refuses cleanup while any recorded execution or change uses that source.
 
 Only finalizers that already exist can be removed. Other content and all pending
 reservations stay unchanged. An absent authority is not a cleanup bypass.
 Ordinary configuration updates still must have inputs that are not marked for
 deletion.
 
-With this opt-in, every primary Team/Sandbox/AgentPolicy Delete must also carry
-the exact submitted deletion reservation and the conditional background options.
-This also applies to unreferenced configurations and legacy Teams. Upgrade
-operational deletion clients before you enable it. Default-off behavior, Agent
-deletion, status writes and the narrow finalizer exclusion for the Kubernetes
-garbage collector are unchanged. This is not a complete all-source execution
-barrier.
+With this opt-in, every primary Delete of a Team, Sandbox, or Agent Policy must
+also carry the exact submitted deletion reservation. It must also carry the
+conditional background options. This also applies to unreferenced
+configurations and legacy Teams. Upgrade operational deletion clients before
+you enable it. Default-off behavior, Agent deletion, status writes and the
+narrow finalizer exclusion for the Kubernetes garbage collector are unchanged.
+This is not a complete all-source execution barrier.
 
 ### Running-input verification
 
@@ -1312,7 +1327,7 @@ reads. The controller does not silently reuse their held-only resolver.
 Placement checks share the scheduled-Pod topology validation that already
 exists.
 
-The controller still dispatches governed Agents to held preparation. No code
+The controller still dispatches Sandbox Agents to held preparation. No code
 here changes finalizers, expectations or replicas to start an Agent. Real
 runtime gating, independent observations, all-source mutation coordination and
 model/tool validation are still prerequisites to enable execution.
@@ -1349,7 +1364,7 @@ withdrawal, process termination or writer fencing.
 
 Stock startup does not install this component as an execution adapter. Its unit
 tests and local API-server tests use synthetic runtime inputs and observations.
-They do not establish live enforcement or an end-to-end governed Agent run.
+They do not establish live enforcement or an end-to-end Sandbox Agent run.
 
 ### Governed native access lifecycle
 
@@ -1362,9 +1377,9 @@ resolves the ingress workload namespaces from the trusted platform ingress
 topology. It reads their exact UIDs and includes them in the same
 effective-source digests and reservations.
 
-The VirtualService refers to the Gateway resource by its namespace/name, but it
+The VirtualService refers to the Istio `Gateway` by its namespace/name, but it
 exports only to these enrolled consumer namespaces. It is not necessary that
-these namespaces contain the Gateway resource. Multiple approved consumers are
+these namespaces contain the Istio `Gateway`. Multiple approved consumers are
 sorted and deduplicated. More than 128 distinct ingress namespaces are rejected
 before namespace reads or route creation. Absent or replaced namespaces fail
 closed, and the VirtualService does not export mesh-wide. A foreign, changed or
@@ -1375,8 +1390,8 @@ separate fresh guest-external enforcement evidence. It updates only the enrolled
 route UID and keeps the native `/ui/<agent>` redirect, HTTP and WebSocket
 behavior. It does not expose terminal, desktop, sign-in helper or webhook
 routes. No new access URL, global Ready condition or runtime permission is
-written. Shared gateway authentication and its continued enforcement must
-already be qualified independently. An HTTPS Gateway object is not
+written. Shared ingress gateway authentication and its continued enforcement
+must already be qualified independently. An HTTPS Gateway object is not
 authentication evidence.
 
 `Withdraw` uses the recorded Stopping ticket and route ownership, even when
@@ -1405,59 +1420,59 @@ synthetic runtime evidence, not a running proxy or an end-to-end model request.
 
 ### Current activation boundary
 
-Legacy Agents and Teams are still supported while Sandbox execution is opt-in.
-The CRD makes Agent `team`/`sandboxRef` and Team policy/Sandbox fields optional.
-Without policy intent, the controller still uses the built-in or Custom runtime
-path that already exists. This path includes provisioning, suspension,
-readiness, and deletion.
+Standard Agents and Teams without an Agent Policy are still supported while
+Sandbox execution is opt-in. The CRD makes Agent `team`/`sandboxRef` and the
+Agent Policy and Sandbox fields of a Team optional. Without policy intent, the
+controller still uses the path that already exists for built-in or Custom agent
+types. This path includes provisioning, suspension, readiness, and deletion.
 
-Ordinary Custom suspension remains `Pending` until the main and auxiliary
-controllers acknowledge zero replicas, no Pods remain, the platform route is
-absent, and Gateway blocking and apply completion succeed. Only then does
-`Suspended` acknowledge the current `metadata.generation` through
-`status.observedGeneration`. Resume applies the runtime again while retaining
-the Agent identity and HOME. These observations confirm ordinary controller
-shutdown; they do not prove physical fencing or volume detachment. The legacy
-built-in registry suspension path keeps its separate zero-generation cache
-invalidation behavior.
+For a standard Custom Agent, suspension remains `Pending` until the main and
+auxiliary controllers acknowledge zero replicas and no Pods remain. The platform
+route must also be absent, and AI Gateway blocking and apply completion must
+succeed. Only then does `Suspended` acknowledge the current
+`metadata.generation` through `status.observedGeneration`. Resume applies the
+runtime again while retaining the Agent identity and HOME. These observations
+confirm ordinary controller shutdown; they do not prove physical fencing or
+volume detachment. The legacy built-in registry suspension path keeps its
+separate zero-generation cache invalidation behavior.
 
-Legacy Gateway model sources are on by default, unless they are explicitly
-disabled. New legacy keys get the deployment default budget. Later
-administrator budget changes, spend, reset periods, and emergency blocks are
-kept. Legacy shared catalog entries and current per-deployment shared-model
-groups are still usable.
+For standard Agents, AI Gateway model sources are on by default, unless they
+are explicitly disabled. New keys of standard Agents get the deployment default
+budget. Later platform administrator budget changes, spend, reset periods, and
+emergency blocks are kept. Legacy shared catalog entries and current
+per-deployment shared-model groups are still usable.
 
-If any Team policy/Sandbox field is set, that Team opts into the full binding
-contract: one policy, allowed Sandboxes, and a creation default. Partial
-configuration is not a legacy fallback. Policy-bound Agents must explicitly
-request model sources. They must have an allowed Sandbox and current
-authorization. Custom must have the common executor and an explicitly
-Gateway-qualified image. See the [Custom contract](../../site/content/en/docs/reference/agent-harness.md#policy-governed-custom-execution).
+A Team that has any Agent Policy or Sandbox field opts into the full binding
+contract: one Agent Policy, allowed Sandboxes, and a creation default. Partial
+configuration is not a legacy fallback. Sandbox Agents
+must explicitly request model sources. They must have an allowed Sandbox and
+current authorization. Custom must have the common executor and an explicitly
+AI Gateway-qualified image. See the [Custom contract](../../site/content/en/docs/reference/agent-harness.md#policy-governed-custom-execution).
 
-Portal creation accepts legacy Teams without a default Sandbox. If the Gateway
-is disabled, it also accepts no Team, as before. If the Gateway is enabled,
-supported model routing and a Team that exists are still necessary. The Portal
-Admin pages manage Teams, AgentPolicies, and Sandboxes. Admission still
-defaults governed creation and protects exact Team/Sandbox/policy UIDs. For
-later governed assignment or budget changes, an authorized administrator and a
-suspended Agent are necessary.
+Portal creation accepts legacy Teams without a default Sandbox. If the AI
+Gateway is disabled, it also accepts no Team, as before. If the AI Gateway is
+enabled, supported model routing and a Team that exists are still necessary.
+The Portal Admin pages manage Teams, Agent Policies, and Sandboxes. Admission
+still defaults governed creation and protects exact Team, Sandbox, and Agent
+Policy UIDs. For later governed assignment or budget changes, an authorized
+administrator and a suspended Agent are necessary.
 
 This compatibility path does not clear hold/preparation finalizers,
 authorization records, or recorded policy/Sandbox status that already exist.
 These lifetimes stay governed, even after spec fields are removed. If an earlier
 mandatory-policy version already held an old Agent, review its state and the
 data to keep before recovery. Do not remove authority markers or delete its
-namespace as an upgrade shortcut. Legacy mode does not claim AgentPolicy
+namespace as an upgrade shortcut. Legacy mode does not claim Agent Policy
 enforcement.
 
 An administrative Team is a separate Team with its own context and skills. It
 does not create a privileged policy lane for other Teams. A person's permission
-to manage Teams or AgentPolicies is a control-plane authorization that is
+to manage Teams or Agent Policies is a control-plane authorization that is
 different from workload authorization. Workload authorization comes only from
 the Agent's selected Team, that Team's `agentPolicyRef`, and the Agent's
 explicit requests. Before a changed binding can be explicitly reauthorized,
-policy-enabled resources that already exist must have a controlled stop and
-cleanup. No lossless rolling migration between policies is supported.
+policy-bound resources that already exist must have a controlled stop and
+cleanup. No lossless rolling migration between Agent Policies is supported.
 
 The pre-release `normalAgentPolicyRef`, `adminAgentPolicyRef` and `policyClass`
 fields are removed from the API and CRD schemas. New resources use only the
@@ -1477,10 +1492,10 @@ and retained single-start lifetimes keep their recorded execution contract.
 Without that setting, the controller holds these Agents:
 
 - Agents that request Sandbox policy.
-- Agents that belong to a Team with policy settings.
+- Agents that belong to a policy-bound Team.
 - Agents that already have Sandbox status or a hold finalizer.
 
-The controller never passes these Agents to legacy built-in or Custom runtime
+The controller never passes these Agents to legacy built-in or Custom agent type
 preparation or application. Before workload changes, it persists a dedicated
 hold finalizer. This finalizer also keeps newly held Agents available for
 cleanup. A change that clears spec fields cannot release that recorded hold,
@@ -1549,8 +1564,8 @@ namespace-scoped controller state, not cluster-wide Secret or ConfigMap access.
 It does not mount operator cloud credentials, registry credentials, or workload
 Secrets.
 
-Agent validation fetches its Team and only that Team's named Sandbox/policy
-references. If [Kubernetes-backed sources](#kubernetes-backed-sources-opt-in)
+Agent validation fetches its Team and only that Team's named Sandbox and Agent
+Policy references. If [Kubernetes-backed sources](#kubernetes-backed-sources-opt-in)
 are enabled, policy configuration checks also read the selected platform
 declarations and validate RuntimeClass/StorageClass pins. Shared-configuration
 checks scan consumers in pages of 200. They reuse named reference reads only in
@@ -1561,14 +1576,14 @@ The chart sets `sandboxAdmission.enabled`, `sandboxAdmission.enforce` and
 `sandboxAdmission.podsEnabled` to `false` by default. Default installations keep
 the runtime behavior that they already have. When you enable the server, webhook
 rules are not installed. `enforce` is a separate bootstrap step. After
-admission is enforced, even legacy Agent writes depend on webhook availability.
-But healthy admission does not change their Sandbox selection.
+admission is enforced, even standard Agent writes depend on webhook
+availability. But healthy admission does not change their Sandbox selection.
 
 This admission process implements:
 
-- Explicit administrator usernames/groups for shared policy configuration,
-  and trusted Team assignments for policy-bound member Agents. Kubernetes RBAC
-  must also authorize the operation.
+- Explicit admission administrator usernames/groups for shared policy
+  configuration, and trusted Team assignments for policy-bound member Agents.
+  Kubernetes RBAC must also authorize the operation.
   Portal administrators do not automatically get this independent authority.
 - Agent selection defaults that apply only at creation, followed by validation
   against the current Team. Defaults are never silently applied again to Agents
@@ -1577,8 +1592,9 @@ This admission process implements:
   [Availability and bootstrap](#availability-and-bootstrap)). They can keep the
   Team that the Agent owner selected.
 
-  Direct Kubernetes writes from non-administrators must have an exact
-  authenticated identity-to-Team assignment that is configured on the webhook.
+  Direct Kubernetes writes from callers that are not admission administrators
+  must have an exact authenticated identity-to-Team assignment that is
+  configured on the webhook.
   That cluster access rule is separate from the product's Team selection model.
 
   Mutation and validation are installed together. Kubernetes runs mutation
@@ -1587,23 +1603,23 @@ This admission process implements:
   `metadata.generateName` is accepted before the API server assigns a name.
   After the name is assigned, the object name and the admission request name
   must match.
-- Durable admission-owned Team/Sandbox/selected-policy UID authorization on the
-  Agent, independent of last-applied status. A replacement with the same name
-  never grants authority to the new UID. The mutator also handles explicit
-  administrator reauthorization on UPDATE, and does not apply creation defaults
-  again. Mutation uses `reinvocationPolicy: Never`. Both webhooks share the
-  native cleanup exclusion.
+- Durable admission-owned UID authorization of the Team, Sandbox, and selected
+  Agent Policy on the Agent, independent of last-applied status. A replacement
+  with the same name never grants authority to the new UID. The mutator also
+  handles explicit admission administrator reauthorization on UPDATE, and does
+  not apply creation defaults again. Mutation uses `reinvocationPolicy: Never`.
+  Both webhooks share the native cleanup exclusion.
 - Shared normalization and compatibility validation, and reference checks
-  before shared deletion. On Sandbox/policy edits, the validation includes every
-  Team that refers to the edited object. Ordinary edits to the Team context in
-  the Portal can keep unchanged policy.
+  before shared deletion. On Sandbox or Agent Policy edits, the validation
+  includes every Team that refers to the edited object. Ordinary edits to the
+  Team context in the Portal can keep the Agent Policy unchanged.
 
   Deletion of a policy-free Team keeps the RBAC boundary that already exists,
-  even with member Agents. Before policy is removed from a policy-configured
-  Team, or the Team is deleted, its members must be bound to another
-  policy-configured Team or deleted. Members inherit policy, even without an
-  explicit Agent `sandboxRef`. A change that clears the Team fields must not
-  release those Agents into legacy execution.
+  even with member Agents. Before the Agent Policy is removed from a
+  policy-bound Team, its members must be bound to another policy-bound Team or
+  deleted. This also applies before the Team is deleted. Members inherit the
+  Agent Policy, even without an explicit Agent `sandboxRef`. A change that
+  clears the Team fields must not release those Agents into legacy execution.
 - Protected lifecycle finalizers. Only the configured controller identity can
   change known lifecycle finalizers in a metadata-only update. It has no blanket
   exemption for spec changes. For removal, the Agent must also be already marked
@@ -1620,7 +1636,7 @@ This admission process implements:
 The chart installs no capability registration. The platform administrator
 writes it in the `platform.json` source, as
 [Policy-bound Teams](../../site/content/en/docs/operations/policy-teams.md)
-shows. Standalone Sandbox and AgentPolicy definitions can be validated. But
+shows. Standalone Sandbox and Agent Policy definitions can be validated. But
 without a registration, policy-bound Team/Agent bindings are rejected. The
 tests inject synthetic registrations, which are not production evidence. A
 registration alone does not release the controller hold:
@@ -1637,9 +1653,9 @@ production adoption.
 
 #### Direct Kubernetes writer assignments and explicit reauthorization
 
-For non-administrator callers that write Agent CRs directly, configure
-assignments. Use the Kubernetes authenticated identity, not an Agent field or a
-Portal role:
+For callers that write Agent CRs directly and are not admission administrators,
+configure assignments. Use the Kubernetes authenticated identity, not an Agent
+field or a Portal role:
 
 ```yaml
 sandboxAdmission:
@@ -1657,19 +1673,19 @@ map a shared Portal ServiceAccount as if it identified the individual human
 caller.
 
 `TeamAssignmentConflict` means that the effective memberships of the
-authenticated user match more than one configured Team. Administrators must
-review both the assignment configuration and identity-provider memberships.
+authenticated user match more than one configured Team. Platform administrators
+must review both the assignment configuration and identity-provider memberships.
 There is no user-over-group or first-match precedence. Static configuration
 validation cannot find live memberships that overlap. The diagnostic does not
 show users, groups or matched Team names.
 
 To recover after reference deletion or replacement, restore the necessary
 configuration or explicitly select valid replacement references. Then authorize
-the exact current UIDs with a fresh administrator request. The Agent UID and
-execution hold are kept, also when several references change together. Absent
-references are not a reason to clear authorization or to use legacy execution
-as a fallback. Consumed reauthorization requests stay as replay state. Do not
-remove either protected annotation as ordinary metadata cleanup.
+the exact current UIDs with a fresh admission administrator request. The Agent
+UID and execution hold are kept, also when several references change together.
+Absent references are not a reason to clear authorization or to use legacy
+execution as a fallback. Consumed reauthorization requests stay as replay
+state. Do not remove either protected annotation as ordinary metadata cleanup.
 
 Server-side apply owns individual annotation keys. We recommend that you omit
 the admission-owned authorization and reauthorization keys from desired
@@ -1677,11 +1693,12 @@ manifests. We recommend that you do not copy these keys from a live-object
 export. Repeated applies and removal of ordinary, application-owned annotations
 keep the policy.
 
-If a field manager already claimed protected keys, an administrator can make
-another manager the owner of their exact unchanged values. The administrator
-can do this before the original manager omits the keys. This is an ownership
-handoff, not authorization removal. A forced apply cannot bypass admission. A
-binding change still must use the explicit reauthorization protocol below.
+If a field manager already claimed protected keys, an admission administrator
+can make another manager the owner of their exact unchanged values. The
+admission administrator can do this before the original manager omits the keys.
+This is an ownership handoff, not authorization removal. A forced apply cannot
+bypass admission. A binding change still must use the explicit reauthorization
+protocol below.
 
 The controller persists hold and cleanup finalizers with optimistic,
 metadata-only patches. These patches keep sparse server-side-applied
@@ -1691,11 +1708,11 @@ exempt specification, status or protected-annotation changes.
 
 Admission stamps `cetirun.microsoft.com/sandbox-authorization` during creation.
 Callers cannot supply, copy, remove or directly rewrite that record. For
-policy-bound Agents that already exist without a record, and for changed
-reference UIDs, an administrator must update
+Sandbox Agents that already exist without a record, and for changed
+reference UIDs, an admission administrator must update
 `cetirun.microsoft.com/sandbox-reauthorize`. The update must contain a fresh
 `requestID` and the exact current `binding` tuple: Agent, Team, Sandbox and
-AgentPolicy UIDs. The mutator validates that request and replaces the snapshot
+Agent Policy UIDs. The mutator validates that request and replaces the snapshot
 atomically with the Agent update.
 
 Reauthorization changes metadata, but not always the generation. Consumers must
@@ -1743,7 +1760,7 @@ connects the components, but it does not treat a successful render as
 enforcement. This is an internal platform integration seam,
 **not a tenant activation flag**. By default, the operator installs neither a
 preparation source nor qualified production registrations. With no source,
-policy-bound Agents keep the execution hold that they already have.
+Sandbox Agents keep the execution hold that they already have.
 
 The opt-in Kubernetes sources below add authoritative reads of platform
 configuration and of owned resources that already exist to the shipped binary.
@@ -1760,7 +1777,7 @@ released, interrupted finalization is not lost.
 
 A trusted integration must supply these items:
 
-- The same fresh `SandboxConfigurationSource` that the Sandbox and AgentPolicy
+- The same fresh `SandboxConfigurationSource` that the Sandbox and Agent Policy
   configuration reconcilers use.
 - `SandboxPreparationSource` approvals for the complete Agent generation, chart
   version, helpers and protected namespace UID. The approvals also cover the
@@ -1827,8 +1844,8 @@ source reads.
 Inventories stay bounded to 128 sources and 512 KiB per expectation, with a
 one-Pod existence query. No production fleet size is qualified. Activation
 review must establish a measured capacity limit. It must also evaluate more
-dependency watches together with the Agent/Team/Sandbox/AgentPolicy watches and
-expiry polls that already exist.
+dependency watches together with the Agent, Team, Sandbox, and Agent Policy
+watches and expiry polls that already exist.
 
 `AgentConfigReady=True` with reason `SandboxPrepared` means
 **held preparation only**: `SandboxReady` and `Ready` stay false, the access
@@ -1908,7 +1925,7 @@ finalizers after the namespace is absent. An absent or corrupt journal, foreign
 ownership, an unavailable fence, or a state update that conflicts blocks
 completion. Such a condition does not imply successful cleanup.
 
-During the deletion of Sandbox-held native Agents and legacy Custom Agents, a
+During the deletion of held Sandbox Agents and standard Custom Agents, a
 grant-journal read or revocation failure does not skip these operations:
 
 - Independent workload stop requests.
@@ -2017,14 +2034,14 @@ field names.
 
 RuntimeClass and StorageClass declarations pin their UIDs and
 handler/provisioner. Role approvals pin the role identity, version, and rules.
-Live role checks apply only to the grants that each policy requests during
+Live role checks apply only to the grants that each Agent Policy requests during
 assessment and workload preparation. This includes mutation guards.
 
 A missing, stale, unavailable, or ambiguously approved role rejects that
 request. It does not make the shared snapshot invalid. It also does not make
-unrelated policies invalid, for example policies without Kubernetes access.
-Different policies can have different approval pins for the same role. Each
-request must match its own pins.
+unrelated Agent Policies invalid, for example Agent Policies without Kubernetes
+access. Different Agent Policies can have different approval pins for the same
+role. Each request must match its own pins.
 
 Replacement, concurrent change, malformed configuration, and API failures are
 errors. They do not cause automatic reapproval or a fallback to cached tenant
@@ -2050,8 +2067,8 @@ necessary. This does not change the webhook-outage behavior. When admission
 itself is unavailable, other matched writes still fail closed. This includes
 legacy writes.
 
-The platform owner must protect this ConfigMap from tenant writes. The platform
-owner must also keep its qualification records, complete topology, and
+The platform administrator must protect this ConfigMap from tenant writes. The
+platform administrator must also keep its qualification records, complete topology, and
 explicit approvals current. The chart does not create that inventory or set
 capabilities to true. You can write an empty inventory that claims no platform
 support:
@@ -2094,7 +2111,7 @@ They reject changes that occur during capture. Each configuration observation
 has the date of the start of the read. After the read completes, consumers
 examine freshness. They reject observations that expire during capture.
 
-Configuration admission and the Agent, Sandbox, and AgentPolicy reconcilers use
+Configuration admission and the Agent, Sandbox, and Agent Policy reconcilers use
 the same platform declarations. These declarations do not give Portal callers
 Kubernetes admission authority. They also do not replace trusted Team
 assignments. A configured source does not give runtime, network, or CSI
@@ -2116,8 +2133,8 @@ fence.
 
 ##### Owned bootstrap (separate opt-in)
 
-With `sandboxSources.bootstrapOwnedPrerequisites: true`, new native policy-bound
-Agents can create the prerequisites that they own while they stay held. For
+With `sandboxSources.bootstrapOwnedPrerequisites: true`, new Sandbox Agents
+can create the prerequisites that they own while they stay held. For
 this flag, Kubernetes sources must be enabled. The same enforced
 configuration/Pod admission prerequisites also apply. Its default value is
 false. Namespace inputs that already exist stay on the read-only path. They are
@@ -2167,7 +2184,7 @@ Other rule differences are still errors. This is not a general RBAC repair.
 If an upgrade left an Agent held with `Sandbox bootstrap operator Role changed`,
 install an operator that includes this migration. Then let normal reconciliation
 retry. When the recorded Role matches, the operator updates it and does not
-delete the Agent, namespace, HOME, or Gateway key. Agents already held can
+delete the Agent, namespace, HOME, or AI Gateway key. Agents already held can
 recover with the same budget and spend identity. Do not delete and recreate the
 Agent, clear finalizers, or replace its storage to work around this error. For
 unrecognized rules, missing objects, or changed identities, a reviewed recovery
@@ -2246,8 +2263,9 @@ document are 64 KiB, 128 Teams, 8,192 JSON tokens, and five nesting levels.
 Unknown/duplicate fields, nulls, malformed descriptors, Secret references,
 protocol overrides, and mount options are rejected.
 
-If there is no approval for the current Team name **and UID**, a prerequisite
-error occurs before cold-create effects. A same-name replacement Team does not
+If there is no approval for the current Team name **and UID**, the Agent waits
+before cold-create effects. The operator holds it and checks again every 30
+seconds. A same-name replacement Team does not
 inherit approval. The publisher must keep the content stable for the selected
 revision. The publisher must publish changes under a new approval/source. The
 operator does not examine or hash NFS contents. The revision is an approval
@@ -2410,7 +2428,7 @@ do not silently change the trusted network binding.
 
 The candidate Azure CNI Overlay/Cilium compiler emits explicit network controls
 and per-Agent identity resources from trusted topology and grant inventories.
-Gateway endpoints and ports come from that inventory, not from hardcoded
+AI Gateway endpoints and ports come from that inventory, not from hardcoded
 defaults or policy-supplied destinations. Necessary destinations that conflict
 cause a rejection. FQDN blocking and qualified-adapter mTLS are still not
 supported. They cause a rejection and do not become no-ops. The native common
@@ -2449,7 +2467,7 @@ for namespace protection, migration and validation limits.
 
 The current egress posture allows public IP destinations, except explicit
 exclusions. It restricts private, cluster, node, metadata, and management
-ranges, and it qualifies the necessary DNS/Gateway destinations. It is not a
+ranges, and it qualifies the necessary DNS/AI Gateway destinations. It is not a
 public-destination allow-list. Cilium default-deny establishes isolation for
 traffic that no rule matches. It does not remove the compiler's explicit
 public-egress rules.
@@ -2501,8 +2519,8 @@ approval for these exact items:
 - Tenant ID
 
 An approval inventory cannot assign one ServiceAccount to two Agents in the
-same namespace. A disabled identity projects nothing. A Kubernetes-only policy
-does not inherit an Entra approval that it did not request.
+same namespace. A disabled identity projects nothing. A Kubernetes-only Agent
+Policy does not inherit an Entra approval that it did not request.
 
 The current compiler and common chart emit a read-only `0440` projected token.
 The token has the audience `api://AzureADTokenExchange` and a 600–3600 second
@@ -2527,7 +2545,7 @@ Common-executor OpenClaw, Hermes, and approved Custom images support this
 projection when all of these conditions are true:
 
 - The native registration explicitly declares `entraID: true`.
-- The policy enables the projection.
+- The Agent Policy enables the projection.
 - The platform contains the exact per-Agent approval.
 
 The configuration coordination authority and the owned bootstrap must be
@@ -2593,7 +2611,7 @@ admission also examine the exact identity binding. An expectation cannot omit
 the identity source or transfer ownership to the chart.
 
 Suspension, retained restart, and approval refresh keep the account UID, HOME,
-and Gateway key. When Entra is disabled, its projected token/environment is
+and AI Gateway key. When Entra is disabled, its projected token/environment is
 removed. But the account and pin stay for the Agent lifetime. If Kubernetes
 access stays enabled, bootstrap still owns that account. Helm must not adopt
 it or erase its creation record. Retired Azure identity annotations are
@@ -2679,8 +2697,8 @@ Each approved grant must carry the live ClusterRole UID, resource version, and
 normalized rules. The approval's `Revision` is a separate administrative
 revision. It is not a substitute for an API observation. Configuration
 assessment calls [`VerifyPolicyGrants`](internal/sandboxpolicy/grants.go)
-through the authoritative reader, only for the grants of the policy that makes
-the request.
+through the authoritative reader, only for the grants of the Agent Policy that
+makes the request.
 
 Held preparation and common reconciliation, their apply guards, and current Pod
 admission also do this check immediately before they consume requested grants.
@@ -2694,11 +2712,11 @@ Kubernetes still enforces one of these conditions before the operator creates
 the bindings of a ClusterRole:
 
 - The operator holds the permissions of the role.
-- The operator holds a `bind` permission from an administrator for that exact
-  ClusterRole.
+- The operator holds a `bind` permission from a platform administrator for
+  that exact ClusterRole.
 
-The operator registers Sandbox and AgentPolicy configuration reconcilers.
-Sandbox `Ready` describes prerequisites. AgentPolicy `Accepted` describes
+The operator registers Sandbox and Agent Policy configuration reconcilers.
+Sandbox `Ready` describes prerequisites. Agent Policy `Accepted` describes
 configuration validity/support. Without a qualified platform snapshot source,
 these conditions stay `Unknown`, not ready. Indexed configuration watches
 requeue the Agents that refer to a configuration. This also applies to pending
@@ -2770,7 +2788,7 @@ This does not grant either identity a general admission exemption.
 In protected namespaces, CONNECT requests for `pods/exec`, `pods/attach`, and
 `pods/portforward` are denied. These denials are independent of expectations,
 and they occur without an administrator or controller exemption. The protected
-runtime chart does not install the legacy per-release exec policy. The
+agent chart does not install the legacy per-release exec policy. The
 namespace-scoped admission guard replaces it. Kubernetes RBAC must also
 restrict access to these subresources. This guard does not change access to
 unmarked workloads.
@@ -2942,9 +2960,9 @@ Explicit requests do not change. The Pod in the request and the stored
 DaemonSet template are not rewritten. Unrelated resource requests that
 admission adds are still rejected.
 
-The platform owner must protect registry writes. The owner must also establish
-the registry on an empty, isolated dedicated pool before the owner grants
-workload access. The guard does not discover or adopt nodes, mutate scheduling
+The platform administrator must protect registry writes. The platform
+administrator must also establish the registry on an empty, isolated dedicated
+pool before they grant workload access. The guard does not discover or adopt nodes, mutate scheduling
 inputs, install DaemonSets, write reservations, or prove historical pool
 isolation. Registry changes must have their own authorized, stopped lifecycle.
 The removal of a record is not permission to reuse a pool or skip old-writer
@@ -2972,7 +2990,7 @@ This is one placement boundary that is necessary for a future dedicated-pool
 Agent pilot. It is not a `CheckQuiesced` provider, an AKS deletion
 authorization, a complete start/change barrier, or proof of pre-start and
 continuous runtime enforcement. Those gates and the actual end-to-end
-demonstration of a policy-bound Agent are separate items that are still
+demonstration of a Sandbox Agent are separate items that are still
 necessary.
 
 #### Durable placement binding during held preparation
@@ -3017,7 +3035,7 @@ cleanup of these receipts is necessary.
 This is durable identity infrastructure, not proof of lifetime exclusivity or
 Compute VM destruction. No automatic enrollment, qualified fence adapter, cloud
 deletion, execution permit, or hold release is added. Those necessary items
-and a real policy-bound Agent run are not complete.
+and a real Sandbox Agent run are not complete.
 
 #### Schema and binary upgrades
 
@@ -3035,13 +3053,13 @@ admission, and namespace protection stay strict. `failurePolicy` is still
 `Fail`.
 
 Metadata-only cleanup compares the raw objects. This comparison includes
-unknown fields. Non-administrators cannot use legacy Agent/Team authority to
-add, change, or remove unknown top-level spec fields. They can continue
-ordinary updates when those unknown fields are unchanged.
+unknown fields. Callers that are not admission administrators cannot use legacy
+Agent/Team authority to add, change, or remove unknown top-level spec fields.
+They can continue ordinary updates when those unknown fields are unchanged.
 
-Administrator authority is not proof that an older binary implements a new
-policy. Additions in the same served API must keep the old authorization and
-execution semantics. New security semantics must have a qualified
+Admission administrator authority is not proof that an older binary implements
+a new policy. Additions in the same served API must keep the old authorization
+and execution semantics. New security semantics must have a qualified
 version/capability transition. An unknown field alone, or a default that
 silently activates them, is not enough.
 
@@ -3091,18 +3109,18 @@ operator/admission installation for each cluster.
    `enabled=true, enforce=false`. Blanket groups, for example
    `system:authenticated` or `system:serviceaccounts:<namespace>`, are refused.
 
-   The Portal's service account must also be an administrator. The Portal
-   writes Agents, Teams, Sandboxes, and AgentPolicies with this account. If
-   the account is not an administrator, the webhook refuses its writes to
-   policy-bound Agents. For example, the webhook refuses the write that saves
-   the GitHub Copilot models of an owner after a sign-in.
+   The Portal's service account must also be an admission administrator. The
+   Portal writes Agents, Teams, Sandboxes, and Agent Policies with this account.
+   If the account is not an admission administrator, the webhook refuses its
+   writes to Sandbox Agents. For example, the webhook refuses the write
+   that saves the GitHub Copilot models of an owner after a sign-in.
 
    `sandboxAdmission.portalServiceAccount` adds
-   `system:serviceaccount:<release namespace>:<name>` to the administrators one
-   time. This entry does not count as the one necessary administrator. The
-   platform chart sets it to the service account of the Portal, which is
-   `cetirun-portal` by default. If a Portal is in another namespace, list it in
-   `adminUsers`.
+   `system:serviceaccount:<release namespace>:<name>` to the admission
+   administrators one time. This entry does not count as the one necessary
+   admission administrator. The platform chart sets it to the service account of
+   the Portal, which is `cetirun-portal` by default. If a Portal is in another
+   namespace, list it in `adminUsers`.
 
    Examine TLS, readiness, API read permissions, two available replicas, and
    their placement. The chart supplies a disruption budget and spread
@@ -3278,7 +3296,7 @@ this collector and its metrics-only informer initialization.
 
 | Metric | Meaning |
 | --- | --- |
-| `cetirun_sandbox_agents{runtime,status,reason}` | Counts explicit or Team policy-bound Sandbox intent and retained-held/history Agents by their reported status. Ordinary policy-free Agents are excluded. The obsolete `class` label is removed. |
+| `cetirun_sandbox_agents{runtime,status,reason}` | Counts explicit or Team policy-bound Sandbox intent and retained-held/history Agents by their reported status. Standard Agents are excluded. The obsolete `class` label is removed. |
 | `cetirun_sandbox_metrics_collection_success` | `1` when the complete cached snapshot was collected. `0` when collection is unavailable or fails. Failed collection emits no partial fleet counts. |
 
 Startup initializes the shared Agent, Team, and Sandbox informers on every
@@ -3295,7 +3313,8 @@ different resource kinds are not an atomic snapshot. Later scrapes show cache
 updates and deletions. These reads do not add API calls to reconciliation or
 status writes.
 
-An empty or legacy-only fleet has successful collection and no fleet series.
+An empty fleet, or a fleet of only standard Agents, has successful collection
+and no fleet series.
 This is different from failed collection or an unavailable scrape target.
 
 Labels are bounded:
@@ -3315,8 +3334,8 @@ reported. The collector does not independently confirm it again.
 
 Intentional suspension and deletion take precedence over old conditions. They
 stay distinguishable from failures. Applied-binding history alone is not
-current readiness. Cached Team policy fields count only as intent. They never
-select a Sandbox or establish an authorization binding.
+current readiness. Cached Agent Policy fields of a Team count only as intent.
+They never select a Sandbox or establish an authorization binding.
 
 **These are cached status reports, not fresh enforcement evidence.** A declared
 runtime label does not qualify its adapter. `SandboxPrepared` still means
@@ -3379,8 +3398,8 @@ failure counters, alert rules, dashboards, or production qualification.
 Source inspection identifies Azure CNI Overlay powered by Cilium and Kata node
 pools in the [cluster template](../../infra/cluster/modules/aks-cluster.bicep).
 The [current chart network template](../cetirun-chart/templates/networkpolicy.yaml)
-uses standard NetworkPolicy, namespace-wide DNS, and an IPv4 egress rule. It is
-not a qualified implementation of the new contract.
+uses standard NetworkPolicy, DNS to the DNS Pods only, and an IPv4 egress rule.
+It is not a qualified implementation of the new contract.
 
 Public documentation that was reviewed on 2026-09-25 narrows the next trial:
 
@@ -3444,7 +3463,7 @@ Those rules generate additive IP **allows**, not hostname denies. They do not
 remove the compiler's public-egress allowance.
 
 This is also not the shared Istio sidecar SNI blacklist. That blacklist was
-retired, and the scoped AgentPolicy controls are used instead. That filter was
+retired, and the scoped Agent Policy controls are used instead. That filter was
 not a guest-external control that covers arbitrary traffic. This experiment
 does not enable the separately registered observed-SNI path below. It also
 does not establish full hostname enforcement. A successful DNS-projection
@@ -3589,7 +3608,7 @@ native cleanup predicate. A separate loopback serving test runs the actual
 admission process and a certificate rotation with overlap.
 
 For these checks, pinned envtest assets and Helm 3 or 4 are necessary. Refer
-to [development setup](../../DEVELOPMENT.md#generated-files-and-dependencies).
+to [Prepare envtest assets](../../DEVELOPMENT.md#prepare-envtest-assets).
 These checks never use a cluster that already exists or run an Agent. They
 also never qualify a production issuer, replica-loss recovery, runtime, CNI, or
 CSI.

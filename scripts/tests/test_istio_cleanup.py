@@ -177,7 +177,8 @@ class IstioCleanupTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("helm"), "requires Helm")
     def test_chart_removes_only_enforcement_and_rejects_retired_values(self):
         command = ["helm", "template", "example", str(ROOT / "infra/istio"), "--namespace", "release-system",
-                   "--set", "clientId=synthetic", "--set", "tenantId=synthetic", "--set", "allowedGroups=synthetic"]
+                   "--set", "clientId=synthetic", "--set", "tenantId=synthetic", "--set", "allowedGroups=synthetic",
+                   "--set-string", "portalAuth.mtls.serverIdentity=spiffe://cluster.local/ns/synthetic/sa/portal"]
         env = {**os.environ, "KUBECONFIG": os.devnull}
         result = subprocess.run(command, capture_output=True, text=True, env=env, check=True)
         objects = [item for item in yaml.safe_load_all(result.stdout) if item]

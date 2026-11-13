@@ -9,8 +9,8 @@ with the accounts that its owner connects. The Portal does not offer
 Microsoft 365 (Microsoft Graph) connections. These components supply Agent
 connections:
 
-- The **Broker** stores the encrypted provider authorizations in the
-  credential namespace, `cetirun-credentials`. It issues short-lived
+- The **Agent Identity Broker** stores the encrypted provider authorizations in
+  the credential namespace, `cetirun-credentials`. It issues short-lived
   credentials for each request.
 - The **Connections MCP** service gives Agents the connection tools. It sends
   each request to the provider with a credential from the Broker.
@@ -27,7 +27,7 @@ registrations, encryption key, or certificates that this guide describes.
 [`make deploy`](../../getting-started/platform/#platform-chart) installs the
 Broker with Microsoft delegated access through the Entra Auth SDK. It also
 enables the Agent Identity lifecycle of the Operator. If the environment file
-turns off one of these features, `make deploy` stops. As a result, the Entra
+disables one of these features, `make deploy` stops. As a result, the Entra
 parts of this guide are not optional with `make deploy`. GitHub and Google
 connections stay optional.
 
@@ -105,18 +105,19 @@ enabling it on existing Agents. **Required** also applies to existing Agents and
 stops an Agent that does not request an identity. Complete the Agent Identity and
 Connections platform configuration before selecting Optional or Required.
 
-After an identity-only policy update is accepted, switching between Disabled and
-Optional does not restart Agents that do not request an identity. Upgrading the
-Operator also preserves those running Agents when their policy is already
-Optional. Installations with configuration coordination still reject identity
-policy edits while the policy has active execution reservations; use their normal
-stop-and-update workflow. This behavior does not change policy-update admission
-or recover Agents stopped by an earlier denial.
+After an identity-only Agent Policy update is accepted, switching between
+Disabled and Optional does not restart Agents that do not request an identity.
+Upgrading the Operator also preserves those running Agents when their
+Agent Policy is already Optional. Installations with configuration
+coordination still reject Agent Policy identity edits while the Agent Policy
+has active execution reservations; use their normal stop-and-update workflow.
+This behavior does not change the admission of Agent Policy updates or
+recover Agents stopped by an earlier denial.
 
 ## 1. Prepare access and record the coordinates
 
 Use an authorized Azure CLI session and an explicit Kubernetes context. The
-administrator must have these permissions:
+platform administrator must have these permissions:
 
 - Authority to provision the encryption resources and to assign roles for them
 - Kubernetes permission to install the charts and Secrets
@@ -155,10 +156,10 @@ Before you enable the Portal feature, complete these prerequisites:
   examines the token signature, tenant, audience and immutable owner identity.
   Email headers alone are not sufficient.
 - A supported Hermes or OpenClaw workload and an operational platform, or a
-  governed Custom image that implements the [Custom client contract]({{< repo "app/cetirun-connections-mcp/README.md" >}}#governed-custom-workloads).
-  For Custom, `custom` must also be in each runtime allowlist below. The native
-  common-executor configuration is also necessary for Custom. A change to a
-  type list alone grants nothing. For Sandbox Agents, also do
+  Custom Sandbox Agent image that implements the [Custom client contract]({{< repo "app/cetirun-connections-mcp/README.md" >}}#governed-custom-workloads).
+  For Custom, `custom` must also be in each agent type allowlist below. The
+  native common-executor configuration is also necessary for Custom. A change
+  to a type list alone grants nothing. For Sandbox Agents, also do
   [Enable Agent connections for Sandbox Agents](#enable-connections-for-sandbox-agents).
 - Network access from the Broker to Kubernetes, Entra sign-in, its Key Vault,
   and configured providers. Network access from MCP to Kubernetes, the Broker
@@ -555,7 +556,7 @@ For a standalone component release, remove the umbrella key for the
 component. Use the contents of that key as the values of the component. If
 the Portal runs in `cetirun-portal` instead, adjust the Portal namespace in the
 Broker's trust configuration. Match all ServiceAccount names, MCP certificate
-SANs and URLs to the rendered resources. Keep the same runtime allowlist in
+SANs and URLs to the rendered resources. Keep the same agent type allowlist in
 Portal, Broker and Operator.
 
 ## 6. Render, then deploy
@@ -635,8 +636,8 @@ successful chart render do not prove that provider authorization works.
    Azure role to its principal. Then test autonomous Azure separately from
    delegated sign-in. Test the actual Microsoft Graph permission that you
    granted.
-7. Remove the Agent binding. Make sure that new requests stop. Test
-   reauthentication after consent revocation or refresh expiry. Local
+7. Remove the Agent binding. Make sure that new requests stop. After consent
+   revocation or refresh expiry, make sure that **Sign in again** works. Local
    connection removal does not revoke provider-wide consent. It also does not
    uninstall a GitHub App.
 
@@ -648,8 +649,10 @@ that were already sent, or tokens that were issued previously.
 
 The Agents of a policy-bound Team run in a Sandbox. The operator gives such an
 Agent its Connections configuration only after the steps below. The agent type
-of the Agent must also be in the runtime allowlists of the operator, the
-Broker, and the Portal. Without this configuration, the Agent cannot use
+of the Agent must also be in the agent type allowlists of the operator, the
+Broker, and the Portal. A Sandbox Agent with a
+[single-start lifetime](../../concepts/glossary/#single-start-lifetime) does
+not get this configuration. Without this configuration, the Agent cannot use
 Connections. The Portal can still show **Identities** for the Agent.
 
 Do these steps after you
@@ -709,15 +712,15 @@ complete contract, refer to the Connections MCP README's
 
 | Symptom | Check next |
 | --- | --- |
-| Connections absent or owner verification fails | Portal `agentToolsEnabled`, correct login app client ID/tenant, forwarded verified ID token, HTTPS origin and supported runtime |
+| Connections absent or owner verification fails | Portal `agentToolsEnabled`, correct login app client ID/tenant, forwarded verified ID token, HTTPS origin and supported agent type |
 | OAuth redirect mismatch | Exact provider callback, public origin and the distinction from `/oauth2/callback` |
 | Broker cannot persist or decrypt | Encryption identity client ID, exact issuer/subject/audience, Key Vault key URL, wrap/unwrap role propagation, DNS/firewall and old key versions that are kept |
 | Portal or Operator gets Broker 403 | Actual namespace/ServiceAccount against Broker `portal`/`operator`, sidecar injection and Istio policy |
 | MCP cannot reach Broker | HTTPS service port 443, DNS server SAN, CA direction, client `clientAuth` and exact SPIFFE URI, Broker `toolService` identity |
-| MCP rejects an Agent | Audience alignment, live Pod/ServiceAccount/Agent binding, supported runtime and current Agent state. Do not use a manually copied token as a substitute |
-| Agent has no MCP connection | Operator URL/CA source, runtime allowlists, workload configuration and Agent namespace Broker permissions |
+| MCP rejects an Agent | Audience alignment, live Pod/ServiceAccount/Agent binding, supported agent type and current Agent state. Do not use a manually copied token as a substitute |
+| Agent has no MCP connection | Operator URL/CA source, agent type allowlists, workload configuration and Agent namespace Broker permissions |
 | Sandbox Agent has no Connections | `connectionsMCP.nativeEnabled`, the MCP `nativeSandbox` values, the MCP peer in `topology.peers`, and `sandboxAdmission.podsEnabled`. Refer to [Enable Agent connections for Sandbox Agents](#enable-connections-for-sandbox-agents) |
-| Agent Identity is `Ready`, but a policy-bound Agent cannot use it | The `CredentialPolicyReady` condition of the Agent. `PolicyApplied` alone does not prove this access: the operator must also read back the current credential policy from the Broker, for the owner and the identity. For Sandbox Agents, the Broker also verifies the current Pod and the protected Sandbox sources |
+| Agent Identity is `Ready`, but a Sandbox Agent cannot use it | The `CredentialPolicyReady` condition of the Agent. `PolicyApplied` alone does not prove this access: the operator must also read back the current credential policy from the Broker, for the owner and the identity. For Sandbox Agents, the Broker also verifies the current Pod and the protected Sandbox sources |
 | Entra identity or delegated exchange fails | Follow [Troubleshoot Agent Identity](../entra-agent-identity/#troubleshoot-agent-identity). Key Vault encryption authority does not grant Blueprint lifecycle authority |
 | Provider returns 401/403 | Current installation, owner/Admin authority, scopes, consent, resource RBAC, organization policy and token expiry |
 
@@ -809,9 +812,9 @@ component settings, refer to the
   [provider guide](../identity-providers/).
 - Mount TLS Secrets as whole volumes. The Broker and the MCP then reload
   them, as [Broker and MCP operation](#broker-and-mcp-operation) describes.
-- Back up encrypted records together with a recovery plan for their Key Vault
-  key versions and identity permissions. Before you return a recovered
-  environment to service, use the [restore procedure below](#restore-with-fresh-owner-authorization).
+- Make a backup of encrypted records together with a recovery plan for their
+  Key Vault key versions and identity permissions. Before you return a
+  recovered environment to service, use the [restore procedure below](#restore-with-fresh-owner-authorization).
   Encryption does not prove that a backup reflects current owner consent. It
   also does not prevent the use of credentials by an administrator who has
   decryption authority.
@@ -866,8 +869,8 @@ If a whole-cluster or namespace restore includes those records, use this order:
 
    The Broker namespace also has `credential-policy` records. They hold no
    credentials. The Broker uses such a record only when it matches the current
-   Agent and its Policy. Without a matching record, the Broker refuses the
-   Agent Identity requests of that policy-bound Agent.
+   Agent and its Agent Policy. Without a matching record, the Broker refuses
+   the Agent Identity requests of that Sandbox Agent.
 3. **Clear restored authorization state before you enable management writes.**
    Remove the restored records that you identified above from both storage
    locations. Do not resume old OAuth transactions or restore their

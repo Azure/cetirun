@@ -6,13 +6,13 @@ weight: 25
 
 A smart-routing model, or router, is a model name such as `auto`. For each
 request, the AI Gateway classifies how difficult the request is. The result is
-one of four tiers: `simple`, `medium`, `complex`, and `reasoning`. The Gateway
-sends the request to the model of that tier. If an Agent uses the router as its
-model, the Agent gets a cheap model for simple turns. In the same conversation,
-it gets a strong model for hard turns.
+one of four tiers: `simple`, `medium`, `complex`, and `reasoning`. The
+AI Gateway sends the request to the model of that tier. If an Agent uses the
+router as its model, the Agent gets a cheap model for simple turns. In the
+same conversation, it gets a strong model for hard turns.
 
-The steps on this page start with the Gateway's models and end with a request
-that you examine. They are for an administrator of the Portal, on an
+The steps on this page start with the models of the AI Gateway and end with a
+request that you examine. They are for a Portal administrator, on an
 installation that `make deploy` made, as in
 [Install CetiRun](../../getting-started/platform/). Steps 2 and 3 are for a
 Team with an Agent Policy. For these steps, the installation must run
@@ -20,11 +20,12 @@ Team with an Agent Policy. For these steps, the installation must run
 
 A router is defined in one of two places:
 
-- **In the Gateway's models**: routers that a Policy can grant, and that Agents
-  without a Team get. See [Routers in the Gateway](#routers-in-the-gateway).
+- **In the models of the AI Gateway**: routers that an Agent Policy can grant,
+  and that Agents without a Team get. See
+  [Routers in the AI Gateway](#routers-in-the-ai-gateway).
 - **On a Team**, in the Portal: the Team's own routers, which its Agents use.
-  No change to the Gateway is necessary. The classifier is `heuristic`, `llm`,
-  or `jev`.
+  No change to the AI Gateway is necessary. The classifier is `heuristic`,
+  `llm`, or `jev`.
 
 `make deploy` checks the AI Gateway routers by `modelRouting.mode` in the
 environment file. The default mode, `auto`, requires the router `auto` of
@@ -34,10 +35,10 @@ Then Team routers can use only the `heuristic` and `llm` classifiers. Refer to
 
 ## 1. Offer the tier models
 
-Each tier names a shared model. A shared model is a model in the Gateway's
+Each tier names a shared model. A shared model is a model in the AI Gateway's
 `models`, with a price. Order the tiers by price. At the top, put the model
 that you use without a router. The
-[Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#smart-routing)
+[AI Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#smart-routing)
 contains measured costs. For the other fields of a model, refer to
 [Configure the shared models](../ai-gateway/#configure-the-shared-models).
 
@@ -114,38 +115,38 @@ entries `decision-1` and `auto` have this form. `decision-1` uses LiteLLM's
 model. Without the `azure_ai/` prefix, LiteLLM finds no price for
 Microsoft-Decision-1, the operator does not offer the classifier, and `auto`
 does not work. The
-[Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#pricing-a-deployment)
+[AI Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#pricing-a-deployment)
 shows how to set a price yourself.
 
 Each `api_key: os.environ/<NAME>` reads the key `<NAME>` of the provider-key
 Secret. Add each key to the Secret before the run. Then run `make deploy`, as
 in [Install CetiRun](../../getting-started/platform/#platform-chart). A change
-to the models replaces the Gateway's Pods. For Sandbox Agents, refer to
+to the models replaces the AI Gateway Pods. For Sandbox Agents, refer to
 [Protect the selected peers](../policy-teams/#peer-labels).
 
 ## 2. Allow the routers in an Agent Policy
 
-> **Warning:** Use a new Policy for this step. For a Policy that already has
-> Agents, create the router first, as step 3 shows. Then add `auto-team` to the
-> Policy. Until the router exists, the operator cannot resolve the name, and it
-> stops the Agents of that Policy. Refer to
+> **Warning:** Use a new Agent Policy for this step. For an Agent Policy that
+> already has Agents, create the router first, as step 3 shows. Then add
+> `auto-team` to the Agent Policy. Until the router exists, the operator cannot
+> resolve the name, and it stops the Agents of that Agent Policy. Refer to
 > [When model changes reach Agents](../ai-gateway/#when-model-changes-reach-agents).
 
-In the Portal, select **Admin → Agent policies → New policy**. Allow the
-harnesses, OpenClaw and Hermes. Under **Allowed shared models**, select each
-router and the models of its tiers. For `auto`, select `auto`, `gpt-mini`,
-`gpt-main`, and `o3`.
+In the Portal, select **Admin → Agent policies → New policy**. Under
+**Allowed harnesses**, enable **OpenClaw** and **Hermes**. Under
+**Allowed shared models**, select each router and the models of its tiers.
+For `auto`, select `auto`, `gpt-mini`, `gpt-main`, and `o3`.
 
 The picker offers the models of the AI Gateway catalog. It offers the routers
-of a Team only after the Team uses the Policy. For this reason, you add the Team
-router `auto-team` in step 3.
+of a Team only after the Team uses the Agent Policy. For this reason, you add
+the Team router `auto-team` in step 3.
 
-An Agent gets a router only when its Policy allows the router and the models
-that [Routers](../models/#routers) lists. It is not necessary to list a
+An Agent gets a router only when its Agent Policy allows the router and the
+models that [Routers](../models/#routers) lists. It is not necessary to list a
 classifier model, such as `decision-1`.
-Select **Set monthly Gateway budget**. A Policy that allows models must have
-this budget. Each request is charged at the price of the model that it went to.
-The calls of a model classifier are also charged.
+Select **Set monthly Gateway budget**. An Agent Policy that allows models must
+have this budget. Each request is charged at the price of the model that it went
+to. The calls of a model classifier are also charged.
 
 ## 3. Create the Team and its router
 
@@ -154,7 +155,7 @@ as the allowed and default Sandbox. Under **Smart routing**, select
 **Add smart-routing model**:
 
 - **Model name**: `auto-team`. A Team router cannot have the name of a shared
-  model. `auto` is a shared model, because it is the Gateway's router.
+  model. `auto` is a shared model, because it is an AI Gateway router.
 - **Classifier**: **Heuristic**, **Shared model**, or **Decision model**. For a
   model classifier, select a shared chat model or a decision model, such as
   `decision-1`, as **Classifier model**. See
@@ -163,12 +164,12 @@ as the allowed and default Sandbox. Under **Smart routing**, select
   `gpt-main`, **Reasoning tier** `o3`. The reasoning tier can stay empty. In
   that case, it uses the complex tier.
 
-Save the Team. Then allow the Team router in the Policy:
+Save the Team. Then allow the Team router in the Agent Policy:
 
-1. Select **Admin → Agent policies**, and open the Policy of step 2.
+1. Select **Admin → Agent policies**, and open the Agent Policy of step 2.
 2. Under **Allowed shared models**, select `auto-team`. The picker shows the
    Team of the router, and if the router is registered.
-3. Save the Policy.
+3. Save the Agent Policy.
 
 This is the same configuration as resources, for `kubectl apply`:
 
@@ -213,10 +214,11 @@ spec:
         reasoning: o3
 ```
 
-Within a minute or two, the operator registers the router in the Gateway under
-an internal name, `cetirun-router-<hash>`. The Team page shows that the router
-is ready, or why it is not. An example is a tier model that the Gateway does
-not offer, or a router name that is also the name of a shared model:
+Within a minute or two, the operator registers the router in the AI Gateway
+under an internal name, `cetirun-router-<hash>`. The Team page shows that the
+router is ready, or why it is not. An example is a tier model that the
+AI Gateway does not offer. Another example is a router name that is also the
+name of a shared model:
 
 ```bash
 kubectl get team routed -o jsonpath='{.status.modelRouters}'
@@ -224,31 +226,32 @@ kubectl get team routed -o jsonpath='{.status.modelRouters}'
 
 ## 4. Create an Agent on a router
 
-In the Portal, a member of the Team selects **New Agent** and then selects the
-Team. The member keeps **Use shared models** enabled. As the
-**Default model (optional)**, the member selects `auto-team (smart routing)`,
-or `auto` for the Gateway's router.
+In the Portal, the user who creates the Agent selects **New Agent** and then
+selects the Team. The user keeps **Use shared models** enabled. As the
+**Default model (optional)**, the user selects `auto-team (smart routing)`,
+or `auto` for the AI Gateway router.
 
-The Agents of the Team that already run also get a new router if their policy
-allows it. A router change restarts an Agent only when the model configuration
-of the Agent changes. Router status updates do not interrupt Sandbox
-bootstrap. A change to the shared context of the Team restarts its running
-Sandbox Agents one time. For the Policy changes that restart Agents, refer to
+The Agents of the Team that already run also get a new router if their
+Agent Policy allows it. A router change restarts an Agent only when the model
+configuration of the Agent changes. Router status updates do not interrupt
+Sandbox bootstrap. A change to the shared context of the Team restarts its
+running Sandbox Agents one time. For the Agent Policy changes that restart
+Agents, refer to
 [What changes for Agents](../policy-teams/#what-changes-for-agents).
 
 Owners can make a router the default model in the **Models** section of the
 Agent's page. This restarts the Agent.
 
-An Agent without a Team gets each Gateway router whose models are all shared
-models, `auto` included. To examine `auto` without a policy-bound Team, keep
-**(none)** as the Team, and select `auto` as the default model.
+An Agent without a Team gets each AI Gateway router whose models are all
+shared models, `auto` included. To examine `auto` without a policy-bound Team,
+keep **(none)** as the Team, and select `auto` as the default model.
 
 The Agent's page lists the routers among its models, or it shows why the Agent
 cannot use a router. OpenClaw and Hermes show the router's name. Each Agent is
 configured with the smallest context window and output limit among the
-router's tier models. For a Gateway router, this includes its default model,
-unless the router sets its own limits in `model_info`. With these limits, a
-request fits every tier.
+router's tier models. For an AI Gateway router, this includes its default
+model, unless the router sets its own limits in `model_info`. With these
+limits, a request fits every tier.
 
 The Agent sends images to a router only when every model that the router sends
 requests to accepts images. Refer to [Images](../ai-gateway/#images).
@@ -262,9 +265,10 @@ reason. The Team page in the Portal shows them with the router.
 ## 5. Check where requests go
 
 Send a short question to the Agent. Then send a request for a design or a proof.
-For each request that it answers, the Gateway writes a line to its log. In this
-line, `model` is the router. For a Team's router, it is the internal name. The
-line also shows what made the decision, the tier, and the model that answered:
+For each request that it answers, the AI Gateway writes a line to its log. In
+this line, `model` is the router. For a Team's router, it is the internal name.
+The line also shows what made the decision, the tier, and the model that
+answered:
 
 ```bash
 kubectl logs -n cetirun-system -c gateway --since=15m --tail=-1 \
@@ -283,21 +287,21 @@ kubectl logs -n cetirun-system -c gateway --since=15m --tail=-1 \
 | `provider_model` | The deployment that answered, such as `azure/my-gpt-deployment` |
 | `spend` | What the request cost |
 
-The Gateway chart README has queries of the ADX-Mon collection for these lines
-in
+The AI Gateway chart README has queries of the ADX-Mon collection for these
+lines in
 [Measuring the routers]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#measuring-the-routers).
 The queries show the share of each tier, its spend, and its latency. A client
-that calls the Gateway with its own key also gets the tier in response headers.
-See
-[Calling the Gateway]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#calling-the-gateway).
+that calls the AI Gateway with its own key also gets the tier in response
+headers. See
+[Calling the AI Gateway]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#calling-the-ai-gateway).
 
 ### When a tier fails
 
 The model of a tier can fail, for example when the GitHub Copilot proxy of an
-Agent is down. The Gateway then sends the request to the router's other models.
-First, it uses the other models of the tier. Then it uses the higher tiers, the
-router's default model, and the lower tiers, in this order. It uses only the
-models that the Agent's key can use.
+Agent is down. The AI Gateway then sends the request to the router's other
+models. First, it uses the other models of the tier. Then it uses the higher
+tiers, the router's default model, and the lower tiers, in this order. It uses
+only the models that the Agent's key can use.
 
 In the log, the tier's line has the status `failure`. The line of the model that
 answered has `fallback_from`, which names the router. The error that the Agent
@@ -307,21 +311,20 @@ gets when every model fails does not contain the router's internal name.
 
 | Classifier | How it decides | Cost | Where |
 | --- | --- | --- | --- |
-| `heuristic` | Scores English keywords and the length of the request, without a model call | None | Team and Gateway routers |
-| `llm` | A shared chat model reads the request and selects the tier | One model call per request, charged to the Agent | Team and Gateway routers |
-| `jev` | A decision model, such as Microsoft-Decision-1, selects the tier | One call per request, charged to the Agent | Team and Gateway routers |
+| `heuristic` | Scores English keywords and the length of the request, without a model call | None | Team and AI Gateway routers |
+| `llm` | A shared chat model reads the request and selects the tier | One model call per request, charged to the Agent | Team and AI Gateway routers |
+| `jev` | A decision model, such as Microsoft-Decision-1, selects the tier | One call per request, charged to the Agent | Team and AI Gateway routers |
 
 The default, `heuristic`, is free and adds no latency, but it does not place
-hard requests well. In a measurement on 40 prompts, ten for each tier, it
-selected the expected tier for 15 of the English prompts. For their Chinese
-translations, it selected the expected tier for 11. It never selected the
-`complex` or `reasoning` tier. Microsoft-Decision-1 selected the expected tier
-for 39 of 40 in each language. Examine a classifier with requests that are
-similar to your users' requests.
+hard requests well. On 40 prompts, ten for each tier, it selects the expected
+tier for 15 of the English prompts. For their Chinese translations, it selects
+the expected tier for 11. It never selects the `complex` or `reasoning` tier.
+Microsoft-Decision-1 selects the expected tier for 39 of 40 in each language.
+Examine a classifier with requests that are similar to your users' requests.
 
-For `llm`, select a small, fast chat model that the Gateway offers as a shared
-model. For `jev`, select a decision model that the Gateway offers, such as
-`decision-1`:
+For `llm`, select a small, fast chat model that the AI Gateway offers as a
+shared model. For `jev`, select a decision model that the AI Gateway offers,
+such as `decision-1`:
 
 ```yaml
   modelRouters:
@@ -351,20 +354,20 @@ After a timeout, the router skips the classifier for 30 seconds. Requests
 during this period also go to the default model. `routing_cause` shows
 `default_model_fallback` in both cases.
 
-A Gateway router can set `classifier_llm_config.timeout_ms` and
+An AI Gateway router can set `classifier_llm_config.timeout_ms` and
 `classifier_fallback` to use different values. A router with its own
 `tier_definitions` uses its `fallback_tier`. These settings are described in
 [Choosing a classifier]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#choosing-a-classifier).
 
 A `jev` classifier sends the Agent's whole system prompt and its latest
 messages to the decision model. Microsoft-Decision-1 takes at most 32,768
-tokens. The Gateway shortens a longer classifier request so that it fits. If
-the newest user message fits, the Gateway keeps it whole. Refer to
+tokens. The AI Gateway shortens a longer classifier request so that it fits. If
+the newest user message fits, the AI Gateway keeps it whole. Refer to
 [Configure a team](../../guides/teams/#smart-routing).
 
-## Routers in the Gateway
+## Routers in the AI Gateway
 
-A router can also be an entry in the Gateway's `models`, next to the tier
+A router can also be an entry in the AI Gateway's `models`, next to the tier
 models, as `auto` in step 1. For the Agents that get such a router, refer to
 [Routers](../models/#routers). Changes apply only after a `make deploy` run.
 The limits that each Agent gets are in [step 4](#4-create-an-agent-on-a-router).
@@ -372,17 +375,17 @@ The limits that each Agent gets are in [step 4](#4-create-an-agent-on-a-router).
 Microsoft-Decision-1 is deployed in an Azure AI Foundry resource, not in an
 Azure OpenAI resource. It is reached with LiteLLM's `azure_ai` provider. Its
 entry sets `model_info.mode: evaluation`. As a result, LiteLLM calls it only to
-classify, and it is not offered to Agents. The Gateway also refuses requests
+classify, and it is not offered to Agents. The AI Gateway also refuses requests
 that ask it for a conversation.
 
 Without a LiteLLM license, LiteLLM limits some classifier features to one
-router per Gateway, for example a classifier prompt of the router's own. Only
-Gateway routers can use these features. The
-[Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#choosing-a-classifier)
+router per AI Gateway, for example a classifier prompt of the router's own.
+Only AI Gateway routers can use these features. The
+[AI Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#choosing-a-classifier)
 describes the settings of the classifiers.
 
 Sources: [Team model routers]({{< repo "app/cetirun-operator/internal/controller/ai_gateway_routers.go" >}}),
-[Gateway routers]({{< repo "app/cetirun-operator/internal/controller/ai_gateway_shared_routers.go" >}}),
-[Gateway request log]({{< repo "app/cetirun-ai-gateway/cetirun_ai_gateway/request_log.py" >}}),
+[AI Gateway routers]({{< repo "app/cetirun-operator/internal/controller/ai_gateway_shared_routers.go" >}}),
+[AI Gateway request log]({{< repo "app/cetirun-ai-gateway/cetirun_ai_gateway/request_log.py" >}}),
 [deployment helper]({{< repo "scripts/cetirun_platform_deploy.py" >}}),
 and [Configure a team](../../guides/teams/#smart-routing).

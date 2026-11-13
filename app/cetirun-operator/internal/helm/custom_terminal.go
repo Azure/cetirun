@@ -193,9 +193,7 @@ func (p *PreparedRelease) terminalObjects(b runtimebindings.Custom) ([]map[strin
 		return networkv1.NetworkPolicyPort{Protocol: ptr.To(corev1.ProtocolTCP), Port: ptr.To(intstr.FromInt32(port))}
 	}
 	egress := []networkv1.NetworkPolicyEgressRule{
-		{To: []networkv1.NetworkPolicyPeer{peer(text(network["dnsNamespace"]))}, Ports: []networkv1.NetworkPolicyPort{
-			{Protocol: ptr.To(corev1.ProtocolUDP), Port: ptr.To(intstr.FromInt32(53))}, tcp(53),
-		}},
+		dnsEgress(network),
 		{To: []networkv1.NetworkPolicyPeer{peer(text(network["istioNamespace"]))}, Ports: []networkv1.NetworkPolicyPort{tcp(15012)}},
 	}
 	for _, endpoint := range b.Network.APIServer {

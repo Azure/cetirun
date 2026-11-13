@@ -314,16 +314,16 @@ role allows.
 
 | Other name | Name in this documentation |
 | --- | --- |
-| instance, workspace (for the Agent) | Agent |
-| workspace (for the volume) | HOME |
-| the Gateway | AI Gateway, ingress gateway, or OpenClaw gateway token |
-| legacy Agent, ordinary Agent | standard Agent |
-| governed Agent, native Sandbox, common-executor Sandbox Agent, policy-bound instance | Sandbox Agent |
-| policy-enabled Team, policy-configured Team | policy-bound Team |
-| Agent policy, Policy | Agent Policy, or `AgentPolicy` for the kind |
-| BYO, Custom runtime, Custom provider, Custom Harness | Custom Agent |
-| runtime, harness (for the agent type) | agent type |
-| runtime chart | agent chart |
-| console (of an Agent), native interface | Agent UI |
-| Reauthorize (for a connection) | **Sign in again**, the label in the Portal |
-| administrator (without a role name) | the name of the role |
+| "instance", "workspace" (for the Agent) | Agent |
+| "workspace" (for the volume) | HOME |
+| "the Gateway" | AI Gateway, ingress gateway, or OpenClaw gateway token |
+| "legacy Agent", "ordinary Agent" | standard Agent |
+| "governed Agent", "native Sandbox", "common-executor Sandbox Agent", "policy-bound Agent", "policy-bound instance" | Sandbox Agent |
+| "policy-enabled Team", "policy-configured Team" | policy-bound Team |
+| "Agent policy", "Policy" | Agent Policy, or `AgentPolicy` for the kind |
+| "BYO", "Custom runtime", "Custom provider", "Custom Harness" | Custom Agent |
+| "runtime", "harness" (for the agent type) | agent type |
+| "runtime chart" | agent chart |
+| "console" (of an Agent), "native interface" | Agent UI |
+| "Reauthorize" (for a connection) | **Sign in again**, the label in the Portal |
+| "administrator" (without a role name) | the name of the role |

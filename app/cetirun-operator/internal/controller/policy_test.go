@@ -24,6 +24,142 @@ import (
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 )
 
+func TestOrdinaryAgentPolicyDependencyHoldRecoversWithoutSandboxIntent(t *testing.T) {
+	ctx := context.Background()
+	r, agent, gateway := legacyGatewayFixture(t)
+	r.SandboxPreparation = &SandboxPreparation{NativeExecution: true}
+	kube := r.Client
+	agent.Status.Phase, agent.Status.ObservedGeneration = api.PhaseReady, agent.Generation
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.updateStatus(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	token := aigateway.Token(gateway.generated[0].Key)
+	gateway.keys[token].Spend = ptr.To(3.0)
+	workload := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
+		Name: instanceServiceName(agent.Name), Namespace: instanceNamespace(agent.Name), UID: "workload-uid",
+		Annotations: map[string]string{"meta.helm.sh/release-name": helmReleaseName(agent.Name), "meta.helm.sh/release-namespace": instanceNamespace(agent.Name)},
+	}, Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](1), PersistentVolumeClaimRetentionPolicy: &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{WhenScaled: appsv1.DeletePersistentVolumeClaimRetentionPolicyType}}}
+	route := &istiov1beta1.VirtualService{ObjectMeta: metav1.ObjectMeta{
+		Name: virtualServiceName(agent.Name), Namespace: workload.Namespace, UID: "route-uid",
+		Labels: map[string]string{"app.kubernetes.io/managed-by": "cetirun-operator", "app.kubernetes.io/instance": agent.Name},
+	}}
+	for _, object := range []client.Object{workload, route} {
+		if err := kube.Create(ctx, object); err != nil {
+			t.Fatal(err)
+		}
+	}
+	down := true
+	r.APIReader = interceptor.NewClient(kube.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+			if _, ok := object.(*api.Team); ok && down {
+				return apierrors.NewServiceUnavailable("synthetic Team outage")
+			}
+			return c.Get(ctx, key, object, options...)
+		},
+	})
+	for range 2 {
+		policy, err := r.reconcilePolicy(ctx, agent)
+		if err == nil || !policy.dependencyUnavailable {
+			t.Fatalf("Team outage must remain retryable: %+v %v", policy, err)
+		}
+		if _, err := r.holdPolicyDependencyUnavailable(ctx, agent); err != nil {
+			t.Fatal(err)
+		}
+		if err := kube.Get(ctx, client.ObjectKeyFromObject(agent), agent); err != nil {
+			t.Fatal(err)
+		}
+		if sandboxRequested(agent, nil) {
+			t.Fatal("temporary dependency outage permanently enrolled an ordinary Agent into Sandbox")
+		}
+	}
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(workload), workload); err != nil {
+		t.Fatal(err)
+	}
+	if *workload.Spec.Replicas != 0 || workload.Spec.PersistentVolumeClaimRetentionPolicy.WhenScaled != appsv1.RetainPersistentVolumeClaimRetentionPolicyType {
+		t.Fatal("dependency hold must stop compute while retaining HOME")
+	}
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(route), route); !apierrors.IsNotFound(err) {
+		t.Fatalf("dependency hold left ingress available: %v", err)
+	}
+	if !gateway.keys[token].Blocked || agent.Status.ObservedGeneration != 0 || agent.Status.Phase == api.PhaseReady {
+		t.Fatal("dependency hold must block the key and invalidate workload readiness/cache")
+	}
+	down = false
+	policy, err := r.reconcilePolicy(ctx, agent)
+	if err != nil || !policy.authorized || !policy.projectionsVerified {
+		t.Fatalf("ordinary Agent failed policy recovery: %+v %v", policy, err)
+	}
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if gateway.keys[token].Blocked || *gateway.keys[token].Spend != 3 || len(gateway.generated) != 1 || len(gateway.deletedTokens) != 0 {
+		t.Fatal("recovery must unblock the same key and preserve spend")
+	}
+}
+
+func TestOrdinaryDependencyHoldStopsComputeWhenGatewayIsUnavailable(t *testing.T) {
+	for _, agentType := range []api.AgentType{api.AgentTypeOpenClaw, api.AgentTypeCustom} {
+		t.Run(string(agentType), func(t *testing.T) {
+			ctx := context.Background()
+			r, agent, _ := legacyGatewayFixture(t)
+			if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+				t.Fatal(err)
+			}
+			agent.Spec.Agent.Type = agentType
+			if err := r.Update(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			r.aiGatewayClientFactory = func(context.Context) (aiGatewayKeyClient, error) { return nil, errors.New("synthetic Gateway outage") }
+			owner := *metav1.NewControllerRef(agent, api.GroupVersion.WithKind("Agent"))
+			workload := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
+				Name: instanceServiceName(agent.Name), Namespace: instanceNamespace(agent.Name), UID: "workload-uid",
+				OwnerReferences: []metav1.OwnerReference{owner}, Annotations: map[string]string{customAgentUID: string(agent.UID)},
+			}, Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](1)}}
+			if err := r.Create(ctx, workload); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.holdPolicyDependencyUnavailable(ctx, agent); err == nil {
+				t.Fatal("Gateway failure must remain visible")
+			}
+			if err := r.Get(ctx, client.ObjectKeyFromObject(workload), workload); err != nil {
+				t.Fatal(err)
+			}
+			if *workload.Spec.Replicas != 0 {
+				t.Fatal("Gateway failure skipped compute shutdown")
+			}
+			if err := r.Get(ctx, client.ObjectKeyFromObject(agent), agent); err != nil {
+				t.Fatal(err)
+			}
+			if sandboxRequested(agent, nil) {
+				t.Fatal("Gateway failure invented Sandbox intent")
+			}
+		})
+	}
+}
+
+func TestOrdinaryDependencyRecoveryRechecksNewTeamPolicy(t *testing.T) {
+	ctx := context.Background()
+	r, agent, _ := legacyGatewayFixture(t)
+	if _, err := r.holdPolicyDependencyUnavailable(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	team := &api.Team{}
+	if err := r.Get(ctx, client.ObjectKey{Name: agent.Spec.Team}, team); err != nil {
+		t.Fatal(err)
+	}
+	team.Spec.AgentPolicyRef = testPolicyName
+	if err := r.Update(ctx, team); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := r.reconcilePolicy(ctx, agent)
+	if err != nil || policy.authorized || agent.Status.Policy == nil || agent.Status.Policy.Phase != "Denied" {
+		t.Fatalf("new Team policy must produce a persisted denial: %+v %v", policy, err)
+	}
+}
+
 func TestPolicyGatewayRevisionFollowsModelNamesNotTheirConfiguration(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())

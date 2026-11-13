@@ -1,6 +1,6 @@
 ---
 title: "Model access"
-description: "Find which models an Agent can use, what decides its default model, and how to give a team its own provider account."
+description: "Find which models an Agent can use, what decides its default model, and how to give a Team its own provider account."
 weight: 21
 ---
 
@@ -18,7 +18,7 @@ administrators.
 | Models added in the AI Gateway console | The platform administrator, in the console | The access group `cetirun-shared` and a price | Only standard Agents | The price of the model |
 | AI Gateway routers, for example `auto` | The platform administrator, in `models` | Every model that the router sends requests to | Refer to [Routers](#routers) | The price of the tier model, and the classifier calls |
 | Team routers | A Portal administrator, on the Team | Every model that the router sends requests to | The Agents of that Team. Refer to [Routers](#routers) | The price of the tier model, and the classifier calls |
-| The GitHub Copilot models of the owner | The owner of the Agent, with a sign-in on the Agent page | The Copilot proxy is enabled. For a policy-bound Team, the Policy allows Copilot | Each Agent gets the models of its own sign-in | The list price of the model, from the budget of the Agent |
+| The GitHub Copilot models of the owner | The owner of the Agent, with a sign-in on the Agent page | The Copilot proxy is enabled. For a policy-bound Team, the Agent Policy allows Copilot | Each Agent gets the models of its own sign-in | The list price of the model, from the budget of the Agent |
 | Outbound calls of a Custom image | The image | None. The platform does not control them | Custom Agents only | Not counted by the AI Gateway |
 
 CetiAdmin uses the shared models of the AI Gateway. Its default model is
@@ -33,9 +33,11 @@ router. With `kubectl`, read `status.aiGateway` of the Agent.
 
 These settings decide which models the key of an Agent can use:
 
-- **The Team and its Agent Policy.** A standard Agent has no Team, or a Team
-  without an Agent Policy. It can use every shared model. The Agent Policy of a
-  policy-bound Team limits its Agents to `modelAccess.sharedModels.allowed`.
+- **The Team and its Agent Policy.** A
+  [standard Agent](../../concepts/glossary/#standard-agent) has no Team, or a
+  Team without an Agent Policy. It can use every shared model. The Agent
+  Policy of a policy-bound Team limits its Agents to
+  `modelAccess.sharedModels.allowed`.
   It allows GitHub Copilot only with `modelAccess.copilot.allowed`.
 - **The model sources of the Agent.** `spec.modelAccess.sharedModels` and
   `spec.modelAccess.githubCopilot` enable or disable the two sources. Without
@@ -116,20 +118,20 @@ whose default model is `copilot/<model>` uses the current name of the model.
 
 ### Copilot models under an Agent Policy
 
-For a policy-bound Agent, the allowed shared models of its Policy also apply to
-the Copilot models that are the same models. The Agent gets such a Copilot
-model only when the Policy allows a shared model that is that model. A Copilot
-model with a date version is the same model only as the same version. The
-Agent page lists other such models as not allowed by the Agent Policy.
+For a Sandbox Agent, the allowed shared models of its Agent Policy also apply
+to the Copilot models that are the same models. The Agent gets such a Copilot
+model only when the Agent Policy allows a shared model that is that model. A
+Copilot model with a date version is the same model only as the same version.
+The Agent page lists other such models as not allowed by the Agent Policy.
 
 For example, the shared model `enterprise-sol` has the `base_model`
-`azure/gpt-6-sol`, and no other shared model is that model. If the Policy does
-not allow `enterprise-sol`, the Agent does not get the Copilot model
+`azure/gpt-6-sol`, and no other shared model is that model. If the Agent Policy
+does not allow `enterprise-sol`, the Agent does not get the Copilot model
 `gpt-6-sol` of its owner. A Copilot model that is not the same model as a
-shared model needs only **Allow GitHub Copilot** in the Policy. An example is a
-Claude model when the AI Gateway has no Claude deployment.
+shared model needs only **Allow GitHub Copilot** in the Agent Policy. An example
+is a Claude model when the AI Gateway has no Claude deployment.
 
-When the Policy stops the access to such a model, the operator removes the
+When the Agent Policy stops access to such a model, the operator removes the
 route of the model from the AI Gateway. Then it updates the key of the Agent. If
 the AI Gateway cannot remove the route, the key cannot reach any Copilot model of
 the owner until the route is removed. The same occurs while the operator
@@ -143,29 +145,29 @@ A router is a model name that sends each request to one of several models.
 Refer to [Smart routing](../smart-routing/). An Agent gets a router only when it
 can use every model that the router sends requests to.
 
-For an Agent with an Agent Policy, the Policy must list these models:
+For an Agent with an Agent Policy, the Agent Policy must list these models:
 
 - the router
 - every model of its tiers
 - its default model
 - its context compaction model, if it has one
 
-The classifier model must be a shared model, but the Policy does not have to
-list it. For a GitHub Copilot tier, the Policy must allow Copilot.
+The classifier model must be a shared model, but the Agent Policy does not
+have to list it. For a GitHub Copilot tier, the Agent Policy must allow Copilot.
 
 A standard Agent gets every AI Gateway router whose models are all shared
 models.
 
-If the operator cannot read a router completely, Agents with a Policy do not
-get it. Examples are a router with a setting that the operator does not know,
-and a router with a classifier plugin. A router that an Agent cannot use is not
-in its key or in its models. If the Policy of the Agent lists the router, the
-Agent page tells why.
+If the operator cannot read a router completely, Agents with an Agent Policy
+do not get it. Examples are a router with a setting that the operator does not
+know, and a router with a classifier plugin. A router that an Agent cannot use
+is not in its key or in its models. If the Agent Policy of the Agent lists the
+router, the Agent page tells why.
 
 A changed router reaches the keys of the Agents in about two minutes. It does
-not change the AI Gateway projection of the Policy. If an administrator
+not change the AI Gateway projection of the Agent Policy. If an administrator
 removes or renames a Team router that an Agent Policy allows, the operator
-stops the Agents of that Policy. Refer to
+stops the Agents of that Agent Policy. Refer to
 [When model changes reach Agents](../ai-gateway/#when-model-changes-reach-agents).
 
 ## Limits
@@ -181,11 +183,11 @@ operator keeps these shared models first:
 The operator reports the shared models that it leaves out in an
 `AIGatewayModelsLimited` event on the Agent.
 
-## Use the provider account of a team
+## Use the provider account of a Team
 
 Agents cannot use their own provider credentials. The operator does not apply
 a provider override of an Agent, and each workload gets only an AI Gateway
-virtual key. To give a team its own provider account, do these steps:
+virtual key. To give a Team its own provider account, do these steps:
 
 1. Add the key of the account to the provider-key Secret of the AI Gateway.
    Use a name of its own, for example `RESEARCH_OPENAI_KEY`.

@@ -50,7 +50,10 @@ FULL_PLATFORM = {
         "domainSuffix": "platform.example.invalid",
         "cetiadmin": {"enabled": False},
     },
-    "cetirun-portal": {"enabled": True, "istio": {"host": DOMAIN}},
+    "cetirun-portal": {"enabled": True, "istio": {"host": DOMAIN}, "agentIdentity": {
+        "tenantId": "11111111-1111-1111-1111-111111111111",
+        "portalClientId": "22222222-2222-2222-2222-222222222222",
+    }},
     "cetirun-ai-gateway": {"enabled": True},
 }
 OFFLINE = {

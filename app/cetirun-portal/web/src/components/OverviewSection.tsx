@@ -18,6 +18,9 @@ import {
   Switch,
   TabList,
   Tab,
+  MessageBar,
+  MessageBarBody,
+  MessageBarTitle,
   type SelectTabData,
   tokens,
 } from "@fluentui/react-components";
@@ -76,6 +79,14 @@ export function OverviewSection({ instance }: { instance: Instance }) {
   const [editWebUI, setEditWebUI] = useState(false);
   const [editValidationError, setEditValidationError] = useState("");
   const gatewayRouted = !!instance.aiGateway?.routed;
+  const governance = currentGovernance(instance);
+  const readiness = !instance.suspended && !governance &&
+    (instance.phase === "Provisioning" || instance.phase === "Failed")
+    ? instance.conditions?.find((condition) => condition.type === "Ready" && condition.status === "False" &&
+      (!condition.observedGeneration || instance.generation === undefined || condition.observedGeneration === instance.generation))
+    : undefined;
+  const canRetryWorkload = readiness?.reason === "PodNotReady" && instance.suspendAvailable &&
+    !instance.restartAvailable && instance.restartRequestId === instance.observedRestartRequestId;
 
   useEffect(() => {
     return () => {
@@ -209,7 +220,20 @@ export function OverviewSection({ instance }: { instance: Instance }) {
         </div>
       )}
 
-      {instance.phase === "Provisioning" && !currentGovernance(instance) && <Spinner size="small" label="Provisioning your agent..." />}
+      {readiness ? (
+        <MessageBar intent="warning" style={{ marginBottom: 16, overflowWrap: "anywhere" }}>
+          <MessageBarBody>
+            <MessageBarTitle>Agent is not ready</MessageBarTitle>
+            <Text block>Reported reason: {readiness.reason}{readiness.message ? `: ${readiness.message}` : ""}</Text>
+            {canRetryWorkload && <Text block>
+              If the workload stays unready, you can select Suspend Agent below. This interrupts active sessions and retains HOME.
+              Wait for the controller to report Suspended, then select Resume Agent to retry with the current configuration.
+              An accepted resume does not mean the Agent is Ready. If it stays unready, ask your administrator to check the reported cause.
+            </Text>}
+            <Button appearance="subtle" onClick={() => setSelectedTab("status")}>View Status</Button>
+          </MessageBarBody>
+        </MessageBar>
+      ) : instance.phase === "Provisioning" && !governance ? <Spinner size="small" label="Provisioning your agent..." /> : null}
 
       {agentCredential && (
         <div style={{ marginTop: 8, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>

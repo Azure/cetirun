@@ -20,7 +20,7 @@ and limits of its containers:
 | Desktop, on by default | 0.5 CPU, 1 GiB | 2 CPU, 4 GiB |
 | Session logger, on by default | 0.01 CPU, 64 MiB | 0.1 CPU, 128 MiB |
 
-The Pod requests about 4.5 CPU and 9 GiB, plus the Istio sidecar. The runtime
+The Pod requests about 4.5 CPU and 9 GiB, plus the Istio sidecar. The agent
 chart sets no resources for the sidecar, so AKS managed Istio applies its
 defaults. Each OpenClaw or Hermes Agent also has a 100 GiB HOME disk of the
 `default` StorageClass. Custom Agents use the same default requests. Their HOME
@@ -29,8 +29,8 @@ disk has the size and the StorageClass of `customRuntime.storageSize` and
 has a terminal Deployment with a request of 0.05 CPU and 64 MiB.
 
 To change the resources of all Agents, set `resources` in
-`platform.values.cetirun-operator.cetirun.helmValues`. Policy-bound Agents use
-the resources of their Sandbox instead.
+`platform.values.cetirun-operator.cetirun.helmValues`. Sandbox Agents use the
+resources of their Sandbox instead.
 
 The `kata-vm-isolation` RuntimeClass of AKS can add a fixed overhead to each
 Pod. To read it, run this command:
@@ -90,7 +90,7 @@ file. Refer to [Infrastructure](../infrastructure/#cluster-parameter-file).
 | Portal | 2 | 0.1 CPU, 256 MiB |
 | AI Gateway | 2 | None. Set `platform.values.cetirun-ai-gateway.resources` |
 | AI Gateway PostgreSQL and Valkey | 1 each | None. PostgreSQL has a 100 GiB disk by default |
-| Broker | 2 | 0.1 CPU, 128 MiB, with the Entra auth sidecar |
+| Agent Identity Broker | 2 | 0.1 CPU, 128 MiB, with the Entra auth sidecar |
 | Connections MCP | 2 | 0.05 CPU, 64 MiB |
 | OAuth2 Proxy, on the `system` pool | 2 | 0.1 CPU, 128 MiB |
 | Session store of OAuth2 Proxy, on the `system` pool | 1 | 0.05 CPU, 64 MiB, and a 1 GiB disk |

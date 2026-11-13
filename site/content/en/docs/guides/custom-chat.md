@@ -13,7 +13,7 @@ shows in the sidebar of the Agent when these conditions are true:
 
 Hermes and OpenClaw Agents use their own interfaces, which you open with
 **Agent UI**. A Custom Agent with a Web UI uses **Web UI**. To enable Portal
-Chat for a deployment, administrators refer to
+Chat for a deployment, platform administrators refer to
 [Enable Portal Chat](../../operations/portal-chat/).
 
 ## Start a conversation
@@ -39,9 +39,9 @@ keeps its files, its tools, and its private memory.
 
 If the model list is empty, the Agent has no models yet. Complete the model
 setup of the image. For an image that uses the AI Gateway, sign in to GitHub
-Copilot on the **Overview** tab, or ask your administrator to share a model.
-Chat does not ask for model credentials, and it does not send them to the
-browser.
+Copilot on the **Overview** tab. As an alternative, ask your platform
+administrator to share a model. Chat does not ask for model credentials, and
+it does not send them to the browser.
 
 When a reply fails or stops, the conversation shows the actual state of the
 reply. A page refresh does not send the request again. Before you send the

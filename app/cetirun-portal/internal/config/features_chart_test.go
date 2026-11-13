@@ -21,7 +21,7 @@ func TestCustomChartKeepsAgentIdentitySeparate(t *testing.T) {
 	if err != nil {
 		t.Skip("Helm is required for the Portal chart rendering check")
 	}
-	args := []string{"template", "portal", "../../chart", "--set", "istio.host=portal.example.com"}
+	args := []string{"template", "portal", "../../chart", "--set", "istio.host=portal.example.com", "--set", "istio.internalAuthMTLS=false"}
 	output, err := exec.Command(helm, args...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("Custom chart render: %v\n%s", err, output)
@@ -67,7 +67,7 @@ func TestCustomChartKeepsAgentIdentitySeparate(t *testing.T) {
 			t.Errorf("Agent Identity configuration is missing: %s", expected)
 		}
 	}
-	args = []string{"template", "portal", "../../chart", "--set", "istio.host=portal.example.com", "--set", "features.agentToolsEnabled=true"}
+	args = []string{"template", "portal", "../../chart", "--set", "istio.host=portal.example.com", "--set", "istio.internalAuthMTLS=false", "--set", "features.agentToolsEnabled=true"}
 	output, err = exec.Command(helm, args...).CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "tenantId is required") {
 		t.Fatalf("Agent Tools accepted missing OIDC configuration: %v\n%s", err, output)
@@ -91,7 +91,9 @@ func TestConfigurationCoordinationChartWiring(t *testing.T) {
 	if err != nil {
 		t.Skip("Helm is required for the Portal chart rendering check")
 	}
-	base := []string{"template", "portal", "../../chart", "--set", "istio.host=portal.example.com"}
+	base := []string{"template", "portal", "../../chart", "--set", "istio.host=portal.example.com",
+		"--set", "agentIdentity.tenantId=11111111-1111-1111-1111-111111111111",
+		"--set", "agentIdentity.portalClientId=33333333-3333-3333-3333-333333333333"}
 	partial := append(append([]string{}, base...), "--set", "configurationCoordination.name=configuration-state")
 	output, err := exec.Command(helm, partial...).CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "requires namespace, name and uid together") {
@@ -131,7 +133,8 @@ func TestAgentToolsChartRequiresVerifiedOwnerConfiguration(t *testing.T) {
 		values    []string
 		wantError string
 	}{
-		{"defaults", nil, ""},
+		{"mTLS defaults require identity", nil, "tenantId is required"},
+		{"legacy defaults", []string{"istio.internalAuthMTLS=false"}, ""},
 		{"missing tenant", []string{"features.agentToolsEnabled=true"}, "tenantId is required"},
 		{"missing client", []string{"features.agentToolsEnabled=true", "agentIdentity.tenantId=tenant"}, "portalClientId is required"},
 		{"missing origin", []string{"features.agentToolsEnabled=true", "agentIdentity.tenantId=tenant", "agentIdentity.portalClientId=client", "istio.host="}, "istio.host is required"},
@@ -214,7 +217,9 @@ func TestSkillMarketplaceChartWiring(t *testing.T) {
 	}
 	catalogReader := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"configmaps"}, ResourceNames: []string{"cetirun-skill-marketplace"}, Verbs: []string{"get"}}
 	gatewayReader := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"configmaps"}, ResourceNames: []string{"cetirun-ai-gateway-catalog"}, Verbs: []string{"get"}}
-	base := []string{"template", "portal", "../../chart", "--set", "istio.host=portal.example.com"}
+	base := []string{"template", "portal", "../../chart", "--set", "istio.host=portal.example.com",
+		"--set", "agentIdentity.tenantId=11111111-1111-1111-1111-111111111111",
+		"--set", "agentIdentity.portalClientId=33333333-3333-3333-3333-333333333333"}
 	for _, tc := range []struct {
 		name          string
 		values        []string

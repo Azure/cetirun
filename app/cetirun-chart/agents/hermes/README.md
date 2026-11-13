@@ -74,7 +74,7 @@ Container startup runs `hermes-prepare-dependencies` before the runtime check.
 Upstream PM reuses a matching environment without downloading or rebuilding it.
 When an image upgrade changes dependency inputs, it prepares a new generation
 for the retained plugin and extra selection, including the required platform
-extras, and validates startup imports. Downloads use the instance's existing
+extras, and validates startup imports. Downloads use the Agent's existing
 network policy; preparation fails if required packages are unavailable or
 incompatible. A failed PM build leaves the previous selection available for
 diagnosis and stops startup without falling back to the base or disabling plugins.
@@ -83,7 +83,7 @@ Supervised gateway restarts and health probes only validate the prepared selecti
 The same command remains available for preparing dependencies explicitly before
 an upgrade. `hermes doctor --fix` does not replace this dependency sync and is not
 run automatically. Startup after successful preparation must also pass with
-external network access disabled. Back up the instance before upgrading its
+external network access disabled. Back up the Agent before upgrading its
 runtime or database; do not run an old image on a migrated database.
 
 The image applies a source-hash guarded change to the pinned PM candidate builder:
@@ -95,7 +95,7 @@ a working selection. PM still owns building, validation and atomic publication.
 
 The platform manages the API port (default `8642`), Webapp port `9120`, the public URL,
 listener addresses and browser authentication on every supervised gateway start.
-The Gateway model and provider settings are reapplied from the generated
+The AI Gateway model and provider settings are reapplied from the generated
 configuration before each start. Persistent default-model edits in the Webapp
 or CLI are reset to the platform selection; change `spec.model` through CetiRun
 to retain a different platform model. Message channels, plugins, sessions and
@@ -126,18 +126,18 @@ question with "No thanks" (`telemetry.shared_metrics` in
 change the answer with `hermes setup telemetry`.
 
 The Operator routes `/ui/<instance>/`, removes the prefix when forwarding, and
-sets `X-Forwarded-Prefix`. `webapp.public_url` carries the full HTTPS instance
+sets `X-Forwarded-Prefix`. `webapp.public_url` carries the full HTTPS Agent
 URL. Native Webapp prefix handling owns assets, auth, files and sockets; there
 is no Dashboard prefix rewrite middleware. Cookie paths, storage, WebSocket
-tickets and plugin/file URLs must be qualified using two instances on one host.
+tickets and plugin/file URLs must be qualified using two Agents on one host.
 
 Before building the Webapp, `compat/apply_webapp_storage.py` verifies the pinned
 renderer entry and native window handoff source hashes, and installs browser
 state scoping before any preference stores load. Local storage, session storage, storage events and
-BroadcastChannel names are scoped to `/ui/<instance>`. Clearing one instance's
+BroadcastChannel names are scoped to `/ui/<instance>`. Clearing one Agent's
 storage leaves the others intact. Existing unscoped browser keys are not
-migrated because their owning instance is unknown. Only a native launch grant
-already bound to the current origin and instance is carried into that instance's
+migrated because their owning Agent is unknown. Only a native launch grant
+already bound to the current origin and Agent is carried into that Agent's
 session storage; child-window authorization uses the same scoped channel.
 Native Desktop keeps its
 existing storage behavior. The patch changes source modules, without rewriting
@@ -209,8 +209,8 @@ With Memory enabled, Hermes mounts platform instructions read-only at
 `$HOME/.agents` writable. Shared Skills stay on their direct read-only PVC mount
 at `skills.mountPath`, so published updates do not require a Pod restart.
 An explicit shared mount at `$HOME/.agents/skills` still occupies that directory.
-Ordinary Hermes context volumes have a `40Mi` limit; protected reconciled
-workloads retain their configured scratch limit.
+The context volumes of standard Hermes Agents have a `40Mi` limit; protected
+reconciled workloads retain their configured scratch limit.
 
 The managed Hermes image discovers personal, configured and shared skills
 alongside the installed Memory assets. The source-hash guarded
@@ -314,11 +314,11 @@ Webapp/TUI builders, native configuration and plugin contracts. Synchronize the
 Hermes profile and Memory host pins. A CetiRun release change is separate and
 must use `make set-version VERSION=X.Y.Z` when requested.
 
-Upgrade each Hermes Agent to the matching runtime Chart and image when updating
+Upgrade each Hermes Agent to the matching agent chart and image when updating
 the Operator. An Agent still pinned to an older Hermes profile is marked
 `Failed` with `AgentConfigInvalid`; that preparation error does not replace its
 existing workload or route. Portal Restart is unavailable until the Agent is
-Ready again with the matching runtime. Other lifecycle or policy changes can
+Ready again with the matching runtime. Other lifecycle or Agent Policy changes can
 still stop a workload according to their normal rules.
 
 The new runtime does not load packages from the old `lazy-packages` directory.
@@ -341,6 +341,6 @@ configuration, authentication keys, routing and retained state. Memory and MCP
 tests exercise the changed native adapter interfaces.
 
 The focused browser storage test and existing native ingress test are described
-in [DEVELOPMENT.md](../../../../DEVELOPMENT.md#runtime-chart-and-python-helpers).
+in [DEVELOPMENT.md](../../../../DEVELOPMENT.md#agent-chart-and-python-helpers).
 They use synthetic data. Report offline validation and live deployment results
 separately; local checks do not establish public login or model access.

@@ -22,6 +22,7 @@ CHART = Path(__file__).resolve().parents[2] / "infra/istio"
 class IstioSessionTests(unittest.TestCase):
     def render(self, session=None, *, kubeconfig=None, upgrade=False, error=None):
         values = {
+            "portalAuth": {"mtls": {"serverIdentity": "spiffe://cluster.local/ns/synthetic/sa/portal"}},
             "clientId": "synthetic-client", "tenantId": "synthetic-tenant",
             "allowedGroups": "synthetic-group", "cookieSecret": "a" * 32,
             "oauth2Proxy": {"sessionStore": session or {}},

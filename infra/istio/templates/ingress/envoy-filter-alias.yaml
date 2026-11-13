@@ -2,7 +2,10 @@
 {{- if not (kindIs "map" $portalAuthMTLS) -}}
 {{- fail "portalAuth.mtls must be an object" -}}
 {{- end -}}
-{{- $portalAuthMTLSEnabled := get $portalAuthMTLS "enabled" | default false -}}
+{{- $portalAuthMTLSEnabled := true -}}
+{{- if hasKey $portalAuthMTLS "enabled" -}}
+{{- $portalAuthMTLSEnabled = get $portalAuthMTLS "enabled" -}}
+{{- end -}}
 {{- if not (kindIs "bool" $portalAuthMTLSEnabled) -}}
 {{- fail "portalAuth.mtls.enabled must be a boolean" -}}
 {{- end -}}
@@ -408,7 +411,11 @@ spec:
                 )
                 local status = headers and headers[":status"] or "500"
                 if status ~= "200" then
-                  request_handle:respond({[":status"] = "403"}, "Forbidden: " .. email .. " does not own " .. instance_name)
+                  if status == "401" or status == "403" or status == "404" then
+                    request_handle:respond({[":status"] = "403"}, "Forbidden: access denied")
+                  else
+                    request_handle:respond({[":status"] = "503"}, "Agent access verification is temporarily unavailable")
+                  end
                   return
                 end
                 -- Portal authentication is complete and ownership has been

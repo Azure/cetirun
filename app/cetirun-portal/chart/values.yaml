@@ -55,9 +55,8 @@ istio:
   # -- Confirm the target namespace has Istio sidecar injection enabled.
   # Must be set to true; the AuthorizationPolicy requires mTLS enforcement.
   sidecarInjection: true
-  # -- Require mesh mTLS on the internal ownership endpoint. Enable together
-  # with the Istio chart's portalAuth.mtls settings before forwarding ID tokens.
-  internalAuthMTLS: false
+  # -- Require mesh mTLS and verified Entra identity on the internal ownership endpoint. Configure agentIdentity.tenantId, agentIdentity.portalClientId and istio.host, together with the Istio chart's portalAuth.mtls settings. Disable only for explicit legacy alias-only deployments.
+  internalAuthMTLS: true
 
 # -- Resource requests/limits.
 resources:

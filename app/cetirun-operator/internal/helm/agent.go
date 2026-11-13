@@ -164,6 +164,13 @@ func prepareChart(chrt *chart.Chart, input map[string]any, validateRender bool) 
 }
 
 func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender bool, harness agents.Harness) (*PreparedRelease, error) {
+	// Preparation coalesces the values, and the Helm action coalesces them
+	// again, which restores a default label that a null removed.
+	for key, value := range object(object(input["networkPolicy"])["dnsPodLabels"]) {
+		if value == nil {
+			return nil, fmt.Errorf("networkPolicy.dnsPodLabels.%s is null; set it to \"\" to drop the label", key)
+		}
+	}
 	var request AgentRequest
 	requestJSON, err := json.Marshal(input["agentRequest"])
 	if err != nil {

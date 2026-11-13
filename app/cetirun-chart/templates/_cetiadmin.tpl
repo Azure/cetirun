@@ -111,8 +111,8 @@ Licensed under the MIT License.
 {{- fail "CetiAdmin API addresses must also be excluded from unrestricted external egress" -}}
 {{- end -}}
 {{- end -}}
-{{- range list "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16" "169.254.169.254/32" -}}
-{{- if not (has . $.Values.networkPolicy.blockedCIDRs) -}}{{- fail "CetiAdmin must retain private-network and IMDS egress exclusions" -}}{{- end -}}
+{{- range list "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16" "100.64.0.0/10" "169.254.0.0/16" "168.63.129.16/32" -}}
+{{- if not (has . $.Values.networkPolicy.blockedCIDRs) -}}{{- fail "CetiAdmin must retain the default blockedCIDRs egress exclusions" -}}{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
