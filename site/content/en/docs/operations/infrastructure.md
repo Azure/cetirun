@@ -452,13 +452,29 @@ Gateway prompts and responses:
 - The role `Viewer` for the principals in `adxContentViewers`. Every prompt and
   response is in this database: keep the list short.
 
-The outputs `adxContentDatabase` and `adxContentClientId` are the AI Gateway's
-`content.adx.database` and `content.clientId`; see "Content in Azure Data
-Explorer" in the
+The outputs `adxContentDatabase` and `adxContentClientId` are
+`observability.content.database` and `observability.content.clientId` of the
+`make deploy` environment file: the AI Gateway's `content.adx.database` and
+`content.clientId`. See "Content in Azure Data Explorer" in the
 [AI Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}).
 
+The logs database also gets the materialized view `GatewayDailyUsage`: the AI
+Gateway calls, tokens, and spend of each day per Agent, owner, Team, and model.
+It keeps `adxGatewayUsageRetentionDays` days, 400 by default. This is longer
+than the request log in its source table.
+
+With `adxAlerter` set to `true`, the template also creates the user-assigned
+managed identity `<clusterName>-adx-alerter` for the
+[ADX-Mon alerter](../observability/#alerts). It has a federated credential for
+the service account `cetirun-adx-mon-alerter` in `observabilityNamespace`. It
+has the role `Viewer` on the logs and metrics databases only. The output
+`adxAlerterClientId` is `observability.alerter.clientId` of the `make deploy`
+environment file.
+
 The default SKU, `Dev(No SLA)_Standard_E2a_v4`, has one engine node and no SLA.
-Use it for evaluation. The template enables auto-stop on a Kusto cluster that
+Use it for evaluation; for production, refer to
+[Size Azure Data Explorer](../observability/#size-azure-data-explorer). The
+template enables auto-stop on a Kusto cluster that
 it creates. Such a cluster stops after five days without ingestion or queries,
 and you must start it again. The outputs `adxClusterUri` and
 `adxIngestorClientId` are the inputs of the `observability` block of the
@@ -467,3 +483,38 @@ and you must start it again. The outputs `adxClusterUri` and
 The resource group of an existing or a new Kusto cluster must exist before the
 deployment, unless it is the cluster resource group. Kusto cluster names are
 unique in Azure.
+
+### Kubernetes audit events
+
+With `adxAuditLogs` set to `true`, the template sends the audit events of the
+AKS API server to Azure Data Explorer. These are the events of the category
+`kube-audit-admin`: every request except `get` and `list`. The template creates
+these resources:
+
+- In the cluster resource group, the Event Hubs namespace
+  `auditEventHubNamespaceName`, Standard tier, with one throughput unit. Its hub
+  `kube-audit` keeps each message for one day. The diagnostic setting
+  `cetirun-kube-audit` of the AKS cluster sends the events there.
+- The system-assigned managed identity of a new Kusto cluster, with the role
+  `Azure Event Hubs Data Receiver` on that namespace. With `adxMode: existing`,
+  enable the system-assigned identity of the Kusto cluster before the
+  deployment.
+- The database `CetiRunAudit`, which keeps `adxAuditRetentionDays` days, 90 by
+  default. Its table `KubeAuditLogs` has one row for each Event Hubs message.
+  Its function `AuditEvents()` gives one row for each audit event.
+- An Event Hubs data connection of that database for the hub of this cluster,
+  and the role `Viewer` for the principals in `adxAuditViewers`. Its name is
+  `kube-audit-` and a hash of the resource ID of the hub. So CetiRun clusters
+  that share the Kusto cluster each keep a connection of their own.
+
+The first events arrive a few minutes after the deployment. On a test cluster
+with four nodes and two Agents, AKS sent about 30,000 events an hour. Two
+thirds of them renewed leases, and the messages had about 70 MB an hour. The
+Free tier of AKS sends these events too. The Event Hubs namespace bills its
+throughput unit by the hour. If the first deployment fails on the data
+connection because the new role is not in effect yet, run it again.
+
+An audit event names the user, the source address, and the object of a
+request. For many kinds, such as Deployments, role bindings, and webhook
+configurations, it also has the request and the response. For Secrets and
+ConfigMaps, it has neither. Give `CetiRunAudit` its own readers.

@@ -75,6 +75,7 @@ type cetiAdminFixture struct {
 	before   func(string, client.Object) error
 	after    func(string, client.Object) error
 	getError func(client.ObjectKey, client.Object) error
+	result   ctrl.Result
 }
 
 func newCetiAdminFixture(t *testing.T) *cetiAdminFixture {
@@ -257,7 +258,8 @@ func cetiAdminTestMapper() *meta.DefaultRESTMapper {
 }
 
 func (f *cetiAdminFixture) run() error {
-	_, err := f.r.Reconcile(f.ctx, ctrl.Request{NamespacedName: f.r.Source})
+	var err error
+	f.result, err = f.r.Reconcile(f.ctx, ctrl.Request{NamespacedName: f.r.Source})
 	return err
 }
 
@@ -410,6 +412,16 @@ func TestCetiAdminInstallationDisabledColdStart(t *testing.T) {
 		t.Fatal("disabled cold install created instances")
 	}
 	f.noBindings()
+	if err := f.run(); err != nil || f.result != (ctrl.Result{}) {
+		t.Fatalf("disabled installation still polls: result=%+v err=%v", f.result, err)
+	}
+	writes := len(f.writes)
+	if err := f.run(); err != nil || f.result != (ctrl.Result{}) || len(f.writes) != writes {
+		t.Fatalf("unchanged disabled installation did not stay idle: result=%+v err=%v", f.result, err)
+	}
+	f.config.Enabled = true
+	f.updateConfig()
+	f.converge()
 }
 
 func TestCetiAdminInstallationPairedUpgradeKeepsUserState(t *testing.T) {
@@ -699,7 +711,7 @@ func TestCetiAdminInstallationWaitsForObservedWriterStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.noBindings()
-	if f.state().Phase != cetiadmin.PhaseStopping {
+	if f.state().Phase != cetiadmin.PhaseStopping || f.result.RequeueAfter == 0 {
 		t.Fatal("zero desired replicas was reported as stopped")
 	}
 	if err := f.kube.Get(f.ctx, client.ObjectKeyFromObject(workload), workload); err != nil {
@@ -715,7 +727,7 @@ func TestCetiAdminInstallationWaitsForObservedWriterStop(t *testing.T) {
 	if err := f.run(); err != nil {
 		t.Fatal(err)
 	}
-	if f.state().Phase != cetiadmin.PhaseStopping {
+	if f.state().Phase != cetiadmin.PhaseStopping || f.result.RequeueAfter == 0 {
 		t.Fatal("live Pod was ignored after workload acknowledgement")
 	}
 	pod.Status.Phase = corev1.PodSucceeded
@@ -725,7 +737,7 @@ func TestCetiAdminInstallationWaitsForObservedWriterStop(t *testing.T) {
 	if err := f.run(); err != nil {
 		t.Fatal(err)
 	}
-	if f.state().Phase != cetiadmin.PhaseDisabled {
+	if f.state().Phase != cetiadmin.PhaseDisabled || f.result != (ctrl.Result{}) {
 		t.Fatal("confirmed stop did not finish")
 	}
 	if err := f.kube.Get(f.ctx, client.ObjectKeyFromObject(home), home); err != nil || home.UID != homeUID {
@@ -740,6 +752,30 @@ func TestCetiAdminInstallationWaitsForObservedWriterStop(t *testing.T) {
 	if f.agent().UID != agent.UID {
 		t.Fatal("reenable replaced the retained Agent")
 	}
+}
+
+func TestCetiAdminInstallationDisabledRechecksWriters(t *testing.T) {
+	f := newCetiAdminFixture(t)
+	f.converge()
+	f.config.Enabled = false
+	f.updateConfig()
+	if err := f.run(); err != nil || f.result != (ctrl.Result{}) {
+		t.Fatalf("stop did not settle: result=%+v err=%v", f.result, err)
+	}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "late-writer", Namespace: f.state().Namespace.Name},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning}}
+	f.seed(pod)
+	if err := f.run(); err != nil || f.result.RequeueAfter == 0 {
+		t.Fatalf("retained Disabled phase hid a live writer: result=%+v err=%v", f.result, err)
+	}
+	pod.Status.Phase = corev1.PodSucceeded
+	if err := f.kube.Status().Update(f.ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.run(); err != nil || f.result != (ctrl.Result{}) {
+		t.Fatalf("confirmed stop still polls: result=%+v err=%v", f.result, err)
+	}
+	f.noBindings()
 }
 
 func TestCetiAdminInstallationCheckpointFailureWithdrawsGrant(t *testing.T) {

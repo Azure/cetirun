@@ -5,6 +5,7 @@ Licensed under the MIT License.
 
 {{- define "cetirun-observability.collectorName" -}}cetirun-adx-mon-collector{{- end }}
 {{- define "cetirun-observability.ingestorName" -}}cetirun-adx-mon-ingestor{{- end }}
+{{- define "cetirun-observability.alerterName" -}}cetirun-adx-mon-alerter{{- end }}
 {{- define "cetirun-observability.kubeStateMetricsName" -}}cetirun-kube-state-metrics{{- end }}
 {{- define "cetirun-observability.telemetryName" -}}cetirun-telemetry{{- end }}
 
@@ -33,6 +34,18 @@ registry, and global.version is the tag when the image sets none.
 {{- end -}}
 {{- $tag := .image.tag | default $global.version | default .context.Chart.AppVersion -}}
 {{- if .image.digest }}{{ printf "%s:%s@%s" $repository $tag .image.digest }}{{ else }}{{ printf "%s:%s" $repository $tag }}{{ end }}
+{{- end }}
+
+{{/*
+Image that CetiRun does not build, such as ADX-Mon's: used as configured,
+pinned by its digest when one is set.
+*/}}
+{{- define "cetirun-observability.externalImage" -}}
+{{- if .digest }}{{ printf "%s:%s@%s" .repository .tag .digest }}{{ else }}{{ printf "%s:%s" .repository .tag }}{{ end }}
+{{- end }}
+
+{{- define "cetirun-observability.alerterEnabled" -}}
+{{- if .Values.alerter.endpoint }}true{{ end }}
 {{- end }}
 
 {{- define "cetirun-observability.ingestorEndpoint" -}}
@@ -67,6 +80,32 @@ names the value to set.
 {{- end }}
 {{- if lt (int .Values.metrics.scrapeInterval) 10 }}
 {{- fail "metrics.scrapeInterval must be at least 10 seconds" }}
+{{- end }}
+{{- if hasKey .Values "image" }}
+{{- fail "image is replaced by collector.image and ingestor.image: the chart runs the ADX-Mon images on MCR" }}
+{{- end }}
+{{- range $component := list "collector" "ingestor" "alerter" "kubeStateMetrics" }}
+{{- $image := (index $.Values $component).image }}
+{{- if not (and $image.repository $image.tag) }}
+{{- fail (printf "%s.image needs a repository and a tag" $component) }}
+{{- end }}
+{{- if and $image.digest (not (regexMatch "^sha256:[0-9a-f]{64}$" ($image.digest | toString))) }}
+{{- fail (printf "%s.image.digest must be sha256: followed by 64 hexadecimal digits" $component) }}
+{{- end }}
+{{- end }}
+{{- if include "cetirun-observability.alerterEnabled" . }}
+{{- if not (regexMatch "^https?://[^/?#\\s]+(/[^?#\\s]*)?$" (.Values.alerter.endpoint | toString)) }}
+{{- fail "alerter.endpoint must be the base URL of the service that receives the alerts, such as https://alerts.example.com" }}
+{{- end }}
+{{- if hasSuffix "/" (.Values.alerter.endpoint | toString) }}
+{{- fail "alerter.endpoint must not end with a slash: the alerter adds /alerts" }}
+{{- end }}
+{{- if not (regexMatch "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" (.Values.alerter.clientId | toString)) }}
+{{- fail "alerter.clientId must be the client ID of the managed identity that the alerter uses through workload identity" }}
+{{- end }}
+{{- if not (regexMatch "^([0-9]+(s|m|h))+$" (.Values.alerter.rules.collectionHealth.interval | toString)) }}
+{{- fail "alerter.rules.collectionHealth.interval must be a Go duration in seconds, minutes or hours, such as 5m" }}
+{{- end }}
 {{- end }}
 {{- end }}
 
@@ -105,8 +144,9 @@ Pods that match no route are not collected; kube-system is not collected.
 {{/*
 The collector's configuration. Its listener binds the Pod's loopback address:
 it serves only the collector's own metrics, which it scrapes itself, and no
-write endpoint. The kubelet is scraped at the node address with the
-collector's service account, which may read node metrics only.
+write endpoint. The kubelet is scraped at the node's name, which the collector
+replaces for $(HOSTNAME), with the collector's service account, which may read
+node metrics only.
 */}}
 {{- define "cetirun-observability.collectorConfig" -}}
 {{- $toml := "cetirun-observability.toml" -}}
@@ -119,6 +159,7 @@ max-segment-age-seconds = 30
 max-disk-usage = {{ int64 .Values.collector.maxDiskUsage }}
 lift-labels = [
   { name = "cluster", column = "Cluster" },
+  { name = "host", column = "Host" },
   { name = "adxmon_namespace", column = "Namespace" },
   { name = "adxmon_pod", column = "Pod" },
   { name = "adxmon_container", column = "Container" },
@@ -130,8 +171,12 @@ lift-resources = [
   { name = "container", column = "Container" },
 ]
 
+# Every metric names its cluster and its node. Without the node, the series
+# that the kubelet and the collector of each node report under the same labels
+# would be one series.
 [add-labels]
 cluster = {{ include $toml .Values.clusterName }}
+host = "$(HOSTNAME)"
 
 [prometheus-scrape]
 database = {{ include $toml .Values.adx.databases.metrics }}
@@ -150,12 +195,25 @@ drop-metrics = [
 ]
 static-scrape-target = [
   { host-regex = ".*", url = "http://127.0.0.1:8080/metrics", namespace = {{ include $toml .Release.Namespace }}, pod = {{ include $toml (include "cetirun-observability.collectorName" .) }}, container = "collector" },
-  { host-regex = ".*", url = "https://$(HOSTIP):10250/metrics/cadvisor", namespace = "kube-system", pod = "kubelet", container = "cadvisor" },
-  { host-regex = ".*", url = "https://$(HOSTIP):10250/metrics/resource", namespace = "kube-system", pod = "kubelet", container = "resource" },
-  { host-regex = ".*", url = "https://$(HOSTIP):10250/metrics", namespace = "kube-system", pod = "kubelet", container = "kubelet" },
+  { host-regex = ".*", url = "https://$(HOSTNAME):10250/metrics/cadvisor", namespace = "kube-system", pod = "kubelet", container = "cadvisor" },
+  { host-regex = ".*", url = "https://$(HOSTNAME):10250/metrics/resource", namespace = "kube-system", pod = "kubelet", container = "resource" },
+  { host-regex = ".*", url = "https://$(HOSTNAME):10250/metrics", namespace = "kube-system", pod = "kubelet", container = "kubelet" },
 ]
 
 [[host-log]]
+{{- if .Values.logs.node.enabled }}
+# The node journal of the kubelet and of containerd, each line unparsed in
+# Body.message. A kubelet line keeps its klog header, whose first letter is the
+# severity: I, W, E or F.
+{{- range (list (dict "unit" "kubelet.service" "table" "Kubelet") (dict "unit" "containerd.service" "table" "Containerd")) }}
+
+[[host-log.journal-target]]
+matches = [{{ include $toml (printf "_SYSTEMD_UNIT=%s" .unit) }}]
+database = {{ include $toml $.Values.adx.databases.logs }}
+table = {{ include $toml .table }}
+journal-fields = ["_HOSTNAME"]
+{{- end }}
+{{- end }}
 {{- range (include "cetirun-observability.logRoutes" . | fromJsonArray) }}
 
 [[host-log.static-pod-target]]

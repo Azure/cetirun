@@ -4,8 +4,21 @@
 // Query functions of the CetiRun logs database. The ADX module of the
 // cluster template runs this script; for another Kusto cluster, run it as
 // .execute database script <| (this file without the comment lines).
-// skipvalidation lets the functions exist before the first rows create their
-// tables.
+// skipvalidation lets a function refer to a table or a database that does not
+// exist yet.
+//
+// The tables of the cetirun-observability chart, with the columns that the
+// ADX-Mon ingestor gives them: they exist before the first rows arrive, so
+// that the functions, the dashboard and the alert rule work on a new
+// database. The ingestor adds a missing column and creates the other tables.
+.create-merge tables
+    Platform (Timestamp:datetime, ObservedTimestamp:datetime, TraceId:string, SpanId:string, SeverityText:string, SeverityNumber:int, Body:dynamic, Resource:dynamic, Attributes:dynamic, Cluster:string, Container:string, Namespace:string, Pod:string),
+    Gateway (Timestamp:datetime, ObservedTimestamp:datetime, TraceId:string, SpanId:string, SeverityText:string, SeverityNumber:int, Body:dynamic, Resource:dynamic, Attributes:dynamic, Cluster:string, Container:string, Namespace:string, Pod:string),
+    Ingress (Timestamp:datetime, ObservedTimestamp:datetime, TraceId:string, SpanId:string, SeverityText:string, SeverityNumber:int, Body:dynamic, Resource:dynamic, Attributes:dynamic, Cluster:string, Container:string, Namespace:string, Pod:string),
+    Telemetry (Timestamp:datetime, ObservedTimestamp:datetime, TraceId:string, SpanId:string, SeverityText:string, SeverityNumber:int, Body:dynamic, Resource:dynamic, Attributes:dynamic, Cluster:string, Container:string, Namespace:string, Pod:string),
+    Kubelet (Timestamp:datetime, ObservedTimestamp:datetime, TraceId:string, SpanId:string, SeverityText:string, SeverityNumber:int, Body:dynamic, Resource:dynamic, Attributes:dynamic, Cluster:string, Container:string, Namespace:string, Pod:string),
+    Containerd (Timestamp:datetime, ObservedTimestamp:datetime, TraceId:string, SpanId:string, SeverityText:string, SeverityNumber:int, Body:dynamic, Resource:dynamic, Attributes:dynamic, Cluster:string, Container:string, Namespace:string, Pod:string)
+
 .create-or-alter function with (folder = "CetiRun", docstring = "AI Gateway calls, one row per call, from the Gateway request log. No request or response content.", skipvalidation = "true") GatewayRequests() {
     Gateway
     | where Container == "gateway" and tostring(Body['log_type']) == "cetirun.ai_gateway.request"

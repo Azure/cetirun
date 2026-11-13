@@ -403,7 +403,7 @@ platform:
         platformReadNamespaces: [cetirun-system]
         kubernetes:
           apiServer: https://kubernetes.default.svc
-          apiAudience: https://kubernetes.default.svc.cluster.local
+          apiAudience: REPLACE_WITH_API_SERVER_AUDIENCE
           caConfigMapName: kube-root-ca.crt
           apiEgressCIDRs: [192.0.2.10/32]
         model:
@@ -427,6 +427,28 @@ Entra object ID explicitly. The helper examines format and consistency. It does
 not query the directory, create an account, or treat an email address as proof
 of identity. Owner access still uses SSO claims that match the assigned
 identity.
+
+Portal access requires verified owner identity, not only a matching alias.
+`make deploy` configures this. For component-chart installations, set the Portal's
+`agentIdentity.tenantId` to the owner's tenant and `agentIdentity.portalClientId`
+to the OAuth2 Proxy application's client ID. Either identity field enables
+verification and requires both; Agent Identity and Agent Tools can remain off.
+For the Agent UI ownership check, also enable `istio.internalAuthMTLS` in the
+Portal chart and configure `portalAuth.mtls.enabled` and
+`portalAuth.mtls.serverIdentity` in the separate Istio chart. The latter must
+identify the Portal ServiceAccount. The platform chart rejects a bundled
+CetiAdmin/Portal combination that lacks these Portal inputs or uses a different
+owner tenant. Separate releases need the same configuration.
+
+Replace `REPLACE_WITH_API_SERVER_AUDIENCE` with a ServiceAccount token audience
+accepted by the target API server, distinct from the Connections MCP audience.
+The API server's DNS address is not necessarily its audience. An AKS OIDC issuer
+URL is a candidate only if that cluster accepts it; it is not a universal value.
+Obtain the accepted audience from the cluster administrator. During an authorized
+runtime check, run `kubectl --context=cetiadmin auth whoami` with CetiAdmin's
+generated kubeconfig to verify the projected token without printing it. The
+returned identity must be CetiAdmin's ServiceAccount. Offline chart checks and
+the Agent's Ready state do not establish this API authentication.
 
 CetiAdmin automatically manages all standard Agents owned by this Operator,
 regardless of their Team. There is no Agent or Team allowlist. The optional

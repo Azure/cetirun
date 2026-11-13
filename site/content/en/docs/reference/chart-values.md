@@ -644,6 +644,7 @@ Source: [app/cetirun-portal/chart/values.yaml]({{< repo "app/cetirun-portal/char
 | `configurationCoordination.namespace` | `""` |  |
 | `configurationCoordination.name` | `""` |  |
 | `configurationCoordination.uid` | `""` |  |
+| `agentIdentity` |  | Setting either identity field enables Portal ID-token verification and requires both fields, independently of the Agent Identity and Agent Tools features. |
 | `agentIdentity.tenantId` | `""` |  |
 | `agentIdentity.portalClientId` | `""` |  |
 | `agentIdentity.brokerURL` | `"http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"` |  |

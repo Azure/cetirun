@@ -4,6 +4,12 @@
 // Query functions of the CetiRun Agent logs database. __LOGS_DATABASE__ is
 // the name of the logs database; the ADX module of the cluster template
 // replaces it and runs this script. Readers need the logs database too.
+//
+// The tables of the cetirun-observability chart, as in cetirun-logs.kql.
+.create-merge tables
+    AgentLogs (Timestamp:datetime, ObservedTimestamp:datetime, TraceId:string, SpanId:string, SeverityText:string, SeverityNumber:int, Body:dynamic, Resource:dynamic, Attributes:dynamic, Cluster:string, Container:string, Namespace:string, Pod:string),
+    CopilotProxy (Timestamp:datetime, ObservedTimestamp:datetime, TraceId:string, SpanId:string, SeverityText:string, SeverityNumber:int, Body:dynamic, Resource:dynamic, Attributes:dynamic, Cluster:string, Container:string, Namespace:string, Pod:string)
+
 .create-or-alter function with (folder = "CetiRun", docstring = "Agent workload logs with the Agent, owner and Team that had their namespace when each line was written, from the inventory in the logs database.", skipvalidation = "true") AgentLogsWithOwner() {
     // The Agents of each namespace in creation order. An Agent's namespace is
     // named after the Agent, and a second Agent of the name comes only after

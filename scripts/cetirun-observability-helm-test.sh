@@ -84,18 +84,41 @@ assert_contains 'destination = "CetiRunAgents:AgentLogs"' "Agent logs go to the 
 assert_contains 'destination = "CetiRunLogs:Gateway"' "Gateway logs have their own table" "${default}"
 assert_contains 'cluster = "example"' "rows carry the cluster name" "${default}"
 assert_contains 'kind: CustomResourceDefinition' "ADX-Mon CRDs are installed by default" "${default}"
+assert_contains 'table = "Kubelet"' "the kubelet journal is collected" "${default}"
+assert_contains 'matches = ["_SYSTEMD_UNIT=containerd.service"]' "the containerd journal is collected" "${default}"
+assert_contains 'mountPath: /run/log' "the collector reads a journal kept in memory" "${default}"
+assert_absent 'cetirun-adx-mon-alerter' "no alerter without an endpoint" "${default}"
 
 without_optional="$(render --set kubeStateMetrics.enabled=false --set telemetry.enabled=false --set crds.install=false \
-  --set logs.agents.enabled=false)"
+  --set logs.agents.enabled=false --set logs.node.enabled=false)"
 assert_absent 'cetirun-kube-state-metrics' "kube-state-metrics can be left out" "${without_optional}"
 assert_absent 'name: cetirun-telemetry' "the telemetry program can be left out" "${without_optional}"
 assert_absent 'kind: CustomResourceDefinition' "the CRDs can be left out" "${without_optional}"
 assert_absent 'CetiRunAgents:AgentLogs' "Agent logs can be left out" "${without_optional}"
+assert_absent 'journal-target' "the node journal can be left out" "${without_optional}"
+assert_absent '/run/log' "no journal mount without the node journal" "${without_optional}"
 
+# global.registry and global.version set CetiRun's own image only; the ADX-Mon
+# and kube-state-metrics images stay as the chart pins them.
 registry="$(render --set-string global.registry=registry.example.com/team --set-string global.version=9.9.9)"
-assert_contains 'image: "registry.example.com/team/cetirun-observability:9.9.9"' "global coordinates set the collector image" "${registry}"
 assert_contains 'image: "registry.example.com/team/cetirun-operator:9.9.9"' "global coordinates set the telemetry image" "${registry}"
-assert_contains 'mcr.microsoft.com/oss/kubernetes/kube-state-metrics:v2.14.0@sha256:' "kube-state-metrics stays pinned by digest" "${registry}"
+assert_contains 'image: "mcr.microsoft.com/aks/ai-runtime/adx-mon/collector:' "the collector image stays on MCR" "${registry}"
+assert_absent 'cetirun-observability:' "no CetiRun-built ADX-Mon image" "${registry}"
+unpinned="$(grep -E '^\s+image: ' <<< "${registry}" | grep -vF '/cetirun-operator:' | grep -vF '@sha256:' || true)"
+if [ -n "${unpinned}" ]; then
+  echo "FAIL: images that CetiRun does not build are pinned by digest: ${unpinned}" >&2
+  exit 1
+fi
+
+alerter="$(render --set-string alerter.endpoint=https://alerts.example.com \
+  --set-string alerter.clientId=77777777-7777-7777-7777-777777777777)"
+assert_contains 'name: cetirun-adx-mon-alerter' "an endpoint turns the alerter on" "${alerter}"
+assert_contains '--alerter-address=https://alerts.example.com' "the alerter posts to the endpoint" "${alerter}"
+assert_contains '--kusto-endpoint=CetiRunMetrics=' "the alerter queries the metrics database" "${alerter}"
+assert_absent '--kusto-endpoint=CetiRunAgents=' "the alerter does not query the Agent logs" "${alerter}"
+assert_contains 'azure.workload.identity/client-id: "77777777-7777-7777-7777-777777777777"' "the alerter has its own identity" "${alerter}"
+assert_contains 'kind: AlertRule' "the chart creates the collection health rule" "${alerter}"
+assert_contains 'helm.sh/hook: post-install,post-upgrade' "the rule follows its definition" "${alerter}"
 
 existing_tls="$(render --set-string ingestor.tls.secretName=adx-mon-tls)"
 assert_contains 'secretName: adx-mon-tls' "an existing TLS Secret is used" "${existing_tls}"
@@ -114,5 +137,11 @@ assert_rejected 'adx.databases.logs must be a database name' "database name with
 assert_rejected 'telemetry.events must be' "unknown event filter" "${base_args[@]:2}" --set-string "telemetry.events=everything"
 assert_rejected 'is not supported by this chart' "kube-state-metrics reading Secrets" "${base_args[@]:2}" \
   --set-string "kubeStateMetrics.objects=pods\,secrets"
+assert_rejected 'image is replaced by collector.image and ingestor.image' "the removed image value" "${base_args[@]:2}" \
+  --set-string "image.repository=registry.example.com/cetirun-observability"
+assert_rejected 'alerter.clientId must be the client ID' "an alerter without an identity" "${base_args[@]:2}" \
+  --set-string "alerter.endpoint=https://alerts.example.com"
+assert_rejected 'alerter.endpoint must not end with a slash' "an alerter endpoint with a trailing slash" "${base_args[@]:2}" \
+  --set-string "alerter.endpoint=https://alerts.example.com/" --set-string "alerter.clientId=77777777-7777-7777-7777-777777777777"
 
 echo "cetirun-observability chart render checks passed"

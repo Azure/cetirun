@@ -1689,6 +1689,54 @@ func TestListInstances(t *testing.T) {
 	}
 }
 
+func TestCetiAdminVerifiedOwnerListAndGet(t *testing.T) {
+	const tenant = "11111111-1111-1111-1111-111111111111"
+	const owner = "22222222-2222-2222-2222-222222222222"
+	instance := sampleInstance()
+	instance.Name = "cetiadmin"
+	instance.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes
+	instance.Spec.SandboxRef = ""
+	instance.Spec.User.Email = ""
+	instance.Annotations = map[string]string{
+		cetirunv1alpha1.AnnotationOwnerTenantID: tenant,
+		cetirunv1alpha1.AnnotationOwnerObjectID: owner,
+	}
+	h := &InstanceHandler{Kube: kube.NewClient(newFakeClientWith(instance))}
+	for _, tc := range []struct {
+		name, alias, tenant, object string
+		allowed                     bool
+	}{
+		{"verified owner", "alice", tenant, owner, true},
+		{"renamed owner", "renamed", tenant, owner, true},
+		{"alias alone", "alice", "", "", false},
+		{"other tenant", "alice", owner, owner, false},
+		{"other object", "alice", tenant, tenant, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := withAgentIdentityClaims(httptest.NewRequest(http.MethodGet, "/api/v1/instances", nil), tc.alias, tc.tenant, tc.object)
+			listed := httptest.NewRecorder()
+			h.ListInstances(listed, req)
+			var instances []InstanceResponse
+			if err := json.Unmarshal(listed.Body.Bytes(), &instances); err != nil || listed.Code != http.StatusOK {
+				t.Fatalf("list: status=%d err=%v", listed.Code, err)
+			}
+			if (len(instances) == 1) != tc.allowed {
+				t.Fatalf("listed %d instances, allowed=%v", len(instances), tc.allowed)
+			}
+			req.SetPathValue("name", instance.Name)
+			got := httptest.NewRecorder()
+			h.GetInstanceByName(got, req)
+			wantStatus := http.StatusForbidden
+			if tc.allowed {
+				wantStatus = http.StatusOK
+			}
+			if got.Code != wantStatus {
+				t.Fatalf("get: status=%d, want %d", got.Code, wantStatus)
+			}
+		})
+	}
+}
+
 func TestGetInstanceByName_Forbidden(t *testing.T) {
 	inst := sampleInstance()
 	inst.Name = "alice-work"

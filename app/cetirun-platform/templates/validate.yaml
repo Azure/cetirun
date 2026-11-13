@@ -65,6 +65,17 @@
 {{- end }}
 {{- end }}
 {{- $portalStorage := $portal.sandboxStorage | default dict }}
+{{- if and $operator.enabled $portal.enabled ($operator.cetiadmin | default dict).enabled }}
+{{- $identity := $portal.agentIdentity | default dict }}
+{{- $_ := required "CetiAdmin owner access requires cetirun-portal.agentIdentity.tenantId" $identity.tenantId }}
+{{- $_ := required "CetiAdmin owner access requires cetirun-portal.agentIdentity.portalClientId" $identity.portalClientId }}
+{{- if ne (lower $identity.tenantId) (lower $operator.cetiadmin.owner.tenantID) }}
+{{- fail "cetirun-portal.agentIdentity.tenantId must match cetirun-operator.cetiadmin.owner.tenantID" }}
+{{- end }}
+{{- if not $portal.istio.internalAuthMTLS }}
+{{- fail "CetiAdmin UI access requires cetirun-portal.istio.internalAuthMTLS=true and the separate Istio chart's portalAuth.mtls configuration" }}
+{{- end }}
+{{- end }}
 {{- $operatorSources := $operator.sandboxSources | default dict }}
 {{- if and $portal.enabled $operator.enabled $operatorSources.enabled }}
 {{- if not $operatorSources.platformConfigMapName }}

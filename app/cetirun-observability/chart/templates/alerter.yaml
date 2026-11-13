@@ -1,0 +1,204 @@
+{{- if include "cetirun-observability.alerterEnabled" . }}
+{{- include "cetirun-observability.validate" . -}}
+{{- $name := include "cetirun-observability.alerterName" . -}}
+{{- $labels := dict "name" $name "context" . -}}
+{{- $alerter := .Values.alerter -}}
+{{- $databases := .Values.adx.databases -}}
+{{- $endpoint := .Values.adx.endpoint -}}
+{{- /*
+The ADX-Mon alerter: it runs the query of every AlertRule on the rule's
+interval with its own workload identity, and posts each row of the result as
+an alert to the configured endpoint. It queries the logs and metrics
+databases, not the Agent logs database.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $alerter.serviceAccount.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cetirun-observability.labels" $labels | nindent 4 }}
+  annotations:
+    azure.workload.identity/client-id: {{ $alerter.clientId | quote }}
+automountServiceAccountToken: false
+---
+# It lists the AlertRules of every namespace and records each run in the
+# rule's status: nothing else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "cetirun-observability.labels" $labels | nindent 4 }}
+rules:
+  - apiGroups: ["adx-mon.azure.com"]
+    resources: ["alertrules"]
+    verbs: ["get", "list"]
+  - apiGroups: ["adx-mon.azure.com"]
+    resources: ["alertrules/status"]
+    verbs: ["update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "cetirun-observability.labels" $labels | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $alerter.serviceAccount.name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cetirun-observability.labels" $labels | nindent 4 }}
+spec:
+  # One alerter: a second one would send every alert twice.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "cetirun-observability.selectorLabels" $labels | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "cetirun-observability.selectorLabels" $labels | nindent 8 }}
+        azure.workload.identity/use: "true"
+      annotations:
+        sidecar.istio.io/inject: "false"
+        adx-mon/scrape: "true"
+        adx-mon/port: "4023"
+        adx-mon/path: /metrics
+    spec:
+      serviceAccountName: {{ $alerter.serviceAccount.name }}
+      automountServiceAccountToken: true
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: alerter
+          image: {{ include "cetirun-observability.externalImage" $alerter.image | quote }}
+          imagePullPolicy: {{ $alerter.image.pullPolicy }}
+          command: ["/alerter"]
+          args:
+            - --port=4023
+            - --kusto-endpoint={{ $databases.logs }}={{ $endpoint }}
+            - --kusto-endpoint={{ $databases.metrics }}={{ $endpoint }}
+            - --alerter-address={{ $alerter.endpoint }}
+            # Names the cluster in the alerts that the alerter sends about
+            # its own rules.
+            - --region={{ .Values.clusterName }}
+          env:
+            # Workload identity only: no fallback to the node's identity.
+            - name: AZURE_TOKEN_CREDENTIALS
+              value: WorkloadIdentityCredential
+          ports:
+            - name: metrics
+              containerPort: 4023
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml $alerter.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+      {{- with $alerter.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $alerter.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+# Only the collectors scrape the alerter's metrics.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cetirun-observability.labels" $labels | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "cetirun-observability.selectorLabels" $labels | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "cetirun-observability.selectorLabels" (dict "name" (include "cetirun-observability.collectorName" .) "context" .) | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 4023
+{{- if $alerter.rules.collectionHealth.enabled }}
+---
+# A hook, so that Helm creates the rule after the AlertRule definition, which
+# the same installation or upgrade can add. Helm records no owner on a hook, so
+# the rule names this release itself, as make deploy expects of a retained
+# hook. One alert for each failed check; the columns other than Title,
+# Severity, Summary, Description and CorrelationId reach the receiver as custom
+# fields.
+apiVersion: adx-mon.azure.com/v1
+kind: AlertRule
+metadata:
+  name: cetirun-collection-health
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cetirun-observability.labels" $labels | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+    meta.helm.sh/release-name: {{ .Release.Name | quote }}
+    meta.helm.sh/release-namespace: {{ .Release.Namespace | quote }}
+spec:
+  database: {{ $databases.metrics }}
+  interval: {{ $alerter.rules.collectionHealth.interval }}
+  destination: {{ $alerter.destination | quote }}
+  query: |
+    CollectionHealth()
+    | where Cluster == {{ .Values.clusterName | quote }} and Status == "Failed"
+    | project Title = strcat("CetiRun collection health check failed on ", Cluster, ": ", Check),
+        Severity = 3,
+        Summary = Detail,
+        Description = {{ printf "CollectionHealth() in the %s database shows every check of this cluster." $databases.metrics | quote }},
+        CorrelationId = strcat("cetirun-collection-health/", Cluster, "/", Check),
+        Cluster,
+        Check
+{{- end }}
+{{- end }}

@@ -3148,6 +3148,10 @@ content:
     database: CetiRunContent
 ```
 
+With `make deploy`, set the `content` block of `observability` in the
+environment file instead: it sets these values with the cluster name and the
+Kusto cluster of the ADX-Mon collection.
+
 - **Records.** One row per part of a call's request or response, at most
   256 KiB each, with the call and request IDs, model, status, the Agent, owner
   and Team from the key's metadata, and the LiteLLM user and Team of the key.

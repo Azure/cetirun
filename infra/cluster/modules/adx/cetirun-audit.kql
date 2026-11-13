@@ -1,0 +1,41 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+//
+// Kubernetes audit events of the AKS API server, in the CetiRun audit
+// database. The AKS diagnostic setting sends the category kube-audit-admin,
+// every request except get and list, to an Event Hub; an Event Hub data
+// connection of the Kusto cluster ingests each message as one row, in the
+// MULTIJSON format with the mapping below. A message is {"records": [...]}:
+// AuditEvents() expands it into one row per audit event. The ADX module of the
+// cluster template runs this script.
+.create-merge table KubeAuditLogs (Records:dynamic)
+
+.create-or-alter table KubeAuditLogs ingestion json mapping "KubeAuditLogsMapping" '[{"column": "Records", "path": "$.records", "datatype": "dynamic"}]'
+
+.create-or-alter function with (folder = "CetiRun", docstring = "Kubernetes audit events of the AKS API server, one row per event: who changed which object, from where, and the answer. Only the stage ResponseComplete and the events without a response stage.", skipvalidation = "true") AuditEvents() {
+    KubeAuditLogs
+    | mv-expand Record = Records
+    | extend Log = parse_json(tostring(Record['properties']['log']))
+    | where tostring(Log['stage']) in ("ResponseComplete", "Panic", "")
+    | project
+        Timestamp = todatetime(Log['stageTimestamp']),
+        RequestTime = todatetime(Log['requestReceivedTimestamp']),
+        AksCluster = tolower(tostring(split(tostring(Record['resourceId']), '/')[-1])),
+        Verb = tostring(Log['verb']),
+        User = tostring(Log['user']['username']),
+        Groups = Log['user']['groups'],
+        ImpersonatedUser = tostring(Log['impersonatedUser']['username']),
+        SourceIp = tostring(Log['sourceIPs'][0]),
+        UserAgent = tostring(Log['userAgent']),
+        ApiGroup = tostring(Log['objectRef']['apiGroup']),
+        Resource = tostring(Log['objectRef']['resource']),
+        Subresource = tostring(Log['objectRef']['subresource']),
+        Namespace = tostring(Log['objectRef']['namespace']),
+        Name = tostring(Log['objectRef']['name']),
+        RequestUri = tostring(Log['requestURI']),
+        ResponseCode = toint(Log['responseStatus']['code']),
+        Decision = tostring(Log['annotations']['authorization.k8s.io/decision']),
+        Reason = tostring(Log['annotations']['authorization.k8s.io/reason']),
+        Stage = tostring(Log['stage']),
+        AuditId = tostring(Log['auditID'])
+}

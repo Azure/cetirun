@@ -162,6 +162,8 @@ configurationCoordination:
   name: ""
   uid: ""
 
+# -- Setting either identity field enables Portal ID-token verification and
+# requires both fields, independently of the Agent Identity and Agent Tools features.
 agentIdentity:
   tenantId: ""
   portalClientId: ""

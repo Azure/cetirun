@@ -178,8 +178,8 @@ spec:
       terminationGracePeriodSeconds: 120
       containers:
         - name: ingestor
-          image: {{ include "cetirun-observability.image" (dict "image" .Values.image "name" "cetirun-observability" "context" .) | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: {{ include "cetirun-observability.externalImage" .Values.ingestor.image | quote }}
+          imagePullPolicy: {{ .Values.ingestor.image.pullPolicy }}
           command: ["/ingestor"]
           args:
             - --storage-dir=/var/lib/cetirun-adx-mon/ingestor
