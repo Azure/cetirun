@@ -666,8 +666,8 @@ briefly unavailable between these steps; Portal port 8080 remains available.
 The TLS cluster has a distinct name so partial xDS propagation fails closed.
 Preserve the TLS settings when you return the backend to an earlier version.
 Existing Helm values that explicitly disable mTLS override the new defaults;
-update both releases'
-values rather than relying on a Chart upgrade or `--reuse-values` to migrate them.
+update both releases' values rather than relying on a Chart upgrade or
+`--reuse-values` to migrate them.
 The older plaintext alias-only transport requires explicit `false` on both sides.
 That mode never forwards ID tokens and cannot authorize identity-bound Agents with
 the updated backend. A configured Entra tenant and Portal client are required

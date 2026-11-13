@@ -373,7 +373,7 @@ class IstioGatewayIsolationTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("helm") and LUA_LIBRARY, "requires Helm and liblua5.4")
     def test_auth_failures_are_safe_and_distinct_from_service_failures(self):
-        for args in ((), MTLS_VALUES):
+        for mtls, args in ((False, ("--set", "portalAuth.mtls.enabled=false")), (True, MTLS_VALUES)):
             script = self._render_ownership_lua(*args) + LUA_GATEWAY_FIXTURE
             for kind, status, body in (
                 *[("status-" + code, "403", "Forbidden: access denied") for code in ("401", "403", "404")],
@@ -382,7 +382,7 @@ class IstioGatewayIsolationTests(unittest.TestCase):
                 ("timeout", "503", "Agent access verification is temporarily unavailable"),
                 ("missing-status", "503", "Agent access verification is temporarily unavailable"),
             ):
-                with self.subTest(mtls=bool(args), kind=kind):
+                with self.subTest(mtls=mtls, kind=kind):
                     result = self._call_rendered_lua(script, "gateway_fixture", kind).split("\t")
                     self.assertEqual(result[3:6], [status, body, ""])
                     for private in ("owner@example.com", "cetiadmin", "private backend detail", "verified-id-token"):
