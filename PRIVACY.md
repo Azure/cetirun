@@ -166,10 +166,10 @@ collector reads the container output of the platform namespaces into the
 ingress gateway and the request log of the AI Gateway. The collector reads the
 output of every container of the Agent Pods, Custom terminals, and GitHub
 Copilot proxies into the `CetiRunAgents` database. That output includes what
-Agents print themselves and, when it is on, the session logger's output that is
-described above. This output can include conversation text. The collector reads
-container output from the node logs and does not copy container environment
-variables.
+Agents print themselves and, when it is enabled, the output of the session
+logger that is described above. This output can include conversation text.
+The collector reads container output from the node logs and does not copy
+container environment variables.
 
 The chart's telemetry program writes each Agent's namespace, owner alias,
 display name, email, Entra tenant and object IDs, Team and policy into
