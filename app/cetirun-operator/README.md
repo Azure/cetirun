@@ -229,11 +229,14 @@ explicit suspension for an ordinary chart or image upgrade. Use the normal Agent
 update and reconciliation path. If a coordinated configuration change makes a
 suspension necessary, plan for owner reauthorization.
 
-If policy denial already requested the deletion of the AI Gateway key,
-suspension retries that revocation. It does not try to block the deleted key.
-It reports `Suspended` only after revocation and shutdown succeed. The policy
-stays denied, and the recorded key identity stays. A resume does not recreate a
-missing key or restore access under a denied policy.
+When a policy denies an Agent that already has an AI Gateway key, the Operator
+blocks that key instead of deleting it. A denied suspension reports `Suspended`
+only after the block and shutdown succeed. The policy stays denied, and resume
+keeps the Agent held until a current policy grant is verified. Once that grant
+is verified, the Operator unblocks only its own temporary block; it keeps an
+administrator emergency block in place. The key, its spend, and its budget
+reset time remain. For a missing AI Gateway key record, refer to the
+site documentation on [virtual-key recovery](../../site/content/en/docs/operations/ai-gateway.md#recover-a-missing-key-record).
 
 Loss of bootstrap or runtime prerequisites also holds a reconciled Agent that
 already runs and is not suspended. The hold blocks its key, stops the owned

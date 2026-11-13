@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -183,11 +184,14 @@ func TestRegistrationIncompatiblePolicyHoldsAgentWithoutRevokingItsKey(t *testin
 	}
 }
 
-func TestPolicyDenialReportsKeyRevocationOnce(t *testing.T) {
+func TestPolicyDenialKeepsKeyBlockedAcrossReconciles(t *testing.T) {
 	ctx := context.Background()
 	f := readyPolicyRateLimitFixture(t, "openclaw", true)
 	recorder := record.NewFakeRecorder(1000)
 	f.r.EventRecorder = recorder
+	before := f.current(t)
+	token := aigateway.Token(f.gateway.generated[0].Key)
+	f.gateway.keys[token].Spend = ptr.To(2.5)
 	team := &api.Team{}
 	if err := f.kube.Get(ctx, types.NamespacedName{Name: f.current(t).Spec.Team}, team); err != nil {
 		t.Fatal(err)
@@ -201,17 +205,23 @@ func TestPolicyDenialReportsKeyRevocationOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if phase := f.current(t).Status.AIGateway.Phase; phase != api.AIGatewayPhaseDeleting {
-		t.Fatalf("denial did not revoke the key: phase=%s", phase)
+	if status := f.current(t).Status.AIGateway; status == nil || status.Reason != aiGatewayReasonPolicyReprojection || !status.Blocked {
+		t.Fatalf("denial did not block the key: status=%+v", status)
 	}
-	revoked := 0
+	key := f.gateway.keys[token]
+	if key == nil || !key.Blocked || key.Spend == nil || *key.Spend != 2.5 ||
+		f.current(t).Status.AIGateway.KeyID != before.Status.AIGateway.KeyID || len(f.gateway.generated) != 1 ||
+		len(f.gateway.deletedTokens) != 0 || len(f.gateway.deletedAliases) != 0 {
+		t.Fatalf("repeated policy denial changed the existing key: key=%+v generated=%d deleted=%v aliases=%v", key, len(f.gateway.generated), f.gateway.deletedTokens, f.gateway.deletedAliases)
+	}
+	blocked := 0
 	for len(recorder.Events) != 0 {
-		if strings.Contains(<-recorder.Events, "AIGatewayKeyRevoked") {
-			revoked++
+		if strings.Contains(<-recorder.Events, "AIGatewayKeyBlocked") {
+			blocked++
 		}
 	}
-	if revoked != 1 {
-		t.Fatalf("AIGatewayKeyRevoked events = %d, want 1", revoked)
+	if blocked != 1 {
+		t.Fatalf("AIGatewayKeyBlocked events = %d, want 1", blocked)
 	}
 }
 

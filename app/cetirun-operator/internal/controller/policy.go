@@ -31,20 +31,19 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// holdPolicyDenied revokes a virtual key before using the existing
-// Sandbox hold path to remove ingress and scale known workloads down. A revoke
-// error never skips the compute stop: the next reconcile keeps the fail-closed
-// hold and retries revocation.
+// holdPolicyDenied blocks the existing virtual key before removing ingress
+// and stopping compute. Keep its identity and spend for a later authorization;
+// a block error never skips the independent workload stop.
 func (r *AgentReconciler) holdPolicyDenied(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
-	var revokeErr error
+	var blockErr error
 	if r.AIGateway.configured() {
-		revokeErr = r.revokeAIGatewayKey(ctx, agent)
+		blockErr = r.beginAIGatewayPolicyHold(ctx, agent, true)
 	}
-	// An absent Gateway cannot confirm revocation of a previously issued key.
+	// An absent Gateway cannot confirm a block of a previously issued key.
 	// In that case retain the normal pending hold instead of claiming suspension
 	// completed.
-	revocationConfirmed := revokeErr == nil && (r.AIGateway.configured() || !aiGatewayKeyWasIssued(agent))
-	if revocationConfirmed && agent.Spec.Suspended {
+	blockConfirmed := blockErr == nil && (r.AIGateway.configured() || !aiGatewayKeyWasIssued(agent))
+	if blockConfirmed && agent.Spec.Suspended {
 		reconciled, reconcileErr := r.usesReconciledSandbox(ctx, agent)
 		if reconciled && reconcileErr == nil {
 			result, holdErr := r.holdReconciledSandboxForDeniedSuspension(ctx, agent)
@@ -52,8 +51,8 @@ func (r *AgentReconciler) holdPolicyDenied(ctx context.Context, agent *api.Agent
 		}
 	}
 	result, holdErr := r.holdSandboxBecause(ctx, agent, policyHoldCause(agent))
-	if revokeErr != nil || holdErr != nil {
-		return result, errors.Join(revokeErr, holdErr)
+	if blockErr != nil || holdErr != nil {
+		return result, errors.Join(blockErr, holdErr)
 	}
 	return result, nil
 }
@@ -73,7 +72,7 @@ func policyHoldCause(agent *api.Agent) string {
 }
 
 // holdPolicyReprojection fences an already-running Agent while a changed
-// expected projection is being applied. Unlike a denied binding it preserves
+// expected projection is being applied. Like a denied binding it preserves
 // the virtual-key identity and spend history, but blocks the old grant before
 // removing workload ingress and compute. The Gateway records that this is an
 // operator-owned temporary block; an administrator emergency block is never
@@ -198,7 +197,7 @@ func (r *AgentReconciler) reconcilePolicy(ctx context.Context, agent *api.Agent)
 	err = r.recordPolicy(ctx, agent, resolution, nil)
 	if err != nil {
 		// A failed observation write does not turn valid authorization into a
-		// denial that destroys the existing virtual key and spending identity.
+		// definitive denial. Hold access until the observation can be saved.
 		result.dependencyUnavailable = true
 	}
 	return result, err

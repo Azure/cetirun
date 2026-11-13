@@ -18,13 +18,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
-func TestReconciledSandboxSuspensionCompletesAfterPolicyRevokesItsKey(t *testing.T) {
+func TestReconciledSandboxSuspensionCompletesAfterPolicyBlocksItsKey(t *testing.T) {
 	ctx := context.Background()
 	f := readyPolicyRateLimitFixture(t, "openclaw", true)
 
 	initial := f.current(t)
 	keyID := initial.Status.AIGateway.KeyID
 	generated := len(f.gateway.generated)
+	var token string
+	for value := range f.gateway.keys {
+		token = value
+	}
+	f.gateway.keys[token].Spend = ptr.To(2.5)
 	team := &api.Team{}
 	if err := f.kube.Get(ctx, types.NamespacedName{Name: initial.Spec.Team}, team); err != nil {
 		t.Fatal(err)
@@ -46,9 +51,11 @@ func TestReconciledSandboxSuspensionCompletesAfterPolicyRevokesItsKey(t *testing
 		t.Fatal("policy denial did not hold the running Agent:", err)
 	}
 	denied := f.current(t)
-	if denied.Status.AIGateway == nil || denied.Status.AIGateway.Phase != api.AIGatewayPhaseDeleting ||
-		denied.Status.AIGateway.KeyID != keyID || len(f.gateway.keys) != 0 {
-		t.Fatalf("policy denial did not preserve the revoked-key identity: status=%+v keys=%d", denied.Status.AIGateway, len(f.gateway.keys))
+	if denied.Status.AIGateway == nil || denied.Status.AIGateway.KeyID != keyID ||
+		denied.Status.AIGateway.Reason != aiGatewayReasonPolicyReprojection || !denied.Status.AIGateway.Blocked ||
+		f.gateway.keys[token] == nil || !f.gateway.keys[token].Blocked || f.gateway.keys[token].Spend == nil || *f.gateway.keys[token].Spend != 2.5 ||
+		len(f.gateway.keys) != 1 || len(f.gateway.deletedTokens) != 0 || len(f.gateway.deletedAliases) != 0 {
+		t.Fatalf("policy denial did not preserve and block the key: status=%+v key=%+v deleted=%v aliases=%v", denied.Status.AIGateway, f.gateway.keys[token], f.gateway.deletedTokens, f.gateway.deletedAliases)
 	}
 
 	denied.Spec.Suspended = true
@@ -56,12 +63,11 @@ func TestReconciledSandboxSuspensionCompletesAfterPolicyRevokesItsKey(t *testing
 	if err := f.kube.Update(ctx, denied); err != nil {
 		t.Fatal(err)
 	}
-	// The Deleting receipt must survive an operator restart: it is the only
-	// proof that the next suspension pass should retry revocation, not recreate
-	// the revoked key.
+	// The policy block receipt survives an operator restart without changing
+	// the existing key or its ledger.
 	f.r = restartEntraReconciler(f.r)
 	if _, err := f.reconcile(); err != nil {
-		t.Fatal("suspension did not confirm the prior revocation:", err)
+		t.Fatal("suspension did not confirm the prior policy block:", err)
 	}
 	current := f.current(t)
 	if current.Status.Phase != api.PhaseSuspended || current.Status.AccessURL != "" ||
@@ -81,21 +87,23 @@ func TestReconciledSandboxSuspensionCompletesAfterPolicyRevokesItsKey(t *testing
 	if condition := apimeta.FindStatusCondition(current.Status.Conditions, api.ConditionAIGatewayReady); condition == nil ||
 		condition.Status != metav1.ConditionFalse || condition.Reason != "Suspended" ||
 		condition.ObservedGeneration != current.Generation {
-		t.Fatalf("confirmed suspension did not record revoked Gateway state: %+v", condition)
+		t.Fatalf("confirmed suspension did not record blocked Gateway state: %+v", condition)
 	}
 	if replicas := ptr.Deref(f.workload(t).Spec.Replicas, -1); replicas != 0 {
 		t.Fatalf("confirmed suspension did not stop workload: replicas=%d", replicas)
 	}
-	if current.Status.AIGateway == nil || current.Status.AIGateway.KeyID != keyID ||
-		current.Status.AIGateway.Phase != api.AIGatewayPhaseDeleting || len(f.gateway.generated) != generated || len(f.gateway.keys) != 0 {
-		t.Fatalf("suspension recreated or forgot the revoked key: status=%+v generated=%d keys=%d", current.Status.AIGateway, len(f.gateway.generated), len(f.gateway.keys))
+	if current.Status.AIGateway == nil || current.Status.AIGateway.KeyID != keyID || !current.Status.AIGateway.Blocked ||
+		f.gateway.keys[token] == nil || !f.gateway.keys[token].Blocked || f.gateway.keys[token].Spend == nil || *f.gateway.keys[token].Spend != 2.5 ||
+		len(f.gateway.generated) != generated || len(f.gateway.keys) != 1 {
+		t.Fatalf("suspension changed the blocked key: status=%+v generated=%d key=%+v", current.Status.AIGateway, len(f.gateway.generated), f.gateway.keys[token])
 	}
 
 	if _, err := f.reconcile(); err != nil {
 		t.Fatal("repeated suspension did not retain the confirmed stop:", err)
 	}
-	if current = f.current(t); current.Status.Phase != api.PhaseSuspended || len(f.gateway.generated) != generated {
-		t.Fatalf("repeated suspension changed the confirmed revoked lifetime: phase=%s generated=%d", current.Status.Phase, len(f.gateway.generated))
+	if current = f.current(t); current.Status.Phase != api.PhaseSuspended || len(f.gateway.generated) != generated ||
+		f.gateway.keys[token] == nil || !f.gateway.keys[token].Blocked || len(f.gateway.deletedTokens) != 0 || len(f.gateway.deletedAliases) != 0 {
+		t.Fatalf("repeated suspension changed the confirmed blocked lifetime: phase=%s generated=%d key=%+v", current.Status.Phase, len(f.gateway.generated), f.gateway.keys[token])
 	}
 
 	current.Spec.Suspended = false
@@ -106,16 +114,20 @@ func TestReconciledSandboxSuspensionCompletesAfterPolicyRevokesItsKey(t *testing
 	if _, err := f.reconcile(); err != nil {
 		t.Fatal("denied resume did not remain held:", err)
 	}
-	if current = f.current(t); current.Status.Phase == api.PhaseReady || len(f.gateway.generated) != generated || len(f.gateway.keys) != 0 {
-		t.Fatalf("denied resume recreated or enabled the revoked key: phase=%s generated=%d keys=%d", current.Status.Phase, len(f.gateway.generated), len(f.gateway.keys))
+	if current = f.current(t); current.Status.Phase == api.PhaseReady || len(f.gateway.generated) != generated ||
+		f.gateway.keys[token] == nil || !f.gateway.keys[token].Blocked || len(f.gateway.keys) != 1 {
+		t.Fatalf("denied resume changed the blocked key: phase=%s generated=%d key=%+v", current.Status.Phase, len(f.gateway.generated), f.gateway.keys[token])
 	}
 
 	if err := f.kube.Get(ctx, types.NamespacedName{Name: current.Spec.Team}, team); err != nil {
 		t.Fatal(err)
 	}
-	team.Spec.SandboxRefs = []string{testSandboxName}
-	team.Spec.DefaultSandboxRef = testSandboxName
+	team.Spec.SandboxRefs = []string{current.Spec.SandboxRef}
+	team.Spec.DefaultSandboxRef = current.Spec.SandboxRef
 	if err := f.kube.Update(ctx, team); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.kube.Get(ctx, types.NamespacedName{Name: team.Name}, team); err != nil {
 		t.Fatal(err)
 	}
 	team.Status.ObservedGeneration = team.Generation
@@ -127,13 +139,12 @@ func TestReconciledSandboxSuspensionCompletesAfterPolicyRevokesItsKey(t *testing
 	if err := f.kube.Status().Update(ctx, team); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.reconcile(); err != nil {
-		t.Fatal("policy recovery did not retain the revoked-key recovery hold:", err)
-	}
-	if current = f.current(t); current.Status.Phase == api.PhaseReady ||
-		current.Status.AIGateway == nil || current.Status.AIGateway.KeyID != keyID ||
-		len(f.gateway.generated) != generated || len(f.gateway.keys) != 0 {
-		t.Fatalf("policy recovery recreated or forgot the revoked key: phase=%s status=%+v generated=%d keys=%d", current.Status.Phase, current.Status.AIGateway, len(f.gateway.generated), len(f.gateway.keys))
+	settleReadyForTest(t, f)
+	current = f.current(t)
+	if current.Status.AIGateway == nil || current.Status.AIGateway.KeyID != keyID || current.Status.AIGateway.Blocked ||
+		f.gateway.keys[token] == nil || f.gateway.keys[token].Blocked || f.gateway.keys[token].Spend == nil || *f.gateway.keys[token].Spend != 2.5 ||
+		len(f.gateway.generated) != generated || len(f.gateway.deletedTokens) != 0 || len(f.gateway.deletedAliases) != 0 {
+		t.Fatalf("policy recovery did not resume the original key: status=%+v generated=%d key=%+v deleted=%v aliases=%v", current.Status.AIGateway, len(f.gateway.generated), f.gateway.keys[token], f.gateway.deletedTokens, f.gateway.deletedAliases)
 	}
 }
 
@@ -251,35 +262,16 @@ func TestCommonCustomDeniedSuspensionClearsAccessConditions(t *testing.T) {
 	}
 }
 
-func TestReconciledSandboxSuspensionRetriesRecordedGatewayRevocation(t *testing.T) {
-	ctx := context.Background()
-	f := readyPolicyRateLimitFixture(t, "openclaw", true)
-
-	current := f.current(t)
-	current.Status.AIGateway.Phase = api.AIGatewayPhaseDeleting
-	if err := f.kube.Status().Update(ctx, current); err != nil {
-		t.Fatal(err)
-	}
-	current = f.current(t)
-	current.Spec.Suspended = true
-	current.Generation++
-	if err := f.kube.Update(ctx, current); err != nil {
-		t.Fatal(err)
-	}
-	f.gateway.deleteErr = errors.New("synthetic Gateway revoke failure")
-	if _, err := f.reconcile(); err == nil {
-		t.Fatal("an unconfirmed recorded revocation completed suspension")
-	}
-	current = f.current(t)
-	if current.Status.Phase != api.PhasePending || current.Status.AIGateway.KeyID == "" {
-		t.Fatalf("failed recorded revocation was not retained pending: phase=%s status=%+v", current.Status.Phase, current.Status.AIGateway)
-	}
-	if replicas := ptr.Deref(f.workload(t).Spec.Replicas, -1); replicas != 0 {
-		t.Fatalf("Gateway revoke failure skipped independent workload stop: replicas=%d", replicas)
-	}
+type policyBlockFailureGateway struct {
+	*fakeAIGateway
+	err error
 }
 
-func TestPolicyDeniedSuspensionWaitsForGatewayRevocation(t *testing.T) {
+func (g *policyBlockFailureGateway) SetKeyBlocked(context.Context, string, bool) error {
+	return g.err
+}
+
+func TestPolicyDeniedSuspensionWaitsForGatewayBlock(t *testing.T) {
 	ctx := context.Background()
 	f := readyPolicyRateLimitFixture(t, "openclaw", true)
 
@@ -290,22 +282,23 @@ func TestPolicyDeniedSuspensionWaitsForGatewayRevocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	current = f.current(t)
-	failure := errors.New("synthetic Gateway revoke failure")
-	f.gateway.deleteErr = failure
+	failure := errors.New("synthetic Gateway block failure")
+	gateway := &policyBlockFailureGateway{fakeAIGateway: f.gateway, err: failure}
+	f.r.aiGatewayClientFactory = func(context.Context) (aiGatewayKeyClient, error) { return gateway, nil }
 	if _, err := f.r.holdPolicyDenied(ctx, current); !errors.Is(err, failure) {
-		t.Fatalf("Gateway revoke failure was hidden: %v", err)
+		t.Fatalf("Gateway block failure was hidden: %v", err)
 	}
 
 	current = f.current(t)
 	if current.Status.Phase != api.PhasePending || current.Status.AIGateway == nil ||
-		current.Status.AIGateway.Phase != api.AIGatewayPhaseDeleting || current.Status.AIGateway.KeyID == "" {
-		t.Fatalf("failed policy revocation did not remain pending with its identity: phase=%s gateway=%+v", current.Status.Phase, current.Status.AIGateway)
+		current.Status.AIGateway.Reason != aiGatewayReasonPolicyReprojection || current.Status.AIGateway.KeyID == "" {
+		t.Fatalf("failed policy block did not remain pending with its identity: phase=%s gateway=%+v", current.Status.Phase, current.Status.AIGateway)
 	}
 	if len(f.gateway.keys) != 1 || len(f.gateway.generated) != 1 {
-		t.Fatalf("failed policy revocation changed the Gateway lifetime: keys=%d generated=%d", len(f.gateway.keys), len(f.gateway.generated))
+		t.Fatalf("failed policy block changed the Gateway lifetime: keys=%d generated=%d", len(f.gateway.keys), len(f.gateway.generated))
 	}
 	if replicas := ptr.Deref(f.workload(t).Spec.Replicas, -1); replicas != 0 {
-		t.Fatalf("Gateway revoke failure skipped independent workload stop: replicas=%d", replicas)
+		t.Fatalf("Gateway block failure skipped independent workload stop: replicas=%d", replicas)
 	}
 }
 
@@ -335,7 +328,7 @@ func TestPolicyDeniedSuspensionWaitsForWorkloadStop(t *testing.T) {
 
 	current = f.current(t)
 	if current.Status.Phase != api.PhasePending || current.Status.AIGateway == nil ||
-		current.Status.AIGateway.Phase != api.AIGatewayPhaseDeleting || current.Status.AIGateway.KeyID == "" {
+		current.Status.AIGateway.Reason != aiGatewayReasonPolicyReprojection || current.Status.AIGateway.KeyID == "" {
 		t.Fatalf("failed workload stop incorrectly completed suspension: phase=%s gateway=%+v", current.Status.Phase, current.Status.AIGateway)
 	}
 	condition := apimeta.FindStatusCondition(current.Status.Conditions, api.ConditionPodReady)
@@ -347,10 +340,10 @@ func TestPolicyDeniedSuspensionWaitsForWorkloadStop(t *testing.T) {
 	if gateway := apimeta.FindStatusCondition(current.Status.Conditions, api.ConditionAIGatewayReady); gateway == nil ||
 		gateway.Status != metav1.ConditionFalse || gateway.Reason != "SuspensionPending" ||
 		gateway.ObservedGeneration != current.Generation {
-		t.Fatalf("failed workload stop did not record the completed key revocation: %+v", gateway)
+		t.Fatalf("failed workload stop did not record the completed key block: %+v", gateway)
 	}
-	if len(f.gateway.keys) != 0 || len(f.gateway.generated) != 1 {
-		t.Fatalf("workload stop failure recreated or retained a usable key: keys=%d generated=%d", len(f.gateway.keys), len(f.gateway.generated))
+	if len(f.gateway.keys) != 1 || len(f.gateway.generated) != 1 {
+		t.Fatalf("workload stop failure changed the blocked key: keys=%d generated=%d", len(f.gateway.keys), len(f.gateway.generated))
 	}
 	if replicas := ptr.Deref(f.workload(t).Spec.Replicas, -1); replicas != 1 {
 		t.Fatalf("injected workload-stop failure did not leave the workload unchanged: replicas=%d", replicas)

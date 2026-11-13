@@ -151,9 +151,9 @@ func (h *policyHistoryFixture) expectRecovered(t *testing.T) {
 
 // TestRegistrationIncompatibleSurvivesTransientObservations checks that an
 // inventory read failure or an expired snapshot between two registration-only
-// refusals does not make the second refusal definitive. A definitive refusal
-// revokes the Gateway key, and after the registration is corrected the Agent
-// then reports KeyRecordLost.
+// refusals does not make the second refusal definitive. Both temporary and
+// definitive policy holds preserve their Gateway key, so a corrected policy
+// can recover without a new spend ledger.
 func TestRegistrationIncompatibleSurvivesTransientObservations(t *testing.T) {
 	h := newPolicyHistoryFixture(t)
 	h.observe(t, metav1.ConditionTrue, "PolicyAccepted", h.generation)
@@ -231,8 +231,9 @@ func TestRegistrationIncompatibleAfterUnknownObservation(t *testing.T) {
 
 // TestNewPolicyGenerationStartsWithoutAcceptanceHistory checks that a spec
 // edit starts a new history. The refusal of an incompatible new generation is
-// definitive, also after a transient observation, and the Agent loses its
-// key. An accepted new generation then keeps its own history.
+// definitive, also after a transient observation, but it blocks rather than
+// deletes the Gateway key. An accepted new generation then keeps its own
+// history and recovers the original key.
 func TestNewPolicyGenerationStartsWithoutAcceptanceHistory(t *testing.T) {
 	h := newPolicyHistoryFixture(t)
 	previous := h.generation
@@ -257,8 +258,11 @@ func TestNewPolicyGenerationStartsWithoutAcceptanceHistory(t *testing.T) {
 	}
 	agent := h.f.current(t)
 	resolved := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionPolicyResolved)
+	key, found := h.f.gateway.keys[h.token]
 	if resolved == nil || resolved.Reason != "PolicyDenied" || agent.Status.AIGateway == nil ||
-		agent.Status.AIGateway.Phase != api.AIGatewayPhaseDeleting {
+		!found || !key.Blocked || agent.Status.AIGateway.KeyID != h.keyID ||
+		agent.Status.AIGateway.Reason != aiGatewayReasonPolicyReprojection ||
+		len(h.f.gateway.generated) != h.generated || len(h.f.gateway.deletedTokens) != 0 || len(h.f.gateway.deletedAliases) != 0 {
 		t.Fatalf("the refused new generation did not deny the Agent: condition=%+v status=%+v", resolved, agent.Status.AIGateway)
 	}
 

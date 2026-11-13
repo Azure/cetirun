@@ -429,7 +429,7 @@ func TestDesiredSandboxRevisionDoesNotCopyHistoricalEvidenceWithoutCompiler(t *t
 	}
 }
 
-func TestPolicyDenialRevokesKeyAndStopsOwnedBuiltinWorkload(t *testing.T) {
+func TestPolicyDenialBlocksKeyAndStopsOwnedBuiltinWorkload(t *testing.T) {
 	ctx := context.Background()
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	agent.Status.Phase = api.PhaseReady
@@ -461,6 +461,11 @@ func TestPolicyDenialRevokesKeyAndStopsOwnedBuiltinWorkload(t *testing.T) {
 	if len(gateway.keys) != 1 {
 		t.Fatal("test setup did not create the governed virtual key")
 	}
+	var token string
+	for value := range gateway.keys {
+		token = value
+	}
+	gateway.keys[token].Spend = ptr.To(2.5)
 
 	team := &api.Team{}
 	if err := kube.Get(ctx, types.NamespacedName{Name: testAIGatewayTeam}, team); err != nil {
@@ -475,8 +480,10 @@ func TestPolicyDenialRevokesKeyAndStopsOwnedBuiltinWorkload(t *testing.T) {
 	if err != nil || result.RequeueAfter == 0 {
 		t.Fatalf("denied Agent must enter a retrying hold: result=%+v err=%v", result, err)
 	}
-	if len(gateway.keys) != 0 || len(gateway.deletedTokens) != 1 {
-		t.Fatalf("denial did not revoke the virtual key: keys=%d deleted=%v", len(gateway.keys), gateway.deletedTokens)
+	key := gateway.keys[token]
+	if key == nil || !key.Blocked || key.Spend == nil || *key.Spend != 2.5 ||
+		len(gateway.generated) != 1 || len(gateway.deletedTokens) != 0 || len(gateway.deletedAliases) != 0 {
+		t.Fatalf("denial did not preserve and block the virtual key: key=%+v generated=%d deleted=%v aliases=%v", key, len(gateway.generated), gateway.deletedTokens, gateway.deletedAliases)
 	}
 	stopped := &appsv1.StatefulSet{}
 	if err := kube.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: workload.Name}, stopped); err != nil || !ptr.Equal(stopped.Spec.Replicas, ptr.To[int32](0)) {
@@ -489,7 +496,8 @@ func TestPolicyDenialRevokesKeyAndStopsOwnedBuiltinWorkload(t *testing.T) {
 	if err := kube.Get(ctx, types.NamespacedName{Name: agent.Name}, current); err != nil {
 		t.Fatal(err)
 	}
-	if current.Status.Policy == nil || current.Status.Policy.Phase != "Denied" {
+	if current.Status.Policy == nil || current.Status.Policy.Phase != "Denied" || current.Status.AIGateway == nil ||
+		current.Status.AIGateway.Reason != aiGatewayReasonPolicyReprojection || !current.Status.AIGateway.Blocked {
 		t.Fatalf("denial status was not persisted: %+v", current.Status.Policy)
 	}
 }
