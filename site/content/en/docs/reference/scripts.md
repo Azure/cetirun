@@ -243,7 +243,9 @@ Operator deployment inputs include `REGISTRY`, `VERSION`, `CHART_VERSION`, `NAME
 `ISTIO_INGRESS_NAMESPACE` selects the namespace of the ingress gateway workload
 for the NetworkPolicies of the Agents.
 
-Portal deployment also uses `ISTIO_HOST`, `ISTIO_REV`, `NOTICE_BANNER`,
+Portal deployment requires `ISTIO_HOST`, `ENTRA_TENANT_ID`, and
+`PORTAL_OIDC_CLIENT_ID` before any cluster calls. It passes the identity inputs
+to the Chart and enables internal ownership mTLS. It also uses `ISTIO_REV`, `NOTICE_BANNER`,
 `ADMIN_ALIASES`, and `MAX_INSTANCES_PER_USER`. The default registry prefix is
 `mcr.microsoft.com/aks/ai-runtime/cetirun`. `VERSION` selects both the chart
 and image version unless a component-specific override is explicit. Configure

@@ -607,7 +607,7 @@ Source: [app/cetirun-portal/chart/values.yaml]({{< repo "app/cetirun-portal/char
 | `istio.gatewayServiceAccount` | `"aks-istio-ingressgateway-external"` | Service account name of the Istio ingress gateway (used by AuthorizationPolicy). |
 | `istio.legacyHost` | `""` | Optional legacy hostname to redirect to istio.host with a 301. Set to the old portal subdomain (e.g. portal.example.com) to redirect old users. Leave empty to disable. |
 | `istio.sidecarInjection` | `true` | Confirm the target namespace has Istio sidecar injection enabled. Must be set to true; the AuthorizationPolicy requires mTLS enforcement. |
-| `istio.internalAuthMTLS` | `false` | Require mesh mTLS on the internal ownership endpoint. Enable together with the Istio chart's portalAuth.mtls settings before forwarding ID tokens. |
+| `istio.internalAuthMTLS` | `true` | Require mesh mTLS and verified Entra identity on the internal ownership endpoint. Configure the Portal tenant, client and host together with the Istio chart's `portalAuth.mtls` settings. Explicit `false` selects legacy alias-only ownership. |
 | `resources` |  | Resource requests/limits. |
 | `resources.requests.cpu` | `"100m"` |  |
 | `resources.requests.memory` | `"256Mi"` |  |

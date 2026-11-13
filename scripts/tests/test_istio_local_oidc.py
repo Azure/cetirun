@@ -23,6 +23,7 @@ OFFLINE = {
     "HELM_REPOSITORY_CONFIG": os.devnull,
 }
 ENTRA_VALUES = {
+    "portalAuth": {"mtls": {"enabled": False}},
     "clientId": "lint-client",
     "tenantId": "lint-tenant",
     "allowedGroups": "lint-group",
@@ -82,6 +83,7 @@ ENTRA_ARGS = [
 
 def local_values():
     return {
+        "portalAuth": {"mtls": {"enabled": False}},
         "cookieSecret": "lint-cookie-secret",
         "oauth2Proxy": {
             "sessionStore": {"type": "cookie"},
@@ -212,7 +214,7 @@ class IstioLocalOIDCTests(unittest.TestCase):
                 self.assertEqual(self.render(values), expected)
 
     def test_oidc_cli_overrides_issuer_and_secret_reference(self):
-        objects = self.render({}, args=[
+        objects = self.render({"portalAuth": {"mtls": {"enabled": False}}}, args=[
             "--set-string", "cloud=AzureChinaCloud",
             "--set-string", "oauth2Proxy.mode=oidc",
             "--set-string", "oauth2Proxy.oidc.issuerURL=https://identity.example.com:8443/tenant",

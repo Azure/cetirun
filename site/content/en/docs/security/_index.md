@@ -77,9 +77,9 @@ PeerAuthentication, an AuthorizationPolicy, and a NetworkPolicy that admits
 only the ingress gateway namespace. These controls need Istio sidecar injection
 in the Portal namespace. The chart does not add the injection label. Its value
 `istio.sidecarInjection: true`, the default, only confirms that the namespace
-has injection. With `istio.internalAuthMTLS: false`, the default of the
-standalone Portal chart, port 8081 uses plain HTTP, and only the NetworkPolicy
-protects it. `make deploy` sets `istio.internalAuthMTLS: true` and labels the
+has injection. `istio.internalAuthMTLS` defaults to `true`. Only an explicit
+legacy `false` makes port 8081 use plain HTTP, with the NetworkPolicy protecting
+it. `make deploy` sets `istio.internalAuthMTLS: true` and labels the
 platform namespaces for sidecar injection.
 
 After the ownership check, the ingress gateway removes the sign-in cookies:

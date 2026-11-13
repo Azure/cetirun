@@ -884,6 +884,8 @@ HELM_SET_ARGS="cetiadmin.enabled=false" \
 
 REGISTRY=registry.example.com CHART_VERSION=0.1.1 IMAGE_TAG=example-build \
 ISTIO_HOST=example.com ISTIO_REV=your-installed-istio-revision \
+ENTRA_TENANT_ID="<tenant-id>" \
+PORTAL_OIDC_CLIENT_ID="<portal-client-id>" \
 NOTICE_BANNER="" \
   bash app/cetirun-portal/deploy/deploy.sh
 ```
@@ -912,8 +914,10 @@ installation that already exists, review
 The [portal helper]({{< repo "app/cetirun-portal/deploy/deploy.sh" >}})
 expects that the operator/CRDs are prepared separately. It also labels its
 namespace for Istio injection. Set `ISTIO_REV` to the actual installed revision
-instead of its built-in `asm-1-27`. Supply `ISTIO_HOST` explicitly, because the
-helper also reads it in its final summary. Neither helper waits for the
+instead of its built-in `asm-1-27`. Supply `ISTIO_HOST`, `ENTRA_TENANT_ID`, and
+`PORTAL_OIDC_CLIENT_ID` explicitly. The identity inputs must match the tenant
+and Portal client configured at ingress. The helper requires all three before
+any cluster call and enables internal ownership mTLS. Neither helper waits for the
 operator or portal rollout.
 
 `LOCAL_CHART=1` selects the local operator or portal chart. It does **not** make
