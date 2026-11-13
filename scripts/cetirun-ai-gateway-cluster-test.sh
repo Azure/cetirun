@@ -889,7 +889,7 @@ key_requests() {  # key_requests KEY MODEL EXPECTED_STATUS
 }
 
 managed_key_freshness() {
-  local phase="$1" control_key target_key target_hash before alias budget_key allowed i port status
+  local phase="$1" control_key target_key target_hash before alias budget_alias budget_key budget_reset allowed i port status
   echo "==> Current key authorization on both replicas (${phase})"
   control_key="$(api_post "${port_a}" /key/generate '{"models":["mock-priced"],"max_budget":10}' | jq -er .key)" \
     || fail "could not create the independent key control"
@@ -944,8 +944,15 @@ managed_key_freshness() {
   key_requests "${control_key}" mock-priced 200
   pass "deletion by alias denies new requests on both replicas; the control still serves"
 
-  budget_key="$(api_post "${port_a}" /key/generate '{"models":["mock-priced"],"max_budget":0.10}' | jq -er .key)" \
-    || fail "could not create the managed budget control"
+  budget_alias="cluster-test-budget-${phase}"
+  budget_key="$(api_post "${port_a}" /key/generate \
+    "$(jq -nc --arg alias "${budget_alias}" '{key_alias:$alias,models:["mock-priced"],max_budget:0.10,budget_duration:"1mo"}')" \
+    | jq -er .key)" || fail "could not create the managed budget control"
+  budget_reset="$(curl -fs -m 30 "http://127.0.0.1:${port_a}/key/info?key=${budget_key}" \
+    -H "Authorization: Bearer ${master_key}" | jq -er '.info.budget_reset_at')" \
+    || fail "the managed budget control has no reset time"
+  # LiteLLM keeps the reset in UTC: the guard states it to the minute.
+  budget_reset="${budget_reset:0:10} ${budget_reset:11:5} UTC"
   allowed=0
   for i in $(seq 0 15); do
     port="${pod_ports[$((i % 2))]}"
@@ -958,8 +965,14 @@ managed_key_freshness() {
       # LiteLLM's own default is 422), which agents report as exhausted credit
       # rather than retrying it as a rate limit.
       [ "${status}" = 402 ] || fail "managed budget returned ${status}, not a budget rejection"
-      jq -e '.error.message | test("budget"; "i")' "${work_dir}/last.json" >/dev/null \
-        || fail "managed budget request was rejected for a different reason"
+      # The guard's message, not LiteLLM's: it names the budget and its reset,
+      # and neither the key's alias nor the end of the key.
+      jq -e --arg alias "${budget_alias}" --arg reset "${budget_reset}" '
+        .error.type == "budget_exceeded"
+        and (.error.message | startswith("CetiRun AI Gateway: this key has spent "))
+        and (.error.message | contains(" USD of its 0.10 USD budget. The Gateway refuses its model requests until the budget resets on " + $reset + ". "))
+        and (.error.message | (contains($alias) or contains("sk-")) | not)' "${work_dir}/last.json" >/dev/null \
+        || fail "managed budget request was not refused with the Gateway's budget message: $(last_body)"
     fi
     sleep 0.3
   done
