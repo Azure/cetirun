@@ -29,6 +29,7 @@ OFFLINE = {
     "HELM_REPOSITORY_CONFIG": os.devnull,
 }
 BASE_VALUES = {
+    "portalAuth": {"mtls": {"serverIdentity": "spiffe://cluster.local/ns/synthetic/sa/portal"}},
     "clientId": "lint-client",
     "tenantId": "lint-tenant",
     "allowedGroups": "lint-group",

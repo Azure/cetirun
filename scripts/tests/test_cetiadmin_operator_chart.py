@@ -458,7 +458,9 @@ class CetiAdminOperatorChartTests(unittest.TestCase):
             operator = self.values()
             operator["sandboxAdmission"]["portalServiceAccount"] = "cetirun-portal"
             inputs = {"istio": {"enabled": True}, "cetirun-operator": copy.deepcopy(operator),
-                      "cetirun-portal": {"istio": {"host": "portal.example.com"}, "aiGateway": {"catalogNamespace": NAMESPACE}}}
+                      "cetirun-portal": {"istio": {"host": "portal.example.com"}, "aiGateway": {"catalogNamespace": NAMESPACE},
+                                         "agentIdentity": {"tenantId": "11111111-1111-1111-1111-111111111111",
+                                                           "portalClientId": "22222222-2222-2222-2222-222222222222"}}}
             direct, umbrella = self.render(operator), self.render(inputs, chart=chart)
             for key, obj in direct.items():
                 if "cetiadmin" in key[1]:

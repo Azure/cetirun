@@ -2,7 +2,10 @@
 {{- if not (kindIs "map" $portalAuthMTLS) -}}
 {{- fail "portalAuth.mtls must be an object" -}}
 {{- end -}}
-{{- $portalAuthMTLSEnabled := get $portalAuthMTLS "enabled" | default false -}}
+{{- $portalAuthMTLSEnabled := true -}}
+{{- if hasKey $portalAuthMTLS "enabled" -}}
+{{- $portalAuthMTLSEnabled = get $portalAuthMTLS "enabled" -}}
+{{- end -}}
 {{- if not (kindIs "bool" $portalAuthMTLSEnabled) -}}
 {{- fail "portalAuth.mtls.enabled must be a boolean" -}}
 {{- end -}}

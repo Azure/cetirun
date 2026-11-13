@@ -32,7 +32,9 @@ SPEC.loader.exec_module(DEPLOY)
 class PortalSandboxStorageChartTests(unittest.TestCase):
     def render(self, values=None):
         command = ["helm", "template", "portal", str(CHART), "--namespace", "portal-system",
-                   "--set-string", "istio.host=portal.example.invalid"]
+                   "--set-string", "istio.host=portal.example.invalid",
+                   "--set-string", "agentIdentity.tenantId=11111111-1111-1111-1111-111111111111",
+                   "--set-string", "agentIdentity.portalClientId=22222222-2222-2222-2222-222222222222"]
         for value in values or []:
             command.extend(["--set-string", value])
         output = subprocess.run(command, env=OFFLINE_ENV, check=True, text=True, capture_output=True).stdout

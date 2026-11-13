@@ -19,6 +19,11 @@ OFFLINE = {**os.environ, "KUBECONFIG": os.devnull, "HELM_REGISTRY_CONFIG": os.de
 @unittest.skipUnless(shutil.which("helm"), "requires Helm")
 class PortalChatChartTests(unittest.TestCase):
     def render(self, chart, values, *, success=True):
+        portal = values if chart.name == "chart" else values.setdefault("cetirun-portal", {})
+        portal.setdefault("agentIdentity", {
+            "tenantId": "11111111-1111-1111-1111-111111111111",
+            "portalClientId": "22222222-2222-2222-2222-222222222222",
+        })
         result = subprocess.run(
             ["helm", "template", "chat-test", str(chart), "--namespace", "test-platform", "--kube-version", "1.37.0", "--values", "-"],
             input=json.dumps(values), text=True, capture_output=True, env=OFFLINE, timeout=30, check=False,

@@ -26,7 +26,6 @@ SECURITY_HEADERS_TEMPLATE = TEMPLATE.with_name("envoy-filter-security-headers.ya
 CHART = TEMPLATE.parents[2]
 LUA_LIBRARY = ctypes.util.find_library("lua5.4")
 MTLS_VALUES = (
-    "--set", "portalAuth.mtls.enabled=true",
     "--set-string", "portalAuth.mtls.serverIdentity=spiffe://cluster.local/ns/synthetic/sa/portal",
 )
 
@@ -346,7 +345,7 @@ class IstioGatewayIsolationTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("helm") and LUA_LIBRARY, "requires Helm and liblua5.4")
     def test_rendered_ownership_lua_keeps_id_tokens_out_of_agent_requests_and_denials(self):
-        plaintext_script = self._render_ownership_lua() + LUA_GATEWAY_FIXTURE
+        plaintext_script = self._render_ownership_lua("--set", "portalAuth.mtls.enabled=false") + LUA_GATEWAY_FIXTURE
         plaintext_owned = self._call_rendered_lua(plaintext_script, "gateway_fixture", "owned").split("\t")
         self.assertEqual(plaintext_owned, [
             "portal_auth_cluster", "", "5000", "", "",
@@ -391,7 +390,7 @@ class IstioGatewayIsolationTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("helm"), "requires Helm")
     def test_mtls_ownership_cluster_is_distinct_and_has_no_plaintext_fallback(self):
-        disabled = self._render_ownership_filter()
+        disabled = self._render_ownership_filter("--set", "portalAuth.mtls.enabled=false")
         enabled = self._render_ownership_filter(*MTLS_VALUES)
 
         def clusters(ownership_filter):
@@ -446,7 +445,7 @@ class IstioGatewayIsolationTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("helm"), "requires Helm")
     def test_mtls_ownership_requires_a_well_formed_server_identity(self):
-        missing = self._render_chart("--set", "portalAuth.mtls.enabled=true")
+        missing = self._render_chart()
         self.assertNotEqual(missing.returncode, 0)
         self.assertIn("portalAuth.mtls.serverIdentity is required", missing.stderr)
         malformed = self._render_chart(

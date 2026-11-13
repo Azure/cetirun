@@ -49,7 +49,9 @@ CHARTS = (
         "aiGateway.keySecretName=lint-model-key", "secrets.apiBase=http://gateway.example.com/v1",
         "hermes.env.HERMES_WEBAPP_PUBLIC_URL=https://agents.example.com/ui/validation")),
     ("app/cetirun-operator/chart", ("cetiadmin.enabled=false",)),
-    ("app/cetirun-portal/chart", ("istio.host=portal.example.invalid",)),
+    ("app/cetirun-portal/chart", ("istio.host=portal.example.invalid",
+        "agentIdentity.tenantId=11111111-1111-1111-1111-111111111111",
+        "agentIdentity.portalClientId=22222222-2222-2222-2222-222222222222")),
     (
         "app/cetirun-agent-broker/chart",
         (
@@ -90,6 +92,7 @@ CHARTS = (
             "tenantId=lint-tenant",
             "allowedGroups=lint-group",
             "cookieSecret=lint-cookie-secret",
+            "portalAuth.mtls.serverIdentity=spiffe://cluster.local/ns/synthetic/sa/portal",
         ),
     ),
     (
@@ -98,6 +101,8 @@ CHARTS = (
             "istio.enabled=true",
             "cetirun-operator.domainSuffix=platform.example.invalid",
             "cetirun-portal.istio.host=portal.example.invalid",
+            "cetirun-portal.agentIdentity.tenantId=11111111-1111-1111-1111-111111111111",
+            "cetirun-portal.agentIdentity.portalClientId=22222222-2222-2222-2222-222222222222",
             # Rendered in the default namespace: the bundled AI Gateway must
             # share the operator's namespace, and the Portal reads the shared
             # models the operator publishes there.

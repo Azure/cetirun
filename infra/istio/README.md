@@ -36,7 +36,12 @@ python3 -m pip install --requirement infra/istio/requirements.txt
 For a direct installation of the platform umbrella, without `make deploy`, set
 `PORTAL_AUTH_NAMESPACE=cetirun-system` before you run `deploy.sh`. The default
 value for the standalone helper is `cetirun-portal`. `PORTAL_AUTH_SERVICE` and `PORTAL_AUTH_CLUSTER_HOST` let you
-set custom service locations. Refer to the
+set custom service locations. Set `PORTAL_AUTH_SERVER_IDENTITY` to the actual
+Portal SPIFFE identity, for example
+`spiffe://cluster.local/ns/cetirun-system/sa/cetirun-portal`. Both Charts default
+to mTLS; the Portal also requires `agentIdentity.tenantId`,
+`agentIdentity.portalClientId`, and `istio.host`. Existing explicit `false`
+values must be updated on both releases. Refer to the
 [ownership endpoint configuration](../../site/content/en/docs/operations/istio.md#portal-ownership-endpoint).
 
 The ownership check returns a generic `403 Forbidden: access denied` for

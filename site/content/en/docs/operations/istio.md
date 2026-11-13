@@ -647,8 +647,10 @@ ownership endpoint. There, Portal checks the recorded tenant and object IDs.
 An owner's display alias or email can change without changing ownership.
 The token is never forwarded to the Agent.
 
-`make deploy` enables both sides. `infra/istio/deploy.sh` does not. Standalone
-deployments must set `portalAuth.mtls.enabled: true` and an exact
+Both Charts default to mTLS. `make deploy` supplies the identity configuration
+for both sides. `infra/istio/deploy.sh` enables ingress mTLS and requires
+`PORTAL_AUTH_SERVER_IDENTITY`; it does not upgrade the Portal. Standalone
+deployments must supply an exact
 `portalAuth.mtls.serverIdentity`, such as
 `spiffe://cluster.local/ns/cetirun-portal/sa/cetirun-portal`, in the Istio chart,
 and `istio.internalAuthMTLS: true` in the Portal chart. Use the actual Portal
@@ -663,11 +665,18 @@ Istio TLS cluster, then update the Portal backend. Native Agent access can be
 briefly unavailable between these steps; Portal port 8080 remains available.
 The TLS cluster has a distinct name so partial xDS propagation fails closed.
 Preserve the TLS settings when you return the backend to an earlier version.
-Chart defaults keep the older plaintext alias-only transport for standalone
-compatibility; that mode never forwards ID tokens and cannot authorize
-identity-bound Agents with the updated backend. A configured Entra tenant and
-Portal client are required for bound ownership even when Agent Identity and
-Agent Tools are disabled.
+Existing Helm values that explicitly disable mTLS override the new defaults;
+update both releases'
+values rather than relying on a Chart upgrade or `--reuse-values` to migrate them.
+The older plaintext alias-only transport requires explicit `false` on both sides.
+That mode never forwards ID tokens and cannot authorize identity-bound Agents with
+the updated backend. A configured Entra tenant and Portal client are required
+for bound ownership even when Agent Identity and Agent Tools are disabled.
+
+Non-Entra and local OIDC installations that use alias-only ownership must
+explicitly disable both mTLS ownership settings and leave Portal Agent Identity
+and Agent Tools disabled. The Portal verifier uses the public-cloud
+Entra issuer; enabling this setting does not add support for another issuer.
 
 Sources: [ownership filter]({{< repo "infra/istio/templates/ingress/envoy-filter-alias.yaml" >}}),
 [portal peer authentication]({{< repo "app/cetirun-portal/chart/templates/peer-authentication.yaml" >}}),
@@ -717,7 +726,8 @@ deployment helper.
 
 Use `PORTAL_AUTH_SERVICE` for a custom service name or
 `PORTAL_AUTH_CLUSTER_HOST` for a service FQDN override, without a port suffix.
-The ownership endpoint uses port 8081. The umbrella
+Set `PORTAL_AUTH_SERVER_IDENTITY` to the exact SPIFFE identity of the Portal
+service account in that namespace. The ownership endpoint uses port 8081. The umbrella
 does not reconfigure the independent Istio release. Refer to the
 [deployment helper]({{< repo "infra/istio/deploy.sh" >}}) and
 [platform installation](../../getting-started/platform/#platform-chart).
