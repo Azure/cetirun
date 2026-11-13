@@ -154,6 +154,25 @@ param platformNamespace string = 'cetirun-system'
 @description('Readers of the content database, which holds every AI Gateway prompt and response.')
 param adxContentViewers array = []
 
+@minValue(1)
+@description('Days of the daily AI Gateway usage view GatewayDailyUsage in the logs database.')
+param adxGatewayUsageRetentionDays int = 400
+
+@description('Create the managed identity of the ADX-Mon alerter, with the Viewer role on the logs and metrics databases. Needs adxMode create or existing.')
+param adxAlerter bool = false
+
+@description('Send the Kubernetes audit events of the AKS API server, except get and list, to the database CetiRunAudit through an Event Hub. Needs adxMode create, or an existing Kusto cluster with a system-assigned identity.')
+param adxAuditLogs bool = false
+
+@minValue(1)
+param adxAuditRetentionDays int = 90
+
+@description('Readers of the audit database, which names every user and source address that changed the cluster.')
+param adxAuditViewers array = []
+
+@description('Name of the Event Hub namespace of the audit events, in the cluster resource group.')
+param auditEventHubNamespaceName string = 'ehaudit${uniqueString(subscription().subscriptionId, resourceGroupName, clusterName)}'
+
 // --- Modules ---
 
 module cluster 'modules/aks-cluster.bicep' = {
@@ -239,6 +258,51 @@ module adx 'modules/adx.bicep' = if (adxMode != 'none') {
     createContentDatabase: adxContent
     contentWriterClientId: gatewayContentIdentity.?outputs.clientId ?? ''
     contentViewers: adxContentViewers
+    gatewayUsageRetentionDays: adxGatewayUsageRetentionDays
+    alerterClientId: adxAlerterIdentity.?outputs.clientId ?? ''
+    auditLogs: adxAuditLogs
+    auditRetentionDays: adxAuditRetentionDays
+    auditViewers: adxAuditViewers
+  }
+}
+
+// The ADX-Mon alerter's identity: the observability chart names its
+// ServiceAccount cetirun-adx-mon-alerter.
+module adxAlerterIdentity 'modules/adx-ingestor-identity.bicep' = if (adxMode != 'none' && adxAlerter) {
+  name: 'deploy-adx-alerter-identity'
+  params: {
+    name: '${clusterName}-adx-alerter'
+    location: location
+    tags: tags
+    oidcIssuerUrl: cluster.outputs.oidcIssuerUrl
+    namespace: observabilityNamespace
+    serviceAccountName: 'cetirun-adx-mon-alerter'
+    credentialName: 'cetirun-adx-mon-alerter'
+  }
+}
+
+// Kubernetes audit events: the Event Hub and the diagnostic setting in the
+// cluster resource group, then the data connection of the Kusto cluster.
+module aksAudit 'modules/aks-audit.bicep' = if (adxMode != 'none' && adxAuditLogs) {
+  name: 'deploy-aks-audit'
+  params: {
+    aksClusterName: cluster.outputs.clusterName
+    location: location
+    tags: tags
+    namespaceName: auditEventHubNamespaceName
+    receiverPrincipalId: adx.?outputs.principalId ?? ''
+  }
+}
+
+module adxAuditConnection 'modules/adx-audit-connection.bicep' = if (adxMode != 'none' && adxAuditLogs) {
+  name: 'deploy-adx-audit-connection'
+  scope: resourceGroup(adxSubscriptionId, adxResourceGroupName)
+  params: {
+    clusterName: adxClusterName
+    location: adxLocation
+    databaseName: adx.?outputs.auditDatabaseName ?? ''
+    eventHubId: aksAudit.?outputs.eventHubId ?? ''
+    consumerGroupName: aksAudit.?outputs.consumerGroupName ?? ''
   }
 }
 
@@ -255,6 +319,9 @@ output keyvaultSecretsProviderObjectId string = cluster.outputs.keyvaultSecretsP
 // Inputs of the observability block of the make deploy environment file.
 output adxClusterUri string = adx.?outputs.clusterUri ?? ''
 output adxIngestorClientId string = adxIngestorIdentity.?outputs.clientId ?? ''
+@description('observability.alerter.clientId of the make deploy environment file.')
+output adxAlerterClientId string = adxAlerterIdentity.?outputs.clientId ?? ''
+output adxAuditDatabase string = adx.?outputs.auditDatabaseName ?? ''
 
 // Inputs of the AI Gateway's content values.
 output adxContentDatabase string = adx.?outputs.contentDatabaseName ?? ''

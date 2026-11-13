@@ -722,13 +722,11 @@ class WorkflowContractTests(unittest.TestCase):
         ):
             self.assertIn(expected, names)
 
-    def test_observability_image_is_built_once_smoke_tested_and_scanned(self):
+    def test_observability_images_are_pulled_as_pinned_and_checked(self):
         text = (validate.ROOT / ".github/workflows/observability-ci.yml").read_text()
-        self.assertEqual(text.count("uses: docker/build-push-action@"), 1)
-        self.assertEqual(text.count("tags: cetirun-observability:validation"), 1)
-        self.assertIn("--entrypoint /collector", text)
-        self.assertIn("--entrypoint /ingestor", text)
-        self.assertEqual(text.count("scan_image.py --image cetirun-observability:validation"), 1)
+        self.assertNotIn("docker/build-push-action", text)
+        self.assertNotIn("scan_image.py --image", text)
+        self.assertEqual(text.count("run: python3 scripts/ci/check_observability_images.py"), 1)
 
     def test_scans_reuse_each_component_build(self):
         for component in validate.COMPONENTS:

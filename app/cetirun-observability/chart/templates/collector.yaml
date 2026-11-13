@@ -4,10 +4,10 @@
 {{- $config := include "cetirun-observability.collectorConfig" . -}}
 {{- /*
 The ADX-Mon collector: one Pod on every node. It reads the node's container
-log files and sends the logs of the Pods that the routes select; it scrapes the
-kubelet, and the platform Pods annotated for ADX-Mon on its node. It runs as
-root without any capability, because the container log files belong to root,
-and outside the mesh.
+log files and sends the logs of the Pods that the routes select, and the node
+journal of the kubelet and containerd; it scrapes the kubelet, and the platform
+Pods annotated for ADX-Mon on its node. It runs as root without any
+capability, because the log files belong to root, and outside the mesh.
 */}}
 apiVersion: v1
 kind: ServiceAccount
@@ -102,22 +102,19 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: collector
-          image: {{ include "cetirun-observability.image" (dict "image" .Values.image "name" "cetirun-observability" "context" .) | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: {{ include "cetirun-observability.externalImage" .Values.collector.image | quote }}
+          imagePullPolicy: {{ .Values.collector.image.pullPolicy }}
           command: ["/collector"]
           args:
             - --config=/etc/cetirun-adx-mon/config.toml
+            # The node's name: it selects the Pods of this node and replaces
+            # $(HOSTNAME) in the configuration.
             - --hostname=$(NODE_NAME)
-            - --host-ip=$(HOST_IP)
           env:
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            - name: HOST_IP
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.hostIP
             # The ingestor's certificate is checked against the chart's CA only.
             - name: SSL_CERT_FILE
               value: /etc/cetirun-adx-mon/ca/ca.crt
@@ -144,6 +141,17 @@ spec:
             - name: log
               mountPath: /var/log
               readOnly: true
+            {{- if .Values.logs.node.enabled }}
+            # The journal: a node keeps it in /var/log/journal, or in memory
+            # under /run/log/journal. Its reader finds the node's own journal
+            # files by the machine ID.
+            - name: run-log
+              mountPath: /run/log
+              readOnly: true
+            - name: machine-id
+              mountPath: /etc/machine-id
+              readOnly: true
+            {{- end }}
             - name: storage
               mountPath: /var/lib/cetirun-adx-mon/collector
       volumes:
@@ -160,6 +168,16 @@ spec:
           hostPath:
             path: /var/log
             type: Directory
+        {{- if .Values.logs.node.enabled }}
+        - name: run-log
+          hostPath:
+            path: /run/log
+            type: DirectoryOrCreate
+        - name: machine-id
+          hostPath:
+            path: /etc/machine-id
+            type: File
+        {{- end }}
         - name: storage
           hostPath:
             path: {{ printf "%s/collector" (trimSuffix "/" .Values.collector.hostPath) }}

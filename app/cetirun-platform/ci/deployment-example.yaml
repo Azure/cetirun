@@ -213,3 +213,19 @@ observability:
       metrics: CetiRunMetrics
       agentLogs: CetiRunAgents
   ingestorClientId: 55555555-5555-5555-5555-555555555555
+  # Optional: the ADX-Mon alerter posts an alert for each failed check of
+  # CollectionHealth() to <endpoint>/alerts. Its managed identity needs the
+  # Viewer role on the logs and metrics databases and a federated credential
+  # for system:serviceaccount:<platform.namespace>:cetirun-adx-mon-alerter.
+  # alerter:
+  #   endpoint: https://alerts.example.com
+  #   clientId: 77777777-7777-7777-7777-777777777777
+  #   destination: example-team
+  # Optional: the AI Gateway writes the request and the response of each call to
+  # a database of their own in the same Kusto cluster, and the spend log in
+  # PostgreSQL keeps none. The cluster template creates both with adxContent: the
+  # identity has the Ingestor and Viewer roles on that database only and a
+  # federated credential for system:serviceaccount:<platform.namespace>:cetirun-ai-gateway.
+  # content:
+  #   clientId: 88888888-8888-8888-8888-888888888888
+  #   database: CetiRunContent

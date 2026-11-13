@@ -169,18 +169,29 @@ Copilot proxies into the `CetiRunAgents` database. That output includes the
 session logger's output that is described above and what Agents print
 themselves. This output can include conversation text. The collector reads
 container output from the node logs and does not copy container environment
-variables.
+variables. It also reads the node journal of the kubelet and containerd into
+the `Kubelet` and `Containerd` tables of `CetiRunLogs`. These entries name
+Pods, containers, and images, and the errors of their starts.
 
 The chart's telemetry program writes each Agent's namespace, owner alias,
 display name, email, Entra tenant and object IDs, Team and Agent Policy into
 `CetiRunLogs`. By default, it also writes the warning events and the events
 about CetiRun resources and namespaces. Metrics go to the `CetiRunMetrics`
 database. The AI Gateway's metric labels include key aliases, user IDs, and
-Team names. Retention is a property of each database: the cluster template
-sets 90 days for logs, 30 days for metrics, and 14 days for Agent logs.
-Successful collection still depends on the deployed collectors, permissions,
-and settings. Source configuration alone does not prove that a live cluster
-collects data.
+Team names. With an alert receiver, the alerter sends that receiver the
+cluster name and the failed checks of the collection. Retention is a property
+of each database: the cluster template sets 90 days for logs, 30 days for
+metrics, and 14 days for Agent logs. Successful collection still depends on
+the deployed collectors, permissions, and settings. Source configuration alone
+does not prove that a live cluster collects data.
+
+With the cluster template parameter `adxAuditLogs`, the AKS API server sends
+its audit events through an Event Hub, which keeps each message for one day,
+into the database `CetiRunAudit`. These are all requests except `get` and
+`list`. An event names the user, the source address, the user agent, and the
+object of a request. For many kinds, such as Deployments, role bindings, and
+webhook configurations, it also holds the request and the response. For
+Secrets and ConfigMaps, it holds neither.
 
 A cluster that runs Container Insights anyway collects container stdout and
 stderr into a Log Analytics workspace. By default, Container Insights also
@@ -225,7 +236,8 @@ Source: [cluster defaults](infra/cluster/main.bicep),
 [Envoy access-log fields](infra/istio/templates/egress/accesslog.yaml),
 [operator metrics configuration](app/cetirun-operator/cmd/main.go),
 [ADX-Mon collection](app/cetirun-observability/chart/templates/_helpers.tpl),
-and [Azure Data Explorer databases and retention](infra/cluster/modules/adx.bicep).
+[Azure Data Explorer databases and retention](infra/cluster/modules/adx.bicep),
+and [Kubernetes audit events](infra/cluster/modules/aks-audit.bicep).
 
 ## Network and third-party boundaries
 

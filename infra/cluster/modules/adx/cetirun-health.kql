@@ -7,21 +7,40 @@
 // is not read: its viewers are a separate, smaller group. One row per cluster
 // and check; Status is OK, Warning or Failed. A query or an alert reads the
 // rows that are not OK.
+//
+// ADX-Mon creates the table of a metric with its first value, and some metrics
+// exist only in some ADX-Mon versions. A table that does not exist reads as
+// empty, and a counter without rows has not counted.
 .create-or-alter function with (folder = "CetiRun", docstring = "Health of the log and metrics collection: one row per cluster and check, with Status OK, Warning or Failed.", skipvalidation = "true") CollectionHealth(window: timespan = 15m) {
     let now_ = now();
     let staleAfter = window;
+    let none = datatable(Timestamp: datetime, SeriesId: long, Labels: dynamic, Value: real, Cluster: string, Pod: string) [];
+    let droppedRows = union isfuzzy=true none, AdxmonCollectorLogsDropped;
+    let rejectedRecordRows = union isfuzzy=true none, AdxmonTableBacklogRejectedRecords;
+    let rejectedByteRows = union isfuzzy=true none, AdxmonTableBacklogRejectedBytes;
+    let collectorAge = union isfuzzy=true none, AdxmonCollectorWalSegmentsMaxAgeSeconds;
+    let ingestorAge = union isfuzzy=true none, AdxmonIngestorWalSegmentsMaxAgeSeconds;
     // The newest row of each cluster in the log databases and in the metrics.
     let logs = union isfuzzy=true
         (database("__LOGS_DATABASE__").Platform | where ingestion_time() > now_ - 1d | summarize Last = max(ingestion_time()) by Cluster),
         (database("__LOGS_DATABASE__").Gateway | where ingestion_time() > now_ - 1d | summarize Last = max(ingestion_time()) by Cluster)
         | summarize Last = max(Last) by Cluster;
-    let metrics = AdxmonCollectorHealthCheck | where Timestamp > now_ - 1d | summarize Last = max(Timestamp) by Cluster;
+    let metrics = union isfuzzy=true none, AdxmonCollectorHealthCheck
+        | where Timestamp > now_ - 1d | summarize Last = max(Timestamp) by Cluster;
     let clusters = union logs, metrics | distinct Cluster;
     // Counters: the increase of each series in the window, summed per cluster.
+    // A series that starts in the window counted from zero, and a value below
+    // the one before it means that the counter started again from zero.
     let increase = (T: (Timestamp: datetime, SeriesId: long, Value: real, Cluster: string)) {
-        T | where Timestamp > now_ - window
-        | summarize Delta = max(Value) - min(Value) by Cluster, SeriesId
-        | summarize Value = sum(Delta) by Cluster
+        T | where Timestamp > now_ - 2 * window
+        | order by Cluster asc, SeriesId asc, Timestamp asc
+        | extend Previous = iff(prev(Cluster) == Cluster and prev(SeriesId) == SeriesId, prev(Value), real(null))
+        | where Timestamp > now_ - window
+        | summarize Value = sum(iff(isnull(Previous) or Value < Previous, Value, Value - Previous)) by Cluster
+    };
+    // Every cluster, with zero where nothing counted.
+    let counted = (data: (Cluster: string, Value: real)) {
+        clusters | join kind=leftouter data on Cluster | project Cluster, Value = coalesce(Value, 0.0)
     };
     let freshness = (data: (Cluster: string, Last: datetime), source: string, status: string) {
         clusters
@@ -30,32 +49,53 @@
             Status = iff(isnull(Last) or now_ - Last > staleAfter, status, "OK"),
             Detail = iff(isnull(Last), "no rows in the last day", strcat("newest row ", format_timespan(now_ - Last, 'd.hh:mm:ss'), " ago"))
     };
+    let dropped = increase(droppedRows);
+    let rejected = union increase(rejectedRecordRows), increase(rejectedByteRows)
+        | summarize Value = sum(Value) by Cluster;
+    // The ingestor's health: its status with the reason where ADX-Mon reports
+    // one, and otherwise the heartbeat that the ingestor sets every minute.
+    let status = union isfuzzy=true none, AdxmonIngestorHealthStatus
+        | where Timestamp > now_ - window
+        | summarize arg_max(Timestamp, Value, Labels) by Cluster, Pod
+        | project Cluster, Pod, Value, Reason = tostring(Labels.unhealthy_reason);
+    let heartbeat = union isfuzzy=true none, AdxmonIngestorHealthCheck
+        | where Timestamp > now_ - window
+        | summarize arg_max(Timestamp, Value) by Cluster, Pod
+        | join kind=leftanti status on Cluster, Pod
+        | project Cluster, Pod, Value, Reason = "";
+    let ingestor = union status, heartbeat
+        | summarize Value = min(Value), Reasons = make_set_if(Reason, isnotempty(Reason)) by Cluster;
+    let restarts = union isfuzzy=true none, KubePodContainerStatusRestartsTotal
+        | where Timestamp > now_ - 1h
+        | extend Namespace = tostring(Labels.namespace)
+        | where Namespace in ("cetirun-system", "cetirun-credentials", "cetirun-istio")
+        | summarize Delta = max(Value) - min(Value) by Cluster, Namespace, PodName = tostring(Labels.pod), Container = tostring(Labels.container)
+        | summarize Value = sum(Delta), Restarting = make_set_if(strcat(Namespace, "/", PodName, "/", Container), Delta > 3) by Cluster;
     union
         freshness(logs, "Platform and Gateway logs arrive", "Failed"),
         freshness(metrics, "Metrics arrive", "Failed"),
-        (increase(AdxmonCollectorLogsDropped)
+        (counted(dropped)
             | project Cluster, Check = "Collector dropped no log lines", Value,
                 Status = iff(Value > 0, "Failed", "OK"), Detail = strcat(tostring(Value), " lines dropped in the window")),
-        (union isfuzzy=true increase(AdxmonTableBacklogRejectedRecords), increase(AdxmonTableBacklogRejectedBytes)
-            | summarize Value = sum(Value) by Cluster
+        (counted(rejected)
             | project Cluster, Check = "No backlog was refused", Value,
                 Status = iff(Value > 0, "Failed", "OK"), Detail = "records and bytes refused for a full table backlog in the window"),
-        (union isfuzzy=true
-            (AdxmonCollectorWalSegmentsMaxAgeSeconds | where Timestamp > now_ - window | summarize Value = max(Value) by Cluster | extend Check = "Collector backlog is recent"),
-            (AdxmonIngestorWalSegmentsMaxAgeSeconds | where Timestamp > now_ - window | summarize Value = max(Value) by Cluster | extend Check = "Ingestor backlog is recent")
+        (union
+            (collectorAge | where Timestamp > now_ - window | summarize Value = max(Value) by Cluster | extend Check = "Collector backlog is recent"),
+            (ingestorAge | where Timestamp > now_ - window | summarize Value = max(Value) by Cluster | extend Check = "Ingestor backlog is recent")
             | project Cluster, Check, Value, Status = case(Value > 1800, "Failed", Value > 600, "Warning", "OK"),
                 Detail = strcat("oldest unsent segment ", tostring(round(Value)), " s")),
-        (AdxmonIngestorHealthStatus | where Timestamp > now_ - window
-            | summarize arg_max(Timestamp, Value, Labels) by Cluster, Pod
-            | summarize Value = min(Value), Reasons = make_set(tostring(Labels.unhealthy_reason)) by Cluster
+        (clusters
+            | join kind=leftouter ingestor on Cluster
+            | extend Reported = isnotnull(Value)
+            | extend Value = coalesce(Value, 0.0)
             | project Cluster, Check = "Ingestor is healthy", Value, Status = iff(Value < 1, "Failed", "OK"),
-                Detail = strcat("reasons: ", strcat_array(Reasons, ", "))),
-        (KubePodContainerStatusRestartsTotal | where Timestamp > now_ - 1h
-            | extend Namespace = tostring(Labels.namespace)
-            | where Namespace in ("cetirun-system", "cetirun-credentials", "cetirun-istio")
-            | summarize Delta = max(Value) - min(Value) by Cluster, Namespace, PodName = tostring(Labels.pod), Container = tostring(Labels.container)
-            | summarize Value = sum(Delta), Restarting = make_set_if(strcat(Namespace, "/", PodName, "/", Container), Delta > 3) by Cluster
-            | project Cluster, Check = "Platform containers do not restart repeatedly", Value,
+                Detail = case(not(Reported), "the ingestor reported no health in the window",
+                    array_length(Reasons) > 0, strcat("reasons: ", strcat_array(Reasons, ", ")),
+                    "running; this ADX-Mon version reports no reasons")),
+        (clusters
+            | join kind=leftouter restarts on Cluster
+            | project Cluster, Check = "Platform containers do not restart repeatedly", Value = coalesce(Value, 0.0),
                 Status = iff(array_length(Restarting) > 0, "Warning", "OK"),
                 Detail = iff(array_length(Restarting) > 0, strcat("more than 3 restarts in 1 h: ", strcat_array(Restarting, ", ")), "restarts in 1 h"))
     | order by Cluster asc, Check asc

@@ -435,8 +435,9 @@ keeps each row for seven days by default (`spendLogs.retention`).
 > `platform.values.cetirun-ai-gateway.spendLogs.storePrompts: false`.
 
 With `content.enabled`, the spend log keeps no prompts or responses. The
-content database keeps them instead. Give access to it only to the users who
-must read them. Refer to the chart README's
+content database keeps them instead. With `make deploy`, the `content` block of
+`observability` in the environment file sets it. Give access to the database
+only to the users who must read them. Refer to the chart README's
 [Content in Azure Data Explorer]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#content-in-azure-data-explorer).
 
 The platform chart enables the metrics, and the ADX-Mon collection scrapes them

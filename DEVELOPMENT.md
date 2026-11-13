@@ -41,7 +41,7 @@ component does and how the components work together, refer to
 | `app/cetirun-connections-mcp/` | Connections MCP |
 | `app/cetirun-memory-context/` | Memory Context helper (Go) and its native adapters |
 | `app/cetirun-ai-gateway/` | AI Gateway image and chart |
-| `app/cetirun-observability/` | ADX-Mon image and chart for logs, events, and metrics |
+| `app/cetirun-observability/` | ADX-Mon chart for logs, events, metrics, and alerts |
 | `app/cetirun-platform/` | Platform chart that `make deploy` installs |
 | `app/cetirun-chart/` | Agent chart, Agent image definitions, and runtime plugins |
 | `app/internal/` | Shared Go packages |
@@ -223,7 +223,7 @@ gate in the [Quick start](#quick-start) runs the rest.
 | Portal frontend or Go code | [Portal](#portal) |
 | `app/cetirun-agent-broker/` or `app/cetirun-connections-mcp/` | [Agent Identity Broker](#agent-identity-broker) |
 | `app/cetirun-memory-context/` | [Memory Context](#memory-context) |
-| `app/cetirun-observability/` | `bash scripts/cetirun-observability-helm-test.sh` and `python3 -B -m unittest scripts.tests.test_observability_chart -v`. CI also builds and scans the image. |
+| `app/cetirun-observability/` | `bash scripts/cetirun-observability-helm-test.sh` and `python3 -B -m unittest scripts.tests.test_observability_chart -v`. CI also runs `python3 scripts/ci/check_observability_images.py`: it pulls the ADX-Mon images that the chart pins, checks that they accept the chart's flags, and scans them. |
 | `app/cetirun-ai-gateway/` | [AI Gateway](#ai-gateway) |
 | `app/cetirun-chart/` | [Agent chart and Python helpers](#agent-chart-and-python-helpers) |
 | `app/cetirun-platform/` or `infra/` | [Platform chart and infrastructure](#platform-chart-and-infrastructure) |
@@ -1142,8 +1142,9 @@ also push to the registry in the `E2E_ACR_REGISTRY` secret.
 [`scripts/release-artifacts.json`](scripts/release-artifacts.json) lists the
 images and charts for the root Make targets and the MCR release pipeline. These
 include the Broker, the Pi demo (`cetirun-pi-agent`), VS Code Server
-(`cetirun-vscode`), Memory Context, and ADX-Mon (`cetirun-observability`)
-artifacts. `make artifact-check` checks the source
+(`cetirun-vscode`), Memory Context, and the ADX-Mon chart
+(`cetirun-observability`). The ADX-Mon images are not in the inventory: the
+chart pins their MCR images. `make artifact-check` checks the source
 paths and the chart coverage, and prints the number of images and charts. The
 release driver calls the image builders, stamps the version and the source
 SHA, and builds the base image before the images that use it. It never logs in
