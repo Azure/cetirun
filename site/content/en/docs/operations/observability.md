@@ -373,7 +373,7 @@ observability:
     database: CetiRunContent    # The default
 ```
 
-It sets the Gateway's `content` values with the `clusterName` and the Kusto
+It sets the AI Gateway's `content` values with the `clusterName` and the Kusto
 cluster above. With `adxContent`, the cluster template creates the database
 and the identity; its outputs `adxContentDatabase` and `adxContentClientId` are
 `database` and `clientId`. Without the block, the spend log keeps prompts and
