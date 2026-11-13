@@ -53,7 +53,7 @@ func TestSandboxEventsCommittedConfigurationTransitions(t *testing.T) {
 		name, reason string
 		mutate       func(*api.AgentPolicy, *controller.SandboxConfigurationSnapshot)
 		sourceError  error
-		wantError    bool
+		retry        bool
 		status       metav1.ConditionStatus
 	}{
 		{"accepted", "PolicyAccepted", func(*api.AgentPolicy, *controller.SandboxConfigurationSnapshot) {}, nil, false, metav1.ConditionTrue},
@@ -106,9 +106,11 @@ func TestSandboxEventsCommittedConfigurationTransitions(t *testing.T) {
 			}
 			request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)}
 			for range 3 {
-				_, err := r.Reconcile(ctx, request)
-				if (err != nil) != tc.wantError || tc.sourceError != nil && !errors.Is(err, tc.sourceError) {
-					t.Fatalf("configuration event changed assessment error semantics: %v", err)
+				// Unavailable prerequisites retry periodically, without a
+				// reconcile error.
+				result, err := r.Reconcile(ctx, request)
+				if err != nil || (result.RequeueAfter == unavailableConfigurationRequeue) != tc.retry {
+					t.Fatalf("configuration event changed assessment retry semantics: %+v, %v", result, err)
 				}
 			}
 			if writes != 1 || len(capture.events) != 1 {

@@ -2731,8 +2731,11 @@ workload.
 Reconciliation uses the cache for its primary configuration object, but
 authoritative reads for prerequisites and grants. Successful refreshes are
 jittered between 50% and 62.5% of the snapshot freshness window that is left.
-Failures keep the controller backoff. These helpers do not install a
-production snapshot source.
+When the platform prerequisites are unavailable, for example an unusable
+registration, the reconcilers try again every 30 seconds without a reconcile
+error. A change of the registration ConfigMap queues every Sandbox and
+AgentPolicy immediately. Other failures keep the controller backoff. These
+helpers do not install a production snapshot source.
 
 #### Optional final-Pod admission
 

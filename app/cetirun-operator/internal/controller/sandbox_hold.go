@@ -40,9 +40,16 @@ func sandboxRequested(agent *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) 
 // It requests an existing workload to stop but is not a qualified node fence.
 // Once held, clearing spec fields cannot silently return an Agent to legacy mode.
 func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha1.Agent) (ctrl.Result, error) {
+	return r.holdSandboxBecause(ctx, agent, "")
+}
+
+// holdSandboxBecause is holdSandbox with the reason of the hold. Only a
+// common-executor Agent shows cause, after its generic hold text; other holds
+// write their own text. cause must be bounded text that the Agent already shows.
+func (r *AgentReconciler) holdSandboxBecause(ctx context.Context, agent *cetirunv1alpha1.Agent, cause string) (ctrl.Result, error) {
 	reconciled, err := r.usesReconciledSandbox(ctx, agent)
 	if reconciled || err != nil {
-		result, holdErr := r.holdReconciledSandbox(ctx, agent)
+		result, holdErr := r.holdReconciledSandboxBecause(ctx, agent, cause)
 		return result, errors.Join(err, holdErr)
 	}
 	return r.holdSandboxWithPolicyFence(ctx, agent, nil)
@@ -288,6 +295,11 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 		conditions = append(conditions, cetirunv1alpha1.ConditionAgentConfigReady)
 	}
 	for _, kind := range conditions {
+		if kind == cetirunv1alpha1.ConditionReady && cleanupWaitRecorded(agent) {
+			// Keep the Pod wait that an earlier pass recorded. Otherwise each
+			// pass writes Ready twice while the Pods terminate.
+			continue
+		}
 		apimeta.SetStatusCondition(&agent.Status.Conditions, metav1.Condition{
 			Type: kind, Status: metav1.ConditionFalse, ObservedGeneration: agent.Generation,
 			Reason: "InstanceDeleting", Message: "Sandbox-held Agent cleanup requested",
@@ -311,7 +323,7 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 		return ctrl.Result{}, err
 	}
 	if err := r.checkSandboxBootstrapCleanup(ctx, agent); err != nil {
-		return ctrl.Result{}, err
+		return r.cleanupWaitResult(ctx, agent, err)
 	}
 	if agentIdentityRequested(agent) || agent.Status.AgentIdentity != nil {
 		if err := r.deleteAgentIdentity(ctx, agent); err != nil {

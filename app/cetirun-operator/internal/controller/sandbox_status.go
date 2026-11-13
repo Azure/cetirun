@@ -127,6 +127,10 @@ func appliedMatches(agent *api.Agent, expected sandbox.ExecutionIdentity) bool {
 		applied.AppliedRevision == expected.Revision
 }
 
+// sandboxStatusFailure classifies a failure for SandboxReady. A classified
+// failure adds the fixed explanation of its class, as the AgentPolicy and
+// Sandbox conditions do. Other error text never reaches the status: it can
+// contain values from the policy, the registration or an API error.
 func sandboxStatusFailure(err error) (metav1.ConditionStatus, string, string) {
 	var stale *ingressmtls.StaleError
 	switch {
@@ -139,20 +143,26 @@ func sandboxStatusFailure(err error) (metav1.ConditionStatus, string, string) {
 	case errors.Is(err, sandbox.ErrObservationUnavailable):
 		return metav1.ConditionUnknown, "ObservationUnavailable", "Fresh evidence for the current binding and execution identity is unavailable."
 	case errors.Is(err, sandboxpolicy.ErrUnavailable):
-		return metav1.ConditionUnknown, "ObservationUnavailable", "Current trusted platform dependencies are unavailable."
+		return metav1.ConditionUnknown, "ObservationUnavailable",
+			configurationErrorMessage("Current trusted platform dependencies are unavailable", err, sandboxpolicy.ErrUnavailable)
 	case errors.Is(err, sandbox.ErrEnforcementPending):
 		return metav1.ConditionFalse, "EnforcementPending", "Current observation does not yet verify every required control."
 	case errors.Is(err, sandbox.ErrRuntimeUnavailable):
 		return metav1.ConditionFalse, "RuntimeUnavailable", "The selected Sandbox runtime is unavailable."
 	case sandboxPreparationUnsupportedError(err):
-		return metav1.ConditionFalse, "UnsupportedControl", "A requested Sandbox control is not qualified."
+		return metav1.ConditionFalse, "UnsupportedControl",
+			configurationErrorMessage("A requested Sandbox control is not qualified", err, sandboxpolicy.ErrUnsupportedControl)
 	case apierrors.IsNotFound(err):
-		return metav1.ConditionFalse, "ReferenceMissing", "A required Sandbox configuration reference is missing."
+		return metav1.ConditionFalse, "ReferenceMissing",
+			configurationErrorMessage("A required Sandbox configuration reference is missing", err, nil)
 	case errors.Is(err, sandbox.ErrUnauthorizedBinding), errors.Is(err, sandboxpolicy.ErrUnapprovedGrant):
-		return metav1.ConditionFalse, "UnauthorizedBinding", "The current binding or identity grant is not authorized."
+		return metav1.ConditionFalse, "UnauthorizedBinding",
+			configurationErrorMessage("The current binding or identity grant is not authorized", err, sandboxpolicy.ErrUnapprovedGrant)
 	case errors.Is(err, sandboxpolicy.ErrConflict):
-		return metav1.ConditionFalse, "PolicyConflict", "Policy rules conflict with required platform controls."
+		return metav1.ConditionFalse, "PolicyConflict",
+			configurationErrorMessage("Policy rules conflict with required platform controls", err, sandboxpolicy.ErrConflict)
 	default:
-		return metav1.ConditionFalse, "PolicyApplyFailed", "Sandbox control processing failed; execution must remain held."
+		return metav1.ConditionFalse, "PolicyApplyFailed",
+			configurationErrorMessage("Sandbox control processing failed; execution must remain held", err, nil)
 	}
 }

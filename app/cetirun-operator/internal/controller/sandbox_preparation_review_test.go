@@ -109,6 +109,37 @@ func TestSandboxPreparationUnsupportedProviderControlIsNotRetryableFailure(t *te
 	}
 }
 
+// TestSandboxPreparationStatusShowsTheFixedReason checks #556 item 2: the
+// held preparation status adds the fixed reason of a classified failure, also
+// for an unsupported control, and never other error text.
+func TestSandboxPreparationStatusShowsTheFixedReason(t *testing.T) {
+	const canary = "value-canary-5d1f"
+	for _, tc := range []struct {
+		name    string
+		cause   error
+		message string
+	}{
+		{"unsupported control", sandboxpolicy.ControlFailure(sandboxpolicy.ErrUnsupportedControl, "a fixed reason"),
+			"A requested control is not supported by native Sandbox preparation; execution remains held: a fixed reason."},
+		{"unsupported control without a fixed reason", fmt.Errorf("%w: %s", sandboxpolicy.ErrUnsupportedControl, canary),
+			"A requested control is not supported by native Sandbox preparation; execution remains held."},
+		{"exceeded budget", sandboxpolicy.ControlFailure(sandboxpolicy.ErrConflict, "control input budget exceeded"),
+			"Policy rules conflict with required platform controls: control input budget exceeded."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPreparationFixture(t, "hermes")
+			f.source.resolveErr = tc.cause
+			_, _ = f.reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKey{Name: f.fixture.Agent.Name}})
+			agent := f.current(t)
+			for _, kind := range []string{api.ConditionReady, api.ConditionSandboxReady, api.ConditionAgentConfigReady} {
+				if condition := apimeta.FindStatusCondition(agent.Status.Conditions, kind); condition == nil || condition.Message != tc.message {
+					t.Fatalf("%s does not show the fixed reason: %+v", kind, condition)
+				}
+			}
+		})
+	}
+}
+
 func TestSandboxPreparationPlatformPrerequisiteClassification(t *testing.T) {
 	readFailure := errors.New("synthetic RuntimeClass read failure")
 	for _, tc := range []struct {

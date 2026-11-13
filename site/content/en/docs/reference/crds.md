@@ -341,13 +341,13 @@ does not use can be absent or `False`.
 
 | Condition | Meaning |
 | --- | --- |
-| `Ready` | The Agent is ready for use. `Ready` can be `True` while `IngressReady` is `False`. `Suspended` skips the Pod readiness checks, so examine the replicas and the Pod termination separately. |
+| `Ready` | The Agent is ready for use. `Ready` can be `True` while `IngressReady` is `False`. `Suspended` skips the Pod readiness checks, so examine the replicas and the Pod termination separately. `False` with `PodsTerminating` means that the deletion of a Sandbox Agent waits for the Pods of the Agent to terminate. |
 | `AgentConfigReady` | The operator resolved the Agent configuration. Reason `AgentConfigResolved` means that the built-in configuration is prepared, not that the runtime is ready. `False` with `AgentConfigInvalid` reports a rejected profile, image, port, or Helm value, or a failed chart download for a new Agent or a spec change. For a failed download, the operator log records the error of the registry. `AgentRuntimeNotImplemented` reports a setting that cannot be provisioned, for example a non-default built-in username. `AgentChartUnavailable` reports a temporary chart download failure of an installed Agent. |
 | `BuiltInPrerequisitesReady` | The last full reconciliation of a built-in Agent completed its prerequisites. Only a later successful reconciliation clears a failure. |
 | `RegistryCredentialsReady` | The operator copied the registry credentials of `agent.registrySecretRef`. It does not prove that the registry accepted them or that the image was pulled. |
 | `PolicyResolved` | The Team, the requests of the Agent, the Sandbox, and the effective Agent Policy are resolved. `False` with `PolicyDenied` means that the Agent Policy does not allow a request, for example a skill. `DependencyUnavailable` means that a dependency cannot be read or cannot be used, for example an Agent Policy with the reason `RegistrationIncompatible`. In this case, the operator stops the Agent and blocks its AI Gateway key, but keeps the key. |
 | `PolicyApplied` | Every enforcement revision that the Agent Policy needs matches the evidence of its component. `EnforcementPending` means that the Sandbox, AI Gateway, or credential enforcement is not complete. |
-| `SandboxReady` | The Sandbox workload of a Sandbox Agent is ready, and its Kubernetes configuration matches. It does not supply physical failover fencing. |
+| `SandboxReady` | The Sandbox workload of a Sandbox Agent is ready, and its Kubernetes configuration matches. It does not supply physical failover fencing. `SandboxHeld` means that the common executor holds the workload. If `PolicyResolved` is `False`, the message of `SandboxReady` and `Ready` ends with the `PolicyResolved` message. For other reasons, such as `PolicyConflict` or `UnsupportedControl`, the message can end with a fixed explanation from the operator code. This explanation contains no values from the Agent Policy or the registration. |
 | `AIGatewayReady` | The AI Gateway virtual key of the Agent is ready. `NoModelEntitlement` means that the effective policy grants no model source. |
 | `AgentIdentityReady` | The Entra Agent Identity of the Agent is ready. |
 | `HelmDeployed` | The Helm release of the Agent is applied. |
@@ -667,7 +667,10 @@ prerequisites of the Sandbox, not for an Agent. Its reason is
 `PrerequisitesReady` when the registered runtime and storage match. Other
 reasons are `InvalidConfiguration`, `UnsupportedControl`, `RuntimeUnavailable`,
 `UnapprovedStorage`, `ReferenceMissing`, `ReferenceChanged`, `UnapprovedGrant`,
-`PolicyConflict`, `PrerequisitesUnavailable`, and `Terminating`.
+`PolicyConflict`, `PrerequisitesUnavailable`, and `Terminating`. If the
+operator knows a fixed reason, the message names it, for example an ingress
+mTLS registration without a digest-pinned image. The message contains only
+text from the operator code, without values from the registration.
 
 ## AgentPolicy
 
@@ -801,9 +804,15 @@ reasons are `InvalidConfiguration`, `UnsupportedControl`, `UnapprovedGrant`,
 `Terminating`.
 
 `RegistrationIncompatible` means that the operator accepted this generation of
-the Agent Policy before, and the current platform registration cannot enforce
-it. The message of the condition can end with a fixed explanation from the
-operator. It does not contain values from the Agent Policy or the registration.
+the Agent Policy before (`acceptedGeneration`), and the current platform
+registration cannot enforce it. The operator then holds the Agents that use the
+Agent Policy and blocks their AI Gateway keys, without revoking them. The Agents
+recover when you correct the registration, or when the operator accepts a
+corrected Agent Policy.
+
+If the operator knows a fixed reason, the message names it, for example a rule
+budget that the Agent Policy exceeds. The message contains only text from the
+operator code, without values from the Agent Policy or the registration.
 
 ### Identity and network controls
 

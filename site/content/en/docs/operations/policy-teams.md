@@ -356,6 +356,10 @@ kubectl create configmap sandbox-platform -n cetirun-system --from-file=platform
   --dry-run=client -o yaml | kubectl replace -f -
 ```
 
+When the ConfigMap changes, the operator immediately checks the Agent Policies
+and the Sandboxes again. While the operator cannot use the registration, it
+checks them again about every 30 seconds.
+
 `"profile": "native-single-start"` is the name of the registration profile of
 Sandbox execution in this release. Agents of this profile restart, suspend,
 and resume normally. The profile is different from the *single-start
@@ -705,6 +709,7 @@ operator README's
 | Symptom | Cause | Action |
 | --- | --- | --- |
 | A Sandbox or an Agent Policy reports `PrerequisitesUnavailable` with the status `Unknown` | `platform.json` is not valid, for example with an unknown field, a duplicate field, or a wrong type. The condition message gives only the type of error, such as `malformed, unknown or duplicate platform JSON fields`. It does not name the field | Compare each field of `platform.json` with the example on this page. Make sure that the file is valid JSON, for example with `jq empty platform.json`. Then replace the ConfigMap |
+| A Sandbox Agent does not start, and its `Ready` and `SandboxReady` conditions have the reason `SandboxHeld` | The operator holds the Agent. If `PolicyResolved` is `False`, the message ends with the message of `PolicyResolved`, for example when the current registration cannot enforce the Agent Policy. Other holds, for example a wait for a prerequisite, show only the general message | For a policy message, read the `Accepted` condition of the Agent Policy, and correct the Agent Policy or the platform registration. For the general message, examine the other conditions of the Agent and the operator log |
 | The Portal refuses a new Agent with `runtime_unavailable` | Sandbox execution is not enabled, or the Portal has no runtime profile for the agent type | Do [Enable Sandbox execution](#enable-sandbox-execution) |
 | `kubectl exec`, `attach`, or `port-forward` fails with `ConnectForbidden` | Pod admission refuses interactive access to the Pods of Sandbox Agents | Use the terminal of the Agent in the Portal |
 | Writes to Agents, Teams, Sandboxes, and Agent Policies fail | The admission server is not ready, for example because its certificate expired | Renew the certificate. Refer to [Renew the admission certificate](#renew-the-admission-certificate). If the CetiAdmin webhooks are installed, status updates and the deletion of Agents also fail until the server is ready. So do writes to Pods and other workloads in Agent namespaces |

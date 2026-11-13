@@ -229,8 +229,13 @@ func TestCompileSerializedNetworkPolicyThresholds(t *testing.T) {
 		input.Resolution.Binding.TeamUID = types.UID(strings.Repeat("a", length+delta))
 		plan, err := Compile(input)
 		if delta > 0 {
-			if plan != nil || !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "bytes; limit") {
+			if plan != nil || !errors.Is(err, ErrConflict) ||
+				PublicDetail(err, ErrConflict) != fmt.Sprintf("a generated network policy exceeds %d bytes", MaxNetworkPolicyBytes) {
 				t.Fatalf("oversized serialized policy returned a plan: %v, %v", plan, err)
+			}
+			// The fixed reason names only the constant limit.
+			if strings.Contains(err.Error(), baseline.Network.Policy.Name) || strings.Contains(err.Error(), fmt.Sprint(MaxNetworkPolicyBytes+delta)) {
+				t.Fatalf("the size failure quoted the policy name or its size: %v", err)
 			}
 			continue
 		}

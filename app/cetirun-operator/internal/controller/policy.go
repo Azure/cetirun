@@ -51,11 +51,25 @@ func (r *AgentReconciler) holdPolicyDenied(ctx context.Context, agent *api.Agent
 			return result, holdErr
 		}
 	}
-	result, holdErr := r.holdSandbox(ctx, agent)
+	result, holdErr := r.holdSandboxBecause(ctx, agent, policyHoldCause(agent))
 	if revokeErr != nil || holdErr != nil {
 		return result, errors.Join(revokeErr, holdErr)
 	}
 	return result, nil
+}
+
+// policyHoldCause returns the PolicyResolved message that recordPolicy wrote
+// for the current generation of an Agent whose policy does not resolve, or an
+// empty string. A policy hold repeats it in Ready and SandboxReady, which
+// otherwise show only a generic text. The text is already on the Agent, so
+// this shows nothing new; it is clipped because the hold repeats it.
+func policyHoldCause(agent *api.Agent) string {
+	resolved := meta.FindStatusCondition(agent.Status.Conditions, api.ConditionPolicyResolved)
+	if agent.Status.Policy == nil || agent.Status.Policy.ObservedGeneration != agent.Generation ||
+		resolved == nil || resolved.Status != metav1.ConditionFalse {
+		return ""
+	}
+	return telemetry.Clip(resolved.Message, maxConditionSummary)
 }
 
 // holdPolicyReprojection fences an already-running Agent while a changed
@@ -107,7 +121,7 @@ func (r *AgentReconciler) holdPolicyDependencyUnavailable(ctx context.Context, a
 	var result ctrl.Result
 	var holdErr error
 	if sandboxRequested(agent, nil) {
-		result, holdErr = r.holdSandbox(ctx, agent)
+		result, holdErr = r.holdSandboxBecause(ctx, agent, policyHoldCause(agent))
 	} else {
 		result, holdErr = r.holdOrdinaryAgentDependency(ctx, agent)
 	}
