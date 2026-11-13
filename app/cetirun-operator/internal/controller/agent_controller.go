@@ -721,7 +721,16 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed,
 			metav1.ConditionFalse, "ChartNotInstalled", "Helm chart not installed yet")
 	}
-	if reconciledSandbox && instance.Status.Phase == cetirunv1alpha1.PhasePending {
+	if reconciledSandbox && instance.Spec.Suspended {
+		// Shutdown was requested independently above. Keep its phase while
+		// checking prerequisites: an intermediate status write must not
+		// publish Provisioning before a stale mTLS hold confirms suspension.
+		if creating {
+			if err := r.updateStatus(ctx, instance); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	} else if reconciledSandbox && instance.Status.Phase == cetirunv1alpha1.PhasePending {
 		// A held common-executor Agent stays Pending until this pass applies
 		// or holds it again. Writing Provisioning first would make every pass
 		// of a steady hold write two alternating phases. Keep the phase in
