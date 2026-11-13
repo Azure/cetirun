@@ -782,8 +782,16 @@ When this option is selected, a primary-resource update must have an exact
 submitted coordination reservation. It must also have the normal configuration
 authorization. Admission administrator or controller identity alone is not a
 bypass. To submit or observe an update, use the operator's explicit
-`sandbox-config-change` command with pinned before/after inputs. Admission does
-only reads, also for dry runs. If the authority is absent, corrupt, or
+`sandbox-config-change` command with pinned before/after inputs.
+
+If an update remains `changing` with an unchanged source version, use the
+command's explicit `--action recover-update` with the same original files and
+authority pin. It uses a conditional status update to exclude delayed writes
+before releasing the reservation. This requires update permission on the source's
+`/status` subresource; it never replays the desired configuration update.
+See the [coordinated configuration recovery instructions]({{< repo "app/cetirun-operator/README.md" >}}#coordinated-configuration-updates).
+
+Admission only reads state, including for dry runs. If the authority is absent, corrupt, or
 replaced, it blocks matched updates.
 
 Primary-resource deletion also must have the exact submitted reservation, the

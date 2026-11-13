@@ -1179,6 +1179,51 @@ original content. Read the current configuration before you prepare a new
 update. Do not edit the journal, refresh the original files, or replay the old
 request.
 
+If observation remains uncertain because the source still has its original
+resourceVersion, use explicit `--action recover-update` with the **same original
+before/after files** and authority pin. This action only recovers an existing
+`changing` update; it cannot reserve a new operation or replay the desired write.
+It first observes the source. If a terminal outcome is already visible, it
+releases the reservation using the same content checks as above.
+
+Otherwise, recovery requires the source to match the complete original image.
+It performs one `/status` Update with the original UID and resourceVersion,
+adding a `ConfigurationChangeFenced` condition whose message identifies the
+operation. It preserves all existing status fields and conditions. This condition
+records a version fence, not readiness or acceptance of the proposed change.
+It remains as a historical observation until a later recovery replaces it.
+The command needs `update` permission on the source's status subresource, in
+addition to its existing source-read and coordination ConfigMap permissions;
+it does not grant those permissions.
+
+The original update and the status fence compete for the same resourceVersion.
+If the original update wins, recovery can confirm the desired content and report
+`completed`. If the fence wins, every delayed original update is rejected by
+Kubernetes's version precondition. Recovery must then read the same live UID at
+a newer version with unchanged writable content before it releases the
+reservation and reports `update-superseded`. A successful status response,
+conflict, timeout, or elapsed time alone is insufficient proof. Recovery never
+rebases the fence onto a newer version or automatically retries its write.
+
+After an uncertain recovery result, observe again with the original files.
+If necessary, explicitly run `recover-update` again with those files. If the
+reservation was released but its response was lost, observation may report
+`unavailable`; inspect the exact authority operation and current source through
+authorized reads instead of modifying the journal. Read the current source
+before preparing any new update. The existing CRDs support the condition, so
+this recovery needs no CRD or journal-format migration.
+
+Failed source submissions include a bounded `diagnostic` with `stage`, `state`,
+`reason`, and, for recognized rejections, `httpStatus`. States distinguish
+`not-submitted`, `rejected`, and `unknown` for **this invocation**. For example,
+`source-update/rejected/forbidden` points to source-update authorization or
+admission, while `status-update/rejected/forbidden` points to recovery status
+permissions. Timeout and transport failures remain unknown. No diagnostic
+proves that another invocation has no pending request, and none releases a
+reservation. Raw server messages, configuration bodies, and credentials are
+never printed. Diagnostics are returned to the caller, not persisted in the
+coordination journal; retain the command output for troubleshooting.
+
 The Portal uses the same recovery rules before a save. After a restart, it can
 recover a superseded update without the original request body. Its normal
 UID/resourceVersion checks still reject a stale edit. After the old reservation
@@ -1250,12 +1295,13 @@ operation ID. There is no implicit current-cluster fallback.
 
 The default action observes an update. For deletion observation,
 `--action observe-delete` is necessary. A mutation must have an explicit
-`--action update` or `--action delete`. Inputs are bounded, strict YAML/JSON
+`--action update`, `--action recover-update`, or `--action delete`. Inputs are bounded, strict YAML/JSON
 configuration objects, not arbitrary Kubernetes resources (256 KiB per image).
 Verified HTTPS is necessary. Redirects, exec/auth-provider login plugins and
 automatic mutation retries are refused.
 
-The output identifies the operation and phase, not the configuration contents.
+The output identifies the operation and phase and includes sanitized failure
+diagnostics, never configuration contents.
 For the exact argument list, run `sandbox-config-change --help`.
 
 Whitespace and object-key order inside `managedFields.fieldsV1` do not change

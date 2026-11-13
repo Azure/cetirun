@@ -134,6 +134,10 @@ func TestCLIObserveIsDefaultAndNeverWrites(t *testing.T) {
 			}
 			writes := 0
 			observed := interceptor.NewClient(storage, interceptor.Funcs{
+				SubResourceUpdate: func(context.Context, client.Client, string, client.Object, ...client.SubResourceUpdateOption) error {
+					writes++
+					return errors.New("observe must not write status")
+				},
 				Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error {
 					writes++
 					return errors.New("observe must not write")
@@ -589,7 +593,12 @@ func TestCLITransportDoesNotRetryAnUpdate(t *testing.T) {
 	}
 	mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{api.GroupVersion})
 	mapper.Add(api.GroupVersion.WithKind("Team"), meta.RESTScopeRoot)
-	httpClient := &http.Client{Transport: &singleMutationTransport{next: http.DefaultTransport}}
+	httpClient := &http.Client{Transport: &singleMutationTransport{next: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Body == nil || request.GetBody != nil {
+			t.Error("mutation body is absent or can be rewound by the underlying transport")
+		}
+		return http.DefaultTransport.RoundTrip(request)
+	})}}
 	base, err := client.New(&rest.Config{Host: server.URL}, client.Options{Scheme: scheme, Mapper: mapper, HTTPClient: httpClient})
 	if err != nil {
 		t.Fatal(err)
@@ -597,9 +606,17 @@ func TestCLITransportDoesNotRetryAnUpdate(t *testing.T) {
 	writer := &singleMutationClient{Client: base}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	err = writer.Update(ctx, &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "uid", ResourceVersion: "1"}})
-	if err == nil || requests.Load() != 1 {
-		t.Fatalf("automatic retry reached HTTP: requests=%d error=%v", requests.Load(), err)
+	for _, status := range []bool{false, true} {
+		requests.Store(0)
+		object := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "uid", ResourceVersion: "1"}}
+		if status {
+			err = writer.Status().Update(ctx, object)
+		} else {
+			err = writer.Update(ctx, object)
+		}
+		if err == nil || requests.Load() != 1 {
+			t.Fatalf("automatic retry reached HTTP: status=%v requests=%d error=%v", status, requests.Load(), err)
+		}
 	}
 }
 

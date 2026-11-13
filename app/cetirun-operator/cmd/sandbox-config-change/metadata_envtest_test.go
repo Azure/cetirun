@@ -25,6 +25,8 @@ import (
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -129,7 +131,7 @@ func TestCLIConfigurationMetadataAPIServer(t *testing.T) {
 	if err := storage.Create(ctx, webhook); err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []string{"minimal-manifest", "typed-manifest", "lost-response", "pending-submission"} {
+	for _, scenario := range []string{"minimal-manifest", "typed-manifest", "lost-response", "pending-submission", "recover-pending"} {
 		t.Run(scenario, func(t *testing.T) {
 			created := &unstructured.Unstructured{Object: map[string]any{
 				"apiVersion": api.GroupVersion.String(), "kind": "AgentPolicy",
@@ -235,7 +237,7 @@ func TestCLIConfigurationMetadataAPIServer(t *testing.T) {
 					source := object.GetObjectKind().GroupVersionKind() == api.GroupVersion.WithKind("AgentPolicy")
 					if source {
 						sourceUpdates++
-						if scenario == "pending-submission" {
+						if scenario == "pending-submission" || scenario == "recover-pending" {
 							pending := object.DeepCopyObject().(client.Object)
 							delayed = func(ctx context.Context) error { return writer.Update(ctx, pending, opts...) }
 							return errors.New(syntheticBody)
@@ -254,12 +256,12 @@ func TestCLIConfigurationMetadataAPIServer(t *testing.T) {
 			if sourceUpdates != 1 || result.Phase != sandboxcoordination.Changing || result.Operation == "" {
 				t.Fatalf("metadata update did not submit once under an exact operation: code=%d status=%+v updates=%d", code, result, sourceUpdates)
 			}
-			if scenario == "lost-response" || scenario == "pending-submission" {
+			if scenario == "lost-response" || (scenario == "pending-submission" || scenario == "recover-pending") {
 				if code != 1 || result.Status != "uncertain" || !strings.Contains(stderr, observationInstruction) {
 					t.Fatalf("unconfirmed submission was not retained: code=%d status=%+v stderr=%s", code, result, stderr)
 				}
 				operation, writes := result.Operation, updates
-				if scenario == "pending-submission" {
+				if scenario == "pending-submission" || scenario == "recover-pending" {
 					for _, action := range []string{"observe", "update"} {
 						code, result, _ = invoke(t, append(args, "--action", action), factory)
 						if code != 1 || result.Status != "uncertain" || result.Operation != operation || updates != writes {
@@ -275,6 +277,38 @@ func TestCLIConfigurationMetadataAPIServer(t *testing.T) {
 					}
 					if delayed == nil {
 						t.Fatal("missing delayed request")
+					}
+					if scenario == "recover-pending" {
+						code, result, stderr = invoke(t, append(args, "--action", "recover-update"), factory)
+						if code != 0 || result.Status != "update-superseded" || result.Operation != operation || sourceUpdates != 1 {
+							t.Fatalf("explicit recovery failed: code=%d status=%+v stderr=%s", code, result, stderr)
+						}
+						if err := storage.Get(ctx, client.ObjectKeyFromObject(policy), current); err != nil {
+							t.Fatal(err)
+						}
+						fence := meta.FindStatusCondition(current.Status.Conditions, sandboxcoordination.ConfigurationChangeFencedCondition)
+						if current.UID != before.GetUID() || current.ResourceVersion == before.GetResourceVersion() || current.Generation != before.GetGeneration() || current.Labels["example.com/change"] != "" || fence == nil || !strings.Contains(fence.Message, operation) {
+							t.Fatal("recovery did not preserve the original configuration with a new version")
+						}
+						if !meta.IsStatusConditionTrue(current.Status.Conditions, api.ConditionAgentPolicyAccepted) || current.Status.ObservedGeneration != policy.Status.ObservedGeneration {
+							t.Fatal("recovery changed existing acceptance status")
+						}
+						if err := store.CheckNative(ctx, native); err != nil {
+							t.Fatal("fence invalidated unaffected consumer:", err)
+						}
+						if err := delayed(ctx); err == nil {
+							t.Fatal("delayed request committed after explicit recovery")
+						}
+						// With admission bypassed for this dry proof, Kubernetes storage
+						// must still reject the old resourceVersion itself.
+						if err := storage.Status().Update(ctx, policy.DeepCopy()); !apierrors.IsConflict(err) {
+							t.Fatal("status fence did not advance Kubernetes CAS:", err)
+						}
+						code, result, _ = invoke(t, append(args, "--action", "recover-update"), factory)
+						if code != 1 || result.Status != "unavailable" {
+							t.Fatal("released recovery reacquired operation")
+						}
+						return
 					}
 					if err := delayed(ctx); err != nil {
 						t.Fatal("original pending request could not complete:", err)

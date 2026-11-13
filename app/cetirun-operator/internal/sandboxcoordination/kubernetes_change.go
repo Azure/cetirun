@@ -225,35 +225,39 @@ func NewKubernetesChangeAdapter(writer client.Client, reader client.Reader, befo
 func (a *KubernetesChangeAdapter) Submit(ctx context.Context, ticket ChangeTicket, guard func(context.Context) error) error {
 	ticket = ticket.DeepCopy()
 	if err := a.validate(ctx, ticket); err != nil {
-		return err
+		return submissionFailure(SubmissionStageValidation, SubmissionNotSubmitted, "validation", 0, err)
 	}
 	if a.writer == nil || guard == nil {
-		return fmt.Errorf("%w: configuration writer and coordination guard are required", ErrUnavailable)
+		return submissionFailure(SubmissionStageValidation, SubmissionNotSubmitted, "configuration", 0,
+			fmt.Errorf("%w: configuration writer and coordination guard are required", ErrUnavailable))
 	}
 	if !a.attempted.CompareAndSwap(false, true) {
-		return fmt.Errorf("%w: configuration submission cannot be retried; observe with the same inputs", ErrConflict)
+		// A previous attempt can have reached the API server even if its caller
+		// observed an error, so a refused retry is itself an unknown outcome.
+		return submissionFailure(SubmissionStageSourceUpdate, SubmissionUnknown, "retry-refused", 0,
+			fmt.Errorf("%w: configuration submission cannot be retried; observe with the same inputs", ErrConflict))
 	}
 	if err := guard(ctx); err != nil {
-		return err
+		return submissionFailure(SubmissionStageGuard, SubmissionNotSubmitted, "guard", 0, err)
 	}
 	current, err := a.change.readBefore(ctx, a.reader)
 	if err != nil {
-		return err
+		return submissionFailure(SubmissionStageSourceRead, SubmissionNotSubmitted, "source-read", 0, err)
 	}
 	request, err := a.change.updateRequest(current)
 	if err != nil {
-		return err
+		return submissionFailure(SubmissionStageRequestPreparation, SubmissionNotSubmitted, "request-preparation", 0, err)
 	}
 	if err := guard(ctx); err != nil {
-		return err
+		return submissionFailure(SubmissionStageGuard, SubmissionNotSubmitted, "guard", 0, err)
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return submissionFailure(SubmissionStageSourceUpdate, SubmissionNotSubmitted, "canceled", 0, err)
 	}
 	// No rebasing, patching, create-on-missing or retry. Update carries the
 	// original UID and resourceVersion in the complete request object.
 	if err := a.writer.Update(ctx, request, client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
-		return fmt.Errorf("%w: configuration Update outcome is uncertain; observe with the same inputs: %w", ErrUnavailable, err)
+		return classifySourceUpdateFailure(err)
 	}
 	return nil
 }
