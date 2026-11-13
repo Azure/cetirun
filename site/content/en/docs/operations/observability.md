@@ -151,18 +151,31 @@ The cluster template creates these functions:
 | Database | Function | Rows |
 |---|---|---|
 | `CetiRunLogs` | `GatewayRequests()` | One AI Gateway call with its Agent, owner, Team, model, tokens, spend, routing and outcome. No request or response content. `CallOrigin` is `health_check` for LiteLLM's own probes, the origin of the classifier for the classifier call of a router, and empty for a client's call |
+| `CetiRunLogs` | `GatewayDailyUsage`, a materialized view | The AI Gateway calls, failed calls, tokens and spend of one day per cluster, Agent, owner, Team, model and call origin. It keeps 400 days by default, longer than the request log |
 | `CetiRunLogs` | `KubeEvents()` | One Kubernetes event version |
 | `CetiRunLogs` | `AgentInventoryHistory()`, `AgentInventory()` | Each record of an Agent's namespace, owner, Team and policy; the current Agents |
 | `CetiRunLogs` | `InventorySnapshots()` | One complete inventory snapshot of a kind, per cluster |
 | `CetiRunAgents` | `AgentLogsWithOwner()` | Agent output with the Agent, owner and Team that had the namespace at the time |
 | `CetiRunMetrics` | `CollectionHealth(window)` | One check of the collection per cluster, with `Status` `OK`, `Warning` or `Failed` |
+| `CetiRunAudit` | `AuditEvents()` | One audit event of the AKS API server: user, source address, verb, object, and answer. Only with the [audit events](../infrastructure/#kubernetes-audit-events) of the cluster template |
 
-For example, the spend of each Agent today:
+The template also creates the tables that these functions read, so that the
+functions work before the first rows arrive. For example, the spend of each
+Agent today:
 
 ```kusto
 GatewayRequests()
 | where Timestamp > startofday(now()) and CallOrigin != "health_check"
 | summarize Calls = count(), Spend = sum(Spend) by Agent, Owner, Team, Model
+```
+
+And the spend of each Team by month, also for months before the retention of
+the request log:
+
+```kusto
+GatewayDailyUsage
+| where CallOrigin != "health_check"
+| summarize Spend = sum(Spend) by Month = startofmonth(Day), Team
 ```
 
 `CollectionHealth()` checks the last 15 minutes by default:
@@ -304,7 +317,7 @@ Also watch these signals of the platform:
   Without the role, only the first CetiRun cluster's ingestor starts.
 - If you prepare the databases yourself, also run the scripts in
   `infra/cluster/modules/adx/`, each in its database:
-  - `cetirun-logs.kql` in the logs database
+  - `cetirun-logs.kql`, then `cetirun-gateway-usage.kql`, in the logs database
   - `cetirun-metrics.kql`, `cetirun-health.kql`, and `adxmon-functions.kql` in
     the metrics database
   - `cetirun-agents.kql` in the Agent logs database
@@ -312,12 +325,15 @@ Also watch these signals of the platform:
     content in Azure Data Explorer
 
   Before you run them, replace `__LOGS_DATABASE__` in `cetirun-health.kql`
-  and `cetirun-agents.kql` with the name of the logs database. Also set the
+  and `cetirun-agents.kql` with the name of the logs database. Replace
+  `__RETENTION_DAYS__` in `cetirun-gateway-usage.kql` with the days that the
+  view keeps. Also set the
   ingestion batching policy of each database. The template sets 30 seconds.
 - For the alerter, a user-assigned managed identity with a federated
   credential for
   `system:serviceaccount:<platform namespace>:cetirun-adx-mon-alerter`, and
-  the `Viewer` role on the logs and metrics databases.
+  the `Viewer` role on the logs and metrics databases. The cluster template
+  creates it with `adxAlerter: true`.
 - Outbound HTTPS from the platform namespace to the Kusto cluster, its
   `ingest-` endpoint, the Azure Storage endpoints of ADX ingestion, and Entra
   ID. With the alerter, also to the alert receiver.
@@ -403,6 +419,78 @@ set `ingestor.tls.secretName` to a Secret that you supply.
 - ADX-Mon does not collect Kubernetes events itself. The telemetry program
   writes them; by default, warnings and events about CetiRun resources and
   namespaces.
+
+## Size Azure Data Explorer
+
+On a test cluster with four nodes and two Agents, the collection wrote these
+amounts each day:
+
+| Database | Rows | Data before compression |
+|---|---|---|
+| Metrics | About 13 million | About 5.6 GB. The container metrics of the kubelet and the Pod state of kube-state-metrics are the largest tables |
+| Logs | About 200,000 | About 190 MB. The AI Gateway, with LiteLLM's health check probes, the platform, and the node journal write most of it |
+| Agent logs | Some hundreds | Less than 1 MB. It grows with what the Agents print |
+
+Kusto compresses this data about ten times. The metrics grow with the number
+of containers, and the logs with the use of the AI Gateway and the Agents. When
+the collection starts on a node, it also sends the kubelet and containerd
+journal that the node keeps. On the test cluster, this was about 350,000 rows
+and 125 MB for four nodes.
+
+The default SKU of the cluster template, `Dev(No SLA)_Standard_E2a_v4`, has one
+engine node, no SLA, and one ingestion slot. Use it for evaluation, and give each
+CetiRun cluster in testing a Dev cluster of its own. With one CetiRun cluster, a
+log line reached ADX in about 80 seconds. With two CetiRun clusters on one Dev
+cluster, it took 12 to 20 minutes while one of them sent its nodes' old log
+files.
+
+For production data, use the Standard tier with at least two instances. For
+example, set these parameters of the cluster template with `adxMode: create`:
+
+```bicep
+param adxSkuName = 'Standard_E2ads_v5'
+param adxSkuTier = 'Standard'
+param adxSkuCapacity = 2
+```
+
+A Standard cluster costs more than a Dev cluster: Azure Data Explorer also
+charges for each of its vCores. Select the size for your ingestion and queries,
+as
+[Choose an optimal compute SKU](https://learn.microsoft.com/azure/data-explorer/manage-cluster-choose-sku)
+describes.
+
+## When data is late or missing
+
+`CollectionHealth()` names the check that fails. These steps find the cause:
+
+1. **Logs or metrics stop arriving.** Check that the ingestor Pod is ready,
+   and read its log. A missing database or a missing role stops the ingestor
+   when it starts.
+2. **The ingestor backlog grows.** ADX takes the data more slowly than it
+   arrives. Run `.show ingestion failures | where FailedOn > ago(1h)` in each
+   database. In the Azure portal, read the metric *Ingestion utilization* of the
+   Kusto cluster. A cluster that is too small needs a larger SKU or more
+   instances.
+3. **Only the collector backlog grows.** The collectors lose their connection
+   to the ingestor. Check its Service, its NetworkPolicy, and the
+   `cetirun-adx-mon-ingestor-tls` Secret. The `Host` column of
+   `AdxmonCollectorWalSegmentsMaxAgeSeconds` names the nodes whose collectors
+   fall behind.
+4. **The collector drops log lines, or a backlog is refused.** One source writes
+   more than the collection can send. Find the table that grows fastest:
+
+   ```kusto
+   union withsource = Table Platform, Gateway, Ingress, Telemetry, Kubelet, Containerd
+   | where ingestion_time() > ago(1h)
+   | summarize Rows = count() by Table, Namespace, Pod
+   | top 10 by Rows
+   ```
+
+   Run the same query in the Agent logs database on `AgentLogs`. Stop the
+   source, for example by suspending its Agent. Or leave it out:
+   `logs.agents.enabled`, `logs.node.enabled`, and `metrics.drop` do that for a
+   whole class of data. For more room on the node, raise
+   `collector.maxDiskUsage`.
 
 ## Azure Monitor
 
