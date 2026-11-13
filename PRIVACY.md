@@ -57,24 +57,40 @@ and [Hermes configuration templates](app/cetirun-chart/templates/agents/hermes/_
 
 ### Session and application logs
 
-`logger.enabled` is `true` by default. The logger sidecar copies new lines of
-agent files to stdout:
+`logger.enabled` is `true` by default. It turns on two parts:
 
-- **Hermes:** the logger follows `/home/vibe/.hermes/logs/gateway.log`. The
-  content of this file depends on the installed Hermes version and
-  configuration, and it is not necessarily a complete transcript.
-- **OpenClaw:** the OpenClaw version in the agent image keeps its sessions in
-  SQLite and writes no session JSONL files. Thus, the logger exports no
-  records for it. If an OpenClaw image writes session JSONL files under
-  `/home/vibe/.openclaw/agents`, the logger copies their new lines. These lines
-  can contain user input, assistant output, tool calls, and tool results.
+- **The session log plugin of the runtime.** OpenClaw's plugin reads the new
+  messages of each session from the transcript that OpenClaw stores. Hermes's
+  plugin receives each turn and each tool call from the hooks of Hermes. The
+  plugin writes one JSON record for each user input, assistant output, tool
+  call, and tool result of the sessions, also of the sessions of messaging
+  channels. It writes them to
+  `/home/vibe/.openclaw/cetirun-session-log/` or
+  `/home/vibe/.hermes/cetirun-session-log/` in HOME.
+- **The logger sidecar.** It copies these records to stdout, where the cluster's
+  log collection captures them.
 
-The logger does not redact content. The logger starts to follow each file at
-the current end of that file and does not replay the whole history. The
-OpenClaw file selection looks for recent files and limits the number of files
-that it follows. These limits are not a data-retention or privacy guarantee.
-Anyone with access to the container logs that contain this output, or to their
-downstream log store, can possibly read the content.
+The records do not include system prompts, the history that the runtime sends
+with each model request, reasoning, or the data that a provider needs to
+continue a response. Before the plugin writes a record, the redaction of the
+runtime masks the secrets that it recognizes, for example API keys and tokens.
+This redaction does not find every secret or every item of personal data. Tool
+calls and tool results can contain file contents, command output, and other
+data that the Agent read.
+
+The plugin shortens the content of a record that is longer than the line limit
+of 16,000 bytes, and marks the record with `"truncated": true`. It keeps the
+newest records in HOME: a file of up to 8 MiB and one rotated file. In a new
+Pod, the logger copies these files again from their start, so the same record
+can occur more than once in the log store. The `id` of each record identifies
+these repeats. The processes of the Agent write the records, so the Agent can
+change them before the logger copies them. These limits are not a
+data-retention or privacy guarantee. Anyone with access to the container logs
+that contain this output, or to their downstream log store, can possibly read
+the content.
+
+The logger does not copy the log files of the runtimes, such as
+`/home/vibe/.hermes/logs/gateway.log`.
 
 Portal and operator logs also include operational information, for example
 aliases, display names, Team and Agent names, resource IDs, access URLs,
@@ -84,7 +100,9 @@ secrets. Agent, terminal, auth-helper, and optional Tailscale processes also
 write stdout/stderr.
 
 Source: [chart defaults](app/cetirun-chart/values.yaml),
-[session logger](app/cetirun-chart/configs/session-logger.sh),
+[session logger](app/cetirun-chart/configs/session-logger.mjs),
+[OpenClaw session log plugin](app/cetirun-chart/agents/openclaw/plugins/cetirun-session-log/exporter.mjs),
+[Hermes session log plugin](app/cetirun-chart/agents/hermes/plugins/cetirun-session-log/__init__.py),
 [OpenClaw entrypoint](app/cetirun-chart/agents/openclaw/bootstrap/entrypoint.sh),
 [Hermes entrypoint](app/cetirun-chart/agents/hermes/bootstrap/hermes-entrypoint.sh),
 [Portal handlers](app/cetirun-portal/internal/handler/instance.go),

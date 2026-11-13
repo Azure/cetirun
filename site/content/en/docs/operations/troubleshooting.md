@@ -296,11 +296,11 @@ Sources: [OpenClaw probes]({{< repo "app/cetirun-chart/templates/agents/openclaw
 and [Hermes probes]({{< repo "app/cetirun-chart/templates/agents/hermes/_runtime.tpl" >}}).
 
 Examine only the logs of the container that fails, and examine them privately.
-`logger` can contain session content, not only diagnostic messages. The default
-admission policy denies `kubectl exec` in the instance namespace, except for a
-fixed service account. Do not propose exec or port-forward as a way around the
-access controls of the deployment. When the portal terminal is enabled and
-healthy, it is the intended authenticated user path.
+`logger` prints the conversations of the Agent, not diagnostic messages. The
+default admission policy denies `kubectl exec` in the instance namespace,
+except for a fixed service account. Do not propose exec or port-forward as a
+way around the access controls of the deployment. When the portal terminal is
+enabled and healthy, it is the intended authenticated user path.
 
 ### Hermes tools stop at 420 seconds
 

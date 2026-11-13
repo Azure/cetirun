@@ -431,9 +431,12 @@ covers only `pods/exec`. Before installation, examine the access that
 platform administrators need. Do not disable the exec restriction as a
 troubleshooting shortcut.
 
-The [session logger]({{< repo "app/cetirun-chart/configs/session-logger.sh" >}})
-copies session output of the Agent to stdout without redaction. For what it
-collects and where the data goes, read [PRIVACY.md]({{< repo "PRIVACY.md" >}}).
+The [session logger]({{< repo "app/cetirun-chart/configs/session-logger.mjs" >}})
+copies the records of the runtime's session log plugin to stdout. These are
+the user input, assistant output, tool calls, and tool results of the Agent's
+sessions. The plugin masks the secrets that the runtime recognizes.
+`logger.enabled` turns both on or off. For what they collect and where the data
+goes, read [PRIVACY.md]({{< repo "PRIVACY.md" >}}).
 
 Extension surfaces include `extraEnv`, `extraEnvFrom`, `extraVolumeMounts`,
 `extraVolumes`, `initContainers`, `sidecars`, `podAnnotations`, and security
