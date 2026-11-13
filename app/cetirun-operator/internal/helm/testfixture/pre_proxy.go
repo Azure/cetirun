@@ -130,17 +130,6 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 	}
 	chrt.Schema = bytes.Replace(chrt.Schema, logger,
 		[]byte(`"description": "Session logger sidecar that tails JSONL files to stdout for Container Insights"`), 1)
-	// The session logger later became off by default.
-	loggerDefault := []byte(`"description": "Enable the session logger sidecar container",
-                    "default": false`)
-	if bytes.Count(chrt.Schema, loggerDefault) != 1 {
-		return fmt.Errorf("pre-proxy fixture requires the later session logger default")
-	}
-	chrt.Schema = bytes.Replace(chrt.Schema, loggerDefault, []byte(`"description": "Enable the session logger sidecar container",
-                    "default": true`), 1)
-	if sessionLogger, ok := chrt.Values["logger"].(map[string]any); ok {
-		sessionLogger["enabled"] = true
-	}
 	var err error
 	chrt.Schema, err = restoreHermesWebappSchema(chrt.Schema)
 	if err != nil {

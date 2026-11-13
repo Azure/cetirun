@@ -378,7 +378,7 @@ Sources: [OpenClaw helpers]({{< repo "app/cetirun-chart/templates/agents/opencla
 | `networkPolicy.blockedCIDRs` | RFC 1918 ranges and Azure IMDS |
 | `networkPolicy.allowedInternalCIDRs` | A deployment-specific exception list. Examine or replace it before installation. |
 | `sidecarScope.enabled` | `true`. It limits the scope of service discovery. |
-| `logger.enabled`, `logger.scanInterval` | `false`, 30 seconds |
+| `logger.enabled`, `logger.scanInterval` | `true`, 30 seconds |
 | `skills.shared` | `false`. An optional static Blob CSI PV and PVC. `make deploy` sets `true` from the `sharedSkills` block of the environment file. |
 | `skills.protocol`, `skills.mountPath` | `nfs`, `/home/vibe/.aks/skills`. Native Agents mount shared skills directly, read-only. Custom exposes a read-only alias to its composed context view. |
 | `skills.secretName`, `skills.mountOptions` | Empty, `[]`. Non-NFS protocols must have a namespace-local staging Secret. |
@@ -404,10 +404,9 @@ covers only `pods/exec`. Before installation, examine the necessary
 administrator access. Do not disable the exec restriction as a troubleshooting
 shortcut.
 
-The [session logger]({{< repo "app/cetirun-chart/configs/session-logger.sh" >}}),
-which is off by default, copies session output of the Agent to stdout without
-redaction. For what it collects and where the data goes, read
-[PRIVACY.md]({{< repo "PRIVACY.md" >}}).
+The [session logger]({{< repo "app/cetirun-chart/configs/session-logger.sh" >}})
+copies session output of the Agent to stdout without redaction. For what it
+collects and where the data goes, read [PRIVACY.md]({{< repo "PRIVACY.md" >}}).
 
 Extension surfaces include `extraEnv`, `extraEnvFrom`, `extraVolumeMounts`,
 `extraVolumes`, `initContainers`, `sidecars`, `podAnnotations`, and security

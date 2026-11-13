@@ -11,10 +11,10 @@ the organization that runs the deployment.
 in the AI Gateway's database, and in the memory notes of each Agent.** The AI
 Gateway keeps the request and the response of each model call in its database
 for seven days. With `content.enabled`, it keeps them in an Azure Data Explorer
-database instead. `make deploy` installs the ADX-Mon collection, which keeps
-container output in Azure Data Explorer. Memory, which is on by default, keeps
-the notes of each Agent in its HOME. Before you allow sensitive workloads, check
-these settings. No single
+database instead. The agent chart enables the session logger, and `make deploy`
+installs the ADX-Mon collection, which keeps container output in Azure Data
+Explorer. Memory, which is on by default, keeps the notes of each Agent in its
+HOME. Before you allow sensitive workloads, check these settings. No single
 CetiRun setting disables logging, telemetry, and network activity across every
 component.
 
@@ -57,8 +57,8 @@ and [Hermes configuration templates](app/cetirun-chart/templates/agents/hermes/_
 
 ### Session and application logs
 
-`logger.enabled` is `false` by default. When it is `true`, the logger sidecar
-copies new lines of agent files to stdout:
+`logger.enabled` is `true` by default. The logger sidecar copies new lines of
+agent files to stdout:
 
 - **Hermes:** the logger follows `/home/vibe/.hermes/logs/gateway.log`. The
   content of this file depends on the installed Hermes version and
@@ -165,11 +165,11 @@ collector reads the container output of the platform namespaces into the
 `CetiRunLogs` database. This database also receives the access log of the
 ingress gateway and the request log of the AI Gateway. The collector reads the
 output of every container of the Agent Pods, Custom terminals, and GitHub
-Copilot proxies into the `CetiRunAgents` database. That output includes what
-Agents print themselves and, when it is enabled, the output of the session
-logger that is described above. This output can include conversation text.
-The collector reads container output from the node logs and does not copy
-container environment variables.
+Copilot proxies into the `CetiRunAgents` database. That output includes the
+session logger's output that is described above and what Agents print
+themselves. This output can include conversation text. The collector reads
+container output from the node logs and does not copy container environment
+variables.
 
 The chart's telemetry program writes each Agent's namespace, owner alias,
 display name, email, Entra tenant and object IDs, Team and policy into
@@ -211,7 +211,7 @@ authority/host, HTTP method/path when available, status, and byte counts. It
 also includes duration, upstream addresses, downstream remote addresses, and
 TLS server names. URL paths can contain identifying or sensitive information.
 These access logs are not a transcript of encrypted application bodies, but
-the session logger, when it is enabled, can expose agent content in plaintext.
+the separate session logger can expose agent content in plaintext.
 
 By default, the operator configures a controller-runtime metrics listener at
 `:8080`. To expose an endpoint is not the same as to scrape or export it. The

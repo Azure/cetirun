@@ -241,8 +241,8 @@ Source: [app/cetirun-chart/values.yaml]({{< repo "app/cetirun-chart/values.yaml"
 | `tailscale` |  | Tailscale configuration Enabled automatically when secrets.tailscaleAuthKey is set. Each StatefulSet pod registers as \<hostname>-\<ordinal> on the Tailscale network. Uses kernel networking (NET_ADMIN added automatically). |
 | `tailscale.hostname` | `"cetirun"` | Hostname prefix on the Tailscale network. Each pod appends its StatefulSet ordinal: \<hostname>-0, \<hostname>-1, etc. |
 | `tailscale.serve` | `false` | Enable `tailscale serve` to proxy the gateway with Tailscale HTTPS. When true, the gateway port is automatically used as the serve target. |
-| `logger` |  | Session logger sidecar configuration. Off by default. For Hermes, it copies the new lines of the gateway log to stdout. For OpenClaw, it follows session JSONL files, which OpenClaw versions that keep their sessions in SQLite do not write. The AI Gateway already records the content of the model calls. With the ADX-Mon collection, query the Agent logs database: AgentLogs \| where Container == "logger" |
-| `logger.enabled` | `false` | Enable session logger sidecar |
+| `logger` |  | Session logger sidecar configuration. Tails session JSONL files to stdout, where the cluster's log collection captures them. With the ADX-Mon collection, query the Agent logs database: AgentLogs \| where Container == "logger" |
+| `logger.enabled` | `true` | Enable session logger sidecar |
 | `logger.resources` |  | Resource requests and limits |
 | `logger.resources.limits.cpu` | `"100m"` |  |
 | `logger.resources.limits.memory` | `"128Mi"` |  |
