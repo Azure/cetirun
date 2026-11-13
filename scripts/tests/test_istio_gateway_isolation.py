@@ -70,6 +70,11 @@ function gateway_fixture(kind)
     result.internal_token = request_headers["x-cetirun-portal-id-token"]
     result.timeout = timeout
     if kind == "denied" then return {[":status"] = "403"}, "" end
+    if kind == "timeout" then return nil, "private backend detail" end
+    if kind == "missing-status" then return {}, "private backend detail" end
+    if kind:match("^status%-") then
+      return {[":status"] = kind:sub(8)}, "private backend detail"
+    end
     return {[":status"] = "200"}, ""
   end
   function handle:respond(response_headers, body)
@@ -366,6 +371,23 @@ class IstioGatewayIsolationTests(unittest.TestCase):
         missing_identity = self._call_rendered_lua(script, "gateway_fixture", "missing-identity").split("\t")
         self.assertEqual(missing_identity[0], "")
         self.assertEqual(missing_identity[3:6], ["403", "Forbidden: no identity", ""])
+
+    @unittest.skipUnless(shutil.which("helm") and LUA_LIBRARY, "requires Helm and liblua5.4")
+    def test_auth_failures_are_safe_and_distinct_from_service_failures(self):
+        for args in ((), MTLS_VALUES):
+            script = self._render_ownership_lua(*args) + LUA_GATEWAY_FIXTURE
+            for kind, status, body in (
+                *[("status-" + code, "403", "Forbidden: access denied") for code in ("401", "403", "404")],
+                *[("status-" + code, "503", "Agent access verification is temporarily unavailable")
+                  for code in ("400", "429", "500", "502", "503", "504", "302", "204", "invalid")],
+                ("timeout", "503", "Agent access verification is temporarily unavailable"),
+                ("missing-status", "503", "Agent access verification is temporarily unavailable"),
+            ):
+                with self.subTest(mtls=bool(args), kind=kind):
+                    result = self._call_rendered_lua(script, "gateway_fixture", kind).split("\t")
+                    self.assertEqual(result[3:6], [status, body, ""])
+                    for private in ("owner@example.com", "cetiadmin", "private backend detail", "verified-id-token"):
+                        self.assertNotIn(private, result[4])
 
     @unittest.skipUnless(shutil.which("helm"), "requires Helm")
     def test_mtls_ownership_cluster_is_distinct_and_has_no_plaintext_fallback(self):

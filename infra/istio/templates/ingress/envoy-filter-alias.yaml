@@ -408,7 +408,11 @@ spec:
                 )
                 local status = headers and headers[":status"] or "500"
                 if status ~= "200" then
-                  request_handle:respond({[":status"] = "403"}, "Forbidden: " .. email .. " does not own " .. instance_name)
+                  if status == "401" or status == "403" or status == "404" then
+                    request_handle:respond({[":status"] = "403"}, "Forbidden: access denied")
+                  else
+                    request_handle:respond({[":status"] = "503"}, "Agent access verification is temporarily unavailable")
+                  end
                   return
                 end
                 -- Portal authentication is complete and ownership has been
