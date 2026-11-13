@@ -353,8 +353,9 @@ kubectl create configmap sandbox-platform -n cetirun-system --from-file=platform
   --dry-run=client -o yaml | kubectl replace -f -
 ```
 
-While the operator cannot use the registration, it checks the Agent Policies
-and the Sandboxes again about every 30 seconds.
+When the ConfigMap changes, the operator immediately checks the Agent Policies
+and the Sandboxes again. While the operator cannot use the registration, it
+checks them again about every 30 seconds.
 
 `"profile": "native-single-start"` is the name of the registration profile of
 Sandbox execution in this release. Agents of this profile restart, suspend,

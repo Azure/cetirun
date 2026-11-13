@@ -12,6 +12,7 @@ import (
 	"slices"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	nodev1 "k8s.io/api/node/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -55,6 +56,10 @@ type SandboxReconciler struct {
 	Source          SandboxConfigurationSource
 	Now             func() time.Time
 	MaxSnapshotAge  time.Duration
+	// PlatformRegistration is the ConfigMap of the platform registration that
+	// Source reads. A change of this ConfigMap queues every Sandbox. The zero
+	// value adds no watch.
+	PlatformRegistration types.NamespacedName
 }
 
 type AgentPolicyReconciler struct {
@@ -64,6 +69,10 @@ type AgentPolicyReconciler struct {
 	Source          SandboxConfigurationSource
 	Now             func() time.Time
 	MaxSnapshotAge  time.Duration
+	// PlatformRegistration is the ConfigMap of the platform registration that
+	// Source reads. A change of this ConfigMap queues every AgentPolicy. The
+	// zero value adds no watch.
+	PlatformRegistration types.NamespacedName
 }
 
 // TeamReconciler records whether the Team's policy and Sandbox bindings are
@@ -95,7 +104,11 @@ func (r *SandboxReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.APIReader == nil {
 		r.APIReader = mgr.GetAPIReader()
 	}
-	return ctrl.NewControllerManagedBy(mgr).For(&api.Sandbox{}).Complete(r)
+	managed := ctrl.NewControllerManagedBy(mgr).For(&api.Sandbox{})
+	if r.PlatformRegistration.Name != "" {
+		managed = managed.Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.enqueueForPlatformRegistration))
+	}
+	return managed.Complete(r)
 }
 
 func (r *AgentPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -105,7 +118,55 @@ func (r *AgentPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.APIReader == nil {
 		r.APIReader = mgr.GetAPIReader()
 	}
-	return ctrl.NewControllerManagedBy(mgr).For(&api.AgentPolicy{}).Complete(r)
+	managed := ctrl.NewControllerManagedBy(mgr).For(&api.AgentPolicy{})
+	if r.PlatformRegistration.Name != "" {
+		managed = managed.Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.enqueueForPlatformRegistration))
+	}
+	return managed.Complete(r)
+}
+
+// isPlatformRegistration reports whether object is the platform registration
+// ConfigMap. The zero registration matches no object.
+func isPlatformRegistration(registration types.NamespacedName, object client.Object) bool {
+	return registration.Name != "" && client.ObjectKeyFromObject(object) == registration
+}
+
+// enqueueForPlatformRegistration queues every Sandbox when the platform
+// registration changes, so that a corrected registration is assessed at once
+// and not only at the next periodic retry.
+func (r *SandboxReconciler) enqueueForPlatformRegistration(ctx context.Context, object client.Object) []reconcile.Request {
+	if !isPlatformRegistration(r.PlatformRegistration, object) {
+		return nil
+	}
+	boxes := &api.SandboxList{}
+	if err := r.List(ctx, boxes); err != nil {
+		log.FromContext(ctx).Error(err, "Cannot queue the Sandboxes for a changed platform registration")
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(boxes.Items))
+	for i := range boxes.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: boxes.Items[i].Name}})
+	}
+	return requests
+}
+
+// enqueueForPlatformRegistration queues every AgentPolicy when the platform
+// registration changes, so that a corrected registration is assessed at once
+// and not only at the next periodic retry.
+func (r *AgentPolicyReconciler) enqueueForPlatformRegistration(ctx context.Context, object client.Object) []reconcile.Request {
+	if !isPlatformRegistration(r.PlatformRegistration, object) {
+		return nil
+	}
+	policies := &api.AgentPolicyList{}
+	if err := r.List(ctx, policies); err != nil {
+		log.FromContext(ctx).Error(err, "Cannot queue the AgentPolicies for a changed platform registration")
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(policies.Items))
+	for i := range policies.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: policies.Items[i].Name}})
+	}
+	return requests
 }
 
 func (r *TeamReconciler) SetupWithManager(mgr ctrl.Manager) error {
