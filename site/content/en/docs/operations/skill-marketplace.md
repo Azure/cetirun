@@ -662,7 +662,7 @@ spec:
 
 To give a running Agent the newest versions now, restart it. On the page of
 the Agent, its owner selects **Restart Agent**. Refer to
-[Restart while retaining HOME](../../guides/lifecycle/#restart-while-retaining-home).
+[Restart an Agent](../agent-lifecycle/#restart-an-agent).
 An Agent also receives the newest versions when its Pod starts again for
 another reason.
 
@@ -743,7 +743,7 @@ skill, remove it from the Team. Then you can remove it from the Policy.
 
   While the Team of such an Agent selects marketplace skills, the operator
   sets the Agent to `Failed` with `AgentConfigInvalid`. Upgrade its chart, as
-  [Pin and update a chart](../../guides/lifecycle/#pin-and-update-a-chart)
+  [Pin and update a chart](../agent-lifecycle/#pin-and-update-a-chart)
   shows.
 - **No change for each Agent.** `skillOverrides` cannot add or remove a
   marketplace skill. While the Skill Marketplace is on, the operator refuses

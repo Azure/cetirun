@@ -911,8 +911,9 @@ resource-version preconditions still apply.
 Pin runtime settings per Agent and keep chart and image versions separate. In
 the contract, upgrades must keep UID/GID, HOME and data compatibility, stop old
 writers, and examine the storage handover. Private PVCs must survive compute
-replacement. Before you change or delete an instance that already exists, read
-[Lifecycle](../../guides/lifecycle/). Namespace deletion removes its PVCs.
+replacement. Before you change or delete an Agent that already exists, read
+[Administer Agents](../../operations/agent-lifecycle/). Namespace deletion
+removes its PVCs.
 
 No new Harness, Run or Session CRD is introduced. Unsupported runtime features
 fail with `AgentRuntimeNotImplemented`. Invalid profiles, images and port

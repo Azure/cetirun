@@ -9,8 +9,8 @@ with the accounts that its owner connects. The Portal does not offer
 Microsoft 365 (Microsoft Graph) connections. These components supply Agent
 connections:
 
-- The **Broker** stores the encrypted provider authorizations in the
-  credential namespace, `cetirun-credentials`. It issues short-lived
+- The **Agent Identity Broker** stores the encrypted provider authorizations in
+  the credential namespace, `cetirun-credentials`. It issues short-lived
   credentials for each request.
 - The **Connections MCP** service gives Agents the connection tools. It sends
   each request to the provider with a credential from the Broker.
@@ -649,7 +649,9 @@ that were already sent, or tokens that were issued previously.
 The Agents of a policy-bound Team run in a Sandbox. The operator gives such an
 Agent its Connections configuration only after the steps below. The agent type
 of the Agent must also be in the runtime allowlists of the operator, the
-Broker, and the Portal. Without this configuration, the Agent cannot use
+Broker, and the Portal. A Sandbox Agent with a
+[single-start lifetime](../../concepts/glossary/#single-start-lifetime) does
+not get this configuration. Without this configuration, the Agent cannot use
 Connections. The Portal can still show **Identities** for the Agent.
 
 Do these steps after you

@@ -5,7 +5,8 @@ weight: 20
 ---
 
 The AI Gateway is the model endpoint of every Agent. It is based on LiteLLM.
-Each Agent sends its model requests to the AI Gateway with its own virtual key.
+Each Agent sends its model requests to the AI Gateway with its own
+[virtual key](../../concepts/glossary/#virtual-key).
 The AI Gateway sends each request to a provider deployment, or to the GitHub
 Copilot proxy of that Agent. It also counts the spend of each key against the
 budget of the key.

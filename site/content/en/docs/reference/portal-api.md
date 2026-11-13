@@ -223,8 +223,8 @@ The **Identity** section has two independent controls:
   Connections use. `Optional` lets the user choose during Agent creation.
   `Required` selects it automatically. Both enabled modes set the
   credential-service entitlement `azure-resource-manager`. `Disabled` clears
-  that entitlement. The platform must have the
-  [Agent Identity setup](../../operations/agent-identity/).
+  that entitlement. Prepare the platform as
+  [Prepare Agent connections](../../operations/agent-identity/) describes.
 - **Entra workload identity** controls `entraID.enabled`.
 
 Neither control enables the other. New policies have both controls disabled.

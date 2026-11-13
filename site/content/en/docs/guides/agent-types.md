@@ -64,7 +64,8 @@ a Custom Agent, get these values from your administrator:
 A Custom Agent with an HTTP port and without a Web UI can use Portal Chat, if
 your deployment allows it. Refer to [Chat with a Custom Agent](../custom-chat/).
 The form does not offer a gateway token, a Tailscale key, or a default model
-for a Custom Agent.
+for a Custom Agent. For images that follow the Custom contract, refer to
+[Examples](../../reference/examples/).
 
 Sources: [creation form]({{< repo "app/cetirun-portal/web/src/components/CreateForm.tsx" >}}),
 [runtime chart values]({{< repo "app/cetirun-chart/values.yaml" >}}),

@@ -870,8 +870,10 @@ It uses an explicit run/attempt-specific directory under `RUNNER_TEMP`. It sets
 duplicate pins or rely on the Helm version of the runner. Release provenance for
 both Linux architectures is recorded in `ci/tools.json`.
 
-Refer to [envtest setup](../DEVELOPMENT.md#generated-files-and-dependencies) for
-the separate provisioning and isolated API-server test commands.
+For the provisioning, refer to
+[Prepare envtest assets](../DEVELOPMENT.md#prepare-envtest-assets). For the
+isolated API-server test commands, refer to
+[Operator API-server tests](../DEVELOPMENT.md#operator-api-server-tests).
 
 ## License headers
 

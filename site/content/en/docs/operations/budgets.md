@@ -4,11 +4,11 @@ description: "Set the monthly AI Gateway budgets and request limits of Agents, a
 weight: 22
 ---
 
-Each Agent has its own virtual key in the [AI Gateway](../ai-gateway/). The
-key has a monthly budget in US dollars. There is no token allowance. The
-AI Gateway counts the spend of every model call against the key, and it refuses
-calls when the spend reaches the budget. This page is for platform
-administrators.
+Each Agent has its own [virtual key](../../concepts/glossary/#virtual-key) in
+the [AI Gateway](../ai-gateway/). The key has a monthly budget in US dollars.
+There is no token allowance. The AI Gateway counts the spend of every model
+call against the key, and it refuses calls when the spend reaches the budget.
+This page is for platform administrators.
 
 ## Where the budget of an Agent comes from
 

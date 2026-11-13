@@ -78,7 +78,7 @@ builds only on Linux, and `make go-test`, `make go-lint`, and
 | Git, Bash, Make, curl | Not pinned | All repository commands. Loopback download tests also use curl. |
 | Go | [`.go-version`](.go-version) | Go tests and lint, the Memory native test, and the Hugo installation |
 | Node.js 24 and npm | CI configuration | Portal frontend, Memory native test (`make test`), examples, and the site |
-| Python 3.11 or later | CI uses 3.12 | All Python gates and helpers. `make license-check` needs 3.10 or later. The site validator needs 3.11 or later. |
+| Python 3.11 or later | CI pins 3.12 only for `make python-test` and the Memory Context checks. The other CI jobs use the `python3` of the runner image | All Python gates and helpers. `make license-check` needs 3.10 or later. The site validator needs 3.11 or later. |
 | Python packages | [`scripts/ci/requirements.txt`](scripts/ci/requirements.txt) | `make ci-test`, `make chart-check`, and `make python-test` |
 | Helm 3 or 4 | [`scripts/ci/tools.json`](scripts/ci/tools.json) (CI uses this version) | `make chart-check`, `make set-version`, and the envtest suites |
 | Bicep, ShellCheck, actionlint | [`scripts/ci/tools.json`](scripts/ci/tools.json) | `make bicep-check`, `make shell-check`, and `make workflow-check` |

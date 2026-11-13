@@ -17,6 +17,9 @@ open the management page of an Agent, select its name or **View details**. To
 get access, a user must be a member of the Portal's configured administrator
 allowlist. Team membership alone does not grant this access.
 
+For this role and the other Admin pages, refer to
+[Portal administration](../portal-administration/).
+
 The **Overview** tab shows ownership, configuration, integration states, and
 the desired and observed configuration generations. **Status** shows Conditions
 and Pod health. **Events** shows Agent and namespace events. An unavailable

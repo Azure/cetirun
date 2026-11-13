@@ -318,8 +318,10 @@ If your cluster has different ranges, use its own ranges. `trustedProxyCIDRs`
 must be within `podCIDRs`. The `uid` of the DNS and Gateway peers is a name
 that you select and keep stable. Their `podSelector` matches labels that the
 workload controllers already put on Pods. Use the actual Service selectors if
-your installation changes these labels. Do not list backend Pod IPs in these
-selector-bound entries. The
+your installation changes these labels, and keep
+`sandbox.cetirun.microsoft.com/peer: ai-gateway` in the Gateway entry. The
+Service selector does not contain this label. Do not list backend Pod IPs in
+these selector-bound entries. The
 `revision` fields are labels that you change each time that you change what
 they describe.
 
@@ -507,12 +509,16 @@ kubectl get sandboxes.cetirun.microsoft.com,agentpolicies.cetirun.microsoft.com,
 If a Sandbox is not ready, it names the cause in its conditions. An example is
 a StorageClass that the registration does not pin (`UnapprovedStorage`).
 
-The `Accepted` condition of a Policy gives only a general reason, for example
-`UnsupportedControl`. It also does not assess the Policy against the Sandboxes
-of a Team. To find the setting that the registration does not support, open
-**Admin → Teams**, and select **Details** for the Team. The compatibility
-report names the unsupported control for each Sandbox. With `kubectl`, read
-`status.compatibility` of the Team.
+The `Accepted` condition of a Policy has a general reason, for example
+`UnsupportedControl`. Its message can end with a fixed explanation from the
+operator, for example `observed-SNI blocking is not registered`. The message
+does not contain values from the Policy or the registration.
+
+The condition does not assess the Policy against the Sandboxes of a Team. For
+this assessment, open **Admin → Teams**, and select **Details** for the Team.
+The compatibility report names the unsupported control for each Sandbox. While
+the Policy is not accepted, the report shows `PolicyNotAccepted` for each
+Sandbox instead. With `kubectl`, read `status.compatibility` of the Team.
 
 Members can then create Agents for the Team, as in
 [Your first instance](../../getting-started/first-instance/). After the first
@@ -693,7 +699,7 @@ operator README's
 
 | Symptom | Cause | Action |
 | --- | --- | --- |
-| A Sandbox or a Policy reports `PrerequisitesUnavailable` with the status `Unknown` | `platform.json` is not valid, for example with an unknown field, a duplicate field, or a wrong type. The status does not name the field. The operator log gives only the type of error, such as `malformed, unknown or duplicate platform JSON fields` | Compare each field of `platform.json` with the example on this page. Make sure that the file is valid JSON, for example with `jq empty platform.json`. Then replace the ConfigMap |
+| A Sandbox or a Policy reports `PrerequisitesUnavailable` with the status `Unknown` | `platform.json` is not valid, for example with an unknown field, a duplicate field, or a wrong type. The condition message gives only the type of error, such as `malformed, unknown or duplicate platform JSON fields`. It does not name the field | Compare each field of `platform.json` with the example on this page. Make sure that the file is valid JSON, for example with `jq empty platform.json`. Then replace the ConfigMap |
 | The Portal refuses a new Agent with `runtime_unavailable` | Sandbox execution is not enabled, or the Portal has no runtime profile for the agent type | Do [Enable Sandbox execution](#enable-sandbox-execution) |
 | `kubectl exec`, `attach`, or `port-forward` fails with `ConnectForbidden` | Pod admission refuses interactive access to the Pods of Sandbox Agents | Use the terminal of the Agent in the Portal |
 | Writes to Agents, Teams, Sandboxes, and Agent Policies fail | The admission server is not ready, for example because its certificate expired | Renew the certificate. Refer to [Renew the admission certificate](#renew-the-admission-certificate). If the CetiAdmin webhooks are installed, status updates and the deletion of Agents also fail until the server is ready. So do writes to Pods and other workloads in Agent namespaces |

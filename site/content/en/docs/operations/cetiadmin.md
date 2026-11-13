@@ -13,8 +13,10 @@ The operator chart and `make deploy` enable CetiAdmin by default
 (`cetiadmin.enabled: true`). An installation stops with an error until you
 supply the inputs of CetiAdmin or disable it.
 
-A standard Agent is an Agent that does not select a policy-bound Team or a
-Sandbox. A Sandbox Agent runs in a Sandbox of its policy-bound Team. Refer to
+A [standard Agent](../../concepts/glossary/#standard-agent) is an Agent that
+does not select a policy-bound Team or a Sandbox. A
+[Sandbox Agent](../../concepts/glossary/#sandbox-agent) runs in a Sandbox of
+its policy-bound Team. Refer to
 [Policy-bound Teams](../policy-teams/).
 
 > **Warning:** CetiAdmin can read the Secrets of every standard Agent and run
@@ -163,7 +165,10 @@ For an installation that has CetiAdmin, do these steps:
    ```
 
    The plan shows `"enabled": false` in its `cetiadmin` section.
-3. Run the deployment. **Connected, mutating:**
+3. Run the deployment as an admission administrator. While the installation
+   has CetiAdmin, only these administrators can change its configuration, as
+   [Before you upgrade](../upgrade/#before-you-upgrade) describes.
+   **Connected, mutating:**
 
    ```bash
    make deploy DEPLOY_CONFIG=/absolute/path/environment.yaml

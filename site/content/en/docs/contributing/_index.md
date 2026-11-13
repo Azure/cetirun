@@ -34,6 +34,10 @@ support agreement.
 | Shared infrastructure | [Infrastructure]({{< repo "infra" "tree" >}}) |
 | Reader documentation | [Site content]({{< repo "site/content/en/docs" "tree" >}}) |
 
+[Repository layout]({{< repo "DEVELOPMENT.md" >}}#repository-layout) lists all
+components. To run another agent, read
+[Add an agent integration]({{< repo "DEVELOPMENT.md" >}}#add-an-agent-integration).
+
 Use [DEVELOPMENT.md]({{< repo "DEVELOPMENT.md" >}}) for local setup and validation.
 For documentation, follow the [site guide](site/).
 [GOVERNANCE.md]({{< repo "GOVERNANCE.md" >}}) describes project responsibilities.
@@ -59,7 +63,9 @@ routing. Ask maintainers to arrange review for the affected area.
 
 Before you submit a change, run local tests. Cloud deployment, model-provider
 access, and Tailscale integration must have separate tests in an authorized
-environment. Security review stays separate from test results. Cloud
+environment, as
+[Integration and E2E tests]({{< repo "DEVELOPMENT.md" >}}#integration-and-e2e-tests)
+describes. Security review stays separate from test results. Cloud
 credentials and access to publish are not necessary for contributors.
 
 ## Keep reports and examples safe to publish

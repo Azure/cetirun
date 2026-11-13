@@ -1957,8 +1957,8 @@ name to the `models` of the key, and name it as the model.
 A response through a router tells how it was routed.
 `x-litellm-complexity-router-tier` names the tier. `-cause` names what decided
 the tier, and `-score` gives the heuristic score, if there is one. After a
-failed `jev` classification, the response has no tier, and `-cause` is
-`default_model_fallback`. The request log has the model that answered. Refer to
+failed `llm` or `jev` classification, the response has no tier, and `-cause`
+is `default_model_fallback`. The request log has the model that answered. Refer to
 [Smart routing](#smart-routing).
 
 ### Revoking a key takes up to a minute to reach every replica
@@ -2915,7 +2915,7 @@ Team, and model. Neither of these leaves the Gateway. For collection in other
 places, the chart adds a log line for each call, and it can serve LiteLLM's
 Prometheus metrics. The ADX-Mon collection of the cetirun-observability chart
 takes both to Azure Data Explorer; refer to
-[Observability with ADX-Mon](../../../site/content/en/docs/operations/observability.md).
+[Monitoring and logs](../../../site/content/en/docs/operations/observability.md).
 The measurements of LiteLLM's behavior used LiteLLM 1.101.0.
 
 ### One log line per call

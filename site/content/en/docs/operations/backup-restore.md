@@ -62,8 +62,8 @@ PVC of a policy-bound Agent has no labels. Its name is `home`, the default of
 
 CetiRun has no procedure to restore a snapshot into an existing Agent. A
 restore into an Agent needs a separately reviewed procedure. Before you delete
-an Agent, make a backup of its HOME, and read the
-[lifecycle guidance](../../guides/lifecycle/).
+an Agent, make a backup of its HOME, and read
+[Delete only with a recovery plan](../agent-lifecycle/#delete-only-with-a-recovery-plan).
 
 ## Make a backup of the AI Gateway database
 

@@ -13,7 +13,7 @@ held at zero replicas.
 - [Operator chart configuration](../../site/content/en/docs/reference/helm.md#operator-chart)
 - [Architecture and resource names](../../site/content/en/docs/concepts/architecture.md)
 - [Platform installation prerequisites](../../site/content/en/docs/getting-started/platform.md)
-- [Lifecycle and deletion boundaries](../../site/content/en/docs/guides/lifecycle.md)
+- [Lifecycle and deletion boundaries](../../site/content/en/docs/operations/agent-lifecycle.md)
 
 ## API contract
 
@@ -562,8 +562,8 @@ mutate lifecycle state.
 
 Offline tests use synthetic kubelet/CSI observations and isolated API servers.
 They do not test a live AKS driver, a model, storage durability, or physical
-fencing. See the
-[lifecycle guide](../../site/content/en/docs/guides/lifecycle.md#planned-node-migration).
+fencing. See
+[Planned node migration](../../site/content/en/docs/operations/agent-lifecycle.md#planned-node-migration).
 
 ### Capability registration and retained single-start records
 
@@ -2246,8 +2246,9 @@ document are 64 KiB, 128 Teams, 8,192 JSON tokens, and five nesting levels.
 Unknown/duplicate fields, nulls, malformed descriptors, Secret references,
 protocol overrides, and mount options are rejected.
 
-If there is no approval for the current Team name **and UID**, a prerequisite
-error occurs before cold-create effects. A same-name replacement Team does not
+If there is no approval for the current Team name **and UID**, the Agent waits
+before cold-create effects. The operator holds it and checks again every 30
+seconds. A same-name replacement Team does not
 inherit approval. The publisher must keep the content stable for the selected
 revision. The publisher must publish changes under a new approval/source. The
 operator does not examine or hash NFS contents. The revision is an approval
@@ -3586,7 +3587,7 @@ native cleanup predicate. A separate loopback serving test runs the actual
 admission process and a certificate rotation with overlap.
 
 For these checks, pinned envtest assets and Helm 3 or 4 are necessary. Refer
-to [development setup](../../DEVELOPMENT.md#generated-files-and-dependencies).
+to [Prepare envtest assets](../../DEVELOPMENT.md#prepare-envtest-assets).
 These checks never use a cluster that already exists or run an Agent. They
 also never qualify a production issuer, replica-loss recovery, runtime, CNI, or
 CSI.

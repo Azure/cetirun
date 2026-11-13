@@ -92,7 +92,7 @@ Refer to the
 An Operator upgrade does not change the agent chart version of an existing
 Agent. A new Agent gets the agent chart of the installed release. To upgrade
 an existing Agent, use the **Upgrade to Latest** action of the Portal, as
-[Pin and update a chart](../../guides/lifecycle/#pin-and-update-a-chart)
+[Pin and update a chart](../agent-lifecycle/#pin-and-update-a-chart)
 shows. Upgrade each Agent after the platform upgrade.
 
 ## Settings that make deploy keeps
@@ -146,6 +146,23 @@ Some changes need a specific order:
   by IP address or peer UID still need the current backend addresses and
   labels until you migrate them. Upgrade all readers and follow the
   coordinated configuration change before you use the new registration.
+
+  A selector-bound Gateway entry must also select the protected label
+  `sandbox.cetirun.microsoft.com/peer: ai-gateway`. Add the label to the entry
+  after the upgrade, when the AI Gateway Pods have it. Until then, the Agents
+  that use the entry stay held.
+- **AI Gateway PodMonitor of managed Prometheus:** a platform that an earlier
+  version installed can still hold this PodMonitor. Then `make deploy` stops
+  before it changes the cluster. Create a stand-in definition of its API, run
+  `make deploy`, and then delete the definition, as
+  [Identity, images, and collection](../infrastructure/#identity-images-and-collection)
+  shows.
+- **OAuth2 Proxy PodDisruptionBudget with an external Istio release:** upgrade
+  the external release first, or set
+  `istio.values.oauth2Proxy.podDisruptionBudget.enabled: false` in the
+  environment file. Otherwise the missing budget stops preflight before any
+  write. Refer to
+  [Authentication availability during node maintenance](../istio/#authentication-availability-during-node-maintenance).
 
 ## If an upgrade fails
 

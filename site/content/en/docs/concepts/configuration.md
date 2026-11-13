@@ -53,6 +53,9 @@ per-Agent overrides of them:
   and names that are not protected, for example not `PATH`, `HOME`, or names
   with the prefix `CETIRUN_`
 
+[Helm values of Sandbox Agents](../../operations/policy-teams/#helm-values-of-sandbox-agents)
+shows how this order applies to the Agents of a policy-bound Team.
+
 ### Rules for all Agents
 
 Nested maps merge. Arrays replace and do not append. Arbitrary Helm overrides
@@ -172,6 +175,8 @@ an Agent reads each kind of skill and when a change reaches the Agent.
 The configuration of each agent type decides how the agent finds these
 directories and which one wins. Refer to
 [Memory initialization](../../reference/agent-harness/#common-initialization-and-discovery).
+For the source of the Team skills of each kind of Agent, read
+[Skill sources of an Agent](../../operations/skill-marketplace/#skill-sources-of-an-agent).
 
 If the Skill Marketplace is off and a policy-bound Team names skills, the
 Sandbox Agents of the Team do not start. Enable the Skill Marketplace, or

@@ -127,20 +127,10 @@ get the data, the memory, or the Agent Identity of the deleted Agent.
 ## Administrator tasks
 
 Some lifecycle tasks need permission to change Agent resources in the cluster.
-You cannot do them in the portal. If you need one of these tasks, ask your
-administrator. For the procedures, administrators refer to
-[Administer Agents](../../operations/agent-lifecycle/).
-
-### Pin and update a chart
-
-Refer to
-[Pin and update a chart](../../operations/agent-lifecycle/#pin-and-update-a-chart).
-
-### Planned node migration
-
-An administrator can move an Agent to another Kubernetes node and keep its
-home directory. Refer to
-[Planned node migration](../../operations/agent-lifecycle/#planned-node-migration).
+Examples are a pinned chart version and a move to another Kubernetes node that
+keeps the home directory. You cannot do these tasks in the portal. If you need
+one of them, ask your platform administrator. For the procedures, platform
+administrators refer to [Administer Agents](../../operations/agent-lifecycle/).
 
 Sources: [Agent overview]({{< repo "app/cetirun-portal/web/src/components/OverviewSection.tsx" >}}),
 [restart control]({{< repo "app/cetirun-portal/web/src/components/RestartAgentButton.tsx" >}}),

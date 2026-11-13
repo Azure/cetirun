@@ -134,7 +134,8 @@ OpenClaw says that the Agent is out of budget on the CetiRun AI Gateway.
 The portal does not show the budget or the spend. Ask your administrator to
 raise the budget, or wait until it resets on the first day of the month (UTC).
 For the details, refer to
-[When the budget runs out](../models/#when-the-budget-runs-out).
+[When the budget runs out](../models/#when-the-budget-runs-out). To change a
+budget, administrators refer to [Budgets and spend](../../operations/budgets/).
 
 If the Agent Policy of your Team sets request limits, the **Models** section
 shows them. A request over a limit fails with HTTP 429. The Agent can send the

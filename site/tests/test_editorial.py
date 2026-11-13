@@ -141,6 +141,8 @@ class StyleRuleTests(unittest.TestCase):
             "Refer to [this page](../security/).",
             "Let's start the Agent.",
             "Then let's encrypt the disk.",
+            "[App](https://github.com/Azure/cetirun/tree/main/app)",
+            "This page describes the Helm values.",
         ):
             with self.subTest(text=text):
                 self.assertTrue(check_site.check_editorial_style(text, {}))

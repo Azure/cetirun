@@ -195,9 +195,11 @@ to OpenClaw without an HTTP redirect, because a browser cannot follow a
 redirect during an upgrade.
 
 Hermes serves its Webapp at `/`. The route removes the prefix and sends the
-header `x-forwarded-prefix: /ui/<name>`. After the platform sign-in, Hermes
-asks for its own login. Use `cetirun` as the username and the Hermes API key of
-the Agent as the password. These routes do not carry model calls.
+header `x-forwarded-prefix: /ui/<name>`. Hermes has its own login after the
+platform sign-in. **Agent UI** in the Portal completes it with the username
+`cetirun` and the Hermes API key of the Agent. Refer to
+[Open a Hermes Agent](../../getting-started/first-instance/#open-a-hermes-agent).
+These routes do not carry model calls.
 
 The VirtualService of an Agent is in the Agent's namespace. It refers to the
 operator's `istioGateway`, which is `aks-istio-ingress/cetirun-gateway` by

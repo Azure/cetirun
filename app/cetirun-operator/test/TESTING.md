@@ -137,10 +137,10 @@ kubectl --context "$CONTEXT" delete agent "$NAME" --timeout=10m
 
 The Operator uninstalls the Helm release, and deletes the VirtualService and
 the namespace. For the deletion behavior, refer to
-[Lifecycle](../../../site/content/en/docs/guides/lifecycle.md). The namespace
-deletion also deletes the PVCs. With the default Azure Disk reclaim policy, the
-disks are also deleted. Save any test data that you need before you delete the
-Agent.
+[Delete only with a recovery plan](../../../site/content/en/docs/operations/agent-lifecycle.md#delete-only-with-a-recovery-plan).
+The namespace deletion also deletes the PVCs. With the default Azure Disk
+reclaim policy, the disks are also deleted. Save any test data that you need
+before you delete the Agent.
 
 > **Warning:** Do not delete the CetiRun CRDs to remove test resources. The
 > CRDs are cluster-scoped. When you delete a CRD, Kubernetes deletes every

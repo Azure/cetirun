@@ -213,9 +213,10 @@ Each router has:
   A tier can also name `copilot/<model>` for a GitHub Copilot model. You can
   leave `reasoning` empty to use the `complex` model.
 
-  The `medium` model is also the router's default model. For example, a
-  request goes to it when its `jev` classification fails. If an `llm`
-  classifier fails, the router classifies the request with `heuristic` instead.
+  The `medium` model is also the router's default model. A request goes to it
+  when its `llm` or `jev` classification fails. An `llm` classifier has ten
+  seconds to answer. Refer to
+  [Choose a classifier](../../operations/smart-routing/#choose-a-classifier).
 
 If the model of a `copilot/<model>` tier is the same model as a shared model,
 the tier is registered as that shared model. GitHub Copilot routes of that

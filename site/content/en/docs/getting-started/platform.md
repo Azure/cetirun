@@ -119,7 +119,7 @@ default.
 
 | Tool | Version | Use |
 | --- | --- | --- |
-| Python with PyYAML | Python 3.9 or later. CI tests use Python 3.12 and PyYAML 6.0.3 | `make deploy` and the helpers |
+| Python with PyYAML | Python 3.9 or later. CI tests `make deploy` with the Python and PyYAML of the `ubuntu-latest` runner image | `make deploy` and the helpers |
 | Helm | Helm 3. CI tests use Helm 3.22.0 | Renders and installs the charts |
 | kubectl | No more than one minor version from the cluster | `make deploy` stops if the versions are farther apart |
 | kubelogin | A version that `az aks install-cli` installs | Entra sign-in for kubectl. Refer to [Connect to the cluster](../../operations/infrastructure/#connect-to-the-cluster) |
@@ -436,7 +436,7 @@ these inputs before the first run:
 - `identityRealm` names the authentication realm of Portal Chat history, for
   example `entra:<tenant-id>`. Keep it stable. A new value selects a different
   history partition in each browser, and users do not see their earlier
-  history. Refer to [Custom chat](../../guides/custom-chat/).
+  history. Refer to [Enable Portal Chat](../../operations/portal-chat/).
 - `istio.values.allowedGroups` lists the object IDs of the Entra groups that
   can sign in, separated by commas. These are the groups that you assign to
   the Portal sign-in application. Refer to
@@ -667,7 +667,8 @@ users, test them separately.
 A Team is optional for a new agent. An agent without a Team can use every
 shared conversational model, including `auto` when automatic routing is
 configured. No Agent Policy applies to it, and every signed-in user can select
-any Team.
+any Team. For the models that each Agent gets, refer to
+[Model access](../../operations/models/).
 
 An administrator creates Teams in the portal's administration pages, with an
 Agent Policy and a Sandbox. The agents of such a Team run in its Sandbox, after
@@ -693,7 +694,7 @@ added or removed, or when its limits change, the Agents that can use that model
 restart one time. Before you remove a shared model, remove its name from each
 Agent Policy that allows it. Otherwise, the operator stops the Agents of that
 Agent Policy. Refer to
-[Choose a model](../../guides/models/#runtime-configuration).
+[When model changes reach Agents](../../operations/ai-gateway/#when-model-changes-reach-agents).
 
 To upgrade CetiRun to a new version, follow
 [Upgrade CetiRun](../../operations/upgrade/).
@@ -932,8 +933,9 @@ consumer is reconfigured automatically.
 
 In particular, the operator helper's `NAMESPACE` does not override the chart's
 `namespace` value. A non-default installation must set both consistently. The
-Portal's [Upgrade action](../../guides/lifecycle/#pin-and-update-a-chart) also
-finds the fixed `cetirun-system/cetirun-operator` Deployment. A change to
+Portal's
+[Upgrade action](../../operations/agent-lifecycle/#pin-and-update-a-chart)
+also finds the fixed `cetirun-system/cetirun-operator` Deployment. A change to
 those Helm settings does not reconfigure this lookup.
 
 By default, the standalone portal helper uses the namespace `cetirun-portal`.

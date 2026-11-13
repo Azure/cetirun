@@ -33,9 +33,11 @@ router. With `kubectl`, read `status.aiGateway` of the Agent.
 
 These settings decide which models the key of an Agent can use:
 
-- **The Team and its Agent Policy.** A standard Agent has no Team, or a Team
-  without an Agent Policy. It can use every shared model. The Agent Policy of a
-  policy-bound Team limits its Agents to `modelAccess.sharedModels.allowed`.
+- **The Team and its Agent Policy.** A
+  [standard Agent](../../concepts/glossary/#standard-agent) has no Team, or a
+  Team without an Agent Policy. It can use every shared model. The Agent
+  Policy of a policy-bound Team limits its Agents to
+  `modelAccess.sharedModels.allowed`.
   It allows GitHub Copilot only with `modelAccess.copilot.allowed`.
 - **The model sources of the Agent.** `spec.modelAccess.sharedModels` and
   `spec.modelAccess.githubCopilot` enable or disable the two sources. Without

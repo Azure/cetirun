@@ -50,7 +50,8 @@ For the tasks that use these pages, refer to:
 - [Smart routing](../smart-routing/) for routers
 - [Skill Marketplace](../skill-marketplace/#select-the-skills-of-a-team) for
   Team skills
-- [Manage lifecycle](../../guides/lifecycle/) for the Agents of other users
+- [Administer Agents](../agent-lifecycle/#manage-agents-in-the-portal) for the
+  Agents of other users
 
 ## Settings that only kubectl can change
 

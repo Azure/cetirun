@@ -14,6 +14,10 @@ CetiRun adds four cluster-scoped resources to the Kubernetes API group
 | `Sandbox` | `sandboxes` | `sandboxes.cetirun.microsoft.com` | `crs` |
 | `AgentPolicy` | `agentpolicies` | `agentpolicies.cetirun.microsoft.com` | `crp` |
 
+In scripts, use the full resource names, for example
+`agents.cetirun.microsoft.com`, so that resources of other API groups do not
+match.
+
 An Agent is a long-lived environment that one user owns. A replacement of its
 Pod keeps the same Agent. A Team supplies shared configuration and skills to
 its Agents. The private data of each Agent stays private. A Sandbox selects the
@@ -35,9 +39,10 @@ This page uses these terms:
   operator keeps its StatefulSet at zero replicas and removes its route.
 - A *single-start lifetime* is the lifetime that the operator recorded for a
   Sandbox Agent that started under the earlier version-1 native execution
-  profile. Such an Agent keeps that profile and its limits. In scripts, use
-the full resource names, for example `agents.cetirun.microsoft.com`, so that
-resources of other API groups do not match.
+  profile. Such an Agent keeps that profile and its limits.
+
+The [Glossary](../../concepts/glossary/) defines these terms and the other
+terms of CetiRun.
 
 ## Existing installations
 
@@ -339,7 +344,7 @@ does not use can be absent or `False`.
 | `AgentConfigReady` | The operator resolved the Agent configuration. Reason `AgentConfigResolved` means that the built-in configuration is prepared, not that the runtime is ready. `False` with `AgentConfigInvalid` reports a rejected profile, image, port, or Helm value, or a failed chart download for a new Agent or a spec change. For a failed download, the operator log records the error of the registry. `AgentRuntimeNotImplemented` reports a setting that cannot be provisioned, for example a non-default built-in username. `AgentChartUnavailable` reports a temporary chart download failure of an installed Agent. |
 | `BuiltInPrerequisitesReady` | The last full reconciliation of a built-in Agent completed its prerequisites. Only a later successful reconciliation clears a failure. |
 | `RegistryCredentialsReady` | The operator copied the registry credentials of `agent.registrySecretRef`. It does not prove that the registry accepted them or that the image was pulled. |
-| `PolicyResolved` | The Team, the requests of the Agent, the Sandbox, and the effective AgentPolicy are resolved. `False` with `PolicyDenied` means that the policy does not allow a request, for example a skill. `DependencyUnavailable` means that a dependency cannot be read. |
+| `PolicyResolved` | The Team, the requests of the Agent, the Sandbox, and the effective AgentPolicy are resolved. `False` with `PolicyDenied` means that the policy does not allow a request, for example a skill. `DependencyUnavailable` means that a dependency cannot be read or cannot be used, for example an AgentPolicy with the reason `RegistrationIncompatible`. In this case, the operator stops the Agent and blocks its AI Gateway key, but keeps the key. |
 | `PolicyApplied` | Every enforcement revision that the policy needs matches the evidence of its component. `EnforcementPending` means that the Sandbox, Gateway, or credential enforcement is not complete. |
 | `SandboxReady` | The Sandbox workload of a policy-bound Agent is ready, and its Kubernetes configuration matches. It does not supply physical failover fencing. |
 | `AIGatewayReady` | The AI Gateway virtual key of the Agent is ready. `NoModelEntitlement` means that the effective policy grants no model source. |
@@ -791,7 +796,13 @@ of the policy. Reason `PolicyAccepted` means that the platform supports the
 controls of the policy and its requested role approvals. It does not assess
 Sandbox compatibility, HOME access, or per-Agent enforcement. Other reasons are
 `InvalidConfiguration`, `UnsupportedControl`, `UnapprovedGrant`,
-`PolicyConflict`, `PrerequisitesUnavailable`, and `Terminating`.
+`PolicyConflict`, `RegistrationIncompatible`, `PrerequisitesUnavailable`, and
+`Terminating`.
+
+`RegistrationIncompatible` means that the operator accepted this generation of
+the policy before, and the current platform registration cannot enforce it.
+The message of the condition can end with a fixed explanation from the
+operator. It does not contain values from the policy or the registration.
 
 ### Identity and network controls
 
@@ -1005,8 +1016,12 @@ for example the UID of the Team before the move. It also rejects a request ID
 that is the same as before. After the reauthorization, the Agent stays held.
 Admission requires a suspended Agent only for a change of
 `modelAccess.monthlyBudgetUSD`. Before a move, suspend the Agent, so that its
-workload stops in a controlled way. See the
+workload stops in a controlled way.
+
+See the
 [reauthorization protocol]({{< repo "app/cetirun-operator/README.md" >}}#direct-kubernetes-writer-assignments-and-explicit-reauthorization).
+For the procedure, read
+[Move an Agent to another Team](../../operations/policy-teams/#move-an-agent-to-another-team).
 
 A policy-bound resource that exists enters a controlled hold for cleanup. A
 change or removal of its references does not return it to legacy execution. A

@@ -38,8 +38,10 @@ releases, and deployments. Run `make help` for the short list.
 | `DEPLOY_CONFIG` | The environment file of the deployment targets. Necessary for them |
 
 For the deployment targets, `VERSION` and `REGISTRY` on the `make` command line
-become `--version` and `--registry` of the platform helper. For the steps of an
-installation, see [Install CetiRun](../../getting-started/platform/).
+become `--version` and `--registry` of the platform helper.
+[Deployment commands](../../getting-started/platform/#deployment-commands)
+lists these targets. For the steps of an installation, see
+[Install CetiRun](../../getting-started/platform/).
 
 ## Validation and license helpers
 

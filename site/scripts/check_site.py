@@ -674,11 +674,11 @@ STYLE_RULES = (
         r"|workers?)\s+(?:(?:also|only|then|first|still|again|does\s+not"
         r"|do\s+not|cannot)\s+)?examines?\b",
     ),
-    StyleRule("repo-url", "pending", "use the repo shortcode for repository paths"),
+    StyleRule("repo-url", "error", "use the repo shortcode for repository paths"),
     StyleRule("heading-case", "pending", "use sentence case"),
     StyleRule(
         "description",
-        "pending",
+        "error",
         "start with the reader's task or the purpose, not with an announcement",
     ),
     StyleRule("duplicate-title", "pending", "give each page a unique title"),

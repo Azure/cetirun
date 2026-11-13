@@ -9,8 +9,8 @@ separate **Agent Identity** for each Agent. This guide is for the platform and
 Entra administrators who operate the cluster. It is not for an Agent owner who
 assigns Azure RBAC after an identity exists. Start with
 [Prepare Agent connections](../agent-identity/) for the shared Key Vault, TLS,
-Broker, MCP, network, and Portal prerequisites. Those prerequisites apply here
-also.
+Agent Identity Broker, Connections MCP, network, and Portal prerequisites.
+Those prerequisites apply here also.
 
 An Agent Identity is an `agentIdentity` service principal in Microsoft Entra
 Agent ID. The operator creates it from one **Agent Identity Blueprint**. The Blueprint is an

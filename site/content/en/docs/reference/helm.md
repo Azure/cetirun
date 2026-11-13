@@ -24,7 +24,7 @@ some values to fixed values, for example the Sandbox admission, Agent Identity,
 Connections, Custom runtime, Memory, and Portal Chat settings. If the
 environment file sets a different value, `make deploy` stops with an error. For
 the values that `make deploy` sets, see
-[Install CetiRun](../../getting-started/platform/).
+[Values that make deploy sets](../../getting-started/platform/#values-that-make-deploy-sets).
 
 For the Connections MCP, Agent Identity Broker, and Istio charts, see the
 [Connections MCP chart]({{< repo "app/cetirun-connections-mcp/chart/values.yaml" >}}),
@@ -61,8 +61,8 @@ manages, the operator supplies these values.
 A local render does not pull images, query Secrets that already exist, run init
 containers or hooks, or examine cluster APIs. The `version` and `appVersion`
 metadata of a chart are not evidence of published artifacts. The connected admission and registry checks
-and the Helm installation that mutates the cluster are separate steps in
-[platform setup](../../getting-started/platform/).
+and the Helm installation that mutates the cluster are separate steps. Refer to
+[Deployment commands](../../getting-started/platform/#deployment-commands).
 
 ## Agent chart
 
@@ -567,7 +567,7 @@ For all values and their defaults, see
 | `aiGateway.enabled` | `true`. Every Agent takes its models from the platform AI Gateway. If you disable it, Agent execution is held. There is no direct-provider fallback. |
 | `aiGateway.url` | Empty: the Gateway `cetirun-ai-gateway` in the operator namespace. Otherwise, `http://<service>.<namespace>.svc.cluster.local:<port>`. |
 | `aiGateway.masterKeySecret.name`, `aiGateway.masterKeySecret.key` | `cetirun-ai-gateway-auth`, `master-key`. The Secret in the operator namespace that holds the master key of the Gateway. |
-| `aiGateway.defaultModel` | Empty. The preferred default model of Agents that name none. If it is not available, an Agent uses a shared model, then a GitHub Copilot model, and a router of the Gateway only when nothing else is available. |
+| `aiGateway.defaultModel` | Empty. The preferred default model of Agents that name none. If it is not available, an Agent uses a shared model, then a GitHub Copilot model, and a router of the AI Gateway only when nothing else is available. Refer to [Default model](../../operations/models/#default-model). |
 | `aiGateway.copilotProxy.enabled` | `true`. A GitHub Copilot proxy for each Agent whose owner keeps GitHub Copilot on. If you disable it, OpenClaw Agents use only shared models. |
 | `aiGateway.copilotProxy.healthChecks.enabled` | `false`. See the `cetirun-operator.aiGateway.copilotProxy.healthChecks.enabled` row of [Platform chart](#platform-chart). |
 | `customRuntime.enabled` | `true`, and `make deploy` also sets `true`. The Custom runtime provider. It runs no Custom image until an administrator approves the image in `approvedImages`. To disable Custom Agents in the operator, set `false`. |
@@ -587,7 +587,7 @@ For all values and their defaults, see
 | `sandboxSources.nativeExecution` | `false`. It selects the common OpenClaw/Hermes reconciliation for new lifetimes, with owned bootstrap, enforced admission, and the AI Gateway. |
 | `sandboxSources.plannedMigration` | `false`. It allows new moves from a healthy source that an administrator requests, with one CSI/RWOP HOME. It must have `nativeExecution` and upgraded CRD/Operator/admission/Portal readers. When it is disabled, the current checkpoints and cleanup permissions stay. |
 | `sandboxSources.bootstrapOwnedPrerequisites` | `false`. It also bootstraps the owned namespace, operator access, HOME, and native authentication, for new namespaces only. Explicit Agent chart/image/port pins are necessary. |
-| `sandboxSources.platformConfigMapName` | Empty. A ConfigMap that already exists in the operator namespace and contains a versioned `platform.json`. Configuration admission and the controller share it. |
+| `sandboxSources.platformConfigMapName` | Empty. A ConfigMap that already exists in the operator namespace and contains a versioned `platform.json`. Configuration admission and the controller share it. Refer to [The platform registration](../../operations/policy-teams/#the-platform-registration). |
 | `sandboxSources.homeClaimName`, `sandboxSources.skillsClaimName` | `home`, `skills`. Claims that already exist stay read-only. Bootstrap can create an owned HOME only in new namespaces. Published skills stay external. |
 | `sandboxSources.skillsCatalogConfigMapName` | Empty. It opts in to a separate operator-owned `skills.json` catalog. This catalog binds exact Team identities to Blob NFS content that is already published. Owned bootstrap is necessary. |
 | `sandboxSources.helpers` | `doctor`, `logger`, `desktop` default to `false`. The helper selection for legacy held preparation. It does not enable reconciled (`v2`) helpers. |
@@ -831,9 +831,9 @@ Keep the execution hold until all participants and the independently qualified
 runtime provider are integrated.
 
 The Portal's
-[Upgrade action](../../guides/lifecycle/#pin-and-update-a-chart) still reads
-`cetirun-system/cetirun-operator`. If you use a non-default operator namespace,
-also examine that dependency.
+[Upgrade action](../../operations/agent-lifecycle/#pin-and-update-a-chart)
+still reads `cetirun-system/cetirun-operator`. If you use a non-default
+operator namespace, also examine that dependency.
 
 Keep `istioGateway` aligned with the portal chart's `istio.gateway`. The
 namespace of the Gateway resource can be different from its workload namespace.
@@ -1002,7 +1002,7 @@ Source: [observability values]({{< repo "app/cetirun-observability/chart/values.
 The platform chart installs it with the `cetirun-observability` values, which
 are off by default. `make deploy` turns it on, and sets the first four rows
 from the required `observability` block of the environment file. For the
-procedure, see [Observability with ADX-Mon](../../operations/observability/).
+procedure, see [Monitoring and logs](../../operations/observability/).
 
 | Value | Purpose / default |
 | --- | --- |

@@ -35,7 +35,8 @@ rules:
 - The operator configures each Agent to call models through the AI Gateway.
   The AI Gateway keeps the provider credentials, and the Agent Identity Broker
   keeps the credentials of connections.
-- Sandbox Agents get only what their Agent Policy allows.
+- A [Sandbox Agent](../concepts/glossary/#sandbox-agent) gets only what its
+  Agent Policy allows.
 
 CetiRun does not protect against these risks:
 
@@ -60,7 +61,7 @@ CetiRun does not protect against these risks:
 | Ingress gateway to the Portal | The Portal trusts the identity headers of the ingress gateway, and the Portal chart admits only the ingress gateway | Istio sidecar injection in the Portal namespace, and `istio.internalAuthMTLS: true` |
 | Agent to models | The virtual key of the Agent | The AI Gateway |
 | Agent to external accounts | Connections MCP, with short-lived tokens from the Broker | The connections that the owner authorized |
-| Agent to the network | The NetworkPolicy of a standard Agent, or the CiliumNetworkPolicy of a Sandbox Agent | A network plugin that enforces these policies |
+| Agent to the network | The NetworkPolicy of a [standard Agent](../concepts/glossary/#standard-agent), or the CiliumNetworkPolicy of a Sandbox Agent | A network plugin that enforces these policies |
 
 ### Identity headers
 

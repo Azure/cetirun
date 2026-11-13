@@ -6,6 +6,12 @@ weight: 40
 
 This page is for platform administrators. It covers failures of `make deploy`,
 of the platform components, and of the Agents that the Operator reconciles.
+For other problems, use these pages:
+
+- [Troubleshoot your Agent](../../guides/troubleshooting/) for the problems
+  that an Agent owner can solve in the Portal
+- [Troubleshoot model requests](../ai-gateway/#troubleshoot-model-requests)
+  for failed model calls through the AI Gateway
 
 The checks on this page connect to Kubernetes, but they do not change it,
 unless a step says otherwise. Do not paste their output into public issues,
@@ -114,8 +120,8 @@ kubectl get events -n cetirun-system --field-selector type=Warning --sort-by=.la
 | The Portal cannot create or change Agents, Teams, Sandboxes, or Agent Policies. The error contains `failed calling webhook` | The Sandbox admission webhooks use `failurePolicy: Fail`. When the admission server is not available, the API server refuses these writes | `kubectl get validatingwebhookconfiguration cetirun-sandbox-admission` and `kubectl get deployment cetirun-sandbox-admission -n cetirun-system` |
 | No user can sign in | OAuth2 Proxy runs only on the `system` node pool, and its Pods are not ready | `kubectl get pods -n cetirun-istio -o wide` and `kubectl get nodes -l agentpool=system` |
 | New Agents get no status | The Operator is not ready | `kubectl get deployment cetirun-operator -n cetirun-system` |
-| Agents do not get models | The AI Gateway or its database is not ready | `kubectl get deployment cetirun-ai-gateway -n cetirun-system` and `kubectl get statefulset cetirun-ai-gateway-postgresql -n cetirun-system` |
-| Agent connections fail | The Broker or Connections MCP is not ready | `kubectl get pods -n <broker namespace>` and `kubectl get deployment cetirun-connections-mcp -n cetirun-system` |
+| Agents do not get models | The AI Gateway or its database is not ready | `kubectl get deployment cetirun-ai-gateway -n cetirun-system` and `kubectl get statefulset cetirun-ai-gateway-postgresql -n cetirun-system`. Refer to [AI Gateway](../ai-gateway/) |
+| Agent connections fail | The Broker or Connections MCP is not ready | `kubectl get pods -n <broker namespace>` and `kubectl get deployment cetirun-connections-mcp -n cetirun-system`. Refer to [Prepare Agent connections](../agent-identity/#troubleshooting) |
 
 Read the logs of a platform component privately. The logs of the Portal and of
 OAuth2 Proxy can contain user identities.
@@ -156,7 +162,7 @@ the policy's reason.
 | Blocked by policy | Review the Agent configuration against the Team's Agent Policy. Read the reported reason. |
 | Identity owner binding required | Ask an administrator to verify the trusted owner binding for Agent Identity. |
 | Binding or identity approval required | Ask an administrator to verify the Team binding and the Agent's identity or role approvals. |
-| Identity not ready | Examine Agent Identity setup and the reported reason. |
+| Identity not ready | Read the reported reason. Then follow [Troubleshoot Agent Identity](../entra-agent-identity/#troubleshoot-agent-identity). |
 | Platform support required | Verify platform support for the requested Sandbox controls. |
 | Governance dependency unavailable | Examine the required policy, Sandbox, and platform dependencies. |
 | Waiting for governance | Wait for the Operator to verify prerequisites. If the condition persists, examine the detailed conditions. |
@@ -194,7 +200,7 @@ reported observation; it does not approve a grant or verify live enforcement.
 | `IngressReady` is false | Instance VirtualService and shared gateway |
 | Login loop or 403 | OAuth callback and TLS, groups, sidecar injection, and ownership |
 | Portal returns HTTP 403 `invalid_identity` | The user name. The part before `@` must give a valid alias. The Portal does not replace characters. Refer to [User names](../../getting-started/platform/#user-names) |
-| Agent opens but model fails | AI Gateway conditions, Portal sign-in, selected model entitlement, DNS, and egress. Readiness does not test inference. |
+| Agent opens but model fails | AI Gateway conditions, Portal sign-in, selected model entitlement, DNS, and egress. Readiness does not test inference. Refer to [Troubleshoot model requests](../ai-gateway/#troubleshoot-model-requests). |
 
 The controller can mark the overall instance `Ready` even when the
 VirtualService reconciliation failed. Read `IngressReady`. Then do a separate
@@ -311,7 +317,7 @@ successful CLI exit does not alone show a successful foreground-tool result.
 A restart, a Helm upgrade or rollback, a suspension, or a deletion changes the
 running environment. Authorization is necessary for each of these changes.
 None of them belongs in the read-only checks above. For deliberate changes, use
-the [lifecycle guidance](../../guides/lifecycle/).
+[Administer Agents](../agent-lifecycle/).
 
 If immutable fields are different, the runtime pre-upgrade/pre-rollback hook
 can recreate a StatefulSet. The hook does not migrate PVC data. Deletion of the
