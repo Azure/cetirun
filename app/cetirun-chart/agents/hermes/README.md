@@ -65,10 +65,14 @@ uses upstream PM to create a generation below
 `$HERMES_HOME/installs/<install-key>/environments`; the accompanying `facts.json`
 is PM's selection record. The manifest keeps tool and core source writes out
 of the immutable image. Platform extras remain required after plugin changes.
-Desktop plugin files live under the persistent Hermes root's `desktop-plugins`.
-Browser-compatible Desktop plugins can run without Electron; native windows,
-global shortcuts, updater actions and unsupported file APIs retain upstream's
-unavailable behavior.
+The managed Webapp does not execute runtime Desktop plugins. The image disables
+their module evaluation, folder scanning and hot reload, and the server returns
+404 for `/api/desktop-plugins/*`. This policy is fixed at build time because the
+Webapp shares the Portal's browser origin. Saved plugin files and enable choices
+cannot turn it on. Existing files in the persistent Hermes root's
+`desktop-plugins` are left untouched. Bundled UI plugins and Python Agent plugins,
+including Memory, keep their existing behavior. Native windows, global shortcuts,
+updater actions and unsupported file APIs retain upstream's unavailable behavior.
 
 Container startup runs `hermes-prepare-dependencies` before the runtime check.
 Upstream PM reuses a matching environment without downloading or rebuilding it.
@@ -77,7 +81,7 @@ for the retained plugin and extra selection, including the required platform
 extras, and validates startup imports. Downloads use the Agent's existing
 network policy; preparation fails if required packages are unavailable or
 incompatible. A failed PM build leaves the previous selection available for
-diagnosis and stops startup without falling back to the base or disabling plugins.
+diagnosis and stops startup without falling back to the base or disabling Python plugins.
 Supervised gateway restarts and health probes only validate the prepared selection.
 
 The same command remains available for preparing dependencies explicitly before
@@ -142,6 +146,13 @@ session storage; child-window authorization uses the same scoped channel.
 Native Desktop keeps its
 existing storage behavior. The patch changes source modules, without rewriting
 served HTML or JavaScript.
+
+`compat/apply_webapp_plugins.py` separately checks the pinned runtime loader and
+server surface policy before disabling runtime Desktop plugins. Both patched
+sources are kept in the final image alongside the rebuilt Webapp. Existing Agents
+need the updated Hermes image, and open browser tabs need a reload. This closes
+the Desktop plugin entry points; it does not provide a separate browser origin
+for Agent content.
 
 In managed ingress mTLS mode, both application listeners bind to loopback.
 External TLS `15443` forwards API requests to the configured API port; TLS `15444` forwards Webapp
@@ -342,5 +353,16 @@ tests exercise the changed native adapter interfaces.
 
 The focused browser storage test and existing native ingress test are described
 in [DEVELOPMENT.md](../../../../DEVELOPMENT.md#agent-chart-and-python-helpers).
+
+With a pristine copy of the pinned Hermes source, run the plugin boundary tests:
+
+```bash
+MEMORY_HERMES_SOURCE=/path/to/hermes-source python3 -B -m unittest scripts.tests.test_hermes_webapp_plugins -v
+```
+
+These tests execute the original and patched loader in Node with synthetic host
+APIs, and check the native server surface policy without starting a server.
+They need Node.js 24 or later, not a Hermes image or model endpoint. Without
+`MEMORY_HERMES_SOURCE`, the native cases skip; the installer checks still run.
 They use synthetic data. Report offline validation and live deployment results
 separately; local checks do not establish public login or model access.
