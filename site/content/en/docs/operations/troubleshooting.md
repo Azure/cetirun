@@ -222,6 +222,42 @@ updated, ready, and available, and until no older surge replica is left. If
 only the previous terminal Pod is available, the rollout is not complete.
 These observations do not replace model/tool or provider acceptance.
 
+If the main workload is ready but the Custom terminal keeps returning HTTP
+503, inspect the terminal container logs. A listening ttyd socket alone does
+not establish readiness: the terminal must also read and authorize its target
+and successfully probe a supported shell through Kubernetes exec.
+
+The terminal reports fixed startup stages and error categories:
+
+| Stage | What to investigate |
+| --- | --- |
+| `agent-read` | Kubernetes API connectivity and the terminal ServiceAccount's Agent read permission |
+| `target-resolve` | Current Agent authorization, target StatefulSet/Pod reads, ownership, and main-container readiness |
+| `shell-probe` | Exec transport, exec RBAC/admission, and the supported shells in the target image |
+| `target-recheck` | API reads or target replacement immediately after shell probing |
+| `socket-ready` | Availability of ttyd's private Unix socket after the shell dependency succeeds |
+
+Categories include `timeout`, `connection-failed`, `tls-failure`,
+`authorization-denied`, `exec-upgrade-failed`, `target-waiting`,
+`target-changed`, `no-shell`, and `socket-unavailable`. An `unknown` category
+means the error could not be safely classified. `authorization-denied` does
+not distinguish RBAC from admission or identify a particular admission rule.
+If both shell probing and the subsequent target check fail, `recheck_category`
+preserves the second failure alongside the shell failure.
+
+The first observation is logged immediately. Subsequent nonfatal observations,
+including recovery (`Terminal ready`), share a 30-second rate limit. Repeated
+failures report cumulative `failed_attempts` and `elapsed_seconds` since the
+first failure; `state_changes` counts transitions since the previous log.
+When a recovery is logged, the failure counters reset. A fatal failure is
+logged before exit even within the rate limit. Health requests do not generate
+these logs. Diagnostics contain fixed categories and counters, not raw API
+errors, credentials, request URLs, or target identities.
+
+Use the stage to narrow an authorized investigation. These diagnostics do not
+establish why a particular installation remains unready and do not relax its
+authorization, network policy, or readiness requirements.
+
 The `ValidatingAdmissionPolicy` API can be absent, or an admission-policy write
 can be forbidden. In both cases, examine the default `execRestriction`
 prerequisites and the operator ClusterRole. The chart does not have a condition
