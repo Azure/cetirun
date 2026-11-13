@@ -124,62 +124,78 @@ func TestCopilotRegisteredProxyReadiness(t *testing.T) {
 	}
 }
 
+func newDeployedCopilotAgent(t *testing.T, identity bool) (*deployedAgent, *appsv1.Deployment) {
+	t.Helper()
+	f := newDeployedAgent(t)
+	ctx := context.Background()
+	f.r.AIGateway.CopilotProxyImage = testProxyImage
+	agent := f.agent(t)
+	if identity {
+		agent.Spec.AgentIdentity = &api.AgentIdentitySpec{Enabled: true}
+		if agent.Annotations == nil {
+			agent.Annotations = map[string]string{}
+		}
+		agent.Annotations[api.AnnotationOwnerTenantID] = testAgentIdentityTenantID
+		agent.Annotations[api.AnnotationOwnerObjectID] = testAgentIdentityOwnerObject
+		f.r.AgentIdentityEnabled = true
+		f.r.AgentIdentityTenantID = testAgentIdentityTenantID
+		f.r.AgentIdentityBlueprintClientID = testAgentIdentityBlueprintID
+		principal := &azure.ServicePrincipal{ID: testAgentIdentityObjectID, AppID: testAgentIdentityClientID,
+			DisplayName: f.r.agentIdentityDisplayName(agent), AgentIdentityBlueprintID: testAgentIdentityBlueprintID}
+		directory := &fakeAgentIdentityDirectory{byObject: principal, createResult: principal}
+		f.r.agentIdentityGraphClientFactory = func() (agentIdentityDirectoryClient, error) { return directory, nil }
+	}
+	agent.Spec.ModelAccess = modelAccess(true, true)
+	agent.Generation++
+	if err := f.r.Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	agent = f.agent(t)
+	signIn(t, f.r.Client, agent, testCopilotModels)
+	if err := f.r.Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	proxy := readyProxy(1)
+	proxy.Labels = map[string]string{"app.kubernetes.io/component": "copilot-proxy"}
+	if err := f.r.Create(ctx, proxy); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := f.agent(t)
+	if before.Status.Phase != api.PhaseReady || before.Status.AIGateway.Copilot.Phase != api.AIGatewayCopilotPhaseReady ||
+		aiGatewayVerificationDue(before, true, time.Now()) {
+		t.Fatalf("fixture is not at steady state: %+v", before.Status)
+	}
+	return f, proxy
+}
+
 func TestCopilotProxyReadinessThroughSteadyReconcile(t *testing.T) {
-	for _, scenario := range []string{"without identity", "with identity"} {
+	for _, scenario := range []string{"without identity", "with identity", "directory outage during recovery"} {
 		t.Run(scenario, func(t *testing.T) {
-			identity := scenario == "with identity"
-			f := newDeployedAgent(t)
+			identity := scenario != "without identity"
+			f, proxy := newDeployedCopilotAgent(t, identity)
 			ctx := context.Background()
-			f.r.AIGateway.CopilotProxyImage = testProxyImage
-			agent := f.agent(t)
-			if identity {
-				agent.Spec.AgentIdentity = &api.AgentIdentitySpec{Enabled: true}
-				if agent.Annotations == nil {
-					agent.Annotations = map[string]string{}
-				}
-				agent.Annotations[api.AnnotationOwnerTenantID] = testAgentIdentityTenantID
-				agent.Annotations[api.AnnotationOwnerObjectID] = testAgentIdentityOwnerObject
-				f.r.AgentIdentityEnabled = true
-				f.r.AgentIdentityTenantID = testAgentIdentityTenantID
-				f.r.AgentIdentityBlueprintClientID = testAgentIdentityBlueprintID
-				principal := &azure.ServicePrincipal{ID: testAgentIdentityObjectID, AppID: testAgentIdentityClientID,
-					DisplayName: f.r.agentIdentityDisplayName(agent), AgentIdentityBlueprintID: testAgentIdentityBlueprintID}
-				directory := &fakeAgentIdentityDirectory{byObject: principal, createResult: principal}
-				f.r.agentIdentityGraphClientFactory = func() (agentIdentityDirectoryClient, error) { return directory, nil }
-			}
-			agent.Spec.ModelAccess = modelAccess(true, true)
-			agent.Generation++
-			if err := f.r.Update(ctx, agent); err != nil {
-				t.Fatal(err)
-			}
-			for range 3 {
-				if _, err := f.r.Reconcile(ctx, f.req); err != nil {
-					t.Fatal(err)
-				}
-			}
-			agent = f.agent(t)
-			signIn(t, f.r.Client, agent, testCopilotModels)
-			if err := f.r.Update(ctx, agent); err != nil {
-				t.Fatal(err)
-			}
-			proxy := readyProxy(1)
-			proxy.Labels = map[string]string{"app.kubernetes.io/component": "copilot-proxy"}
-			if err := f.r.Create(ctx, proxy); err != nil {
-				t.Fatal(err)
-			}
-			for range 3 {
-				if _, err := f.r.Reconcile(ctx, f.req); err != nil {
-					t.Fatal(err)
-				}
-			}
 			before := f.agent(t)
-			if before.Status.Phase != api.PhaseReady || before.Status.AIGateway.Copilot.Phase != api.AIGatewayCopilotPhaseReady ||
-				aiGatewayVerificationDue(before, true, time.Now()) {
-				t.Fatalf("fixture is not at steady state: %+v", before.Status)
-			}
 			before.Status.LastReconcileTime = &metav1.Time{Time: time.Now().Add(-time.Minute).Truncate(time.Second)}
+			var directory *fakeAgentIdentityDirectory
+			directoryReads := 0
 			if identity {
 				before.Status.AgentIdentity.LastVerifiedTime = before.Status.LastReconcileTime.DeepCopy()
+				graph, err := f.r.agentIdentityGraphClientFactory()
+				if err != nil {
+					t.Fatal(err)
+				}
+				directory = graph.(*fakeAgentIdentityDirectory)
+				directoryReads = directory.getObjectCalls
 			}
 			if err := f.r.Status().Update(ctx, before); err != nil {
 				t.Fatal(err)
@@ -199,6 +215,9 @@ func TestCopilotProxyReadinessThroughSteadyReconcile(t *testing.T) {
 			}
 			for pass, ready := range []int32{0, 0, 0, 1} {
 				statusWrites = 0
+				if pass == 3 && scenario == "directory outage during recovery" {
+					directory.getObjectErr = errors.New("synthetic directory outage")
+				}
 				proxy.Status.ReadyReplicas = ready
 				if err := f.r.Status().Update(ctx, proxy); err != nil {
 					t.Fatal(err)
@@ -222,6 +241,9 @@ func TestCopilotProxyReadinessThroughSteadyReconcile(t *testing.T) {
 				if current.Status.AIGateway.Copilot.Phase != want {
 					t.Fatalf("ready replicas %d: phase %s, want %s", ready, current.Status.AIGateway.Copilot.Phase, want)
 				}
+				if scenario == "with identity" && directory.getObjectCalls != directoryReads {
+					t.Fatalf("readiness polling performed %d Graph reads with fresh identity verification", directory.getObjectCalls-directoryReads)
+				}
 				if !current.Status.LastReconcileTime.Equal(before.Status.LastReconcileTime) {
 					t.Fatal("proxy polling advanced the recent heartbeat, causing another status watch event")
 				}
@@ -243,6 +265,8 @@ func TestCopilotProxyReadinessThroughSteadyReconcile(t *testing.T) {
 			before = f.agent(t)
 			before.Status.LastReconcileTime = &metav1.Time{Time: time.Now().Add(-11 * time.Minute)}
 			if identity {
+				directory.getObjectErr = nil
+				directoryReads = directory.getObjectCalls
 				before.Status.AgentIdentity.LastVerifiedTime = before.Status.LastReconcileTime.DeepCopy()
 			}
 			if err := f.r.Status().Update(ctx, before); err != nil {
@@ -257,6 +281,47 @@ func TestCopilotProxyReadinessThroughSteadyReconcile(t *testing.T) {
 			}
 			if identity && !f.agent(t).Status.AgentIdentity.LastVerifiedTime.After(before.Status.AgentIdentity.LastVerifiedTime.Time) {
 				t.Fatal("periodic verification did not advance an expired identity verification timestamp")
+			}
+			if identity && directory.getObjectCalls != directoryReads+1 {
+				t.Fatal("expired identity verification did not read Graph")
+			}
+		})
+	}
+}
+
+func TestCopilotReadinessDoesNotSkipChangedIdentityInputs(t *testing.T) {
+	for _, change := range []string{"Agent generation", "operator configuration"} {
+		t.Run(change, func(t *testing.T) {
+			f, proxy := newDeployedCopilotAgent(t, true)
+			ctx := context.Background()
+			graph, err := f.r.agentIdentityGraphClientFactory()
+			if err != nil {
+				t.Fatal(err)
+			}
+			directory := graph.(*fakeAgentIdentityDirectory)
+			reads := directory.getObjectCalls
+			proxy.Status.ReadyReplicas = 0
+			if err := f.r.Status().Update(ctx, proxy); err != nil {
+				t.Fatal(err)
+			}
+			if change == "Agent generation" {
+				agent := f.agent(t)
+				agent.Spec.User.DisplayName = "Updated Owner"
+				agent.Generation++
+				if err := f.r.Update(ctx, agent); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				f.r.AgentIdentityNamePrefix = "updated-prefix"
+			}
+			// A generation change first persists the identity provisioning intent.
+			for range 2 {
+				if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if directory.getObjectCalls != reads+1 {
+				t.Fatalf("%s did not revalidate the identity with Graph", change)
 			}
 		})
 	}

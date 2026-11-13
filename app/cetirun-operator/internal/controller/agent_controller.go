@@ -600,6 +600,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 	gwSecretHash := ""
 	gatewaySecretResourceVersion := ""
+	identityReconcileRequired := true
 	if !reconciledSandbox && (instance.Status.Phase == cetirunv1alpha1.PhaseReady || instance.Status.Phase == cetirunv1alpha1.PhaseSuspended) {
 		brokerRBACErr := r.reconcileConnectionsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team) || r.nativeConnectionsRequested(instance))
 		namespaceMissing := stderrors.Is(brokerRBACErr, errConnectionsMCPBrokerNamespaceMissing)
@@ -644,9 +645,12 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		// which retries the download, until a download succeeds.
 		// A missing namespace also requires the full path, even if the cached
 		// hash matches. Establish Broker RBAC after ensureNamespace recreates it.
-		if !namespaceMissing && instance.Status.ObservedGeneration == instance.Generation &&
-			!identityVerificationDue && !aiGatewayDue && !chartUnavailable(instance) &&
-			instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamRuntimeInputFingerprint(team)) {
+		configurationCurrent := !namespaceMissing && instance.Status.ObservedGeneration == instance.Generation &&
+			!chartUnavailable(instance) &&
+			instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamRuntimeInputFingerprint(team))
+		// Gateway retries do not invalidate a fresh identity verification.
+		identityReconcileRequired = !configurationCurrent || identityVerificationDue
+		if configurationCurrent && !identityVerificationDue && !aiGatewayDue {
 			// Lightweight: ensure VirtualService is up to date (may change after operator upgrade).
 			// Update ConditionIngressReady so CR status reflects the actual VS state.
 			// When suspended, ensure VirtualService is absent (retries deletion if
@@ -851,7 +855,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// Reconcile the per-instance Agent Identity before rendering the workload.
 	// The Broker reads only the canonical binding persisted in CR status.
 	var agentIdentityRequeueAfter time.Duration
-	if instance.Spec.AgentIdentity != nil || instance.Status.AgentIdentity != nil {
+	if identityReconcileRequired && (instance.Spec.AgentIdentity != nil || instance.Status.AgentIdentity != nil) {
 		logger.Info("Reconciling Agent Identity", "instance", instance.Name)
 		if err := r.reconcileAgentIdentity(ctx, instance); err != nil {
 			logger.Error(err, "Agent Identity reconciliation failed", "instance", instance.Name)
