@@ -604,7 +604,8 @@ func (r *AgentReconciler) recordSandboxPreparationStatus(ctx context.Context, ex
 		sandboxStatus, reason, message = sandboxStatusFailure(cause)
 		if sandboxPreparationUnsupportedError(cause) {
 			agent.Status.Phase = api.PhaseFailed
-			message = "A requested control is not supported by native Sandbox preparation; execution remains held."
+			message = configurationErrorMessage("A requested control is not supported by native Sandbox preparation; execution remains held",
+				cause, sandboxpolicy.ErrUnsupportedControl)
 		}
 	} else if prepared {
 		reason, message = "SandboxPrepared", "Native resources and controls are prepared at zero replicas; qualified start and enforcement observation are still required."

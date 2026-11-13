@@ -105,6 +105,9 @@ func TestSandboxSourcesFactoryUsesAuthoritativeReadersWithoutFencing(t *testing.
 	if !ok || source.APIReader != reader || source.Namespace != "platform-system" || source.Name != config.PlatformConfigMapName {
 		t.Fatal("configuration source was not bound to the selected operator namespace and reader")
 	}
+	if key := controller.SandboxPlatformRegistration(prepare.Configuration); key.Namespace != "platform-system" || key.Name != config.PlatformConfigMapName {
+		t.Fatal("the watched platform registration is not the ConfigMap that the source reads:", key)
+	}
 	prerequisites, ok := prepare.Prerequisites.(*controller.KubernetesSandboxPrerequisites)
 	if !ok || prerequisites.APIReader != reader || prerequisites.HomeClaimName != config.HomeClaimName ||
 		prerequisites.SkillsClaimName != config.SkillsClaimName || prerequisites.ChartVersion != "0.1.1" ||

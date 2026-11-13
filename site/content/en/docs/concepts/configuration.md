@@ -19,7 +19,7 @@ For a standard Agent, the operator builds Helm values in this order:
 3. Referenced `Team` member context and skills.
 4. Controller-derived integration settings and image repositories.
 5. Per-Agent `spec.helm.values`.
-6. The enforced agent type, the OpenClaw native UI base path, and the AI
+6. The enforced agent type, the OpenClaw Agent UI base path, and the AI
    Gateway projection.
 7. The profile of the agent type resolves the image and the port. Then it
    builds the native configuration for the chart's reserved `runtime` input.
@@ -52,6 +52,9 @@ per-Agent overrides of them:
   `existingSecret`. `extraEnv` accepts only references to authorized Secrets
   and names that are not protected, for example not `PATH`, `HOME`, or names
   with the prefix `CETIRUN_`
+
+[Helm values of Sandbox Agents](../../operations/policy-teams/#helm-values-of-sandbox-agents)
+shows how this order applies to the Agents of a policy-bound Team.
 
 ### Rules for all Agents
 
@@ -172,6 +175,8 @@ an Agent reads each kind of skill and when a change reaches the Agent.
 The configuration of each agent type decides how the agent finds these
 directories and which one wins. Refer to
 [Memory initialization](../../reference/agent-harness/#common-initialization-and-discovery).
+For the source of the Team skills of each kind of Agent, read
+[Skill sources of an Agent](../../operations/skill-marketplace/#skill-sources-of-an-agent).
 
 If the Skill Marketplace is off and a policy-bound Team names skills, the
 Sandbox Agents of the Team do not start. Enable the Skill Marketplace, or

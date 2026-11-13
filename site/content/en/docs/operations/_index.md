@@ -63,7 +63,7 @@ prerequisites first.
 - [AI Gateway](ai-gateway/) — shared models, prices, Copilot proxies,
   credentials, logs, and model troubleshooting
 - [Model access](models/) — which models each Agent gets, and its default model
-- [Budgets and spend](budgets/) — Gateway budgets, request limits, and spend
+- [Budgets and spend](budgets/) — AI Gateway budgets, request limits, and spend
 - [Portal administration](portal-administration/) — the Admin pages of the
   Portal and their limits
 - [Upgrade CetiRun](upgrade/) — upgrade the platform and the Agents, and the

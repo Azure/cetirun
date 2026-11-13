@@ -127,8 +127,15 @@ class StyleRuleTests(unittest.TestCase):
             "Shut down the Agent.",
             "Find out the cause.",
             "Fill in the form.",
+            "Turn off the flag.",
+            "Back up the database.",
             "This increment adds a flag.",
             "If the checkout includes the root Makefile, run it.",
+            "The logger now exports nothing.",
+            "Upgrade the runtime chart.",
+            "A governed Agent starts.",
+            "A policy-bound Agent starts.",
+            "The Gateway refuses the key.",
             "The Portal is being used.",
             "The Pods were being moved.",
             "The flag currently has no effect.",
@@ -136,11 +143,14 @@ class StyleRuleTests(unittest.TestCase):
             "As of this release, the field is necessary.",
             "Simply restart the Agent.",
             "Of course, the Agent restarts.",
+            "We recommend a backup.",
             "For details, read [here](../security/).",
             "For details, [click here](../security/).",
             "Refer to [this page](../security/).",
             "Let's start the Agent.",
             "Then let's encrypt the disk.",
+            "[App](https://github.com/Azure/cetirun/tree/main/app)",
+            "This page describes the Helm values.",
         ):
             with self.subTest(text=text):
                 self.assertTrue(check_site.check_editorial_style(text, {}))
@@ -163,6 +173,8 @@ class StyleRuleTests(unittest.TestCase):
             "The operator restarts the Agent as soon as the policy changes.",
             "Restart the Agent as\nsoon as the policy changes.",
             "The current source of the Team skills is a Git repository.",
+            "The Gateway API routes the request. Copy the gateway token.",
+            "The AI Gateway and the ingress gateway are separate.",
         ):
             with self.subTest(text=text):
                 self.assertEqual(check_site.check_editorial_style(text, {}), [])
@@ -195,9 +207,8 @@ class StyleRuleTests(unittest.TestCase):
 
     def test_pending_and_review_rules_only_report(self):
         text = (
-            "Turn off the flag. We recommend a backup. "
-            "The logger now exports nothing.\n"
-            "The helper examines the image. The Agent no longer starts.\n"
+            sentence(26)
+            + " The helper examines the image. The Agent no longer starts.\n"
         )
         self.assertEqual(check_site.check_editorial_style(text, {}), [])
         self.assertEqual(
@@ -206,9 +217,7 @@ class StyleRuleTests(unittest.TestCase):
                 for finding in check_site.page_style_findings(text)
             },
             {
-                ("phrasal-verb", "pending"),
-                ("first-person", "pending"),
-                ("dev-narrative", "pending"),
+                ("sentence-length", "pending"),
                 ("examine-subject", "review"),
                 ("timeless", "review"),
             },
@@ -231,20 +240,25 @@ class StyleRuleTests(unittest.TestCase):
                 self.assertIn(advice, finding.rule.advice)
 
     def test_stricter_rule_wins_an_overlap(self):
-        findings = check_site.page_style_findings("The logger now exports nothing.")
+        # List the review rules first, so that only the level decides.
+        reordered = tuple(
+            sorted(check_site.STYLE_RULES, key=lambda rule: rule.level != "review")
+        )
+        with mock.patch.object(check_site, "STYLE_RULES", reordered):
+            findings = check_site.page_style_findings("The logger now exports nothing.")
         self.assertEqual(
             [(finding.rule.name, finding.rule.level) for finding in findings],
-            [("dev-narrative", "pending")],
+            [("dev-narrative", "error")],
         )
 
     def test_promoted_rule_fails_the_check(self):
         promoted = tuple(
-            rule._replace(level="error") if rule.name == "first-person" else rule
+            rule._replace(level="error") if rule.name == "sentence-length" else rule
             for rule in check_site.STYLE_RULES
         )
         with mock.patch.object(check_site, "STYLE_RULES", promoted):
-            self.assertTrue(check_site.check_editorial_style("We recommend it.", {}))
-        self.assertEqual(check_site.check_editorial_style("We recommend it.", {}), [])
+            self.assertTrue(check_site.check_editorial_style(sentence(26), {}))
+        self.assertEqual(check_site.check_editorial_style(sentence(26), {}), [])
 
     def test_us_is_not_first_person(self):
         self.assertNotIn("first-person", rules("The budget is in US dollars."))

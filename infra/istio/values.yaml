@@ -79,11 +79,11 @@ portalAuth:
   clusterHost: "cetirun-portal.cetirun-portal.svc.cluster.local"
   clusterPort: 8081
   path: "/internal/auth"
-  # The legacy internal ownership request uses alias/email only. Enabling mTLS
-  # creates a separate, TLS-only cluster and permits the trusted ID token to
-  # reach Portal's internal ownership endpoint.
+  # Use a TLS-only cluster to send the trusted ID token to Portal. Disabling
+  # mTLS selects legacy alias/email-only ownership, which cannot verify
+  # identity-bound Agents. Keep this aligned with Portal's internalAuthMTLS.
   mtls:
-    enabled: false
+    enabled: true
     # Required when enabled. This is compared as an exact URI SAN.
     serverIdentity: ""
 

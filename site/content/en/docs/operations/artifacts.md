@@ -17,9 +17,10 @@ Examine each independent artifact path:
   release in the registry. `make deploy` examines them before it writes, but it
   installs the charts of your clone. The standalone helpers can use their
   local charts instead, with `LOCAL_CHART=1`.
-- The operator must have access to the runtime OCI chart when it runs. For a
-  private registry, `acrDockerSecret` mounts a `kubernetes.io/dockerconfigjson`
-  Secret from the operator namespace into its Helm client.
+- The operator must have access to the agent chart in the registry when it
+  runs. For a private registry, `acrDockerSecret` mounts a
+  `kubernetes.io/dockerconfigjson` Secret from the operator namespace into its
+  Helm client.
 - Nodes must have pull access to the platform images and to the selected agent
   and desktop images. They also need the images of other projects that
   [Private registries and restricted networks](#private-registries-and-restricted-networks)
@@ -46,9 +47,10 @@ make publish REGISTRY=registry.example.com VERSION=0.1.1 \
 
 The command builds and pushes the 14 images and 9 charts of
 [`scripts/release-artifacts.json`]({{< repo "scripts/release-artifacts.json" >}}).
-These include the operator, Portal, AI Gateway, Broker, OpenClaw, Hermes, and
-VS Code Server images, and the platform, Istio, and Agent (`helm/cetirun`)
-charts. Then the command pulls each chart back to examine it. Refer to the
+These include the operator, Portal, AI Gateway, Agent Identity Broker,
+OpenClaw, Hermes, and VS Code Server images, and the platform, Istio, and agent
+(`helm/cetirun`) charts. Then the command pulls each chart back to examine it.
+Refer to the
 [unified release inventory]({{< repo "DEVELOPMENT.md" >}}#unified-release-inventory).
 
 `ACCEPT_VSCODE_SERVER_LICENSE_TERMS` defaults to `true`, so builds accept the
@@ -78,8 +80,8 @@ release:
 
 The deployment helper rejects unknown, duplicate, or required image exclusions.
 It also rejects any configuration that still references an excluded image,
-including a Custom runtime `approvedImages` digest. Remove that reference and
-do not create or retain a VS Code Server Agent for this deployment. When the
+including an `approvedImages` digest for Custom Agents. Remove that reference
+and do not create or retain a VS Code Server Agent for this deployment. When the
 Agent CRD exists, the helper also stops before a Helm write if a retained Custom
 Agent still references that image. This does not bypass the VS Code builder's
 own license check.
@@ -111,7 +113,7 @@ Use the same registry, version, Git SHA, and optional image selection in the
 `release` section of the environment file for `make deploy`. Before it writes,
 `make deploy` makes sure that every selected image and every chart of this
 version is in the registry. It sets the registry and the version of the
-platform images and of the Agent chart. As a result, image tags are not
+platform images and of the agent chart. As a result, image tags are not
 necessary in the environment file.
 
 Run `make deploy` from the same commit that built the artifacts. `make deploy`
@@ -144,7 +146,7 @@ passes.
 ## Example: Azure Container Registry
 
 When the artifacts are in an Azure Container Registry, these steps cover the
-nodes' image pulls and the operator's chart pulls. In these steps, the runtime
+nodes' image pulls and the operator's chart pulls. In these steps, the agent
 chart is `helm/cetirun` in the registry. First, replace the example values.
 `CHART_VERSION` is the version that you published:
 
@@ -197,7 +199,7 @@ ACR_LOGIN_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)
    registry, as `AcrPull` does. Refer to
    [AKS and Azure Container Registry](https://learn.microsoft.com/azure/aks/cluster-container-registry-integration).
 
-2. Give the operator's Helm client a token that can only read the runtime
+2. Give the operator's Helm client a token that can only read the agent
    chart. The commands create the token without passwords and generate one
    separately. As a result, no command prints the password. The commands also
    write the registry configuration without the password on a command line.

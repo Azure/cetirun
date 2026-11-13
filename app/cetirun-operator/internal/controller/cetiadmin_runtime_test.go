@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -100,8 +101,19 @@ func TestCetiAdminNetworkProjectionIsScopedAndIdempotent(t *testing.T) {
 			t.Fatal("API rule grants the wrong port")
 		}
 	}
-	if !strings.Contains(string(first), "169.254.169.254/32") || !strings.Contains(string(first), "default/kubernetes.default.svc.cluster.local") {
-		t.Fatal("IMDS or mesh contract missing")
+	chrt, err := loader.Load("../../../cetirun-chart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Older pinned charts require the IMDS /32 instead of the link-local range.
+	required := slices.Concat(chrt.Values["networkPolicy"].(map[string]any)["blockedCIDRs"].([]any), []any{"169.254.169.254/32"})
+	for _, cidr := range required {
+		if !slices.Contains(network["blockedCIDRs"].([]any), cidr) {
+			t.Fatalf("CetiAdmin egress does not block %v", cidr)
+		}
+	}
+	if !strings.Contains(string(first), "default/kubernetes.default.svc.cluster.local") {
+		t.Fatal("mesh contract missing")
 	}
 }
 

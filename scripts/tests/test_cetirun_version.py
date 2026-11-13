@@ -158,6 +158,12 @@ class CetiRunVersionTests(unittest.TestCase):
         for relative in (
             "Makefile", "scripts/cetirun-version.py", "scripts/cetirun-release-metadata.sh",
             "scripts/tests/test_connections_mcp_chart.py",
+            "site/scripts/reference_tables.py",
+            "site/content/en/docs/reference/crds.md",
+            "site/content/en/docs/reference/chart-values.md",
+            "site/content/en/docs/reference/helm.md",
+            "app/cetirun-chart/values.yaml",
+            "app/cetirun-chart/values.schema.json",
         ):
             destination = self.root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -168,6 +174,7 @@ class CetiRunVersionTests(unittest.TestCase):
             "cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart",
             "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart",
             "cetirun-agent-broker/chart", "cetirun-observability/chart",
+            "cetirun-operator/config/crd/bases",
         ):
             shutil.copytree(
                 ROOT / "app" / relative, self.root / "app" / relative,
@@ -186,6 +193,11 @@ class CetiRunVersionTests(unittest.TestCase):
                     )
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 MODULE.check_version(version)
+                reference = subprocess.run(
+                    [sys.executable, "-B", "site/scripts/reference_tables.py"],
+                    cwd=self.root, env=env, text=True, capture_output=True, timeout=30,
+                )
+                self.assertEqual(reference.returncode, 0, reference.stdout + reference.stderr)
                 lint = subprocess.run(
                     ["helm", "lint", "app/cetirun-platform", "--namespace", "cetirun-system",
                      "--set", "istio.enabled=true",

@@ -67,7 +67,7 @@ class SyntheticCluster(DEPLOY.Deployment):
             if kind == "Secret":
                 self.keys.setdefault((namespace, name), set()).add(key)
 
-    def run(self, command, *, env=None, input_text=None):
+    def run(self, command, *, env=None, input_text=None, allowed_exits=()):
         self.commands.append(list(map(str, command)))
         if self.fail and self.fail in " ".join(map(str, command)):
             raise ValueError(f"Synthetic failure: {self.fail}")
@@ -1940,6 +1940,27 @@ class PublicTLSPreflightTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not cover"):
             deployment.check_tls()
         self.assertEqual(deployment.writes, [])
+
+    def test_ingress_hostname_mismatch_is_rejected_with_either_openssl_exit_code(self):
+        # When the host does not match, OpenSSL 3.0 exits 0 and OpenSSL 3.5 exits 1.
+        leaf = self.certificate(host="other.example.invalid")
+        real_run = subprocess.run
+        for code in (0, 1):
+            with self.subTest(exit_code=code):
+                deployment = self.deployment(f"wrong-ingress-exit-{code}")
+                deployment.public_certificate = lambda *_args: leaf
+                deployment.verify_certificate = lambda *_args, **_kwargs: None
+
+                def run(command, *args, code=code, **kwargs):
+                    result = real_run(command, *args, **kwargs)
+                    if "-checkhost" in command:
+                        result.returncode = code
+                    return result
+
+                with patch.object(DEPLOY.subprocess, "run", side_effect=run):
+                    with self.assertRaisesRegex(ValueError, "does not cover"):
+                        deployment.check_tls()
+                self.assertEqual(deployment.writes, [])
 
     def test_current_matching_ingress_certificate_is_accepted(self):
         deployment = self.deployment("valid-ingress")

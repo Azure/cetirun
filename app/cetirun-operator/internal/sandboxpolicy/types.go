@@ -70,6 +70,27 @@ func ControlFailure(sentinel error, detail string) error {
 	return controlFailure(sentinel, detail)
 }
 
+// publicError gives an error a fixed explanation that PublicDetail returns.
+// Its text and class stay those of the wrapped error.
+type publicError struct {
+	err    error
+	detail string
+}
+
+func (e *publicError) Error() string { return e.err.Error() }
+func (e *publicError) Unwrap() error { return e.err }
+
+// WithPublicDetail gives err a fixed explanation that PublicDetail returns. It
+// does not change the text or the class of err. Use it for a failure, for
+// example an API error, whose text can contain names that status must not
+// show. The detail must be constant text written in code.
+func WithPublicDetail(err error, detail string) error {
+	if err == nil {
+		return nil
+	}
+	return &publicError{err: err, detail: detail}
+}
+
 // PublicDetail returns the first fixed explanation in err whose class is
 // sentinel, or an empty string. A nil sentinel accepts every class. It never
 // returns text from user input.
@@ -82,6 +103,11 @@ func PublicDetail(err, sentinel error) string {
 			return current.detail
 		}
 		return ""
+	case *publicError:
+		if sentinel == nil || errors.Is(current.err, sentinel) {
+			return current.detail
+		}
+		return PublicDetail(current.err, sentinel)
 	case interface{ Unwrap() []error }:
 		for _, wrapped := range current.Unwrap() {
 			if detail := PublicDetail(wrapped, sentinel); detail != "" {

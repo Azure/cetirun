@@ -77,16 +77,18 @@ func (h *policyHistoryFixture) policy(t *testing.T) *api.AgentPolicy {
 }
 
 // observe runs the AgentPolicy controller once. It checks the Accepted
-// condition of the current generation and the acceptance history.
+// condition of the current generation and the acceptance history. An Unknown
+// observation retries periodically, without a reconcile error.
 func (h *policyHistoryFixture) observe(t *testing.T, status metav1.ConditionStatus, reason string, history int64) *metav1.Condition {
 	t.Helper()
-	_, err := h.policies.Reconcile(context.Background(), ctrl.Request{NamespacedName: h.policyKey})
+	result, err := h.policies.Reconcile(context.Background(), ctrl.Request{NamespacedName: h.policyKey})
 	policy := h.policy(t)
 	accepted := apimeta.FindStatusCondition(policy.Status.Conditions, api.ConditionAgentPolicyAccepted)
 	if accepted == nil || accepted.Status != status || accepted.Reason != reason || accepted.ObservedGeneration != policy.Generation ||
-		policy.Status.AcceptedGeneration != history || (err != nil) != (status == metav1.ConditionUnknown) {
-		t.Fatalf("AgentPolicy generation %d: condition=%+v acceptedGeneration=%d err=%v; want %s/%s and acceptedGeneration %d",
-			policy.Generation, accepted, policy.Status.AcceptedGeneration, err, status, reason, history)
+		policy.Status.AcceptedGeneration != history || err != nil ||
+		(result.RequeueAfter == configurationUnavailableRequeue) != (status == metav1.ConditionUnknown) {
+		t.Fatalf("AgentPolicy generation %d: condition=%+v acceptedGeneration=%d result=%+v err=%v; want %s/%s and acceptedGeneration %d",
+			policy.Generation, accepted, policy.Status.AcceptedGeneration, result, err, status, reason, history)
 	}
 	return accepted
 }

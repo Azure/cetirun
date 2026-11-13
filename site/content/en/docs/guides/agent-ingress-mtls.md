@@ -127,10 +127,10 @@ operator.
      -p '{"spec":{"network":{"ingress":{"requireMTLS":true}}}}'
    ```
 
-   > **Warning:** `requireMTLS` applies to every Agent of the Policy. An Agent
-   > of the Policy without a certificate approval does not run. Use a Policy
-   > that has no other Agents.
-3. Create the Agent in a Team of this Policy. Give it explicit
+   > **Warning:** `requireMTLS` applies to every Agent of the Agent Policy. An
+   > Agent of the Agent Policy without a certificate approval does not run. Use
+   > an Agent Policy that has no other Agents.
+3. Create the Agent in a Team of this Agent Policy. Give it explicit
    `spec.agent.image`, `spec.agent.port`, and `spec.helm.version` values. The
    Agent waits for its certificate approval. During this wait, the bootstrap
    can create the namespace and the HOME of the Agent.

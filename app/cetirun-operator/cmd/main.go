@@ -91,7 +91,7 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&chartRepoURL, "chart-repo-url", "oci://mcr.microsoft.com/aks/ai-runtime/cetirun/helm/cetirun",
 		"OCI registry URL for the CetiRun Helm chart.")
-	flag.StringVar(&chartVersion, "chart-version", "0.1.1",
+	flag.StringVar(&chartVersion, "chart-version", "0.1.2",
 		"Version of the CetiRun Helm chart to deploy.")
 	flag.StringVar(&domainSuffix, "domain-suffix", "", "Base domain suffix for instance access URLs.")
 	flag.StringVar(&istioGateway, "istio-gateway", controller.DefaultIstioGateway,
@@ -368,8 +368,10 @@ func main() {
 		os.Exit(1)
 	}
 	var sandboxSource controller.SandboxConfigurationSource
+	var platformRegistration types.NamespacedName
 	if agentReconciler.SandboxPreparation != nil {
 		sandboxSource = agentReconciler.SandboxPreparation.Configuration
+		platformRegistration = controller.SandboxPlatformRegistration(sandboxSource)
 		if sandboxSourcesConfig.NativeExecution {
 			setupLog.Info("Native Sandbox execution enabled for the bounded OpenClaw profile; physical failover fencing is not provided")
 		} else {
@@ -398,11 +400,15 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "Agent")
 		os.Exit(1)
 	}
-	if err := (&controller.SandboxReconciler{Source: sandboxSource, NativeExecution: sandboxSourcesConfig.NativeExecution}).SetupWithManager(mgr); err != nil {
+	if err := (&controller.SandboxReconciler{
+		Source: sandboxSource, PlatformRegistration: platformRegistration, NativeExecution: sandboxSourcesConfig.NativeExecution,
+	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Sandbox")
 		os.Exit(1)
 	}
-	if err := (&controller.AgentPolicyReconciler{Source: sandboxSource, NativeExecution: sandboxSourcesConfig.NativeExecution}).SetupWithManager(mgr); err != nil {
+	if err := (&controller.AgentPolicyReconciler{
+		Source: sandboxSource, PlatformRegistration: platformRegistration, NativeExecution: sandboxSourcesConfig.NativeExecution,
+	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AgentPolicy")
 		os.Exit(1)
 	}

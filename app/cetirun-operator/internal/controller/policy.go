@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"reflect"
 	"slices"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -50,11 +51,25 @@ func (r *AgentReconciler) holdPolicyDenied(ctx context.Context, agent *api.Agent
 			return result, holdErr
 		}
 	}
-	result, holdErr := r.holdSandbox(ctx, agent)
+	result, holdErr := r.holdSandboxBecause(ctx, agent, policyHoldCause(agent))
 	if revokeErr != nil || holdErr != nil {
 		return result, errors.Join(revokeErr, holdErr)
 	}
 	return result, nil
+}
+
+// policyHoldCause returns the PolicyResolved message that recordPolicy wrote
+// for the current generation of an Agent whose policy does not resolve, or an
+// empty string. A policy hold repeats it in Ready and SandboxReady, which
+// otherwise show only a generic text. The text is already on the Agent, so
+// this shows nothing new; it is clipped because the hold repeats it.
+func policyHoldCause(agent *api.Agent) string {
+	resolved := meta.FindStatusCondition(agent.Status.Conditions, api.ConditionPolicyResolved)
+	if agent.Status.Policy == nil || agent.Status.Policy.ObservedGeneration != agent.Generation ||
+		resolved == nil || resolved.Status != metav1.ConditionFalse {
+		return ""
+	}
+	return telemetry.Clip(resolved.Message, maxConditionSummary)
 }
 
 // holdPolicyReprojection fences an already-running Agent while a changed
@@ -103,8 +118,50 @@ func (r *AgentReconciler) holdPolicyDependencyUnavailable(ctx context.Context, a
 	if r.AIGateway.configured() {
 		blockErr = r.beginAIGatewayPolicyReprojection(ctx, agent)
 	}
-	result, holdErr := r.holdSandbox(ctx, agent)
+	var result ctrl.Result
+	var holdErr error
+	if sandboxRequested(agent, nil) {
+		result, holdErr = r.holdSandboxBecause(ctx, agent, policyHoldCause(agent))
+	} else {
+		result, holdErr = r.holdOrdinaryAgentDependency(ctx, agent)
+	}
 	return result, errors.Join(blockErr, holdErr)
+}
+
+// A failed Team read does not establish Sandbox intent. Stop ordinary compute
+// without adding Sandbox lifetime markers; fresh policy resolution still runs
+// before recovery, including when the Team acquired a policy during the outage.
+func (r *AgentReconciler) holdOrdinaryAgentDependency(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
+	var failures []error
+	if agent.Spec.Agent.Type == api.AgentTypeCustom {
+		r.customPlans.Delete(agent.Name)
+		failures = append(failures, r.stopCustomWorkload(ctx, agent))
+		failures = append(failures, r.stopCustomTerminal(ctx, agent))
+		failures = append(failures, r.stopCustomCopilot(ctx, agent))
+		failures = append(failures, r.removeCustomPlatformRoute(ctx, agent))
+		failures = append(failures, r.retryCustomCompletion(ctx, agent))
+	} else {
+		failures = append(failures, r.stopRegistryBuiltinWorkload(ctx, agent))
+		failures = append(failures, r.suspendCopilotProxy(ctx, agent))
+		failures = append(failures, r.removeRegistryBuiltinRoute(ctx, agent))
+	}
+	agent.Status.Phase, agent.Status.AccessURL = api.PhasePending, ""
+	// Force the normal renderer to restore stopped compute and ingress even
+	// though neither spec nor its configuration hash changed during the outage.
+	agent.Status.ObservedGeneration = 0
+	reason := "PolicyDependencyUnavailable"
+	message := "Waiting for current policy dependencies; workload execution is held"
+	if errors.Join(failures...) != nil {
+		reason, message = "PolicyDependencyHoldFailed", "Policy dependency unavailable; workload shutdown or route removal failed and will be retried"
+	}
+	for _, condition := range []string{api.ConditionReady, api.ConditionPodReady, api.ConditionIngressReady} {
+		setCondition(&agent.Status.Conditions, condition, metav1.ConditionFalse, reason, message)
+	}
+	if agent.Spec.Agent.Type == api.AgentTypeCustom {
+		setCustomServiceConditions(agent, customAccess{}, metav1.ConditionFalse, reason)
+	}
+	failures = append(failures, r.updateStatus(ctx, agent))
+	return ctrl.Result{RequeueAfter: time.Minute}, errors.Join(failures...)
 }
 
 // reconcilePolicy resolves opted-in Agents and preserves the legacy path for

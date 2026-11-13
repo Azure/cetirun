@@ -10,13 +10,14 @@ how to create an Agent, open it, and connect its models.
 
 ## Before you begin
 
-- Get the portal address from your administrator. In these docs,
+- Get the Portal address from your platform administrator. In these docs,
   `https://example.com/` is only a placeholder.
 - Make sure that you are a member of the Microsoft Entra ID group that the
-  portal allows. Your administrator manages this group.
+  Portal allows. Your platform administrator manages this group.
 - Know where your models come from. Your Agent gets its models from the
-  platform's AI Gateway: the models that your administrators share, or the
-  models of your own GitHub Copilot subscription.
+  platform's AI Gateway. They come from two sources: the models that your
+  platform administrators share, and the models of your own GitHub Copilot
+  subscription.
 
 ## Decide before you create
 
@@ -51,10 +52,10 @@ To compare Hermes, OpenClaw, and Custom, refer to
 | **Agent Name (optional)** | A short name, or nothing. The portal puts your alias in front of it. For the synthetic owner `alice`, the name `example` gives the Agent name `alice-example`. If you leave the field empty, the Agent name is your alias. Use lowercase letters, digits, and hyphens. The complete Agent name can have a maximum of 35 characters. |
 | **Team (optional)** | Your Team, or **(none)**. The Agent Policy of a Team can limit the Agent types, the models, and the other options that you can select. If the Team has an Agent Policy, the form shows its name and its request limits. An Agent of a policy-bound Team runs in the Sandbox of that Team. In this Sandbox, Tailscale is not available. |
 | **Agent Type** | **Hermes**, **OpenClaw**, or **Custom**. Hermes is the default. The form shows only the types that the deployment and the Team allow. |
-| **Agent Image (optional)** | Nothing, unless your administrator gives you an image. An empty field uses the platform default image. A Custom Agent must have one of the approved images that the field suggests. Refer to [Choose an Agent type](../../guides/agent-types/#custom). |
+| **Agent Image (optional)** | Nothing, unless your platform administrator gives you an image. An empty field uses the platform default image. A Custom Agent must have one of the approved images that the field suggests. Refer to [Choose an Agent type](../../guides/agent-types/#custom). |
 | **Display Name (optional)** | The name that the portal shows. The default is your sign-in name, for example `alice@example.com`. |
-| **Use private registry credentials** | Keep it off, unless your administrator tells you that the image is in a private registry. |
-| **Use shared models** | On, to use the models that your administrators share. The hint lists these models. The form shows this switch only when shared models are available. |
+| **Use private registry credentials** | Keep it off, unless your platform administrator tells you that the image is in a private registry. |
+| **Use shared models** | On, to use the models that your platform administrators share. The hint lists these models. The form shows this switch only when shared models are available. |
 | **Use GitHub Copilot** | On, to use the models of your own GitHub Copilot subscription. You sign in to GitHub after you create the Agent. The form shows this switch only when the deployment offers GitHub Copilot. At least one model source stays on. |
 | **Default model (optional)** | **(automatic)**, or the model that new conversations start with. **(automatic)** uses the deployment default. Smart-routing models show `(smart routing)` after their names. You can select GitHub Copilot models only after you sign in. The form shows this field only when shared models or smart-routing models are available, and not for Custom Agents. |
 | **Gateway Token (optional)** | Nothing. The platform then generates the token. The OpenClaw gateway token protects the OpenClaw Control UI. It is not a model credential. Hermes uses its own key. |
@@ -80,7 +81,7 @@ After you select **Create Agent**, the form closes, and the new Agent shows in
 | **Pending** | The platform accepted the request and did not start work yet. | Wait. If a governance message shows, follow it. |
 | **Provisioning** | The platform creates the storage, the workload, and the route of the Agent. | Wait. The **Overview** tab of the Agent shows "Provisioning your agent...". |
 | **Ready** | The Agent runs, and you can open it. | Open the Agent. Model sign-in can still be in progress. |
-| **Failed** | A step failed. | Open the **Status** tab. Send the reason to your administrator. |
+| **Failed** | A step failed. | Open the **Status** tab. Send the reason to your platform administrator. |
 | **Suspended** | The Agent is stopped. Its home directory is kept. | Select **Resume Agent**. |
 | **Deleting** | The platform removes the Agent. | No action is possible. |
 
@@ -172,7 +173,7 @@ select the service. For the steps, refer to
 [Agent Connections and Identity](../../guides/agent-identity/).
 
 The **Identities** section shows only when your deployment allows connected
-services. If you cannot find it, ask your administrator.
+services. If you cannot find it, ask your platform administrator.
 
 ## Next steps
 
@@ -181,7 +182,7 @@ services. If you cannot find it, ask your administrator.
 - If something does not work, refer to
   [Troubleshoot your Agent](../../guides/troubleshooting/).
 
-Administrators can also create Agents with the Kubernetes API. Refer to
+Platform administrators can also create Agents with the Kubernetes API. Refer to
 [Administer Agents](../../operations/agent-lifecycle/#create-an-agent-with-kubernetes).
 
 Sources: [creation form]({{< repo "app/cetirun-portal/web/src/components/CreateForm.tsx" >}}),

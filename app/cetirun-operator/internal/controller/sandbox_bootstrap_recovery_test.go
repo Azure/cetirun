@@ -22,6 +22,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
@@ -159,8 +160,13 @@ func TestSandboxBootstrapUnexpectedPodBlocksCleanup(t *testing.T) {
 	if err := f.client.Delete(ctx, f.current(t)); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.reconcile(); err == nil {
-		t.Fatal("unexpected Pod did not block bootstrap-only cleanup")
+	// The Pod wait is a retry without a reconcile error (#556).
+	result, err := f.reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKey{Name: f.fixture.Agent.Name}})
+	if err != nil || result.RequeueAfter <= 0 {
+		t.Fatalf("unexpected Pod did not block bootstrap-only cleanup with a retry: result %+v, error %v", result, err)
+	}
+	if !slices.Contains(f.current(t).Finalizers, sandbox.BootstrapFinalizer) {
+		t.Fatal("Pod check released the bootstrap finalizer of the Agent")
 	}
 	namespace := &corev1.Namespace{}
 	if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Namespace), namespace); err != nil ||

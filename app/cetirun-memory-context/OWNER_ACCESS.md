@@ -16,7 +16,7 @@ to its participants. The controls below narrow access when that is not wanted.
 ## Limit Memory in a CetiRun Agent
 
 The owner of a CetiRun Agent adds `owner_access` to `~/.hermes/config.yaml`
-or `~/.openclaw/openclaw.json` in the portal's **Terminal**, and then selects
+or `~/.openclaw/openclaw.json` in the Portal's **Terminal**, and then selects
 **Restart Agent**. The platform merges its generated configuration into these
 files at each start and keeps `owner_access`. OpenClaw removes the
 `cetirun-memory-context` entry when the deployment disables Memory. For the
@@ -175,21 +175,6 @@ make -C app/cetirun-memory-context test
 make -C app/cetirun-memory-context lint
 ```
 
-The normal suite covers both adapters' default access, platform/sender/chat
-restrictions, configuration/environment intersections, mode restrictions,
-child/grandchild grants, interruption/resume, scope and malformed inputs with a
-real helper and synthetic host APIs. CLI tests cover flags and environment
-controls for native events, direct requests, legacy context and MCP.
-
-With a separately provisioned OpenClaw 2026.9.6 selected by
-`MEMORY_OPENCLAW_SOURCE`, the suite also loads the plugin in the real host and
-checks interactive, channel and scheduled prompt injection. Without it, those
-host checks are explicitly skipped. Child-lineage and restriction propagation
-tests use synthetic host session metadata, not live spawned conversations.
-
-When `MEMORY_HERMES_SOURCE` and `MEMORY_HERMES_PYTHON` select the separately
-provisioned pinned host, the same native test entrypoint also runs
-`tests/hermes_owner_host.py` against real hooks, session metadata, middleware
-and the registry in a disposable marked profile. It makes no model requests.
-Without those dependencies this check is explicitly skipped. Neither test mode
-substitutes for real incoming messages or a model-driven child conversation.
+For what these tests cover, and for the host tests with the pinned OpenClaw
+and Hermes sources, refer to [Memory Context](../../DEVELOPMENT.md#memory-context)
+in DEVELOPMENT.md.

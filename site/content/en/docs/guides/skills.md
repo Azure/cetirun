@@ -13,7 +13,7 @@ A Hermes or OpenClaw Agent can have three types of skills:
 | Type | Where it comes from | Can you change it? |
 | --- | --- | --- |
 | Platform skills | The platform installs them. | Do not change them. |
-| Team skills | Your Team's administrator selects them. | No. |
+| Team skills | A Portal administrator selects them for your Team. | No. |
 | Your own skills | You add them in your home directory. | Yes. |
 
 A Custom Agent loads skills only when its image supports them.
@@ -39,9 +39,9 @@ your copy does not get platform updates again. You cannot change
 ## Team skills
 
 If your Team selects skills, the **Overview** tab of the Agent has a
-**Team skills** section. Your Team's administrator selects these skills from
-the Skill Marketplace. You cannot change them. The changes take effect when
-the Agent starts the next time.
+**Team skills** section. A Portal administrator selects these skills for your
+Team from the Skill Marketplace. You cannot change them. The changes take
+effect when the Agent starts the next time.
 
 Each skill shows its version and a status:
 

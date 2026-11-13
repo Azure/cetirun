@@ -117,6 +117,11 @@ func prepareCustomChart(chrt *chart.Chart, input map[string]any, request AgentRe
 		ensureObject(coalesced, "ttyd")["enabled"] = false
 		bindings.Network.APIServer = nil
 	}
+	// Older runtime Charts ignore dnsPodLabels, also when the platform values
+	// set it, and keep their namespace-wide DNS rule.
+	if !declaresValuePath(chrt.Values, []string{"networkPolicy", "dnsPodLabels"}) {
+		delete(object(coalesced["networkPolicy"]), "dnsPodLabels")
+	}
 	// Custom publishes the approved view at its contract path, independent of
 	// the native agents' discovery paths retained in shared platform settings.
 	ensureObject(coalesced, "skills")["mountPath"] = agent.HomeDir + "/.agents/skills"

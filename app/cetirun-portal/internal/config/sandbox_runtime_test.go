@@ -36,7 +36,10 @@ func TestSandboxRuntimeChartWiring(t *testing.T) {
 		t.Skip("Helm is required for the Portal chart rendering check")
 	}
 	profiles := `{"openclaw":{"chartVersion":"1.2.3","image":"registry.example.com/openclaw@sha256:` + strings.Repeat("a", 64) + `","port":18789}}`
-	out, err := exec.Command(helm, "template", "portal", "../../chart", "--set", "istio.host=portal.example.com", "--set-json", "sandboxRuntimeProfiles="+profiles).CombinedOutput()
+	out, err := exec.Command(helm, "template", "portal", "../../chart", "--set", "istio.host=portal.example.com",
+		"--set", "agentIdentity.tenantId=11111111-1111-1111-1111-111111111111",
+		"--set", "agentIdentity.portalClientId=33333333-3333-3333-3333-333333333333",
+		"--set-json", "sandboxRuntimeProfiles="+profiles).CombinedOutput()
 	if err != nil || !strings.Contains(string(out), "name: SANDBOX_RUNTIME_PROFILES") || !strings.Contains(string(out), `\"chartVersion\":\"1.2.3\"`) {
 		t.Fatalf("runtime chart wiring failed: %v\n%s", err, out)
 	}
@@ -61,7 +64,9 @@ func TestSandboxRuntimeControllerDefaultsChartWiring(t *testing.T) {
 	}
 	for _, value := range []string{"", "false", "true", "1", "invalid"} {
 		t.Run(value, func(t *testing.T) {
-			args := []string{"template", "portal", "../../chart", "--set", "istio.host=portal.example.com"}
+			args := []string{"template", "portal", "../../chart", "--set", "istio.host=portal.example.com",
+				"--set", "agentIdentity.tenantId=11111111-1111-1111-1111-111111111111",
+				"--set", "agentIdentity.portalClientId=33333333-3333-3333-3333-333333333333"}
 			if value != "" {
 				args = append(args, "--set", "sandboxRuntimeDefaultsFromController="+value)
 			}

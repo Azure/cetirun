@@ -1,6 +1,6 @@
 ---
 title: "Custom resources"
-description: "Fields, defaults, validation rules, and status of the Agent, Team, Sandbox, and AgentPolicy resources in cetirun.microsoft.com/v1alpha1."
+description: "Fields, defaults, validation rules, and status of the Agent, Team, Sandbox, and Agent Policy resources in cetirun.microsoft.com/v1alpha1."
 weight: 10
 ---
 
@@ -14,11 +14,15 @@ CetiRun adds four cluster-scoped resources to the Kubernetes API group
 | `Sandbox` | `sandboxes` | `sandboxes.cetirun.microsoft.com` | `crs` |
 | `AgentPolicy` | `agentpolicies` | `agentpolicies.cetirun.microsoft.com` | `crp` |
 
+In scripts, use the full resource names, for example
+`agents.cetirun.microsoft.com`, so that resources of other API groups do not
+match.
+
 An Agent is a long-lived environment that one user owns. A replacement of its
 Pod keeps the same Agent. A Team supplies shared configuration and skills to
 its Agents. The private data of each Agent stays private. A Sandbox selects the
-runtime, the resources, and the storage of the Agents that use it. An
-AgentPolicy sets the controls of the Agents of a Team.
+runtime, the resources, and the storage of the Agents that use it. An Agent
+Policy sets the controls of the Agents of a Team.
 
 The field tables in this page come from the CRD schemas. The **Type**,
 **Default**, and **Validation** columns show what the Kubernetes API server
@@ -28,16 +32,17 @@ operator and the admission webhook do after the schema check.
 This page uses these terms:
 
 - A *Sandbox Agent* selects a policy-bound Team or a Sandbox. A *standard
-  Agent* does not, and no AgentPolicy applies to it.
+  Agent* does not, and no Agent Policy applies to it.
 - The *common executor* is the operator flow that runs Sandbox Agents, Custom
   Agents in a Sandbox included, when Sandbox execution is enabled.
 - A *held* Sandbox Agent is an Agent that the operator does not run. The
   operator keeps its StatefulSet at zero replicas and removes its route.
 - A *single-start lifetime* is the lifetime that the operator recorded for a
   Sandbox Agent that started under the earlier version-1 native execution
-  profile. Such an Agent keeps that profile and its limits. In scripts, use
-the full resource names, for example `agents.cetirun.microsoft.com`, so that
-resources of other API groups do not match.
+  profile. Such an Agent keeps that profile and its limits.
+
+The [Glossary](../../concepts/glossary/) defines these terms and the other
+terms of CetiRun.
 
 ## Existing installations
 
@@ -83,7 +88,7 @@ spec:
   gatewayTokenSecretRef: gateway-token
 ```
 
-For a policy-bound Agent with a Team and a Sandbox, see
+For a Sandbox Agent with a Team and a Sandbox, see
 [Create your first Agent](../../getting-started/first-instance/). For the
 `spec.agent` fields and the Custom image contract, see
 [Agent Harness](../agent-harness/).
@@ -111,10 +116,10 @@ For a policy-bound Agent with a Team and a Sandbox, see
 | `helm.maintenance.requestID` | string |  | Required. Pattern `^[A-Za-z0-9_-]+$`. 16 to 128 characters. | The ID that connects the request with `status.helmMaintenance`. |
 | `helm.values` | map[string]object |  | Any fields. Each value: Any fields. | Map-shaped top-level Helm values. See [Helm-value admission](#helm-value-admission). |
 | `helm.version` | string |  |  | Agent chart pin. The operator sets it from its default on the first reconciliation. A later change of the operator default does not change it. |
-| `model` | string |  | At most 256 characters. | Optional model name. A policy-bound Agent must select a shared model that the policy allows, or a Copilot model if the policy allows Copilot. A Copilot model is selected by its Gateway name or as `copilot/<model ID>`. |
+| `model` | string |  | At most 256 characters. | Optional model name. A Sandbox Agent must select a shared model that its Agent Policy allows, or a Copilot model if the Agent Policy allows Copilot. A Copilot model is selected by its AI Gateway name or as `copilot/<model ID>`. |
 | `modelAccess` | object |  |  | The model sources that the Agent requests. |
 | `modelAccess.githubCopilot` | boolean |  |  | Requests the GitHub Copilot models of the owner. A Sandbox Agent must set it explicitly. A standard Agent gets it by default when the deployment offers Copilot. |
-| `modelAccess.monthlyBudgetUSD` | string |  | Pattern `^(0\|[1-9][0-9]*)(\.[0-9]{1,6})?$`. | Optional monthly budget of the Gateway key of the Agent in US dollars, as a decimal string. It cannot be more than the maximum of the policy. An administrator sets it on a suspended Agent. |
+| `modelAccess.monthlyBudgetUSD` | string |  | Pattern `^(0\|[1-9][0-9]*)(\.[0-9]{1,6})?$`. | Optional monthly budget of the AI Gateway key of the Agent in US dollars, as a decimal string. It cannot be more than the maximum of the policy. An administrator sets it on a suspended Agent. |
 | `modelAccess.sharedModels` | boolean |  |  | Requests the shared models of the AI Gateway. A Sandbox Agent must set it explicitly. A standard Agent gets them by default. |
 | `plannedMigration` | object |  |  | Optional administrator request with `requestID` and the destination `target.name` and `target.uid`. Only for common-executor OpenClaw or Hermes with one CSI/RWOP HOME. An accepted request cannot change until it completes. A request with the same ID cannot change its destination. |
 | `plannedMigration.requestID` | string |  | Required. Pattern `^[A-Za-z0-9_-]+$`. 16 to 128 characters. | The ID of the request. If you use the current ID again, the operator only observes that request. |
@@ -127,7 +132,7 @@ For a policy-bound Agent with a Team and a Sandbox, see
 | `suspended` | boolean |  |  | When `true`, requests zero replicas and the removal of the routes of the Agent. The data of the Agent stays. If omitted, the value is `false`. |
 | `tailscale` | object |  |  | Tailscale configuration of the Agent. |
 | `tailscale.authKeySecretRef` | string |  | Required. Pattern `^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`. At least 1 character. | The name of a Secret in the Agent namespace. The Secret must contain a non-empty `TAILSCALE_AUTH_KEY`. |
-| `team` | string |  |  | Optional for legacy Agents. Necessary for policy binding. The Portal also creates Agents without a Team |
+| `team` | string |  |  | Optional for standard Agents. Necessary for policy binding. The Portal also creates Agents without a Team |
 | `user` | object |  | Required. | The owner of the Agent. |
 | `user.alias` | string |  | Required. Pattern `^[a-z][a-z0-9-]{0,62}$`. | Owner alias. |
 | `user.displayName` | string |  | Required. | Display name of the owner. |
@@ -153,20 +158,21 @@ separate runtime path that supports non-default usernames. Without a binding
 provider, a non-Sandbox Custom Agent reports `CustomRuntimeDisabled`.
 
 The Operator chart enables the `customRuntime` Kubernetes provider by default.
-Its approval list is empty by default, so it runs no Custom image until an
-administrator approves the image digest in `customRuntime.approvedImages`.
+Its approval list is empty by default, so it runs no Custom image until a
+platform administrator approves the image digest in
+`customRuntime.approvedImages`.
 Numeric `customRuntime.imageUsers` entries are necessary only for FQDN capture,
-for example for an AgentPolicy with `blockedFQDNs`, not for every Custom Agent.
+for example for an Agent Policy with `blockedFQDNs`, not for every Custom Agent.
 Portal Custom self-service is enabled by default. To restrict it, change
 `features.allowedAgentTypes`.
 
 The Portal requires a published image approval before creation or an image
-change, including administrator updates. For non-Sandbox Custom Agents, the
-Operator reports `CustomImageNotApproved` if a directly submitted Agent is not
-approved or its approval was withdrawn; it retries after the configuration
+change, including Portal administrator updates. For non-Sandbox Custom Agents,
+the Operator reports `CustomImageNotApproved` if a directly submitted Agent is
+not approved or its approval was withdrawn; it retries after the configuration
 changes. Other unavailable binding prerequisites report `CustomBindingsPending`.
-For policy-governed Sandbox Custom Agents, a disabled provider or unapproved
-image instead reports `PolicyResolved=False` with reason `PolicyDenied`.
+For Custom Sandbox Agents, a disabled provider or unapproved image instead
+reports `PolicyResolved=False` with reason `PolicyDenied`.
 
 Private images use `agent.registrySecretRef.name` to refer to a Portal-managed
 source Secret. For image pulls, the operator copies the Secret to the runtime
@@ -194,7 +200,7 @@ helm:
 ```
 
 The StorageClass is a deployment prerequisite. This fragment does not create
-it. To select a Gateway model, use `spec.model`.
+it. To select an AI Gateway model, use `spec.model`.
 
 The operator accepts different keys on each execution path. It rejects a key
 before it changes the workload. The result depends on the Agent:
@@ -213,7 +219,7 @@ before it changes the workload. The result depends on the Agent:
 | --- | --- |
 | Built-in Agent without a Sandbox | Top-level `runtime`, `agentRequest`, `imagePullSecrets`, `customBindings`, `memoryContext`, `cetiadmin`, `aiGateway`, `connectionsMCP`, and `image`. Also `secrets.provider`, `secrets.authMode`, `secrets.apiBase`, `secrets.apiKey`, `secrets.model`, `service.port`, `service.targetPort`, `<type>.image`, `<type>.env.API_SERVER_PORT`, `<type>.config.model`, and `<type>.config.gateway.port`, where `<type>` is `openclaw` or `hermes`. Platform Pod annotations and, for Hermes, the Hermes listener, authentication, and runtime settings. |
 | Custom Agent without a Sandbox | Every key except `resources`, `ttyd.enabled`, `desktop.enabled`, `desktop.logging`, `desktop.resources`, and `desktop.screenResolution`. |
-| Sandbox Agent of the common executor | The keys of the built-in or Custom row above, and also `runtime`, `sandboxWorkload`, `runtimeClassName`, `replicaCount`, `serviceAccount`, `azureWorkloadIdentity`, `agentIdentity`, `connectionsMCP`, `persistence`, `resources`, `securityContext`, `podSecurityContext`, `networkPolicy`, `sidecarScope`, `autoscaling`, `ingress`, and `execRestriction`, because the Sandbox or the AgentPolicy controls them. For a built-in Agent, `secrets` accepts only an authorized `existingSecret`. A Custom Agent cannot set `desktop.enabled: true`. |
+| Sandbox Agent of the common executor | The keys of the built-in or Custom row above, and also `runtime`, `sandboxWorkload`, `runtimeClassName`, `replicaCount`, `serviceAccount`, `azureWorkloadIdentity`, `agentIdentity`, `connectionsMCP`, `persistence`, `resources`, `securityContext`, `podSecurityContext`, `networkPolicy`, `sidecarScope`, `autoscaling`, `ingress`, and `execRestriction`, because the Sandbox or the Agent Policy controls them. For a built-in Agent, `secrets` accepts only an authorized `existingSecret`. A Custom Agent cannot set `desktop.enabled: true`. |
 
 The operator applies the rules of built-in Agents also to the deployment-wide
 `cetirun.helmValues` of the Operator chart. In these values, `extraEnv` must
@@ -244,51 +250,51 @@ does not prove that an override reconciles successfully.
 | `agentIdentity.phase` | string |  | One of `Disabled`, `Provisioning`, `Ready`, `Degraded`, `Failed`, `Deleting`. | Lifecycle phase of the Agent Identity. |
 | `agentIdentity.reason` | string |  |  | Machine-readable reason of the phase. It contains no sensitive data. |
 | `aiGateway` | object |  |  | State of the AI Gateway key of the Agent. It never contains the key. |
-| `aiGateway.accessGroups` | []string |  | Unique items. | Gateway model access groups of the key. |
-| `aiGateway.blocked` | boolean |  |  | `true` when the Gateway rejects the key. A blocked key continues to report spend and reset times. |
+| `aiGateway.accessGroups` | []string |  | Unique items. | AI Gateway model access groups of the key. |
+| `aiGateway.blocked` | boolean |  |  | `true` when the AI Gateway rejects the key. A blocked key continues to report spend and reset times. |
 | `aiGateway.budgetDuration` | string |  |  | Reset period of the budget, for example `1mo`. |
 | `aiGateway.budgetResetAt` | timestamp |  |  | Next budget reset that the operator observed. |
-| `aiGateway.budgetUSD` | string |  |  | Native Gateway budget of the key in US dollars, as the operator read it back. It is not a provider invoice. |
-| `aiGateway.copilot` | object |  |  | GitHub Copilot proxy of the Agent and its Copilot models in the Gateway. |
-| `aiGateway.copilot.accessGroup` | string |  |  | Gateway access group of the Copilot models of the Agent. Only the key of this Agent has it. |
+| `aiGateway.budgetUSD` | string |  |  | Native AI Gateway budget of the key in US dollars, as the operator read it back. It is not a provider invoice. |
+| `aiGateway.copilot` | object |  |  | GitHub Copilot proxy of the Agent and its Copilot models in the AI Gateway. |
+| `aiGateway.copilot.accessGroup` | string |  |  | AI Gateway access group of the Copilot models of the Agent. Only the key of this Agent has it. |
 | `aiGateway.copilot.models` | []string |  |  | Registered Copilot models, by the names that the Agent uses: the name of the shared model that is the same model, or the Copilot model ID. |
 | `aiGateway.copilot.notAllowed` | []string |  |  | Copilot models that the AgentPolicy does not allow, because each is the same model as a shared model that the policy does not list. |
 | `aiGateway.copilot.phase` | string |  | One of `SignInRequired`, `Starting`, `Ready`, `Degraded`. | `SignInRequired` until the owner signs in to GitHub Copilot through the Portal, `Starting` while the proxy reads the sign-in, `Ready` when the models of the account are registered, and `Degraded` when the registration fails. |
 | `aiGateway.copilot.proxyKeyId` | string |  |  | ID of the master key of the proxy: the first characters of its SHA-256 hash. It does not show the key. |
 | `aiGateway.copilot.reason` | string |  |  | Machine-readable reason of the phase. |
-| `aiGateway.copilot.registered` | []string |  |  | Gateway model IDs that the operator registered for the proxy of the Agent. |
-| `aiGateway.copilot.routes` | []object |  |  | Each registered Copilot model and its name in the Gateway. |
+| `aiGateway.copilot.registered` | []string |  |  | AI Gateway model IDs that the operator registered for the proxy of the Agent. |
+| `aiGateway.copilot.routes` | []object |  |  | Each registered Copilot model and its name in the AI Gateway. |
 | `aiGateway.copilot.routes[].model` | string |  | Required. | Copilot model ID. |
-| `aiGateway.copilot.routes[].name` | string |  | Required. | Name of the model in the Gateway. The Agent uses this name. |
-| `aiGateway.copilot.routes[].reasoning` | boolean |  |  | `true` when the Agent can set a reasoning effort for the model. This requires that the price table of the Gateway says that the model reasons, and that the model is a Claude or GPT model. The Copilot proxy of the Agent passes a reasoning effort on only for these models. The Agent is configured to set a reasoning effort for `name` only when every model behind `name` reasons. |
-| `aiGateway.copilot.routes[].shared` | boolean |  |  | `true` when `name` is the name of a shared model. The Gateway then serves the requests of the Agent from the shared deployments and from this Copilot model. |
-| `aiGateway.copilot.routes[].vision` | boolean |  |  | `true` when the model accepts images, as the price table of the Gateway shows. |
-| `aiGateway.copilot.skipped` | []string |  |  | Copilot models that the operator did not register, because a different model of the Gateway has the same name. |
-| `aiGateway.copilot.unpriced` | []string |  |  | Copilot models that the operator did not register, because the Gateway has no price for them. |
+| `aiGateway.copilot.routes[].name` | string |  | Required. | Name of the model in the AI Gateway. The Agent uses this name. |
+| `aiGateway.copilot.routes[].reasoning` | boolean |  |  | `true` when the Agent can set a reasoning effort for the model. This requires that the price table of the AI Gateway says that the model reasons, and that the model is a Claude or GPT model. The Copilot proxy of the Agent passes a reasoning effort on only for these models. The Agent is configured to set a reasoning effort for `name` only when every model behind `name` reasons. |
+| `aiGateway.copilot.routes[].shared` | boolean |  |  | `true` when `name` is the name of a shared model. The AI Gateway then serves the requests of the Agent from the shared deployments and from this Copilot model. |
+| `aiGateway.copilot.routes[].vision` | boolean |  |  | `true` when the model accepts images, as the price table of the AI Gateway shows. |
+| `aiGateway.copilot.skipped` | []string |  |  | Copilot models that the operator did not register, because a different model of the AI Gateway has the same name. |
+| `aiGateway.copilot.unpriced` | []string |  |  | Copilot models that the operator did not register, because the AI Gateway has no price for them. |
 | `aiGateway.defaultModel` | string |  |  | Default model of the Agent. |
-| `aiGateway.keyAlias` | string |  |  | Gateway alias of the key. It comes from the Agent UID and does not change. |
+| `aiGateway.keyAlias` | string |  |  | AI Gateway alias of the key. It comes from the Agent UID and does not change. |
 | `aiGateway.keyId` | string |  |  | ID of the key: the first characters of its SHA-256 hash. It does not show the key. |
 | `aiGateway.keySecretName` | string |  |  | Secret in the Agent namespace that holds the key. |
-| `aiGateway.lastVerifiedTime` | timestamp |  |  | Time of the last successful check of the key in the Gateway. |
-| `aiGateway.modelRouters` | []object |  | Unique by `name`. | Smart-routing models of the Agent: the routers of its Team and, with an AgentPolicy, the Gateway routers that the policy lists. |
+| `aiGateway.lastVerifiedTime` | timestamp |  |  | Time of the last successful check of the key in the AI Gateway. |
+| `aiGateway.modelRouters` | []object |  | Unique by `name`. | Smart-routing models of the Agent: the routers of its Team and, with an AgentPolicy, the AI Gateway routers that the policy lists. |
 | `aiGateway.modelRouters[].alias` | string |  |  | Name of a granted Team router when the key also reaches the router under that name. A Hermes Agent sends this name. Other Agents send the internal name. |
 | `aiGateway.modelRouters[].contextWindow` | integer |  |  | Context window that the Agent uses for the router: the smallest known value of the models of the router. |
 | `aiGateway.modelRouters[].granted` | boolean |  | Required. | `true` when the key of the Agent can use the router. |
 | `aiGateway.modelRouters[].maxTokens` | integer |  |  | Maximum output tokens that the Agent uses for the router: the smallest known value of the models of the router. |
-| `aiGateway.modelRouters[].model` | string |  |  | Gateway model name of a granted router: the internal name of a Team router, or the name of a Gateway router. |
+| `aiGateway.modelRouters[].model` | string |  |  | AI Gateway model name of a granted router: the internal name of a Team router, or the name of an AI Gateway router. |
 | `aiGateway.modelRouters[].name` | string |  | Required. | Name of the router that the owner selects. |
 | `aiGateway.modelRouters[].reason` | string |  |  | Why the router is not granted. |
 | `aiGateway.modelRouters[].reasoning` | boolean |  |  | `true` when the Agent is configured to set a reasoning effort for the router, because every model that answers the requests of the router reasons. The Copilot routes of the Agent under the names of these models must also reason. |
 | `aiGateway.modelRouters[].vision` | boolean |  |  | `true` when the Agent sends images to the router, because every model of the router accepts them. |
-| `aiGateway.models` | []string |  |  | Model names that the Agent is configured with, as the Agent sees them in the Gateway. |
+| `aiGateway.models` | []string |  |  | Model names that the Agent is configured with, as the Agent sees them in the AI Gateway. |
 | `aiGateway.observedGeneration` | integer |  |  | Agent generation of this status. |
 | `aiGateway.phase` | string |  | One of `Provisioning`, `Ready`, `Degraded`, `Deleting`. | Lifecycle phase of the key. |
-| `aiGateway.policyRevision` | string |  |  | Revision of the Gateway policy projection that the operator read back. |
-| `aiGateway.pricingRevision` | string |  |  | Revision of the catalog and pricing input of the Gateway read-back. It is not a price quote. |
+| `aiGateway.policyRevision` | string |  |  | Revision of the AI Gateway policy projection that the operator read back. |
+| `aiGateway.pricingRevision` | string |  |  | Revision of the catalog and pricing input of the AI Gateway read-back. It is not a price quote. |
 | `aiGateway.reason` | string |  |  | Machine-readable reason of the phase. |
-| `aiGateway.routed` | boolean |  |  | `true` when the model traffic of the Agent goes through the Gateway. |
-| `aiGateway.spendUSD` | string |  |  | Spend that the Gateway observed in the current period. It is not the exact billing of the provider. |
-| `aiGateway.team` | string |  |  | Gateway team of the key, from `spec.team`. |
+| `aiGateway.routed` | boolean |  |  | `true` when the model traffic of the Agent goes through the AI Gateway. |
+| `aiGateway.spendUSD` | string |  |  | Spend that the AI Gateway observed in the current period. It is not the exact billing of the provider. |
+| `aiGateway.team` | string |  |  | AI Gateway team of the key, from `spec.team`. |
 | `conditions` | []Condition |  | Unique by `type`. | Individual readiness observations with reasons and messages. See [Agent conditions](#agent-conditions). |
 | `helmMaintenance` | object |  |  | Controller observation of a Helm handoff. A stored phase alone does not give permission to write or resume. |
 | `helmMaintenance.message` | string |  | At most 32768 characters. | Explanation of the observation. |
@@ -310,7 +316,7 @@ does not prove that an override reconciles successfully.
 | `policy.enforcement` | object |  |  | Desired revisions of the enforcement components. |
 | `policy.enforcement.credential` | object |  |  | Credential enforcement. |
 | `policy.enforcement.credential.desiredRevision` | string |  |  | Revision that the credential service must apply. |
-| `policy.enforcement.gateway` | object |  |  | Gateway enforcement. |
+| `policy.enforcement.gateway` | object |  |  | AI Gateway enforcement. |
 | `policy.enforcement.gateway.desiredRevision` | string |  |  | Revision that the AI Gateway must apply. |
 | `policy.enforcement.sandbox` | object |  |  | Sandbox enforcement. |
 | `policy.enforcement.sandbox.desiredRevision` | string |  |  | Revision that the Sandbox workload must apply. |
@@ -335,13 +341,13 @@ does not use can be absent or `False`.
 
 | Condition | Meaning |
 | --- | --- |
-| `Ready` | The Agent is ready for use. `Ready` can be `True` while `IngressReady` is `False`. `Suspended` skips the Pod readiness checks, so examine the replicas and the Pod termination separately. |
+| `Ready` | The Agent is ready for use. `Ready` can be `True` while `IngressReady` is `False`. `Suspended` skips the Pod readiness checks, so examine the replicas and the Pod termination separately. `False` with `PodsTerminating` means that the deletion of a Sandbox Agent waits for the Pods of the Agent to terminate. |
 | `AgentConfigReady` | The operator resolved the Agent configuration. Reason `AgentConfigResolved` means that the built-in configuration is prepared, not that the runtime is ready. `False` with `AgentConfigInvalid` reports a rejected profile, image, port, or Helm value, or a failed chart download for a new Agent or a spec change. For a failed download, the operator log records the error of the registry. `AgentRuntimeNotImplemented` reports a setting that cannot be provisioned, for example a non-default built-in username. `AgentChartUnavailable` reports a temporary chart download failure of an installed Agent. |
 | `BuiltInPrerequisitesReady` | The last full reconciliation of a built-in Agent completed its prerequisites. Only a later successful reconciliation clears a failure. |
 | `RegistryCredentialsReady` | The operator copied the registry credentials of `agent.registrySecretRef`. It does not prove that the registry accepted them or that the image was pulled. |
-| `PolicyResolved` | The Team, the requests of the Agent, the Sandbox, and the effective AgentPolicy are resolved. `False` with `PolicyDenied` means that the policy does not allow a request, for example a skill. `DependencyUnavailable` means that a dependency cannot be read. |
-| `PolicyApplied` | Every enforcement revision that the policy needs matches the evidence of its component. `EnforcementPending` means that the Sandbox, Gateway, or credential enforcement is not complete. |
-| `SandboxReady` | The Sandbox workload of a policy-bound Agent is ready, and its Kubernetes configuration matches. It does not supply physical failover fencing. |
+| `PolicyResolved` | The Team, the requests of the Agent, the Sandbox, and the effective Agent Policy are resolved. `False` with `PolicyDenied` means that the Agent Policy does not allow a request, for example a skill. `DependencyUnavailable` means that a dependency cannot be read or cannot be used, for example an Agent Policy with the reason `RegistrationIncompatible`. In this case, the operator stops the Agent and blocks its AI Gateway key, but keeps the key. |
+| `PolicyApplied` | Every enforcement revision that the Agent Policy needs matches the evidence of its component. `EnforcementPending` means that the Sandbox, AI Gateway, or credential enforcement is not complete. |
+| `SandboxReady` | The Sandbox workload of a Sandbox Agent is ready, and its Kubernetes configuration matches. It does not supply physical failover fencing. `SandboxHeld` means that the common executor holds the workload. If `PolicyResolved` is `False`, the message of `SandboxReady` and `Ready` ends with the `PolicyResolved` message. For other reasons, such as `PolicyConflict` or `UnsupportedControl`, the message can end with a fixed explanation from the operator code. This explanation contains no values from the Agent Policy or the registration. |
 | `AIGatewayReady` | The AI Gateway virtual key of the Agent is ready. `NoModelEntitlement` means that the effective policy grants no model source. |
 | `AgentIdentityReady` | The Entra Agent Identity of the Agent is ready. |
 | `HelmDeployed` | The Helm release of the Agent is applied. |
@@ -371,7 +377,7 @@ The chart allows zero or one replica, and it limits an enabled HPA to
 ## Team
 
 This example is a policy-bound Team. A Team without `agentPolicyRef`,
-`sandboxRefs`, and `defaultSandboxRef` has no AgentPolicy, and its Agents are
+`sandboxRefs`, and `defaultSandboxRef` has no Agent Policy, and its Agents are
 standard Agents:
 
 ```yaml
@@ -401,11 +407,11 @@ spec:
 | `memberContext.role` | string |  |  | Role of the Team members, for example `Engineer`. |
 | `modelRouters` | []object |  | At most 10 items. Unique by `name`. | Smart-routing models of the Team, by `name`. See [Smart routing](../../guides/teams/#smart-routing). |
 | `modelRouters[].classifier` | object | `{"type": "heuristic"}` | Rule: classifier.model is required for the llm and jev classifiers and not allowed for the heuristic classifier. | How the router selects the complexity tier of each request. |
-| `modelRouters[].classifier.model` | string |  | Pattern `^[^\s]+$`. 1 to 256 characters. | Shared model that classifies requests. It is not a router of the Gateway. It is a chat model for `llm`, and a decision model (`model_info.mode: evaluation`) for `jev`. Necessary for `llm` and `jev`, and not allowed for `heuristic`. |
+| `modelRouters[].classifier.model` | string |  | Pattern `^[^\s]+$`. 1 to 256 characters. | Shared model that classifies requests. It is not a router of the AI Gateway. It is a chat model for `llm`, and a decision model (`model_info.mode: evaluation`) for `jev`. Necessary for `llm` and `jev`, and not allowed for `heuristic`. |
 | `modelRouters[].classifier.type` | string | `"heuristic"` | One of `heuristic`, `llm`, `jev`. | `heuristic` scores each request without a model call. `llm` and `jev` ask a shared model. The license-limited classifier types of LiteLLM are not accepted. |
 | `modelRouters[].name` | string |  | Required. Pattern `^[^\s/]+$`. 1 to 64 characters. Rule: a model router name must not start with the reserved prefix cetirun-. | Model name that Agents request. It cannot start with `cetirun-` in any letter case. |
 | `modelRouters[].tiers` | object |  | Required. | The model of each complexity tier. |
-| `modelRouters[].tiers.complex` | string |  | Required. Pattern `^[^\s]+$`. 1 to 256 characters. | Model for complex requests: a shared model that answers conversations and is not a router of the Gateway, or `copilot/<model>`. |
+| `modelRouters[].tiers.complex` | string |  | Required. Pattern `^[^\s]+$`. 1 to 256 characters. | Model for complex requests: a shared model that answers conversations and is not a router of the AI Gateway, or `copilot/<model>`. |
 | `modelRouters[].tiers.medium` | string |  | Required. Pattern `^[^\s]+$`. 1 to 256 characters. | Model for ordinary requests, and for requests that the router cannot classify. |
 | `modelRouters[].tiers.reasoning` | string |  | Pattern `^[^\s]+$`. At most 256 characters. | Optional model for requests that ask for step-by-step reasoning. If it is empty, the tier uses the `complex` model. |
 | `modelRouters[].tiers.simple` | string |  | Required. Pattern `^[^\s]+$`. 1 to 256 characters. | Model for the simplest requests. |
@@ -426,20 +432,20 @@ the API has no `normalAgentPolicyRef`, `adminAgentPolicyRef`, or Agent
 `policyClass` field.
 
 An Agent selects its Team with `spec.team`. The selection applies the runtime
-defaults of the Team and, when configured, its policy. It does not grant access
-to the data or the runtime of another Agent. There is no separate Team
-membership record. Model and credential entitlements come from the policy, and
-each Agent requests them.
+defaults of the Team and, when configured, its Agent Policy. It does not grant
+access to the data or the runtime of another Agent. There is no separate Team
+membership record. Model and credential entitlements come from the Agent
+Policy, and each Agent requests them.
 
 A Team for administrative work is an independent Team with its own context and
-skills. It does not select a more privileged policy for another Team.
-Permission to manage Teams or AgentPolicies is a control-plane permission of
+skills. It does not select a more privileged Agent Policy for another Team.
+Permission to manage Teams or Agent Policies is a control-plane permission of
 people. The platform enforces it separately from workload authorization.
 
-If you set one of the policy or Sandbox fields, the Team opts in to the full
-policy binding. A partial binding cannot fall back to legacy behavior. The Team
-controller accepts a legacy Team without these references. It accepts a
-policy-bound Team when its policy and Sandbox references form a valid
+If you set one of the Agent Policy or Sandbox fields, the Team opts in to the
+full policy binding. A partial binding cannot fall back to legacy behavior. The
+Team controller accepts a legacy Team without these references. It accepts a
+policy-bound Team when its Agent Policy and Sandbox references form a valid
 configuration.
 
 Hermes refreshes `TEAM.md` at each initialization. OpenClaw keeps the `USER.md`
@@ -463,14 +469,14 @@ lowercase letters and digits in words that single hyphens join, and at most 64
 characters. These rules apply:
 
 - The operator does not pass the name to `skills.clawHub`.
-- For a Team with an AgentPolicy, the Skill Marketplace publishes the selected
-  skills. Its common-executor Sandbox Agents copy them when they start.
+- For a Team with an Agent Policy, the Skill Marketplace publishes the selected
+  skills. Its Sandbox Agents copy them when they start.
   OpenClaw and Hermes read them in `$HOME/.aks/skills`, and Custom reads them
   in `$HOME/.agents/skills`.
 - An Agent cannot add or remove such a name in `skillOverrides`. The operator
   sets the Agent to `Failed`, with `AgentConfigInvalid` and this message:
   `skillOverrides cannot add or remove Skill Marketplace skills; select them on the Team`.
-  This rule also applies to Agents without a policy.
+  This rule also applies to Agents without an Agent Policy.
 - A change of the selection of the Team restarts the running Sandbox Agents of
   the Team one time, as each Team change does.
 
@@ -505,11 +511,11 @@ See [Skill Marketplace](../../operations/skill-marketplace/).
 | `conditions` | []Condition |  | Unique by `type`. | Condition `Accepted` and condition `ModelRoutersReady`. |
 | `modelRouters` | []object |  | Unique by `name`. | Registration of each router of `spec.modelRouters`. |
 | `modelRouters[].copilotModels` | []string |  |  | The `copilot/<model>` tiers, registered under the ID of the Copilot model. An Agent must have GitHub Copilot and that model. |
-| `modelRouters[].gatewayModel` | string |  |  | Internal Gateway model name of the router. Granted Agents send their requests to it. It stays the same when the router configuration changes. |
+| `modelRouters[].gatewayModel` | string |  |  | Internal AI Gateway model name of the router. Granted Agents send their requests to it. It stays the same when the router configuration changes. |
 | `modelRouters[].message` | string |  |  | Why the router is not ready. |
 | `modelRouters[].name` | string |  | Required. | Router name from `spec.modelRouters`. |
-| `modelRouters[].nonReasoningModels` | []string |  |  | For a ready router, the tier models, as the tiers name them, that do not reason. A shared model is listed when not every deployment of its name reports `supports_reasoning`. A `copilot/<model>` tier is listed when the price table of the Gateway has an entry for its model, and the entry does not report `supports_reasoning` or the model is not a Claude or GPT model. A tier that joins a shared model is also listed when that shared model does not reason. OpenClaw Agents offer no reasoning levels for the router. This is a hint only: the router is registered and granted as usual. |
-| `modelRouters[].ready` | boolean |  | Required. | `true` when the router is registered in the Gateway with its current configuration. |
+| `modelRouters[].nonReasoningModels` | []string |  |  | For a ready router, the tier models, as the tiers name them, that do not reason. A shared model is listed when not every deployment of its name reports `supports_reasoning`. A `copilot/<model>` tier is listed when the price table of the AI Gateway has an entry for its model, and the entry does not report `supports_reasoning` or the model is not a Claude or GPT model. A tier that joins a shared model is also listed when that shared model does not reason. OpenClaw Agents offer no reasoning levels for the router. This is a hint only: the router is registered and granted as usual. |
+| `modelRouters[].ready` | boolean |  | Required. | `true` when the router is registered in the AI Gateway with its current configuration. |
 | `modelRouters[].sharedModels` | []string |  |  | Shared models that the tiers of the router send requests to, as registered. A GitHub Copilot tier that joins a shared model is included, and the classifier is not. An Agent with an AgentPolicy gets the router only when the policy allows each of these models. |
 | `observedGeneration` | integer |  |  | Last generation that the operator fully reconciled. |
 
@@ -517,27 +523,27 @@ See [Skill Marketplace](../../operations/skill-marketplace/).
 
 The Team controller sets the condition `Accepted`. Its reason is `Valid` for a
 valid binding and `InvalidConfiguration` for an invalid binding. The reason is
-`DependenciesUnavailable` when the controller cannot read the policy or a
+`DependenciesUnavailable` when the controller cannot read the Agent Policy or a
 Sandbox, and `Terminating` during deletion. The condition `ModelRoutersReady`
 is `True` when every router of the Team is registered. `False` names each
-router that is not registered, and `Unknown` means that the Gateway cannot be
-reached.
+router that is not registered, and `Unknown` means that the AI Gateway cannot
+be reached.
 
 ### Team compatibility
 
 The operator records a compatibility report for each policy-bound Team in
 `status.compatibility`. It examines the saved configuration at most 15 seconds
-apart, and after each Policy or Sandbox change. An unchanged report keeps its
-timestamps until five seconds before it expires, when the operator renews it.
-A changed result is published immediately. The report expires 30 seconds after
-`checkedAt`, at `validUntil`. The report is for display. It does not change the
-`Accepted` condition, and it does not authorize Agent execution.
+apart, and after each Agent Policy or Sandbox change. An unchanged report
+keeps its timestamps until five seconds before it expires, when the operator
+renews it. A changed result is published immediately. The report expires 30
+seconds after `checkedAt`, at `validUntil`. The report is for display. It does
+not change the `Accepted` condition, and it does not authorize Agent execution.
 
 `compatibility.state` and `compatibility.sandboxes[].state` are `Compatible`,
 `Incompatible`, or `Unknown`. The Portal also shows `Pending` when no report
-exists, and `Not configured` for a Team without a policy. These two values are
-Portal labels, not values of the field. The Portal also shows `Unknown` when a
-report expires or when a referenced generation changes.
+exists, and `Not configured` for a Team without an Agent Policy. These two
+values are Portal labels, not values of the field. The Portal also shows
+`Unknown` when a report expires or when a referenced generation changes.
 
 Each entry of `compatibility.issues[]` and
 `compatibility.sandboxes[].issues[]` has one of these codes and its fixed
@@ -633,9 +639,9 @@ You can save a `gvisor` Sandbox, but Sandbox execution does not support it.
 Such a Sandbox does not become ready, and its `Ready` condition reports
 `UnsupportedControl`.
 
-A `container` Sandbox uses the same AgentPolicy, Gateway, Cilium, and retained
-HOME lifecycle as Kata, with per-container resource limits and no implicit VM
-overhead. It supports the same separately approved
+A `container` Sandbox uses the same Agent Policy, AI Gateway, Cilium, and
+retained HOME lifecycle as Kata. It has per-container resource limits and no
+implicit VM overhead. It supports the same separately approved
 [managed ingress mTLS](../../guides/agent-ingress-mtls/) as Kata. A capability
 flag alone does not authorize the endpoint.
 
@@ -661,11 +667,14 @@ prerequisites of the Sandbox, not for an Agent. Its reason is
 `PrerequisitesReady` when the registered runtime and storage match. Other
 reasons are `InvalidConfiguration`, `UnsupportedControl`, `RuntimeUnavailable`,
 `UnapprovedStorage`, `ReferenceMissing`, `ReferenceChanged`, `UnapprovedGrant`,
-`PolicyConflict`, `PrerequisitesUnavailable`, and `Terminating`.
+`PolicyConflict`, `PrerequisitesUnavailable`, and `Terminating`. If the
+operator knows a fixed reason, the message names it, for example an ingress
+mTLS registration without a digest-pinned image. The message contains only
+text from the operator code, without values from the registration.
 
 ## AgentPolicy
 
-An AgentPolicy limits the Harnesses, skills, models, network access, and
+An Agent Policy limits the agent types, skills, models, network access, and
 identities of the Agents of a Team. This example allows OpenClaw and one shared
 model:
 
@@ -705,7 +714,7 @@ spec:
 | `entraID` | object | `{}` |  | Approved Entra workload identity in the main container. It is independent of `agentIdentity`. |
 | `entraID.enabled` | boolean | `false` |  | Projects an exchange token and the Azure SDK environment into the main container. It needs platform registration, a pinned ServiceAccount, federation, and resource permissions. |
 | `harnesses` | object |  | Required. | Harness limits of the policy. |
-| `harnesses.allowed` | []string |  | Required. At least 1 item. Unique items. Each item: One of `openclaw`, `hermes`, `custom`. | Harness types that the Agents of the policy can use. Custom also needs the common executor and an approved Gateway-qualified image. |
+| `harnesses.allowed` | []string |  | Required. At least 1 item. Unique items. Each item: One of `openclaw`, `hermes`, `custom`. | Harness types that the Agents of the policy can use. Custom also needs the common executor and an approved AI Gateway-qualified image. |
 | `kubernetesAccess` | object |  | Rule: at least one explicit RBAC grant is required. | Kubernetes API access of the Agents. Its presence grants nothing: separately approved platform grants are necessary. Platform administrators manage it outside the Portal. |
 | `kubernetesAccess.clusterRoleBindings` | []object |  |  | ClusterRoles that the operator binds cluster-wide to the ServiceAccount of each Agent. |
 | `kubernetesAccess.clusterRoleBindings[].clusterRoleName` | string |  | Required. Pattern `^[^/%]+$`. At least 1 character. Rule: a ClusterRole name cannot be '.' or '..'. | Name of a ClusterRole that exists. |
@@ -713,7 +722,7 @@ spec:
 | `kubernetesAccess.roleBindings[].clusterRoleName` | string |  | Required. Pattern `^[^/%]+$`. At least 1 character. Rule: a ClusterRole name cannot be '.' or '..'. | Name of a ClusterRole that exists. |
 | `kubernetesAccess.roleBindings[].namespace` | string |  | Required. Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`. 1 to 63 characters. | Namespace of the binding. |
 | `kubernetesAccess.serviceAccountName` | string |  | Required. Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`. 1 to 253 characters. | ServiceAccount of each Agent. |
-| `modelAccess` | object |  |  | Gateway entitlements and the budget of the key of each Agent. See [AgentPolicy model access](#agentpolicy-model-access). |
+| `modelAccess` | object |  |  | AI Gateway entitlements and the budget of the key of each Agent. See [AgentPolicy model access](#agentpolicy-model-access). |
 | `modelAccess.copilot` | object |  |  | GitHub Copilot entitlement. |
 | `modelAccess.copilot.allowed` | boolean |  |  | Lets the Agents use the GitHub Copilot of their owners. The Portal shows it as **Allow GitHub Copilot**. |
 | `modelAccess.gatewayBudget` | object |  |  | Monthly budget of the key of each Agent. Necessary when the policy allows a shared model or Copilot, and not allowed otherwise. |
@@ -721,13 +730,13 @@ spec:
 | `modelAccess.gatewayBudget.maxMonthlyUSD` | string |  | Required. Pattern `^(0\|[1-9][0-9]*)(\.[0-9]{1,6})?$`. | Maximum budget that an administrator can set on an Agent, in US dollars. It must be above zero. |
 | `modelAccess.rateLimits` | object |  |  | Request limits on the key of each Agent. An omitted field is unlimited. See [AgentPolicy rate limits](#agentpolicy-rate-limits). |
 | `modelAccess.rateLimits.maxParallelRequests` | integer |  | Range 1 to 2147483647. | Requests of the key in flight at the same time. |
-| `modelAccess.rateLimits.perModel` | map[string]object |  | At most 64 keys. Rule: perModel keys must be Gateway model names of 1 to 256 characters without whitespace. Each value: Rule: a per-model limit must set rpm, tpm, or both. | Limits for individual models, by exact Gateway model name. For a router of the Team, the router name is also accepted. |
+| `modelAccess.rateLimits.perModel` | map[string]object |  | At most 64 keys. Rule: perModel keys must be Gateway model names of 1 to 256 characters without whitespace. Each value: Rule: a per-model limit must set rpm, tpm, or both. | Limits for individual models, by exact AI Gateway model name. For a router of the Team, the router name is also accepted. |
 | `modelAccess.rateLimits.perModel.<name>.rpm` | integer |  | Minimum 1. | Requests per minute of the key for this model. |
 | `modelAccess.rateLimits.perModel.<name>.tpm` | integer |  | Minimum 4096. | Tokens per minute of the key for this model. |
 | `modelAccess.rateLimits.rpm` | integer |  | Minimum 1. | Requests per minute of the key across all models. |
 | `modelAccess.rateLimits.tpm` | integer |  | Minimum 4096. | Tokens per minute of the key across all models, from the tokens of finished requests. |
 | `modelAccess.sharedModels` | object |  |  | Shared model entitlement. |
-| `modelAccess.sharedModels.allowed` | []string |  | Unique items. Each item: Pattern `^[^\t\r\n ]+$`. 1 to 256 characters. | Exact Gateway model names that the Agents can use, routers included. For a router, also list the models of its tiers, its default model, and its context compaction model, if it has one. |
+| `modelAccess.sharedModels.allowed` | []string |  | Unique items. Each item: Pattern `^[^\t\r\n ]+$`. 1 to 256 characters. | Exact AI Gateway model names that the Agents can use, routers included. For a router, also list the models of its tiers, its default model, and its context compaction model, if it has one. |
 | `network` | object | `{}` |  | Network controls of the Agents. |
 | `network.allowedInternalCIDRs` | []object | `[]` |  | Internal destinations that the Agents can reach, each with its ports. It needs explicit platform registration and approvals. SCTP grants are limited to direct endpoints. |
 | `network.allowedInternalCIDRs[].cidr` | string |  | Required. At least 1 character. | IPv4 or IPv6 destination CIDR. |
@@ -752,15 +761,15 @@ spec:
 <!-- /generated: agentpolicy-spec -->
 
 The schema checks the shape of each field. The Sandbox admission webhook
-checks these rules when `sandboxAdmission.enforce` is `true`, and the
-AgentPolicy controller checks them for each saved policy. If a saved policy
-breaks a rule, the controller sets `Accepted` to `False` with reason
+checks these rules when `sandboxAdmission.enforce` is `true`, and the Agent
+Policy controller checks them for each saved Agent Policy. If a saved Agent
+Policy breaks a rule, the controller sets `Accepted` to `False` with reason
 `InvalidConfiguration`.
 
 - `harnesses.allowed` contains at least one of `openclaw`, `hermes`, and
   `custom`.
-- `modelAccess.gatewayBudget` is necessary when the policy allows a shared
-  model or Copilot. It is not allowed otherwise.
+- `modelAccess.gatewayBudget` is necessary when the Agent Policy allows a
+  shared model or Copilot. It is not allowed otherwise.
 - `defaultMonthlyUSD` and `maxMonthlyUSD` are above zero, and the default is not
   more than the maximum. The schema pattern also accepts `"0"`.
 - Entries of `skills.allowed` and `modelAccess.sharedModels.allowed` are not
@@ -786,17 +795,30 @@ breaks a rule, the controller sets `Accepted` to `False` with reason
 
 <!-- /generated: agentpolicy-status -->
 
-The AgentPolicy controller sets the condition `Accepted` for the configuration
-of the policy. Reason `PolicyAccepted` means that the platform supports the
-controls of the policy and its requested role approvals. It does not assess
-Sandbox compatibility, HOME access, or per-Agent enforcement. Other reasons are
-`InvalidConfiguration`, `UnsupportedControl`, `UnapprovedGrant`,
-`PolicyConflict`, `PrerequisitesUnavailable`, and `Terminating`.
+The Agent Policy controller sets the condition `Accepted` for the configuration
+of the Agent Policy. Reason `PolicyAccepted` means that the platform supports
+the controls of the Agent Policy and its requested role approvals. It does not
+assess Sandbox compatibility, HOME access, or per-Agent enforcement. Other
+reasons are `InvalidConfiguration`, `UnsupportedControl`, `UnapprovedGrant`,
+`PolicyConflict`, `RegistrationIncompatible`, `PrerequisitesUnavailable`, and
+`Terminating`.
+
+`RegistrationIncompatible` means that the operator accepted this generation of
+the Agent Policy before (`acceptedGeneration`), and the current platform
+registration cannot enforce it. The operator then holds the Agents that use the
+Agent Policy and blocks their AI Gateway keys, without revoking them. The Agents
+recover when you correct the registration, or when the operator accepts a
+corrected Agent Policy.
+
+If the operator knows a fixed reason, the message names it, for example a rule
+budget that the Agent Policy exceeds. The message contains only text from the
+operator code, without values from the Agent Policy or the registration.
 
 ### Identity and network controls
 
 `agentIdentity` and `entraID` are independent. `agentIdentity` permits the
-Microsoft Entra directory identity that the Broker and Connections use.
+Microsoft Entra directory identity that the Agent Identity Broker and
+Connections use.
 `entraID.enabled` projects an exchange token and the Azure SDK environment into
 the main application container with an explicitly approved identity. It needs
 platform registration, a pinned ServiceAccount, federation, and resource
@@ -840,31 +862,31 @@ selected execution profile and the platform capabilities.
 
 | Field | Contract |
 | --- | --- |
-| `modelAccess.sharedModels.allowed` | Exact Gateway model names that the Agents of the policy can use, routers included. For a router, also list the models of its tiers, its default model, and its context compaction model, if it has one. Each name has at most 256 characters, without whitespace |
+| `modelAccess.sharedModels.allowed` | Exact AI Gateway model names that the Agents of the Agent Policy can use, routers included. For a router, also list the models of its tiers, its default model, and its context compaction model, if it has one. Each name has at most 256 characters, without whitespace |
 | `modelAccess.copilot.allowed` | Boolean. Lets the Agents use their owners' GitHub Copilot. The Portal shows it as **Allow GitHub Copilot** |
-| `modelAccess.gatewayBudget.defaultMonthlyUSD`, `maxMonthlyUSD` | Monthly budgets in US dollars, as decimal strings above zero with at most six decimals. Necessary when the policy allows a shared model or Copilot. Not allowed otherwise. The default budget must not exceed the maximum |
+| `modelAccess.gatewayBudget.defaultMonthlyUSD`, `maxMonthlyUSD` | Monthly budgets in US dollars, as decimal strings above zero with at most six decimals. Necessary when the Agent Policy allows a shared model or Copilot. Not allowed otherwise. The default budget must not exceed the maximum |
 | `modelAccess.rateLimits` | Request limits on the key of each Agent. See [AgentPolicy rate limits](#agentpolicy-rate-limits) |
 
-The key of each Agent gets the default budget. An administrator can set the
-`modelAccess.monthlyBudgetUSD` of a suspended Agent, up to the maximum. A
-budget resets on the first day of each month, UTC. A background job of the
-Gateway applies the reset, so it can occur up to about ten minutes late.
+The key of each Agent gets the default budget. An admission administrator can
+set the `modelAccess.monthlyBudgetUSD` of a suspended Agent, up to the maximum.
+A budget resets on the first day of each month, UTC. A background job of the
+AI Gateway applies the reset, so it can occur up to about ten minutes late.
 
-When the spend of a key reaches its budget, the Gateway refuses the requests of
-the key with HTTP 402 until the reset. The requests to the Agent's GitHub
+When the spend of a key reaches its budget, the AI Gateway refuses the requests
+of the key with HTTP 402 until the reset. The requests to the Agent's GitHub
 Copilot models count against the same budget. See
 [When the budget runs out](../../guides/models/#when-the-budget-runs-out).
 
 ### AgentPolicy rate limits
 
 `modelAccess.rateLimits` sets AI Gateway limits on the virtual key of every
-policy-bound Agent whose Team uses the policy. The key of each Agent keeps its
+Sandbox Agent whose Team uses the Agent Policy. The key of each Agent keeps its
 own counters. As a result, Agents do not use up the limits of other Agents.
 Every field is optional, and an omitted field is unlimited. There is no zero
-value. The Gateway rejects every request of a key whose limit is zero, so the
-schema rejects values below the minimums.
+value. The AI Gateway rejects every request of a key whose limit is zero, so
+the schema rejects values below the minimums.
 
-| Field | Minimum | Gateway key setting |
+| Field | Minimum | AI Gateway key setting |
 | --- | --- | --- |
 | `maxParallelRequests` | 1 | `max_parallel_requests`, requests in flight at the same time |
 | `rpm` | 1 | `rpm_limit`, requests per minute across all models |
@@ -872,54 +894,56 @@ schema rejects values below the minimums.
 | `perModel.<model>.rpm` | 1 | `model_rpm_limit` in the key metadata |
 | `perModel.<model>.tpm` | 4096 | `model_tpm_limit` in the key metadata |
 
-`perModel` limits at most 64 models. Its keys are the exact Gateway model names
-that the Agent requests (1 to 256 characters without whitespace). Each entry
-sets `rpm`, `tpm`, or both. `maxParallelRequests` is at most 2,147,483,647,
-which is the largest value that the Gateway stores. The other limits have no
-upper bound. The values are not compared with the context window of a model.
+`perModel` limits at most 64 models. Its keys are the exact AI Gateway model
+names that the Agent requests (1 to 256 characters without whitespace). Each
+entry sets `rpm`, `tpm`, or both. `maxParallelRequests` is at most
+2,147,483,647, which is the largest value that the AI Gateway stores. The other
+limits have no upper bound. The values are not compared with the context window
+of a model.
 
 For a router of the Agent's Team, a `perModel` key can also be the name of the
 router. The operator then also sets the limit under the internal name of the
-router, which the Gateway counts for the router. The limit under the name of
+router, which the AI Gateway counts for the router. The limit under the name of
 the router stays. It applies to another model that keeps the name, for example
-a GitHub Copilot model of the Agent. If the policy sets a limit for both names,
-the internal name gets the smaller value.
+a GitHub Copilot model of the Agent. If the Agent Policy sets a limit for both
+names, the internal name gets the smaller value.
 
 The operator sets the limits when it creates a key. On every reconciliation, it
-compares the stored limits of the key with the policy. When they are different,
-it updates the same key in place. A removed field is cleared on the key. Other
-key settings and metadata are kept.
+compares the stored limits of the key with the Agent Policy. When they are
+different, it updates the same key in place. A removed field is cleared on the
+key. Other key settings and metadata are kept.
 
-The limits are not part of the Gateway policy revision. As a result, a change to
-them does not start the reprojection fence that a model or budget change starts.
-For the same reason, the operator keeps the key of each Agent.
+The limits are not part of the policy revision of the AI Gateway. As a result, a
+change to them does not start the reprojection fence that a model or budget
+change starts. For the same reason, the operator keeps the key of each Agent.
 
 Sandbox execution also excludes `modelAccess.rateLimits` from its execution
 inputs and from coordinated configuration reservations. A change that only
 adds, edits, or removes these limits, `perModel` included, does not stop or
-restart running native Agents. For common-executor Sandboxes, this also applies
-to workloads during initialization or during the completion of a retained
-restart. A limits-only update does not apply the workload again, block its key
-for a short time, or release its unchanged native reservation.
+restart running Sandbox Agents. For common-executor Sandboxes, this also
+applies to workloads during initialization or during the completion of a
+retained restart. A limits-only update does not apply the workload again, block
+its key for a short time, or release its unchanged native reservation.
 
-During bootstrap, the operator compares a policy status update with the
+During bootstrap, the operator compares an Agent Policy status update with the
 captured execution inputs and the immutable UID, not only with its resource
-version. Until the policy status reaches the new generation, the operator
-assesses the current policy again. It uses the same trusted platform inventory
-and grants as the policy controller. It does not stop an Agent only because of
-that delay. Policy evidence that is unavailable or not valid holds execution.
+version. Until the status of the Agent Policy reaches the new
+generation, the operator assesses the current Agent Policy again. It uses the
+same trusted platform inventory and grants as the Agent Policy controller. It
+does not stop an Agent only because of that delay. Agent Policy evidence that
+is unavailable or not valid holds execution.
 
 Budgets, model authorization, and other execution controls keep their normal
 fencing and coordination checks. The exact coordinated write still includes the
-limits. The keys of standard Agents do not change. Gateway
-administrators manage their limits.
+limits. The keys of standard Agents do not change. Platform administrators
+manage their limits in the AI Gateway.
 
-The operator does not rewrite persisted execution evidence. The saved policy
-digest of an older single-start lifetime or coordination reservation can include
-`modelAccess.rateLimits`, also as an empty object. In that case, the lifetime or
-reservation stays fail-closed on an input mismatch, and the stop and recreate
-procedure is necessary. Before you edit limits, upgrade the operator and the
-admission readers. Do not manually change their saved digests.
+The operator does not rewrite persisted execution evidence. The saved Agent
+Policy digest of an older single-start lifetime or coordination reservation can
+include `modelAccess.rateLimits`, also as an empty object. In that case, the
+lifetime or reservation stays fail-closed on an input mismatch, and the stop and
+recreate procedure is necessary. Before you edit limits, upgrade the operator
+and the admission readers. Do not manually change their saved digests.
 
 The total limits count every request on the key, the Agent's GitHub Copilot
 models included. A per-model limit applies to the model name that a request
@@ -927,14 +951,14 @@ uses after model aliases. For an `auto` router, that is the name of the router,
 not the model that it routes to. For a router of a Team, that is the internal
 name of the router, also when the Agent sends the router's name.
 
-A request over a limit gets HTTP 429 with a `retry-after` header. Gateway
+A request over a limit gets HTTP 429 with a `retry-after` header. AI Gateway
 replicas share the counters through Redis.
 
-The Gateway counts `tpm` from the tokens of each finished request. Cached input
-tokens are excluded. When the count for the minute reaches the limit, the
-Gateway refuses the requests of the key until the next minute. A single request
-can take the count past the limit. That is the Gateway chart's default,
-`tpmReservation: false`.
+The AI Gateway counts `tpm` from the tokens of each finished request. Cached
+input tokens are excluded. When the count for the minute reaches the limit, the
+AI Gateway refuses the requests of the key until the next minute. A single
+request can take the count past the limit. That is the default of the AI Gateway
+chart, `tpmReservation: false`.
 
 With `tpmReservation: true`, LiteLLM reserves the input of a request and its
 maximum output tokens before it calls the model. If they do not fit, LiteLLM
@@ -949,19 +973,19 @@ all requests except the smallest.
 
 ### Policy binding and execution
 
-Policy assignment is optional for an Agent without a Sandbox selection or a
-recorded governed lifetime. Such a standard Agent can use no Team, or a Team
-without policy settings. It keeps the standard runtime flow and does not claim
-policy enforcement. For a policy-bound Agent, the controller resolves the owner and
-Team authorization, the effective AgentPolicy, and the selected Sandbox before
-a workload can run. If the authorization is not valid or not available, the
-controller holds the Agent.
+Agent Policy assignment is optional for an Agent without a Sandbox selection or
+a recorded governed lifetime. Such a standard Agent can use no Team, or a Team
+without Agent Policy settings. It keeps the standard runtime flow and does not
+claim Agent Policy enforcement. For a Sandbox Agent, the controller resolves
+the owner and Team authorization, the effective Agent Policy, and the selected
+Sandbox before a workload can run. If the authorization is not valid or not
+available, the controller holds the Agent.
 
 The native Sandbox path compiles and stages protected resources at zero
 replicas. Execution stays held until the Operator's
 `sandboxSources.nativeExecution` is enabled and its prerequisites pass. This
-setting is off by default. Approved Gateway-backed Custom images use the same
-common executor, and the
+setting is off by default. Approved Custom images that call models through the
+AI Gateway use the same common executor, and the
 [Custom image and interface contract](../agent-harness/#policy-governed-custom-execution)
 applies to them. If an approval is absent or a combination is not supported,
 the Agent stays held. Custom Agents without a Sandbox keep their runtime
@@ -991,10 +1015,11 @@ replacement resource with the same name is not adopted.
 
 Only an admission administrator can move a Sandbox Agent to another Team or
 Sandbox. In the same update as the new `spec.team` and `spec.sandboxRef`, the
-administrator writes the annotation `cetirun.microsoft.com/sandbox-reauthorize`.
+admission administrator writes the annotation
+`cetirun.microsoft.com/sandbox-reauthorize`.
 Its value names a new request ID and the UIDs of the target binding. These are
 the UIDs of the Agent, the Team in the new `spec.team`, the Sandbox in the new
-`spec.sandboxRef`, and the AgentPolicy of that Team:
+`spec.sandboxRef`, and that Team's Agent Policy:
 
 ```json
 {"requestID": "<new ID>", "binding": {"agentUID": "<UID>", "teamUID": "<UID>", "sandboxUID": "<UID>", "agentPolicyUID": "<UID>"}}
@@ -1005,42 +1030,47 @@ for example the UID of the Team before the move. It also rejects a request ID
 that is the same as before. After the reauthorization, the Agent stays held.
 Admission requires a suspended Agent only for a change of
 `modelAccess.monthlyBudgetUSD`. Before a move, suspend the Agent, so that its
-workload stops in a controlled way. See the
+workload stops in a controlled way.
+
+See the
 [reauthorization protocol]({{< repo "app/cetirun-operator/README.md" >}}#direct-kubernetes-writer-assignments-and-explicit-reauthorization).
+For the procedure, read
+[Move an Agent to another Team](../../operations/policy-teams/#move-an-agent-to-another-team).
 
 A policy-bound resource that exists enters a controlled hold for cleanup. A
 change or removal of its references does not return it to legacy execution. A
 change needs an explicit reauthorization and an ordered stop and cleanup. There
-is no lossless rolling migration between policies. The operator status reports
-the desired revision of each domain. The operator sets `PolicyApplied` only
-when the matching enforcement evidence is current.
+is no lossless rolling migration between Agent Policies. The operator status
+reports the desired revision of each domain. The operator sets `PolicyApplied`
+only when the matching enforcement evidence is current.
 
-AgentPolicy also allowlists Harnesses, skills, exact Gateway model names,
-Copilot, and Agent Identity. A native LiteLLM default and maximum monthly USD
-budget are necessary for a model entitlement. For Custom, the common executor
-and an approved Gateway-qualified image are also necessary. A policy permission
-alone does not qualify an image or a backend. Agent Identity cannot complete
-the aggregate `PolicyApplied` until a typed credential-service executor
-supplies matching read-back evidence.
+An Agent Policy also allowlists agent types, skills, exact AI Gateway model
+names, Copilot, and Agent Identity. A native LiteLLM default and maximum
+monthly USD budget are necessary for a model entitlement. For Custom, the
+common executor and an approved image that is qualified for the AI Gateway are
+also necessary. A permission of the Agent Policy alone does not qualify an
+image or a backend. Agent Identity cannot complete the aggregate
+`PolicyApplied` until a typed credential-service executor supplies matching
+read-back evidence.
 
 `skills.allowed` lists the exact entries that the Team's `skills` and an
 Agent's `skillOverrides.add` can contain, `npm:` packages included. If a Team
 or an Agent requests a skill that the list does not contain, the operator
 denies the Agent. Its `PolicyResolved` condition is `False`, with reason
 `PolicyDenied` and the message `skill "<name>" is not allowed by policy`. The
-operator then revokes the Agent's Gateway key and stops the Agent.
+operator then revokes the Agent's AI Gateway key and stops the Agent.
 
 The skill allowlist is not an execution input of Sandbox Agents. A change that
-only adds or removes allowed skills does not restart running native Agents. A
-policy with an empty or absent allowlist keeps the execution digest that
-earlier operators recorded. For a policy that allows skills, the digest that
-earlier operators recorded includes the allowlist. After the operator upgrade,
-the first reconciliation sees that policy as changed, as after an edit of its
-execution settings.
+only adds or removes allowed skills does not restart running Sandbox Agents. An
+Agent Policy with an empty or absent allowlist keeps the execution digest that
+earlier operators recorded. For an Agent Policy that allows skills, the digest
+that earlier operators recorded includes the allowlist. After the operator
+upgrade, the first reconciliation sees that Agent Policy as changed, as after an
+edit of its execution settings.
 
 ## Portal administration
 
-The Portal writes Teams, Sandboxes, AgentPolicies, and Agents through these
+The Portal writes Teams, Sandboxes, Agent Policies, and Agents through these
 same resources. For its administration pages and HTTP endpoints, see
 [Portal API](../portal-api/).
 

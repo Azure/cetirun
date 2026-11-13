@@ -18,6 +18,7 @@
 #   CLIENT_ID              — Entra ID app registration client/application ID
 #   TENANT_ID              — Azure AD tenant ID
 #   ALLOWED_GROUPS         — Comma-separated Entra ID group object IDs (e.g. "oid1,oid2")
+#   PORTAL_AUTH_SERVER_IDENTITY — Exact SPIFFE identity of the Portal service account
 #
 # Optional environment variables:
 #   COOKIE_SECRET          — Pre-generated cookie secret (auto-generated if not set)
@@ -42,6 +43,7 @@
 #   export CLIENT_ID="<app-client-id>"
 #   export TENANT_ID="<tenant-id>"
 #   export ALLOWED_GROUPS="<group-oid-1>,<group-oid-2>"
+#   export PORTAL_AUTH_SERVER_IDENTITY="spiffe://cluster.local/ns/cetirun-portal/sa/cetirun-portal"
 #   ./deploy.sh
 
 set -euo pipefail
@@ -57,6 +59,7 @@ fi
 : "${CLIENT_ID:?CLIENT_ID must be set to the Entra app client ID}"
 : "${TENANT_ID:?TENANT_ID must be set to the Azure AD tenant ID}"
 : "${ALLOWED_GROUPS:?ALLOWED_GROUPS must be set to comma-separated Entra group object IDs}"
+: "${PORTAL_AUTH_SERVER_IDENTITY:?Set the exact Portal SPIFFE identity: spiffe://<trust-domain>/ns/<namespace>/sa/<service-account>}"
 
 REQUIRED_CMDS=(helm kubectl jq openssl python3)
 if [[ -z "${SKIP_AZ_VALIDATION:-}" ]]; then
@@ -253,6 +256,8 @@ HELM_ARGS=(
   --set "allowedGroups=${ALLOWED_GROUPS//,/\\,}"
   --set "domain=${DOMAIN}"
   --set-string "portalAuth.clusterHost=${PORTAL_AUTH_CLUSTER_HOST}"
+  --set "portalAuth.mtls.enabled=true"
+  --set-string "portalAuth.mtls.serverIdentity=${PORTAL_AUTH_SERVER_IDENTITY}"
 )
 
 # Only pass cookieSecret when explicitly provided via environment variable.

@@ -112,6 +112,86 @@ describe("OverviewSection", () => {
     expect(screen.queryByText(/Contact your administrator to restore access/)).not.toBeInTheDocument();
   });
 
+  const unreadyHermes: Instance = {
+    ...baseInstance, agent: { type: "hermes" }, phase: "Provisioning", generation: 2, observedGeneration: 2,
+    suspended: false, suspendAvailable: true, resumeAvailable: false, restartAvailable: false,
+    conditions: [{ type: "Ready", status: "False", reason: "PodNotReady", message: "StatefulSet is not ready", observedGeneration: 0 }],
+  };
+
+  it("shows the reported readiness cause and keeps recovery on the existing confirmed suspension path", () => {
+    const view = renderInRouter(<OverviewSection instance={unreadyHermes} />);
+    expect(screen.getByText("Agent is not ready")).toBeInTheDocument();
+    expect(screen.getByText("Reported reason: PodNotReady: StatefulSet is not ready")).toBeInTheDocument();
+    expect(screen.queryByText("Provisioning your agent...")).not.toBeInTheDocument();
+    expect(screen.queryByText(/WebappNotServing/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Wait for the controller to report Suspended/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Restart Agent" })).not.toBeInTheDocument();
+    expect(mockSuspension.mutate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "View Status" }));
+    expect(screen.getByRole("tab", { name: "Status" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
+    fireEvent.click(screen.getByRole("button", { name: "Suspend Agent" }));
+    expect(mockSuspension.mutate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Suspend", exact: true }));
+    expect(mockSuspension.mutate).toHaveBeenLastCalledWith({ uid: baseInstance.uid, resourceVersion: "7", generation: 2, suspended: true }, expect.anything());
+
+    view.rerender(<OverviewSection instance={{ ...unreadyHermes, resourceVersion: "8", generation: 3,
+      phase: "Suspended", suspended: true, suspendAvailable: false, resumeAvailable: true }} />);
+    expect(screen.queryByText("Agent is not ready")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Resume Agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Resume", exact: true }));
+    expect(mockSuspension.mutate).toHaveBeenLastCalledWith({ uid: baseInstance.uid, resourceVersion: "8", generation: 3, suspended: false }, expect.anything());
+
+    view.rerender(<OverviewSection instance={{ ...unreadyHermes, resourceVersion: "9", generation: 4 }} />);
+    expect(screen.getByText("Agent is not ready")).toBeInTheDocument();
+    expect(screen.getByText(/An accepted resume does not mean the Agent is Ready/)).toBeInTheDocument();
+    view.rerender(<OverviewSection instance={{ ...unreadyHermes, phase: "Ready", restartAvailable: true }} />);
+    expect(screen.queryByText("Agent is not ready")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Wait for the controller to report Suspended/)).not.toBeInTheDocument();
+  });
+
+  it("shows configuration failures without presenting a restart as their remedy", () => {
+    renderInRouter(<OverviewSection instance={{ ...unreadyHermes, phase: "Failed", conditions: [
+      { type: "Ready", status: "False", reason: "AgentConfigInvalid", message: "spec.agent.image is not qualified for the selected harness profile", observedGeneration: 2 },
+    ] }} />);
+    expect(screen.getByText(/Reported reason: AgentConfigInvalid/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View Status" })).toBeEnabled();
+    expect(screen.queryByText(/Wait for the controller to report Suspended/)).not.toBeInTheDocument();
+  });
+
+  it("does not suggest suspension when the backend cannot verify retained HOME", () => {
+    renderInRouter(<OverviewSection instance={{ ...unreadyHermes, suspendAvailable: false,
+      suspensionUnavailableReason: "Retained suspension requires persistent HOME storage" }} />);
+    expect(screen.getByText(/Reported reason: PodNotReady/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Suspend Agent" })).toBeDisabled();
+    expect(screen.getByText(/Retained suspension requires persistent HOME/)).toBeInTheDocument();
+    expect(screen.queryByText(/Wait for the controller to report Suspended/)).not.toBeInTheDocument();
+  });
+
+  it("does not suggest another recovery while a restart is pending", () => {
+    renderInRouter(<OverviewSection instance={{ ...unreadyHermes, restartRequestId: "request-00000001" }} />);
+    expect(screen.getByText(/Reported reason: PodNotReady/)).toBeInTheDocument();
+    expect(screen.queryByText(/Wait for the controller to report Suspended/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restart Agent" })).toBeDisabled();
+  });
+
+  it.each([undefined, [{ type: "Ready", status: "False", reason: "PreviousFailure", message: "Old configuration", observedGeneration: 1 }]])(
+    "keeps the provisioning indicator without a current reported failure", (conditions) => {
+      renderInRouter(<OverviewSection instance={{ ...unreadyHermes, conditions }} />);
+      expect(screen.queryByText("Agent is not ready")).not.toBeInTheDocument();
+      expect(screen.getByText("Provisioning your agent...")).toBeInTheDocument();
+    },
+  );
+
+  it("keeps governance failures ahead of workload recovery advice", () => {
+    renderInRouter(<OverviewSection instance={{ ...unreadyHermes,
+      governance: { category: "policy", reason: "PolicyDenied", message: "Image is not approved", condition: "PolicyApplied", observedGeneration: 2 },
+    }} />);
+    expect(screen.getByText("Blocked by policy")).toBeInTheDocument();
+    expect(screen.queryByText("Agent is not ready")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Wait for the controller to report Suspended/)).not.toBeInTheDocument();
+  });
+
   it("retains an uncertain lifecycle request while the owner checks the Status tab", () => {
     const current = { ...baseInstance, suspended: false, suspendAvailable: true, restartAvailable: false };
     const view = renderInRouter(<OverviewSection instance={current} />);

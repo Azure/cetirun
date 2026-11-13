@@ -12,6 +12,7 @@ import (
 	"slices"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	nodev1 "k8s.io/api/node/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -24,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -54,6 +56,10 @@ type SandboxReconciler struct {
 	Source          SandboxConfigurationSource
 	Now             func() time.Time
 	MaxSnapshotAge  time.Duration
+	// PlatformRegistration is the ConfigMap of the platform registration that
+	// Source reads. A change of this ConfigMap queues every Sandbox. The zero
+	// value adds no watch.
+	PlatformRegistration types.NamespacedName
 }
 
 type AgentPolicyReconciler struct {
@@ -63,6 +69,10 @@ type AgentPolicyReconciler struct {
 	Source          SandboxConfigurationSource
 	Now             func() time.Time
 	MaxSnapshotAge  time.Duration
+	// PlatformRegistration is the ConfigMap of the platform registration that
+	// Source reads. A change of this ConfigMap queues every AgentPolicy. The
+	// zero value adds no watch.
+	PlatformRegistration types.NamespacedName
 }
 
 // TeamReconciler records whether the Team's policy and Sandbox bindings are
@@ -82,6 +92,11 @@ const (
 	teamCompatibilityInterval    = 15 * time.Second
 )
 
+// configurationUnavailableRequeue is the retry interval of an AgentPolicy or a
+// Sandbox whose platform prerequisites are unavailable, for example while the
+// platform registration cannot be read or used.
+const configurationUnavailableRequeue = 30 * time.Second
+
 func (r *SandboxReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Client == nil {
 		r.Client = mgr.GetClient()
@@ -89,7 +104,11 @@ func (r *SandboxReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.APIReader == nil {
 		r.APIReader = mgr.GetAPIReader()
 	}
-	return ctrl.NewControllerManagedBy(mgr).For(&api.Sandbox{}).Complete(r)
+	managed := ctrl.NewControllerManagedBy(mgr).For(&api.Sandbox{})
+	if r.PlatformRegistration.Name != "" {
+		managed = managed.Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.enqueueForPlatformRegistration))
+	}
+	return managed.Complete(r)
 }
 
 func (r *AgentPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -99,7 +118,55 @@ func (r *AgentPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.APIReader == nil {
 		r.APIReader = mgr.GetAPIReader()
 	}
-	return ctrl.NewControllerManagedBy(mgr).For(&api.AgentPolicy{}).Complete(r)
+	managed := ctrl.NewControllerManagedBy(mgr).For(&api.AgentPolicy{})
+	if r.PlatformRegistration.Name != "" {
+		managed = managed.Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.enqueueForPlatformRegistration))
+	}
+	return managed.Complete(r)
+}
+
+// isPlatformRegistration reports whether object is the platform registration
+// ConfigMap. The zero registration matches no object.
+func isPlatformRegistration(registration types.NamespacedName, object client.Object) bool {
+	return registration.Name != "" && client.ObjectKeyFromObject(object) == registration
+}
+
+// enqueueForPlatformRegistration queues every Sandbox when the platform
+// registration changes, so that a corrected registration is assessed at once
+// and not only at the next periodic retry.
+func (r *SandboxReconciler) enqueueForPlatformRegistration(ctx context.Context, object client.Object) []reconcile.Request {
+	if !isPlatformRegistration(r.PlatformRegistration, object) {
+		return nil
+	}
+	boxes := &api.SandboxList{}
+	if err := r.List(ctx, boxes); err != nil {
+		log.FromContext(ctx).Error(err, "Cannot queue the Sandboxes for a changed platform registration")
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(boxes.Items))
+	for i := range boxes.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: boxes.Items[i].Name}})
+	}
+	return requests
+}
+
+// enqueueForPlatformRegistration queues every AgentPolicy when the platform
+// registration changes, so that a corrected registration is assessed at once
+// and not only at the next periodic retry.
+func (r *AgentPolicyReconciler) enqueueForPlatformRegistration(ctx context.Context, object client.Object) []reconcile.Request {
+	if !isPlatformRegistration(r.PlatformRegistration, object) {
+		return nil
+	}
+	policies := &api.AgentPolicyList{}
+	if err := r.List(ctx, policies); err != nil {
+		log.FromContext(ctx).Error(err, "Cannot queue the AgentPolicies for a changed platform registration")
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(policies.Items))
+	for i := range policies.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: policies.Items[i].Name}})
+	}
+	return requests
 }
 
 func (r *TeamReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -532,13 +599,14 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 	condition.LastTransitionTime = metav1.NewTime(now)
 	apimeta.SetStatusCondition(&object.Status.Conditions, condition)
 	object.Status.ObservedGeneration = object.Generation
-	if !reflect.DeepEqual(before.Status, object.Status) {
+	changed := !reflect.DeepEqual(before.Status, object.Status)
+	if changed {
 		if err := r.Status().Patch(ctx, object, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 			return ctrl.Result{}, errors.Join(observeErr, fmt.Errorf("update Sandbox prerequisite status: %w", err))
 		}
 	}
 	if observeErr != nil {
-		return ctrl.Result{}, observeErr
+		return configurationUnavailableResult(ctx, "Sandbox", condition, observeErr, changed)
 	}
 	return ctrl.Result{RequeueAfter: configurationRefresh(r.MaxSnapshotAge, now, observedAt)}, nil
 }
@@ -569,16 +637,38 @@ func (r *AgentPolicyReconciler) Reconcile(ctx context.Context, request ctrl.Requ
 		// permits execution, and it is never cleared or lowered.
 		object.Status.AcceptedGeneration = object.Generation
 	}
-	if !reflect.DeepEqual(before.Status, object.Status) {
+	changed := !reflect.DeepEqual(before.Status, object.Status)
+	if changed {
 		if err := r.Status().Patch(ctx, object, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 			return ctrl.Result{}, errors.Join(observeErr, fmt.Errorf("update AgentPolicy configuration status: %w", err))
 		}
 		emitSandboxPolicyTransition(ctx, before, object)
 	}
 	if observeErr != nil {
-		return ctrl.Result{}, observeErr
+		return configurationUnavailableResult(ctx, "AgentPolicy", condition, observeErr, changed)
 	}
 	return ctrl.Result{RequeueAfter: configurationRefresh(r.MaxSnapshotAge, now, observedAt)}, nil
+}
+
+// configurationUnavailableResult ends a pass whose assessment failed, after the
+// status shows the failure. A failure only of unavailable platform
+// prerequisites, with the condition Unknown and the reason
+// PrerequisitesUnavailable, is not a reconcile error. It retries after
+// configurationUnavailableRequeue: the error rate limiter can delay the next
+// assessment by about 17 minutes, also after the registration is corrected.
+// The pass logs the cause at Info level when it changed the status, and at
+// V(1) when it did not. Every other error is returned as it is.
+func configurationUnavailableResult(ctx context.Context, kind string, condition metav1.Condition, cause error, statusChanged bool) (ctrl.Result, error) {
+	if condition.Status != metav1.ConditionUnknown || condition.Reason != "PrerequisitesUnavailable" {
+		return ctrl.Result{}, cause
+	}
+	logger := log.FromContext(ctx)
+	if !statusChanged {
+		logger = logger.V(1)
+	}
+	logger.Info(kind+" waits for platform prerequisites; retrying periodically",
+		"reason", cause.Error(), "requeueAfter", configurationUnavailableRequeue)
+	return ctrl.Result{RequeueAfter: configurationUnavailableRequeue}, nil
 }
 
 func assessSandboxPrerequisites(ctx context.Context, reader client.Reader, object *api.Sandbox,
@@ -801,7 +891,8 @@ func configurationNow(clock func() time.Time) time.Time {
 }
 
 // Successful assessments refresh in [1/2, 5/8] of the snapshot's remaining
-// lifetime. Errors use controller-runtime backoff, not this periodic requeue.
+// lifetime. Unavailable prerequisites retry after
+// configurationUnavailableRequeue; other errors use controller-runtime backoff.
 func configurationRefresh(maxAge time.Duration, now, observedAt time.Time) time.Duration {
 	if maxAge <= 0 {
 		maxAge = 30 * time.Second

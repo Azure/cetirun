@@ -23,7 +23,7 @@ page. The Operator must run while you delete the Agents in step 3.
 Set `platform.values.cetirun-operator.cetiadmin.enabled: false` in the
 environment file. Then run `make deploy` as an admission administrator: a user
 in `sandboxAdmission.adminUsers`, or a member of a group in `adminGroups`. Only
-these administrators can change the CetiAdmin configuration. The Operator
+admission administrators can change the CetiAdmin configuration. The Operator
 revokes the access of CetiAdmin and stops its Agent. The stopped Agent and its
 HOME stay. Refer to
 [Disable CetiAdmin](../cetiadmin/#disable-cetiadmin).
@@ -49,7 +49,8 @@ HOME stay. Refer to
 Each Agent has the finalizer `cetirun.microsoft.com/finalizer`. The Operator
 removes the finalizer after these steps:
 
-1. It removes the Broker access and the Agent Identity of the Agent.
+1. It removes the Agent Identity Broker access and the Agent Identity of the
+   Agent.
 2. It revokes the AI Gateway key of the Agent.
 3. It uninstalls the Helm release of the Agent and deletes its namespace.
 

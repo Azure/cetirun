@@ -1,14 +1,14 @@
 ---
 title: "Configure a team"
-description: "Apply shared context, policies, and skills with Team."
+description: "Apply shared context, an Agent Policy, and skills with a Team."
 weight: 50
 ---
 
 A `Team` is a CetiRun configuration resource.
-Both the team and its member instances are cluster-scoped.
+Both the Team and its Agents are cluster-scoped.
 It does not define a membership roster, validate Entra group membership, or
-authorize access to another user's instance. Portal administrators can manage
-teams.
+authorize access to another user's Agent. Portal administrators can manage
+Teams.
 
 Every signed-in Portal user can select any Team, or no Team, for a new Agent.
 An Agent Policy applies only to the Agents of a Team that has one, so it is not
@@ -31,7 +31,7 @@ The runtime and StorageClass must already be available. The creation of this
 configuration does not install them.
 Container shares the node kernel. It does not give Kata VM isolation. For
 Container, an explicitly registered RuntimeClass/handler and the common
-AgentPolicy execution path are necessary. Container does not bypass policy or
+Agent Policy execution path are necessary. Container does not bypass policy or
 HOME ownership.
 
 The Agent Policy editor offers more controls than a platform registration can
@@ -44,10 +44,10 @@ Sandboxes, and a default Sandbox from that set. Portal-created Teams must have
 all three bindings.
 
 If no Agent Policy or Sandbox exists yet, the editor links to the page that
-creates one. A Team can allow more than one Sandbox only when its Policy
+creates one. A Team can allow more than one Sandbox only when its Agent Policy
 enables **Allow multiple Sandboxes per Team**. When the cluster rejects a
 selection, the editor shows configuration admission errors. The selected
-Policy must allow the Team skills.
+Agent Policy must allow the Team skills.
 
 The Agent Policy can also limit the AI Gateway traffic of each Agent: parallel
 requests, and requests and tokens per minute, also for individual models. Each
@@ -88,10 +88,10 @@ spec:
       - Review changes before applying them.
 ```
 
-An instance references the team with `spec.team: platform`. The team must
-exist. A reference to a team that does not exist produces `TeamNotFound` on
-the instance. Team resource changes enqueue the instances that reference the
-team and change their configuration hash. This can trigger Helm upgrades and
+An Agent references the Team with `spec.team: platform`. The Team must
+exist. A reference to a Team that does not exist produces `TeamNotFound` on
+the Agent. Team resource changes enqueue the Agents that reference the
+Team and change their configuration hash. This can trigger Helm upgrades and
 pod rollouts.
 
 Hermes refreshes `.hermes/memories/TEAM.md` at initialization. OpenClaw renders
@@ -126,25 +126,25 @@ The effective skill IDs are `(team skills ∪ add) − remove`. Removal wins, bu
 it does not enforce a prohibition against separate Helm configuration or
 user-installed files.
 
-When you apply a team or edit its context, this triggers reconciliation of
-the member instances. Before you apply a change, review the affected users.
-The deletion of a referenced team is not a cascade-delete or a safe detach.
-Before you delete a team, move its Agents to another Team, as
+When you apply a Team or edit its context, this triggers reconciliation of
+its Agents. Before you apply a change, review the affected users.
+The deletion of a referenced Team is not a cascade-delete or a safe detach.
+Before you delete a Team, move its Agents to another Team, as
 [Move an Agent to another Team](../../operations/policy-teams/#move-an-agent-to-another-team)
 shows. Configuration admission continues to enforce its consumer and cleanup
 rules.
 
 The Team controller reports if configuration references are accepted. For
 runtime readiness, examine the conditions and the effective configuration of
-each member instance. Accepted Team configuration is not runtime enforcement.
+each Agent of the Team. Accepted Team configuration is not runtime enforcement.
 
 ## Skills from the Skill Marketplace
 
 When the [Skill Marketplace](../../operations/skill-marketplace/) is enabled,
 the Team page in the Portal has a **Skills** section. It lists the skills that
 the Skill Marketplace synchronized from its Git repository. Select the skills
-that the Team's instances get. The Team's Agent Policy must allow each skill.
-A skill that the Policy does not allow shows **Not allowed by the Agent
+that the Team's Agents get. The Team's Agent Policy must allow each skill.
+A skill that the Agent Policy does not allow shows **Not allowed by the Agent
 Policy**.
 
 > **Warning:** Do not enter packages in **npm skill packages, one per line**
@@ -155,37 +155,37 @@ Policy**.
 Saving changes to Team skills restarts the Team's running Sandbox Agents one
 time. Their new Pods copy the Team's published skills. OpenClaw and Hermes
 Agents read this copy read-only at `$HOME/.aks/skills`, and Custom Agents in
-`$HOME/.agents/skills`. Changes in the skills repository reach an instance at
+`$HOME/.agents/skills`. Changes in the skills repository reach an Agent at
 its next start.
 
 In `spec.skills`, each entry without the `npm:` prefix is then the name of a
 marketplace skill. These rules apply:
 
-- The Skill Marketplace delivers skills only to the common-executor Sandbox
-  Agents of a Team with an Agent Policy: OpenClaw, Hermes, and Custom.
-- An instance cannot add or remove a marketplace skill with `skillOverrides`.
-  The operator refuses such an instance with `AgentConfigInvalid`.
+- The Skill Marketplace delivers skills only to the Sandbox Agents of a Team
+  with an Agent Policy: OpenClaw, Hermes, and Custom.
+- An Agent cannot add or remove a marketplace skill with `skillOverrides`.
+  The operator refuses such an Agent with `AgentConfigInvalid`.
 - The Portal adds only skills that the Skill Marketplace catalog has. A Team
   can keep a selected skill after the skill leaves the repository. In that
   case, the Team's Agents keep its last published version.
-- The Portal does not let a Policy save remove a marketplace skill that a
-  Team of the Policy still selects.
+- The Portal does not let a save of an Agent Policy remove a marketplace skill
+  that a Team of the Agent Policy still selects.
 
 ## Smart routing
 
 A Team can define up to ten smart-routing models (`spec.modelRouters`). Each
 is a model name, such as `auto-team`, `auto-gpt` or `auto-claude`, that the
-Team's instances can select like any other model. For each request, the AI
+Team's Agents can select like any other model. For each request, the AI
 Gateway classifies how difficult the request is and sends it to the model of
 that tier.
 
-Administrators define routers on the Team page in the Portal, under
-**Smart routing**. Members see only if they can use a router name. They never
-see the configuration of the router.
+Portal administrators define routers on the Team page in the Portal, under
+**Smart routing**. The owners of the Team's Agents see only if they can use a
+router name. They never see the configuration of the router.
 
-CetiRun does not manage routers made in the Gateway's own console. The routers
-of the Gateway chart's `models` stay as they are. The operator gives those
-routers to instances under the same rule as a Team's routers. See
+CetiRun does not manage routers made in the AI Gateway's own console. The
+routers of the AI Gateway chart's `models` stay as they are. The operator gives
+those routers to Agents under the same rule as a Team's routers. See
 [Model access](../../operations/models/#routers).
 
 Each router has:
@@ -202,28 +202,29 @@ Each router has:
 
   A decision model is a shared model whose `model_info.mode` is `evaluation`.
   LiteLLM calls it through its Decisions API, and it answers no conversation.
-  The calls of an `llm` or `jev` classifier are charged to the instance.
+  The calls of an `llm` or `jev` classifier are charged to the Agent.
 
-  The classifier is a model, never a router of the Gateway such as `auto`. The
-  Gateway makes the classifier call on the instance's behalf without the
-  checks of the instance's key. If the classifier is a router, the router
+  The classifier is a model, never a router of the AI Gateway such as `auto`.
+  The AI Gateway makes the classifier call on the Agent's behalf without the
+  checks of the Agent's key. If the classifier is a router, the router
   forwards the call to a model of its own choice.
 - Four **tiers**, `simple`, `medium`, `complex` and `reasoning`. Each tier
   names a shared model that answers conversations and is not itself a router.
   A tier can also name `copilot/<model>` for a GitHub Copilot model. You can
   leave `reasoning` empty to use the `complex` model.
 
-  The `medium` model is also the router's default model. For example, a
-  request goes to it when its `jev` classification fails. If an `llm`
-  classifier fails, the router classifies the request with `heuristic` instead.
+  The `medium` model is also the router's default model. A request goes to it
+  when its `llm` or `jev` classification fails. An `llm` classifier has ten
+  seconds to answer. Refer to
+  [Choose a classifier](../../operations/smart-routing/#choose-a-classifier).
 
 If the model of a `copilot/<model>` tier is the same model as a shared model,
 the tier is registered as that shared model. GitHub Copilot routes of that
 model join this shared model (see [Names of GitHub Copilot models](../../operations/models/#names-of-github-copilot-models)).
-To be granted the router, an instance must have that shared model, and its
-AgentPolicy must allow that model. The shared deployments can then also answer
+To be granted the router, an Agent must have that shared model, and its
+Agent Policy must allow that model. The shared deployments can then also answer
 the requests of the tier. A tier that is registered under the Copilot model's
-ID is granted only to instances whose owner's Copilot model has that name.
+ID is granted only to Agents whose owner's Copilot model has that name.
 
 ```yaml
 spec:
@@ -252,15 +253,15 @@ spec:
         complex: large-model
 ```
 
-LiteLLM sends a `jev` classifier the instance's whole system prompt and its
+LiteLLM sends a `jev` classifier the Agent's whole system prompt and its
 latest user messages. Microsoft-Decision-1 takes at most 32,768 tokens. The
 AI Gateway shortens a longer classifier request so that it fits.
 
 The limit in bytes is the number of tokens that the decision model takes, less
 the size of LiteLLM's questions and 512 bytes. The number of tokens is the
 model's `model_info.max_input_tokens`, or 32,768 when that is not set. If the
-newest user message fits, the Gateway keeps it whole. It also keeps the start
-and the end of the rest.
+newest user message fits, the AI Gateway keeps it whole. It also keeps the
+start and the end of the rest.
 
 When a classification fails anyway, the router sends the request to its
 `medium` model. For example, this occurs while the decision model is
@@ -276,92 +277,94 @@ them.
 
 For a ready router, `status.modelRouters[].nonReasoningModels` lists the tier
 models that do not reason. The Team page in the Portal shows them with the
-router. OpenClaw instances then offer no reasoning levels for the router. The
-Gateway removes reasoning settings from the requests that the router sends to a
-shared model that does not reason. This list is only a hint. The router is
-registered and granted as usual. Refer to
-[Reasoning](../models/#reasoning).
+router. OpenClaw Agents then offer no reasoning levels for the router. The
+AI Gateway removes reasoning settings from the requests that the router sends
+to a shared model that does not reason.
+
+This list is only a hint. The router is registered and granted as usual. Refer
+to [Reasoning](../models/#reasoning).
 
 A router is not registered while any of these conditions is true:
 
-- A tier or the classifier names a model that the Gateway does not offer as a
-  shared model.
-- A tier or the classifier names a router of the Gateway.
+- A tier or the classifier names a model that the AI Gateway does not offer as
+  a shared model.
+- A tier or the classifier names a router of the AI Gateway.
 - A tier or an `llm` classifier names a shared model that answers no
   conversation.
 - A `jev` classifier names a shared model that is not a decision model.
 
 The message names the router and the tier or the classifier. A changed router
 replaces its registration under the same internal name. As a result,
-instances keep their configuration. A removed router is unregistered.
+Agents keep their configuration. A removed router is unregistered.
 
-The registrations appear in the Gateway's console under their internal
+The registrations appear in the AI Gateway console under their internal
 `cetirun-router-` names. Change them on the Team, not in the console. The
-operator does not watch the console for edits. The Gateway's request log also
-shows a Team's router under that internal name. The queries in the Gateway
-chart's
+operator does not watch the console for edits. The AI Gateway's request log
+also shows a Team's router under that internal name. The queries in the
+AI Gateway chart's
 [Measuring the routers]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#measuring-the-routers)
 section also show the router under that name. The Team's
 `status.modelRouters[].gatewayModel` gives the router that each name belongs
 to.
 
-The key of each instance that can use a router also has an alias for it: the
-router's name for its internal name. As a result, the instance can send
+The key of each Agent that can use a router also has an alias for it: the
+router's name for its internal name. As a result, the Agent can send
 requests to the router by its name. The model list of the key
-(`GET /v1/models`) shows the router by its name only. A Hermes instance is
+(`GET /v1/models`) shows the router by its name only. A Hermes Agent is
 configured with the router under its name, which Hermes shows in its model
-picker. An OpenClaw instance keeps the internal name, and shows the router's
+picker. An OpenClaw Agent keeps the internal name, and shows the router's
 name.
 
-If the instance reaches another model by the router's name, for example one of
-its GitHub Copilot models, that model keeps the name. Then the instance uses
+If the Agent reaches another model by the router's name, for example one of
+its GitHub Copilot models, that model keeps the name. Then the Agent uses
 the router by its internal name. A per-model limit that the Agent Policy sets
 for the name applies to the other model. The operator also sets this limit
 under the internal name, for the router.
 
-An instance gets a router only when it can use every model that the router
-sends requests to. The Gateway also enforces this rule for the router. If a
-router sends a request to a model outside the instance's key, the Gateway
+An Agent gets a router only when it can use every model that the router
+sends requests to. The AI Gateway also enforces this rule for the router. If a
+router sends a request to a model outside the Agent's key, the AI Gateway
 refuses the request with HTTP 403. As a result:
 
-- With an Agent Policy, the Policy's allowed shared models must list the
+- With an Agent Policy, the Agent Policy's allowed shared models must list the
   router's name and each shared tier. After you save the Team, the router's
-  name appears in the **Allowed shared models** picker of the Policy. For
+  name appears in the **Allowed shared models** picker of the Agent Policy. For
   GitHub Copilot tiers, Copilot must be allowed. The classifier must be a
   shared model, a chat model for `llm` or a decision model for `jev`. But it
   is not necessary to list the classifier.
 - For a router with a shared tier or an `llm` or `jev` classifier, the
-  instance must use shared models.
-- A GitHub Copilot tier works for an instance after its owner signs in to
+  Agent must use shared models.
+- A GitHub Copilot tier works for an Agent after its owner signs in to
   GitHub Copilot with an account that offers that model. The account of every
-  member is expected to offer the same models. A router whose tiers are all
-  shared models works immediately. A Copilot tier uses only the instance's own
-  sign-in. If its model is not available to the instance when a request
-  arrives, the Gateway sends the request to the router's medium model. For
+  owner is expected to offer the same models. A router whose tiers are all
+  shared models works immediately. A Copilot tier uses only the Agent's own
+  sign-in. If its model is not available to the Agent when a request
+  arrives, the AI Gateway sends the request to the router's medium model. For
   example, this occurs immediately after a sign-out and before the operator
   withdraws the router.
 
-An instance that cannot use a router reports the reason in
-`status.aiGateway.modelRouters`, and its Portal page shows the reason. A
-change to the routers of a Team updates the AI Gateway registrations and the
-keys of the Team's Agents. It does not change the Policy's Gateway projection. It
-restarts an Agent only when the model configuration of the Agent changes. For
-example, this occurs when a router is added, or when the limits of its tiers
-change, as described in
+An Agent that cannot use a router reports the reason in
+`status.aiGateway.modelRouters`, and its Portal page shows the reason.
+
+A change to the routers of a Team updates the AI Gateway registrations and the
+keys of the Team's Agents. It does not change the AI Gateway projection of the
+Agent Policy. It restarts an Agent only when the model configuration of the
+Agent changes. For example, this occurs when a router is added, or when the
+limits of its tiers change, as described in
 [Choose a model](../models/#smart-routing-models). A change to the tiers that
 changes if the Agent sends images or a reasoning effort to the router also
 restarts the Agent. Other Team changes, such as its context or its skills,
 restart the Team's running Sandbox Agents one time.
 
 Without a LiteLLM license, LiteLLM limits some router features to a single
-router per Gateway. These features are:
+router per AI Gateway. These features are:
 
 - The `heuristic_v2`, `capability` and `llm_v2` classifiers
 - Custom tier sets
 - Custom classifier prompts, which include the instructions of a `jev`
   classifier
 
-A Team cannot use these features. The Gateway chart's own routers can use
+A Team cannot use these features. The AI Gateway chart's own routers can use
 them, within that limit. A Team's `jev` classifier keeps LiteLLM's own
 instructions, which LiteLLM does not limit.
 

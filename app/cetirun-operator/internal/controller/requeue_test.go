@@ -127,6 +127,19 @@ func TestNativeAgentWaitsForSkillsPublication(t *testing.T) {
 				!slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) || f.installer.stages != 0 {
 				t.Fatalf("missing Skills publication was not recorded as a hold: phase=%s condition=%+v", agent.Status.Phase, held)
 			}
+			// Only a policy that does not resolve adds its reason to the hold
+			// text (#556). Here only the mTLS approval holds the policy.
+			want := reconciledSandboxHeldMessage
+			if path == "pending ingress mTLS approval" {
+				resolved := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionPolicyResolved)
+				if resolved == nil || resolved.Status != metav1.ConditionFalse {
+					t.Fatalf("the pending mTLS approval did not hold the policy: %+v", resolved)
+				}
+				want += ": " + resolved.Message
+			}
+			if held.Message != want {
+				t.Fatalf("the hold text does not match its cause: %q, want %q", held.Message, want)
+			}
 			if err := f.kube.Get(ctx, client.ObjectKey{Name: instanceNamespace(agent.Name)}, &corev1.Namespace{}); !apierrors.IsNotFound(err) {
 				t.Fatal("bootstrap continued without the Skills publication:", err)
 			}
@@ -149,5 +162,78 @@ func TestNativeAgentWaitsForSkillsPublication(t *testing.T) {
 				t.Fatalf("the wait was logged %d times, want once", logged)
 			}
 		})
+	}
+}
+
+// waitingPrerequisites returns err instead of the Sandbox prerequisites, for
+// example the classified wait of a Team without an approved Skills publication.
+type waitingPrerequisites struct {
+	*KubernetesSandboxPrerequisites
+	err      error
+	resolves int
+}
+
+func (p *waitingPrerequisites) Resolve(context.Context, *api.Agent, *api.Team) (SandboxPrerequisites, error) {
+	p.resolves++
+	return SandboxPrerequisites{}, p.err
+}
+
+// TestRetainedNativeAgentWaitsForSkillsPublication covers the wait branch of
+// startKubernetesSandbox (#508, #556 item 4): the start of a retained
+// single-start Agent waits for a Skills publication. Each pass retries
+// periodically without an error. The Agent stays held, nothing is staged, and
+// a repeated wait writes nothing and is not logged again. An API error is
+// still a reconcile error.
+func TestRetainedNativeAgentWaitsForSkillsPublication(t *testing.T) {
+	f := newNativeSandboxFixture(t, true)
+	f.projectGateway(t)
+	if !slices.Contains(f.current(t).Finalizers, sandbox.HoldFinalizer) {
+		t.Fatal("the retained fixture must be held before its start")
+	}
+	wait := &waitingPrerequisites{
+		KubernetesSandboxPrerequisites: f.r.SandboxPreparation.Prerequisites.(*KubernetesSandboxPrerequisites),
+		err:                            fmt.Errorf("%w: %w", sandboxpolicy.ErrUnavailable, errSkillsPublicationNotApproved),
+	}
+	f.r.SandboxPreparation.Prerequisites = wait
+	logged := 0
+	ctx := log.IntoContext(context.Background(), funcr.New(func(_, args string) {
+		if strings.Contains(args, "Agent waits for a platform prerequisite") {
+			logged++
+		}
+	}, funcr.Options{}))
+	request := ctrl.Request{NamespacedName: client.ObjectKey{Name: f.agent.Name}}
+	stages, version := f.installer.stages, ""
+	for pass := range 3 {
+		result, err := f.r.Reconcile(ctx, request)
+		if err != nil || result.RequeueAfter <= 0 || result.RequeueAfter > prerequisiteRequeue {
+			t.Fatalf("pass %d: the retained start did not wait: result=%+v err=%v", pass, result, err)
+		}
+		current := f.current(t).ResourceVersion
+		if pass > 0 && current != version {
+			t.Fatalf("pass %d: a repeated wait changed the Agent", pass)
+		}
+		version = current
+	}
+	agent := f.current(t)
+	held := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady)
+	if wait.resolves == 0 || !slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) || agent.Status.Phase != api.PhasePending ||
+		held == nil || held.Status != metav1.ConditionUnknown || held.Reason != "ObservationUnavailable" || f.installer.stages != stages {
+		t.Fatalf("the waiting start did not stay held: resolves=%d phase=%s condition=%+v", wait.resolves, agent.Status.Phase, held)
+	}
+	f.assertNotReady(t)
+	if receipt, _, err := f.r.readSandboxPreparationReceipt(context.Background(), agent); err == nil && receipt.Annotations[nativeStartAnnotation] != "" {
+		t.Fatal("the waiting start recorded a native start")
+	} else if err != nil && !apierrors.IsNotFound(err) {
+		t.Fatal(err)
+	}
+	if logged != 1 {
+		t.Fatalf("the wait was logged %d times, want once", logged)
+	}
+
+	// An API error is still a reconcile error.
+	outage := errors.New("synthetic API outage")
+	wait.err = outage
+	if result, err := f.r.Reconcile(ctx, request); !errors.Is(err, outage) || result.RequeueAfter != 0 {
+		t.Fatalf("an API error was hidden: result=%+v err=%v", result, err)
 	}
 }

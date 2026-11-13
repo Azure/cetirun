@@ -203,7 +203,11 @@ func (s *KubernetesSource) readConfiguration(ctx context.Context) (*corev1.Confi
 
 func readSandboxPlatformObject(ctx context.Context, reader client.Reader, key client.ObjectKey, object client.Object) error {
 	if err := reader.Get(ctx, key, object); err != nil {
-		return fmt.Errorf("read Sandbox platform configuration dependency: %w", err)
+		// API errors can name the configured objects. The AgentPolicy, Sandbox
+		// and Team status show only the fixed reason; the error keeps its text
+		// and class for the log.
+		return sandboxpolicy.WithPublicDetail(fmt.Errorf("read Sandbox platform configuration dependency: %w", err),
+			"a platform dependency could not be read")
 	}
 	if client.ObjectKeyFromObject(object) != key || object.GetUID() == "" || object.GetResourceVersion() == "" ||
 		!object.GetDeletionTimestamp().IsZero() {

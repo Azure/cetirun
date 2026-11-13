@@ -13,8 +13,10 @@ The operator chart and `make deploy` enable CetiAdmin by default
 (`cetiadmin.enabled: true`). An installation stops with an error until you
 supply the inputs of CetiAdmin or disable it.
 
-A standard Agent is an Agent that does not select a policy-bound Team or a
-Sandbox. A Sandbox Agent runs in a Sandbox of its policy-bound Team. Refer to
+A [standard Agent](../../concepts/glossary/#standard-agent) is an Agent that
+does not select a policy-bound Team or a Sandbox. A
+[Sandbox Agent](../../concepts/glossary/#sandbox-agent) runs in a Sandbox of
+its policy-bound Team. Refer to
 [Policy-bound Teams](../policy-teams/).
 
 > **Warning:** CetiAdmin can read the Secrets of every standard Agent and run
@@ -31,7 +33,7 @@ Sandbox. A Sandbox Agent runs in a Sandbox of its policy-bound Team. Refer to
 - The owner is the user in `cetiadmin.owner`. The owner opens CetiAdmin in the
   Portal in the same way as the other Agents of the owner.
 - CetiAdmin uses the model in `cetiadmin.model.default`, `auto` by default. Its
-  Gateway key starts with the budget in
+  AI Gateway key starts with the budget in
   `cetiadmin.model.initialMonthlyBudgetUSD`. GitHub Copilot is disabled by
   default (`cetiadmin.model.githubCopilot: false`).
 - The built-in `cetiadmin` skill gives the model the operations procedures.
@@ -75,7 +77,7 @@ As a result, CetiAdmin can read these Secrets of each standard Agent:
 With `kubectl exec`, CetiAdmin can also read the files in the HOME of a
 standard Agent, for example its sessions and its private memory. The data that
 CetiAdmin reads can go into its model context. The AI Gateway sends this
-context to the model provider. By default, the Gateway also keeps the request
+context to the model provider. By default, the AI Gateway also keeps the request
 in its spend logs. Refer to
 [Data collection](../../security/#data-collection).
 
@@ -85,7 +87,7 @@ the [cetiadmin skill]({{< repo "app/cetirun-operator/internal/cetiadmin/assets/s
 
 ### Exec exception
 
-The runtime chart of each Agent renders a policy that denies `kubectl exec`
+The agent chart of each Agent renders a policy that denies `kubectl exec`
 in the Agent namespace. Refer to
 [Kubernetes exec restriction](../../security/#kubernetes-exec-restriction). The
 chart template has no fixed exception. When CetiAdmin is enabled, the operator
@@ -163,7 +165,10 @@ For an installation that has CetiAdmin, do these steps:
    ```
 
    The plan shows `"enabled": false` in its `cetiadmin` section.
-3. Run the deployment. **Connected, mutating:**
+3. Run the deployment as an admission administrator. While the installation
+   has CetiAdmin, only admission administrators can change its configuration, as
+   [Before you upgrade](../upgrade/#before-you-upgrade) describes.
+   **Connected, mutating:**
 
    ```bash
    make deploy DEPLOY_CONFIG=/absolute/path/environment.yaml

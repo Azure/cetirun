@@ -41,7 +41,12 @@ done
 
 # The deployment helper installs the platform into the operator's namespace,
 # where the bundled AI Gateway must run too.
+portal_identity_args=(
+  --set-string cetirun-portal.agentIdentity.tenantId=11111111-1111-1111-1111-111111111111
+  --set-string cetirun-portal.agentIdentity.portalClientId=22222222-2222-2222-2222-222222222222
+)
 base_args=(
+  "${portal_identity_args[@]}"
   --set cetirun-operator.cetiadmin.enabled=false
   -f "${chart_dir}/values.yaml"
   --namespace cetirun-system
@@ -433,7 +438,7 @@ fi
 echo "==> helm template platform (AI Gateway installed separately)"
 # Without the bundled Gateway the release namespace is free, and the Portal
 # still follows it while the operator keeps its own namespace.
-output=$(helm template platform "${chart_dir}" --set cetirun-operator.cetiadmin.enabled=false -f "${chart_dir}/values.yaml" --namespace portal-ns \
+output=$(helm template platform "${chart_dir}" "${portal_identity_args[@]}" --set cetirun-operator.cetiadmin.enabled=false -f "${chart_dir}/values.yaml" --namespace portal-ns \
   --set istio.enabled=true \
   --set-string cetirun-operator.domainSuffix=platform.example.invalid \
   --set-string cetirun-portal.istio.host=portal.example.invalid \
@@ -453,7 +458,7 @@ grep -A1 'name: AI_GATEWAY_ENABLED' <<< "${output}" | grep -q 'value: "true"' ||
 
 echo "==> helm template platform (admission with the Portal outside the operator namespace)"
 # The Portal's service account is in the release namespace, where the Portal runs.
-output=$(helm template platform "${chart_dir}" --set cetirun-operator.cetiadmin.enabled=false -f "${chart_dir}/values.yaml" --namespace portal-ns \
+output=$(helm template platform "${chart_dir}" "${portal_identity_args[@]}" --set cetirun-operator.cetiadmin.enabled=false -f "${chart_dir}/values.yaml" --namespace portal-ns \
   --set istio.enabled=true \
   --set-string cetirun-operator.domainSuffix=platform.example.invalid \
   --set-string cetirun-portal.istio.host=portal.example.invalid \
@@ -477,7 +482,7 @@ for flag in cetirun-operator.aiGateway.enabled cetirun-portal.features.aiGateway
 done
 
 echo "==> helm template platform (AI Gateway outside the operator namespace, expect failure)"
-if helm template platform "${chart_dir}" --set cetirun-operator.cetiadmin.enabled=false -f "${chart_dir}/values.yaml" --namespace other-ns \
+if helm template platform "${chart_dir}" "${portal_identity_args[@]}" --set cetirun-operator.cetiadmin.enabled=false -f "${chart_dir}/values.yaml" --namespace other-ns \
   --set istio.enabled=true \
   --set-string cetirun-operator.domainSuffix=platform.example.invalid \
   --set-string cetirun-portal.istio.host=portal.example.invalid 2>/dev/null; then
@@ -488,7 +493,7 @@ fi
 # As the deployment helper does for a custom NAMESPACE: the Portal reads the
 # shared models where the operator publishes them.
 echo "==> helm template platform (custom namespace)"
-output=$(helm template platform "${chart_dir}" --set cetirun-operator.cetiadmin.enabled=false -f "${chart_dir}/values.yaml" --namespace custom-ns \
+output=$(helm template platform "${chart_dir}" "${portal_identity_args[@]}" --set cetirun-operator.cetiadmin.enabled=false -f "${chart_dir}/values.yaml" --namespace custom-ns \
   --set istio.enabled=true \
   --set-string cetirun-operator.domainSuffix=platform.example.invalid \
   --set-string cetirun-portal.istio.host=portal.example.invalid \
@@ -500,7 +505,7 @@ grep -A1 'name: AI_GATEWAY_CATALOG_NAMESPACE' <<< "${output}" | grep -q 'value: 
 }
 
 echo "==> helm template platform (Portal catalog outside the operator namespace, expect failure)"
-if helm template platform "${chart_dir}" --set cetirun-operator.cetiadmin.enabled=false -f "${chart_dir}/values.yaml" --namespace custom-ns \
+if helm template platform "${chart_dir}" "${portal_identity_args[@]}" --set cetirun-operator.cetiadmin.enabled=false -f "${chart_dir}/values.yaml" --namespace custom-ns \
   --set istio.enabled=true \
   --set-string cetirun-operator.domainSuffix=platform.example.invalid \
   --set-string cetirun-portal.istio.host=portal.example.invalid \
@@ -510,7 +515,7 @@ if helm template platform "${chart_dir}" --set cetirun-operator.cetiadmin.enable
 fi
 
 echo "==> helm template platform (missing Istio confirmation, expect failure)"
-if helm template platform "${chart_dir}" --set cetirun-operator.cetiadmin.enabled=false --namespace cetirun-system \
+if helm template platform "${chart_dir}" "${portal_identity_args[@]}" --set cetirun-operator.cetiadmin.enabled=false --namespace cetirun-system \
   --set-string cetirun-operator.domainSuffix=platform.example.invalid \
   --set-string cetirun-portal.istio.host=portal.example.invalid 2>/dev/null; then
   echo "FAIL: platform rendered without Istio confirmation" >&2
@@ -518,7 +523,7 @@ if helm template platform "${chart_dir}" --set cetirun-operator.cetiadmin.enable
 fi
 
 echo "==> helm template platform (missing portal hostname, expect failure)"
-if helm template platform "${chart_dir}" --set cetirun-operator.cetiadmin.enabled=false --namespace cetirun-system \
+if helm template platform "${chart_dir}" "${portal_identity_args[@]}" --set cetirun-operator.cetiadmin.enabled=false --namespace cetirun-system \
   --set istio.enabled=true \
   --set-string cetirun-operator.domainSuffix=platform.example.invalid 2>/dev/null; then
   echo "FAIL: platform rendered without portal hostname" >&2
@@ -533,7 +538,7 @@ if helm template platform "${chart_dir}" "${base_args[@]}" \
 fi
 
 echo "==> helm template platform (missing operator domain suffix, expect failure)"
-if helm template platform "${chart_dir}" --set cetirun-operator.cetiadmin.enabled=false --namespace cetirun-system \
+if helm template platform "${chart_dir}" "${portal_identity_args[@]}" --set cetirun-operator.cetiadmin.enabled=false --namespace cetirun-system \
   --set istio.enabled=true \
   --set-string cetirun-portal.istio.host=portal.example.invalid 2>/dev/null; then
   echo "FAIL: platform rendered without operator domain suffix" >&2
@@ -541,7 +546,7 @@ if helm template platform "${chart_dir}" --set cetirun-operator.cetiadmin.enable
 fi
 
 echo "==> helm template platform (missing operator gateway, expect failure)"
-if helm template platform "${chart_dir}" --set cetirun-operator.cetiadmin.enabled=false --namespace cetirun-system \
+if helm template platform "${chart_dir}" "${portal_identity_args[@]}" --set cetirun-operator.cetiadmin.enabled=false --namespace cetirun-system \
   --set istio.enabled=true \
   --set-string cetirun-operator.domainSuffix=platform.example.invalid \
   --set-string cetirun-operator.istioGateway= \
@@ -551,7 +556,7 @@ if helm template platform "${chart_dir}" --set cetirun-operator.cetiadmin.enable
 fi
 
 echo "==> helm template platform (malformed operator gateway, expect failure)"
-if helm template platform "${chart_dir}" --set cetirun-operator.cetiadmin.enabled=false --namespace cetirun-system \
+if helm template platform "${chart_dir}" "${portal_identity_args[@]}" --set cetirun-operator.cetiadmin.enabled=false --namespace cetirun-system \
   --set istio.enabled=true \
   --set-string cetirun-operator.domainSuffix=platform.example.invalid \
   --set-string cetirun-operator.istioGateway=not-a-qualified-gateway \

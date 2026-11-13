@@ -963,11 +963,25 @@ func (r *AgentReconciler) stopReconciledReservation(ctx context.Context, agent *
 	if _, err := r.cancelUnsubmittedReconciledApply(ctx, state, expected); err != nil {
 		return err
 	}
+	if err := r.observeReconciledSandboxShutdown(ctx, agent, state, expected); err != nil {
+		return err
+	}
+	if err := r.revokeSandboxPreparationGrants(ctx, agent); err != nil {
+		return err
+	}
+	return r.SandboxNativeCoordination.ReleaseNative(ctx, ticket)
+}
+
+// observeReconciledSandboxShutdown uses the recorded execution inventory even
+// after its reservation has been released. Requesting zero replicas alone does
+// not prove controller acknowledgement or ordinary Pod termination.
+func (r *AgentReconciler) observeReconciledSandboxShutdown(ctx context.Context, agent *api.Agent, state *corev1.ConfigMap, expected w.ReconcileExpectation) error {
 	applyState := state.Annotations[sandboxApplyStateAnnotation]
 	if applyState != sandboxApplyCancelled && applyState != "" && applyState != sandboxApplySubmitted {
 		return fmt.Errorf("Sandbox apply checkpoint is invalid")
 	}
 	for _, desired := range expected.Workloads {
+		var err error
 		key := client.ObjectKey{Namespace: expected.Namespace.Name, Name: desired.Identity.Name}
 		var current client.Object
 		stopped := false
@@ -1018,10 +1032,7 @@ func (r *AgentReconciler) stopReconciledReservation(ctx context.Context, agent *
 	}); err != nil {
 		return err
 	}
-	if err := r.revokeSandboxPreparationGrants(ctx, agent); err != nil {
-		return err
-	}
-	return r.SandboxNativeCoordination.ReleaseNative(ctx, ticket)
+	return nil
 }
 
 func (r *AgentReconciler) stopReconciledAuxiliaries(ctx context.Context, agent *api.Agent) error {
@@ -1091,13 +1102,24 @@ func (r *AgentReconciler) reconciledSandboxFailure(ctx context.Context, agent *a
 }
 
 func (r *AgentReconciler) holdReconciledSandbox(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
-	return r.holdReconciledSandboxWithStatus(ctx, agent, reconciledSandboxHoldStatus{
-		phase: api.PhasePending, reason: "SandboxHeld",
-		message: "Current Sandbox authorization or prerequisites are unavailable",
-	}, reconciledSandboxHoldStatus{
-		phase: api.PhasePending, reason: "SandboxHeld",
-		message: "Current Sandbox authorization or prerequisites are unavailable",
-	})
+	return r.holdReconciledSandboxBecause(ctx, agent, "")
+}
+
+// reconciledSandboxHeldMessage is the Ready and SandboxReady text of a held
+// common-executor Agent.
+const reconciledSandboxHeldMessage = "Current Sandbox authorization or prerequisites are unavailable"
+
+// holdReconciledSandboxBecause is holdReconciledSandbox with the reason of the
+// hold after the generic text. The condition reason stays SandboxHeld. cause
+// must be bounded text that the Agent already shows, for example the
+// PolicyResolved message of a policy hold.
+func (r *AgentReconciler) holdReconciledSandboxBecause(ctx context.Context, agent *api.Agent, cause string) (ctrl.Result, error) {
+	message := reconciledSandboxHeldMessage
+	if cause != "" {
+		message += ": " + cause
+	}
+	status := reconciledSandboxHoldStatus{phase: api.PhasePending, reason: "SandboxHeld", message: message}
+	return r.holdReconciledSandboxWithStatus(ctx, agent, status, status)
 }
 
 // holdReconciledIngressMTLS holds an Agent whose mTLS prerequisites failed.
@@ -1108,6 +1130,9 @@ func (r *AgentReconciler) holdReconciledIngressMTLS(ctx context.Context, agent *
 		return r.holdReconciledSandbox(ctx, agent)
 	}
 	_, reason, message := sandboxStatusFailure(cause)
+	if agent.Spec.Suspended {
+		return r.holdSuspendedIngressMTLS(ctx, agent, reason, message)
+	}
 	status := reconciledSandboxHoldStatus{phase: api.PhasePending, reason: reason, message: message}
 	return r.holdReconciledSandboxWithStatus(ctx, agent, status, status)
 }
