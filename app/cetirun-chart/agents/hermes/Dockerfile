@@ -87,7 +87,9 @@ RUN node apps/desktop/scripts/build-webapp.mjs --deps-only && \
     node scripts/build/node-deps.mjs --source . --workspace ui-tui && \
     node scripts/build/tui.mjs --source . --out /tmp/hermes-tui-product
 COPY agents/hermes/compat/apply_webapp_storage.py agents/hermes/compat/webapp_storage.ts /tmp/cetirun-webapp-storage/
+COPY agents/hermes/compat/apply_webapp_plugins.py /tmp/cetirun-webapp-storage/
 RUN python3 /tmp/cetirun-webapp-storage/apply_webapp_storage.py --root /usr/local/lib/hermes-agent && \
+    python3 /tmp/cetirun-webapp-storage/apply_webapp_plugins.py --root /usr/local/lib/hermes-agent && \
     node apps/desktop/scripts/build-webapp.mjs --no-install && \
     rm -rf /tmp/cetirun-webapp-storage
 
@@ -110,7 +112,9 @@ RUN python3 cetirun_pm/build.py --source . --phase dependencies
 COPY --from=hermes-ui-build /usr/local/lib/hermes-agent/apps/desktop/dist-webapp/ /usr/local/lib/hermes-agent/apps/desktop/dist-webapp/
 COPY --from=hermes-ui-build /usr/local/lib/hermes-agent/apps/desktop/src/entry.ts /usr/local/lib/hermes-agent/apps/desktop/src/entry.ts
 COPY --from=hermes-ui-build /usr/local/lib/hermes-agent/apps/desktop/src/lib/cetirun-webapp-storage.ts /usr/local/lib/hermes-agent/apps/desktop/src/lib/cetirun-webapp-storage.ts
+COPY --from=hermes-ui-build /usr/local/lib/hermes-agent/apps/desktop/src/contrib/runtime-loader.ts /usr/local/lib/hermes-agent/apps/desktop/src/contrib/runtime-loader.ts
 COPY --from=hermes-ui-build /usr/local/lib/hermes-agent/hermes_cli/web_routers/webapp.py /usr/local/lib/hermes-agent/hermes_cli/web_routers/webapp.py
+COPY --from=hermes-ui-build /usr/local/lib/hermes-agent/hermes_cli/web_server_surface.py /usr/local/lib/hermes-agent/hermes_cli/web_server_surface.py
 COPY --from=hermes-ui-build /tmp/hermes-tui-product/ /usr/local/lib/hermes-agent/tui-product/
 COPY agents/hermes/pm/ /usr/local/lib/hermes-agent/cetirun_pm/
 COPY agents/hermes/compat/workload_mcp.py /usr/local/lib/hermes-agent/cetirun_compat/workload_mcp.py
