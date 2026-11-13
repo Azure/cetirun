@@ -18,6 +18,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplatform"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
+	"github.com/Azure/CetiRun/app/internal/registryauth"
 	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -188,6 +189,14 @@ func (h *Handler) defaultAgent(ctx context.Context, request admission.Request) a
 }
 
 func (h *Handler) validateAgent(ctx context.Context, request admission.Request, agent, old *api.Agent) admission.Response {
+	// CetiAdmin already assigns this receipt to the Operator. Its exact metadata
+	// update must remain possible while a target's policy is held or unavailable.
+	if h.config.CetiAdmin != nil && request.Operation == admissionv1.Update && old != nil &&
+		request.UserInfo.Username == h.config.ControllerUsername && authenticated(request.UserInfo) &&
+		!sameAnnotation(agent, old, registryauth.ExecAdminBindingAnnotation) &&
+		rawChangesOnly(request, nil, []string{"managedFields"}, registryauth.ExecAdminBindingAnnotation) {
+		return admission.Allowed("Operator updates only the CetiAdmin exec binding receipt")
+	}
 	if response, handled := h.reconciledHoldRelease(ctx, request, agent, old); handled {
 		return response
 	}

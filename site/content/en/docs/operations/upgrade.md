@@ -38,10 +38,11 @@ if it has one, also restarts with the new AI Gateway image.
    `platform.values.cetirun-operator.sandboxAdmission.adminUsers`, or a member
    of a group in `adminGroups`. To see your user name and groups, run
    `kubectl auth whoami`. An upgrade changes the CetiAdmin configuration.
-   While the installation has CetiAdmin, only these administrators can change
-   this configuration. If another identity runs `make deploy`, for example the
-   service principal of a pipeline, the run upgrades the Istio release and the
-   Broker, then fails at the platform release.
+   While the installation has CetiAdmin, only admission administrators can
+   change this configuration. Another identity, for example the service
+   principal of a pipeline, cannot complete `make deploy`. Its run upgrades the
+   Istio release and the Agent Identity Broker, then fails at the platform
+   release.
 7. Plan a maintenance window. An upgrade replaces the Pods of the platform, and
    it restarts each running Agent.
 
@@ -92,7 +93,7 @@ Refer to the
 An Operator upgrade does not change the agent chart version of an existing
 Agent. A new Agent gets the agent chart of the installed release. To upgrade
 an existing Agent, use the **Upgrade to Latest** action of the Portal, as
-[Pin and update a chart](../../guides/lifecycle/#pin-and-update-a-chart)
+[Pin and update a chart](../agent-lifecycle/#pin-and-update-a-chart)
 shows. Upgrade each Agent after the platform upgrade.
 
 ## Settings that make deploy keeps
@@ -140,19 +141,29 @@ Some changes need a specific order:
 - **CetiAdmin in the old `scope` format:** upgrade in two steps. Refer to
   [Upgrade an existing scope-format installation]({{< repo "app/cetirun-platform/README.md" >}}#upgrade-an-existing-scope-format-installation).
 - **Peer registrations of policy-bound Teams:** a new release version also
-  replaces the Pods of the AI Gateway. With the rollout-stable DNS and Gateway
-  selectors in [Peer labels](../policy-teams/#peer-labels), the replacement
-  Pods keep their network authorization without manual labels. Registrations
-  by IP address or peer UID still need the current backend addresses and
-  labels until you migrate them. Upgrade all readers and follow the
-  coordinated configuration change before you use the new registration.
-- **The PodMonitor of managed Prometheus:** a platform that an earlier version
-  installed can hold this PodMonitor of the AI Gateway. After the cluster
-  template turns managed Prometheus off, `make deploy` stops before it changes
-  the cluster. Create a stand-in definition, run `make deploy`, and delete the
-  definition, as
+  replaces the Pods of the AI Gateway. With the rollout-stable DNS and
+  AI Gateway selectors in [Peer labels](../policy-teams/#peer-labels), the
+  replacement Pods keep their network authorization without manual labels.
+  Registrations by IP address or peer UID still need the current backend
+  addresses and labels until you migrate them. Upgrade all readers and follow
+  the coordinated configuration change before you use the new registration.
+
+  A selector-bound AI Gateway entry must also select the protected label
+  `sandbox.cetirun.microsoft.com/peer: ai-gateway`. Add the label to the entry
+  after the upgrade, when the AI Gateway Pods have it. Until then, the Agents
+  that use the entry stay held.
+- **AI Gateway PodMonitor of managed Prometheus:** a platform that an earlier
+  version installed can still hold this PodMonitor. Then `make deploy` stops
+  before it changes the cluster. Create a stand-in definition of its API, run
+  `make deploy`, and then delete the definition, as
   [Identity, images, and collection](../infrastructure/#identity-images-and-collection)
   shows.
+- **OAuth2 Proxy PodDisruptionBudget with an external Istio release:** upgrade
+  the external release first, or set
+  `istio.values.oauth2Proxy.podDisruptionBudget.enabled: false` in the
+  environment file. Otherwise the missing budget stops preflight before any
+  write. Refer to
+  [Authentication availability during node maintenance](../istio/#authentication-availability-during-node-maintenance).
 
 ## If an upgrade fails
 
@@ -175,7 +186,7 @@ reviewed plan. Before you make the plan, review these limits:
   newer schema, and it logs SQL commands that drop the new columns. Do not run
   these commands. Refer to the
   [rollback section]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#rolling-back)
-  of the Gateway chart README.
+  of the AI Gateway chart README.
 - **Application data:** a rollback does not reverse the data that the
   components wrote, for example Agent HOME files, connection records, and
   spend records.

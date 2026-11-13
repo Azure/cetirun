@@ -19,6 +19,7 @@ base_args=(
   --set-string allowedGroups=lint-group
   --set-string cookieSecret=lint-cookie-secret
   --set-string oauth2Proxy.sessionStore.type=cookie
+  --set-string portalAuth.mtls.serverIdentity=spiffe://cluster.local/ns/cetirun-portal/sa/cetirun-portal
 )
 
 assert_ownership_target() {
@@ -61,12 +62,12 @@ assert_sign_in_flags() {
 echo "==> helm template cetirun-istio (standalone portal default)"
 output=$(helm template cetirun-istio "${chart_dir}" "${base_args[@]}")
 assert_ownership_target "${output}" "cetirun-portal.cetirun-portal.svc.cluster.local"
-grep -Fq 'local PORTAL_AUTH_MTLS_ENABLED = false' <<< "${output}" || {
-  echo "FAIL: plaintext ownership mode was not the default" >&2
+grep -Fq 'local PORTAL_AUTH_MTLS_ENABLED = true' <<< "${output}" || {
+  echo "FAIL: mTLS ownership mode was not the default" >&2
   exit 1
 }
-if grep -Fq 'name: portal_auth_mtls_cluster' <<< "${output}"; then
-  echo "FAIL: plaintext ownership mode rendered the token transport cluster" >&2
+if ! grep -Fq 'name: portal_auth_mtls_cluster' <<< "${output}"; then
+  echo "FAIL: default ownership mode did not render the token transport cluster" >&2
   exit 1
 fi
 grep -Fq 'local EXEMPT_EXACT_PATHS = {"/healthz", "/readyz", "/favicon.ico", "/connections", "/connections/"}' <<< "${output}" || {
@@ -296,7 +297,7 @@ if helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
   exit 1
 fi
 if helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
-  --set portalAuth.mtls.enabled=true >/dev/null 2>&1; then
+  --set-string portalAuth.mtls.serverIdentity= >/dev/null 2>&1; then
   echo "FAIL: mTLS ownership rendered without a server SPIFFE URI" >&2
   exit 1
 fi

@@ -18,5 +18,5 @@ a commitment to release dates. For the features that CetiRun has, read the
   of a private volume and have no inbound route. They share one AI Gateway key
   that records the usage of each task.
 - **Approved operations:** a Portal step in which a platform administrator
-  approves each change that CetiAdmin, the operations Agent of the platform,
-  proposes.
+  approves each change that [CetiAdmin](../../operations/cetiadmin/), the
+  operations Agent of the platform, proposes.

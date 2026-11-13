@@ -35,7 +35,8 @@ rules:
 - The operator configures each Agent to call models through the AI Gateway.
   The AI Gateway keeps the provider credentials, and the Agent Identity Broker
   keeps the credentials of connections.
-- Sandbox Agents get only what their Agent Policy allows.
+- A [Sandbox Agent](../concepts/glossary/#sandbox-agent) gets only what its
+  Agent Policy allows.
 
 CetiRun does not protect against these risks:
 
@@ -60,7 +61,7 @@ CetiRun does not protect against these risks:
 | Ingress gateway to the Portal | The Portal trusts the identity headers of the ingress gateway, and the Portal chart admits only the ingress gateway | Istio sidecar injection in the Portal namespace, and `istio.internalAuthMTLS: true` |
 | Agent to models | The virtual key of the Agent | The AI Gateway |
 | Agent to external accounts | Connections MCP, with short-lived tokens from the Broker | The connections that the owner authorized |
-| Agent to the network | The NetworkPolicy of a standard Agent, or the CiliumNetworkPolicy of a Sandbox Agent | A network plugin that enforces these policies |
+| Agent to the network | The NetworkPolicy of a [standard Agent](../concepts/glossary/#standard-agent), or the CiliumNetworkPolicy of a Sandbox Agent | A network plugin that enforces these policies |
 
 ### Identity headers
 
@@ -76,9 +77,9 @@ PeerAuthentication, an AuthorizationPolicy, and a NetworkPolicy that admits
 only the ingress gateway namespace. These controls need Istio sidecar injection
 in the Portal namespace. The chart does not add the injection label. Its value
 `istio.sidecarInjection: true`, the default, only confirms that the namespace
-has injection. With `istio.internalAuthMTLS: false`, the default of the
-standalone Portal chart, port 8081 uses plain HTTP, and only the NetworkPolicy
-protects it. `make deploy` sets `istio.internalAuthMTLS: true` and labels the
+has injection. `istio.internalAuthMTLS` defaults to `true`. Only an explicit
+legacy `false` makes port 8081 use plain HTTP, with the NetworkPolicy protecting
+it. `make deploy` sets `istio.internalAuthMTLS: true` and labels the
 platform namespaces for sidecar injection.
 
 After the ownership check, the ingress gateway removes the sign-in cookies:
@@ -108,11 +109,11 @@ OAuth2 Proxy sign-in:
 
 The ownership filter defines its own fixed path exemptions. The Istio
 templates use `authPolicy.aliasExemptPrefixes` only to identify which hosts
-are explicit shared subdomain hosts and which are legacy instance subdomains.
+are explicit shared subdomain hosts and which are legacy subdomains of Agents.
 They do not use the `authPolicy.adminAliases` value that the
 [deployment helper]({{< repo "infra/istio/deploy.sh" >}}) supplies. If you set
-this value, it does not configure an administrator ownership bypass. The
-shared subdomain hosts skip the ownership check, as
+this value, it does not configure an ownership bypass for Portal
+administrators. The shared subdomain hosts skip the ownership check, as
 [Exemptions](../operations/istio/#exemptions) describes.
 
 ### Other access paths
@@ -195,7 +196,7 @@ membership. An Agent Policy limits the Agents of a Team. It does not limit
 which users select the Team.
 
 Sources: [portal claims]({{< repo "app/cetirun-portal/internal/auth/claims.go" >}}),
-[administrator list]({{< repo "app/cetirun-portal/internal/auth/admin.go" >}}),
+[Portal administrator list]({{< repo "app/cetirun-portal/internal/auth/admin.go" >}}),
 [ownership checks]({{< repo "app/cetirun-portal/internal/handler/instance_management.go" >}}),
 and [Team selection]({{< repo "app/cetirun-portal/internal/handler/create_options.go" >}}).
 
@@ -254,7 +255,7 @@ and ephemeral containers. In the namespace of a Sandbox Agent, Sandbox
 admission refuses these operations and `pods/exec`, except the exec of the
 Custom terminal. These operations use the Kubernetes API directly, not the
 ingress gateway. Give these permissions in Agent namespaces only to trusted
-administrators.
+platform administrators.
 
 This policy applies to the Kubernetes exec API, not to every route to command
 execution. The enabled ttyd terminal and the agent tools are separate access
@@ -316,7 +317,7 @@ Provider sign-in state and agent configuration can persist under `/home/vibe`. T
 chart keeps the session PVC and its password Secret.
 
 Keep browser access, terminal access, model credentials, and Kubernetes Secret
-permissions consistent with instance ownership. Some platform identities have
+permissions consistent with Agent ownership. Some platform identities have
 wider Secret access, for example [CetiAdmin](../operations/cetiadmin/#access)
 and the [Broker](../operations/agent-identity/#3-prepare-namespaces-and-tls).
 Never include token files, cookies, private keys, complete Helm values, browser

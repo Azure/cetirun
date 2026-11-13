@@ -510,9 +510,11 @@ type AIGatewayStatus struct {
 // AIGatewayCopilotStatus reports the Agent's GitHub Copilot proxy.
 type AIGatewayCopilotStatus struct {
 	// Phase is SignInRequired until the owner signs in to GitHub Copilot
-	// through the Portal, Starting while the proxy picks up the sign-in,
-	// Ready once the account's models are registered, and Degraded when
-	// registration fails.
+	// through the Portal, Starting while sign-in completes (SignInCompleting)
+	// or a required proxy has no observed ready replica (ProxyStarting), Ready
+	// when the account's models are registered and any required proxy is ready,
+	// and Degraded when registration fails. A proxy outage keeps registered
+	// routes and credentials; it does not block shared models.
 	// +kubebuilder:validation:Enum=SignInRequired;Starting;Ready;Degraded
 	// +optional
 	Phase string `json:"phase,omitempty"`

@@ -15,15 +15,15 @@ To use a service, ask the Agent in plain language. The Agent uses its built-in
 `connected-services` skill. If a connection is missing, the Agent gives you a
 link to the portal.
 
-If your Agent page has no **Identities** section and the portal header has no
+If your Agent page has no **Identities** section and the Portal header has no
 **Connections** link, your deployment does not allow connected services. Ask
-your administrator. To add a connection, open your Agent and select
+your platform administrator. To add a connection, open your Agent and select
 **Identities** → **Add identity**.
 
 Hermes and OpenClaw Agents can use connections. If your Agent belongs to a
-policy-bound Team, your administrator must also allow connections for its
-Sandbox. A Custom Agent can use connections only in a Sandbox, with an image
-that your administrator approved for connections.
+policy-bound Team, your platform administrator must also allow connections for
+its Sandbox. A Custom Agent can use connections only in a Sandbox, with an
+image that your platform administrator approved for connections.
 
 Microsoft Entra Agent Identity is necessary for independent Azure access and
 for the Azure/Microsoft delegated flow. GitHub supports personal OAuth and
@@ -57,8 +57,8 @@ turn it on only when you create the Agent, with
 2. In **Identities**, select **Add identity → Azure**. Continue with the
    default **Agent identity** method. Select the service, examine the access,
    and select **Allow access**. An identity that already exists is used again.
-   The Broker derives the tenant, the principal, the client, and the immutable
-   Agent UID from trusted platform state.
+   The Agent Identity Broker derives the tenant, the principal, the client, and
+   the immutable Agent UID from trusted platform state.
 3. Expand **Assign Azure permissions**. A resource owner assigns applicable
    Azure RBAC to the displayed **Principal ID** at the necessary scope. Reader
    allows reads. For writes, an applicable write role is necessary. As Azure's
@@ -98,7 +98,7 @@ For repository selection and separate read/write permissions, use a
 [shared GitHub App](../github-app/) instead. The personal OAuth option that
 follows is still available, with its broader scope.
 
-An administrator first configures the
+A platform administrator first configures the
 [personal GitHub OAuth provider](../../operations/identity-providers/#github-personal-oauth).
 This mode uses an OAuth App. It does not use GitHub App installations, private
 keys, or bot identities.
@@ -121,16 +121,16 @@ GitHub tokens can have no provider expiry. But internally issued credentials
 still have a short, finite validity. When you remove Agent access, CetiRun
 stops future issuance but does not revoke the external OAuth consent. Revoke
 that consent separately in GitHub Settings → Applications → Authorized OAuth
-Apps. Reauthorize keeps the original account. A different account must be
-added through **Add identity**.
+Apps. **Sign in again** keeps the original account. A different account must
+be added through **Add identity**.
 
 ## Authorize personal Google access
 
 Personal Gmail works without a Workspace organization or a service account.
-An administrator first registers the
+A platform administrator first registers the
 [Google Web OAuth client](../../operations/identity-providers/#google-personal-oauth).
-The administrator also enables the APIs, configures consent, and installs the
-Broker credentials.
+The platform administrator also enables the APIs, configures consent, and
+installs the Broker credentials.
 
 Users select **Identities → Add identity → Google → Sign in to Google**, and
 complete consent in the popup. The wizard continues with the verified account.
@@ -144,7 +144,7 @@ Google uses these OAuth scopes to decide if each API operation is allowed.
 The Broker requests offline access and explicit consent. A connection must
 have a refresh token. If Google does not rotate the refresh token, a refresh
 keeps it. Google's Testing mode limits refresh tokens for these scopes to
-seven days. After expiry, reauthorize.
+seven days. After expiry, select **Sign in again**.
 
 Broader distribution can make Google verification necessary. See
 [consent setup](https://developers.google.com/workspace/guides/configure-oauth-consent)
@@ -278,7 +278,7 @@ of access from the Agent page revokes only the binding of that Agent. It keeps
 the personal account connection and the bindings of other Agents. From the
 Agent page, you cannot remove the connection for the full account.
 
-Execution bearer credentials stay in Broker/MCP. They never go into Agent
+Execution bearer credentials stay in the Broker and Connections MCP. They never go into Agent
 workloads. This does not filter other secrets that an authorized resource API
 returns, for example resource access keys. The provider permissions decide that
 access.

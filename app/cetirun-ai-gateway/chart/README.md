@@ -4,9 +4,9 @@ The CetiRun AI Gateway is based on LiteLLM. It gives AI agents a single endpoint
 for model access.
 
 You can install this chart on its own. It has no dependency on the CetiRun
-operator, portal, or agent chart. As a result, an administrator who already has
+operator, Portal, or agent chart. As a result, an administrator who already has
 their own agents can install it and configure provider keys. The administrator
-can then configure those agents to use the installed Gateway.
+can then configure those agents to use the installed AI Gateway.
 
 ## Install
 
@@ -56,11 +56,11 @@ unless `VERSION` is set. The chart runs the image of its own version.
 publishes them together with every other CetiRun image and chart, the VS Code
 Server image included. `ACCEPT_VSCODE_SERVER_LICENSE_TERMS` defaults to `true`.
 The master key, the salt key, and the console password
-are generated. Refer to [Credentials](#credentials). To call the Gateway, refer
-to [Calling the Gateway](#calling-the-gateway).
+are generated. Refer to [Credentials](#credentials). To call the AI Gateway,
+refer to [Calling the AI Gateway](#calling-the-ai-gateway).
 
-The model list can be empty. Standalone Gateways can add models through the
-console later. The models for shared-model grants in a CetiRun AgentPolicy must
+The model list can be empty. Standalone AI Gateways can add models through the
+console later. The models for shared-model grants in a CetiRun Agent Policy must
 be configured in the chart, with `operatorIntegration` enabled. The section that
 follows describes this.
 
@@ -69,7 +69,7 @@ The cluster must meet two conditions before the installation:
 - The bundled PostgreSQL claims a 100Gi `ReadWriteOnce` volume from the
   default StorageClass. If the cluster has no default StorageClass, set
   `postgresql.bundled.persistence.storageClass`. Without the volume, neither
-  the database nor the Gateway starts.
+  the database nor the AI Gateway starts.
 - The cluster can pull `<registry>/cetirun-ai-gateway`. On AKS, attach the
   registry to the cluster. For other registries, set `imagePullSecrets`.
 
@@ -82,7 +82,7 @@ serves plain chat but fails every tool call that an agent makes. Refer to
 [Budgets and unpriced models](#budgets-and-unpriced-models) and
 [Azure OpenAI](#azure-openai).
 
-### CetiRun AgentPolicy model bindings
+### CetiRun Agent Policy model bindings
 
 With `operatorIntegration: true`, each model that is configured in the chart
 gets a `cetirun-model-<name hash>` access group and a
@@ -97,25 +97,25 @@ unchanged. The chart rejects a supplied `model_info.id` or access group that
 uses the reserved `cetirun-model-` prefix.
 
 Agent keys are granted the group. The group follows the model name, which is
-the identity that an AgentPolicy grants. If you change the endpoint, provider
+the identity that an Agent Policy grants. If you change the endpoint, provider
 parameters, price, or other metadata of a configured model, only its deployment
 ID changes. Agents keep their grant. The Operator does not update their keys,
-and it does not hold policy-bound Agents for this change. Changes that reach an
+and it does not hold Sandbox Agents for this change. Changes that reach an
 Agent's own configuration still update it as before:
 
 - A change to the token limits of a model.
-- The removal of a model without a price from the list, while the Gateway
+- The removal of a model without a price from the list, while the AI Gateway
   blocks unpriced models.
 
 If you rotate the value of a referenced Secret, neither the ID nor the group
 changes. If you add or remove a model name, this adds or removes a group. When
 the Operator's catalog refresh sees this change, the Operator updates the keys
-of Agents with shared models. It re-projects only the policy-bound Agents whose
-AgentPolicy allows that name.
+of Agents with shared models. It re-projects only the Sandbox Agents whose
+Agent Policy allows that name.
 
-A name that a policy does not allow changes nothing for the Agents of that
-policy. Before, any new name re-projected every policy-bound Agent. This held a
-running native Sandbox Agent with a single-start record until the Agent was
+A name that an Agent Policy does not allow changes nothing for the Agents of
+that Agent Policy. Before, any new name re-projected every Sandbox Agent. This
+held a running Sandbox Agent with a single-start record until the Agent was
 recreated (measured on a Kubernetes 1.37 cluster).
 
 The Operator trusts a group only while every deployment that carries the group
@@ -127,14 +127,14 @@ meets these conditions:
 
 A console deployment under the same name is not automatically trusted or
 granted. If a console deployment copies the group, the Operator distrusts it.
-Agents without a policy then lose that model until the copy is removed. A
-policy-bound Agent whose AgentPolicy allows the model stops: the Operator blocks
-its key until the Gateway offers the model again. The same occurs when a policy
-allows a model that is removed from `models`. See
+Agents without an Agent Policy then lose that model until the copy is removed. A
+Sandbox Agent whose Agent Policy allows the model stops: the Operator blocks
+its key until the AI Gateway offers the model again. The same occurs when an
+Agent Policy allows a model that is removed from `models`. See
 [When model changes reach Agents](../../../site/content/en/docs/operations/ai-gateway.md#when-model-changes-reach-agents).
 
-Two identical entries render the same deployment ID. If the Gateway lists this
-ID twice, the Operator does not trust the group.
+Two identical entries render the same deployment ID. If the AI Gateway lists
+this ID twice, the Operator does not trust the group.
 
 Earlier versions of this chart derived the group from the complete model
 configuration. As a result, a change to a model changed its group. The model
@@ -144,8 +144,8 @@ Operator, as the platform chart does. The reason is that the Operator trusts
 only groups of the current form.
 
 When the Operator's catalog refresh sees the new groups, the Operator updates
-the keys of Agents with shared models. It also re-projects policy-bound Agents
-one time. The effect of this re-projection on a running native Sandbox Agent
+the keys of Agents with shared models. It also re-projects Sandbox Agents
+one time. The effect of this re-projection on a running Sandbox Agent
 depends on the record that the Agent was started with. If the Operator's common
 executor started the Agent, the Agent restarts one time. If the Agent still has
 a single-start record, it stays held until it is recreated.
@@ -157,7 +157,7 @@ restarted one time for each re-projection. Hermes restarted in about two to
 three minutes. OpenClaw restarted in about eight to ten minutes.
 
 This behavior is opt-in. When `operatorIntegration` is false, standalone
-Gateways keep their model list and custom deployment IDs unchanged. The
+AI Gateways keep their model list and custom deployment IDs unchanged. The
 platform umbrella chart already enables this integration. No other platform
 value or image is necessary.
 
@@ -182,7 +182,7 @@ Redis contains no durable data. The record of spend is in PostgreSQL. Redis
 holds only in-flight coordination. As a result, persistence, backup, and
 replication are not necessary for Redis.
 
-[Availability](#availability) describes what the Gateway does when PostgreSQL
+[Availability](#availability) describes what the AI Gateway does when PostgreSQL
 or Redis is not available.
 
 ### Bundled or your own
@@ -213,7 +213,7 @@ Azure Cache for Redis with its default settings, which accept only TLS
 connections. Refer to [Known gaps](#known-gaps).
 
 `make deploy` of the CetiRun platform does not accept this configuration. It
-installs the Gateway with the bundled PostgreSQL and Valkey, and it refuses
+installs the AI Gateway with the bundled PostgreSQL and Valkey, and it refuses
 `postgresql.bundled.enabled: false` or `redis.bundled.enabled: false`. To use
 managed services with CetiRun, install the platform chart directly. Refer to
 [Use the component chart directly](../../cetirun-platform/README.md#use-the-component-chart-directly).
@@ -239,7 +239,7 @@ names of the bundled resources are shortened and contain a hash instead.
 
 The size and the storage class of the volume are fixed at installation. The
 default size is 100Gi because the database keeps the spend log of every agent
-that uses the Gateway, for `spendLogs.retention`. As a result, the database
+that uses the AI Gateway, for `spendLogs.retention`. As a result, the database
 grows with the number of agents and with how much they run.
 
 The volume claim template of a StatefulSet cannot be changed. As a result,
@@ -264,13 +264,13 @@ Valkey refuses a client without one.
 
 ### Resources
 
-The chart sets no resource requests or limits: `resources` for the Gateway,
+The chart sets no resource requests or limits: `resources` for the AI Gateway,
 `postgresql.bundled.resources`, and `redis.bundled.resources` are empty. As a
 result, Kubernetes reserves no CPU or memory for these containers. When a node
 runs out of memory, the kubelet first evicts the pods that use more memory
 than they request. Set these values before you serve users.
 
-Each Gateway pod runs one LiteLLM worker, and the image refuses more workers.
+Each AI Gateway pod runs one LiteLLM worker, and the image refuses more workers.
 To scale, use `replicaCount`. For a pod with one worker, LiteLLM's
 [production guide](https://docs.litellm.ai/docs/proxy/prod#machine-specifications)
 gives 1 CPU and 4Gi of memory, as requests and as limits:
@@ -293,7 +293,7 @@ With the default `replicaCount: 2`, these values reserve 2 CPU and 8Gi of
 memory.
 
 A test installation had four Agents and little traffic. After 15 hours, each
-Gateway container used about 800Mi of memory and less than 0.01 CPU. The
+AI Gateway container used about 800Mi of memory and less than 0.01 CPU. The
 bundled PostgreSQL used about 200Mi, and Valkey used less than 10Mi. These
 figures show the use at rest. They are not a recommendation.
 
@@ -338,8 +338,8 @@ The `models` value is LiteLLM's own `model_list`. It is passed through
 unchanged, so the upstream provider documentation applies directly.
 
 `model_name` is the name that a client asks for. `litellm_params.model` is the
-value that the Gateway sends upstream. This value has a prefix that selects the
-provider handler.
+value that the AI Gateway sends upstream. This value has a prefix that selects
+the provider handler.
 
 Do not put credentials in the model list. Use `os.environ/NAME` to refer to
 them. Supply the value through `providerCredentials`. As a result, keys never
@@ -352,8 +352,8 @@ belongs to models that the CetiRun operator registers automatically. With
 `operatorIntegration` on, names that start with `copilot/` are also rejected.
 In a tier, a CetiRun Team's router names an Agent's GitHub Copilot model as
 `copilot/<model>`. A shared model with such a name is ambiguous there. A
-standalone Gateway can continue to serve models under `copilot/`. Both prefixes
-are matched in any letter case.
+standalone AI Gateway can continue to serve models under `copilot/`. Both
+prefixes are matched in any letter case.
 
 The console examines neither prefix. As a result, do not add models under
 these prefixes in the console. The operator does not include such shared models
@@ -401,7 +401,7 @@ another OpenAI-compatible endpoint. `base_model` is not a substitute for this
 setting. Neither setting is necessary for a deployment that has the name of its
 model, for example `azure/gpt-5.4-nano` or `openai/gpt-5.4-nano`.
 
-The Gateway's guard removes the reasoning effort from a request when LiteLLM
+The AI Gateway's guard removes the reasoning effort from a request when LiteLLM
 identifies no deployment of the model as a reasoning model. A model that does
 not reason, such as `gpt-4.1-mini`, then answers the request instead of the
 400. This also applies to a router's tier. Refer to
@@ -458,7 +458,7 @@ The console can change the setting later. LiteLLM keeps that change in its
 database, where it takes precedence over the value of the chart. Refer to
 [Editing settings in the console](#editing-settings-in-the-console-takes-them-out-of-chart-control).
 With CetiRun, the operator reads the setting that is in effect. It gives Agents
-only the shared models that the Gateway serves.
+only the shared models that the AI Gateway serves.
 
 ### Pricing a deployment
 
@@ -512,7 +512,7 @@ cached input is free, and LiteLLM counts too little spend.
 
 As a result, after you add a model, do not guess the values that LiteLLM uses.
 Examine them with this command. `MASTER_KEY` holds the master key, as
-[Calling the Gateway](#calling-the-gateway) shows:
+[Calling the AI Gateway](#calling-the-ai-gateway) shows:
 
 ```bash
 curl -s http://localhost:4000/model/info -H "Authorization: Bearer $MASTER_KEY" \
@@ -533,24 +533,24 @@ for each request matched those rates exactly.
 
 ### When a budget runs out
 
-Budgets are in US dollars. There is no token allowance. The Gateway refuses a
+Budgets are in US dollars. There is no token allowance. The AI Gateway refuses a
 request over budget with HTTP 402 by default (`budgetExceededStatusCode`), and
 with the error type `budget_exceeded`. LiteLLM's own default status is 422
 from version 1.105, and 429 before that.
 
 The image's guard callback replaces LiteLLM's message, `Budget has been
 exceeded!`, which showed the key's alias and the last characters of the key.
-The Gateway's message says which budget is spent: the budget of the key, the
-budget of its team, or another budget that applies to the key. It gives the
-spend and the budget, the reset time of the key's own budget when the key has
-a reset period, and that a CetiRun administrator can raise the budget. For a
+The AI Gateway's message says which budget is spent. It can be the budget of the
+key, the budget of its team, or another budget that applies to the key. It gives
+the spend and the budget, the reset time of the key's own budget when the key
+has a reset period, and that a CetiRun administrator can raise the budget. For a
 key that the CetiRun operator issued, the message names the Agent:
 
 > CetiRun AI Gateway: this Agent has spent 10.02 USD of its 10.00 USD budget.
 > The Gateway refuses its model requests until the budget resets on
 > 2026-12-01 00:00 UTC. A CetiRun administrator can raise the budget sooner.
 
-The Gateway's own log keeps LiteLLM's message.
+The AI Gateway's own log keeps LiteLLM's message.
 
 The status decides what an agent does next. A measurement with OpenClaw
 2026.9.6 and Hermes v2026.9.24 against an exhausted key, with LiteLLM's
@@ -568,34 +568,37 @@ available again only at its reset. To select another status, set
 `budgetExceededStatusCode` to 422 or 429, because the chart refuses any other
 value. Other agents and other versions were not measured.
 
-The Gateway's message names no limit, quota, retry, or wait. With such words,
+The AI Gateway's message names no limit, quota, retry, or wait. With such words,
 OpenClaw 2026.9.6 classifies a 402 as a rate limit and retries it. Hermes
 0.22.7 does the same when a usage limit or a quota is named together with a
-wait or a reset. The classification code of OpenClaw 2026.9.6 and Hermes
-0.22.7 puts each of the three statuses in the same class with the Gateway's
-message as with LiteLLM's. This was checked against their sources, with the
-responses of a LiteLLM 1.108.3 proxy, and not with running agents.
+wait or a reset. With the AI Gateway's message and with
+LiteLLM's message, the classification code of OpenClaw 2026.9.6 and Hermes
+0.22.7 puts each status in the same class. This was checked against their
+sources, with the responses of a LiteLLM 1.108.3 proxy, and not with running
+agents.
 
-With 402, Hermes shows the Gateway's message after "Billing or credits
+With 402, Hermes shows the AI Gateway's message after "Billing or credits
 exhausted", followed by its own advice to add credits with the provider.
 OpenClaw 2026.9.6 shows its own text for a billing error instead: the provider
 `cetirun` returned a billing error, and the user should check its billing
-dashboard. It then stops using the Gateway key for ten minutes, so a raised
+dashboard. It then stops using the AI Gateway key for ten minutes, so a raised
 budget would wait that long. The CetiRun OpenClaw image changes both, with
-`agents/openclaw/compat/apply-gateway-budget.mjs` of the runtime chart. Its
+`agents/openclaw/compat/apply-gateway-budget.mjs` of the agent chart. Its
 text says that the Agent is out of budget on the CetiRun AI Gateway, and that a
 CetiRun administrator can raise the budget or that the budget resets. It does
-not give the reset time. OpenClaw keeps no cooldown for the Gateway key, as it
-does for the providers `openrouter` and `kilocode`: after a refusal, its next
-request goes to the Gateway again. The image changes two chunks of the
-published OpenClaw 2026.9.6 package. The change was checked on those files,
-and not with a running Agent.
+not give the reset time.
+
+OpenClaw keeps no cooldown for the AI Gateway key, as it does for the providers
+`openrouter` and `kilocode`. After a refusal, its next request goes to the
+AI Gateway again. The image changes two chunks of the published OpenClaw
+2026.9.6 package. The change was checked on those files, and not with a running
+Agent.
 
 ### Key request limits
 
-An AgentPolicy's `modelAccess.rateLimits` makes the CetiRun operator set
+An Agent Policy's `modelAccess.rateLimits` makes the CetiRun operator set
 `max_parallel_requests`, `rpm_limit`, and `tpm_limit` on the key of every Agent
-bound to the policy. It also makes the operator set the per-model
+bound to the Agent Policy. It also makes the operator set the per-model
 `model_rpm_limit` and `model_tpm_limit` on these keys. The operator updates
 these keys in place and does not change other keys. A request over a limit gets
 HTTP 429 with a `retry-after` header. Replicas share the counters through Redis.
@@ -612,7 +615,7 @@ With every request, OpenClaw asks for the maximum output of the model, which is
 tokens of input. The reason is that the reservation alone was larger than the
 limit. OpenClaw stopped after nine one-minute retries. These results were
 measured on a test cluster. Refer to the
-[AgentPolicy reference](../../../site/content/en/docs/reference/crds.md#agentpolicy-rate-limits).
+[`AgentPolicy` reference](../../../site/content/en/docs/reference/crds.md#agentpolicy-rate-limits).
 
 A `budget_duration` of `30d` or `1mo` resets on the first day of each month,
 UTC, and not thirty days after the key was created. A background job that runs
@@ -663,7 +666,7 @@ turn fails with this error:
 litellm.NotFoundError: AzureException NotFoundError - {"error":{"code":"404","message": "Resource not found"}}
 ```
 
-The Gateway log also shows the request that it made:
+The AI Gateway log also shows the request that it made:
 `404 Not Found for url '.../openai/responses?api-version=2024-10-21'`.
 
 Use `2025-04-01-preview` or later. The "Chat with tools" column stays at 400
@@ -700,8 +703,8 @@ upstream call. The cluster test examines this behavior on the version that
 runs.
 
 A save of the Router Settings page in the console stores the value that the
-Gateway runs with. As a result, the value stays at zero. A replay of that save
-stored `num_retries: 0`, and failures were still not retried.
+AI Gateway runs with. As a result, the value stays at zero. A replay of that
+save stored `num_retries: 0`, and failures were still not retried.
 
 A caller cannot enable retries again for its own request. LiteLLM accepts
 `num_retries` in the request body or the `x-litellm-num-retries` header, and
@@ -730,12 +733,12 @@ model, for example two Azure OpenAI resources, or Azure OpenAI and OpenAI.
 `router.routingStrategy` selects one of them for each request. Refer to
 [Choosing a deployment](#choosing-a-deployment). An entry with a higher
 `litellm_params.order` stays in reserve until the entries with a lower order
-are unavailable. The administrator decides which deployments serve a model and
-which model falls back to which. The `router` values set the rest.
+are unavailable. The platform administrator decides which deployments serve a
+model and which model falls back to which. The `router` values set the rest.
 
-The routing measurements used two Gateway replicas and the bundled Valkey, and
-ran against mock deployments in place of separate Azure OpenAI resources. The
-clients were an OpenClaw-like client and OpenClaw itself. Where noted, the
+The routing measurements used two AI Gateway replicas and the bundled Valkey,
+and ran against mock deployments in place of separate Azure OpenAI resources.
+The clients were an OpenClaw-like client and OpenClaw itself. Where noted, the
 tests also ran against Azure OpenAI. The figures in tables were measured on
 LiteLLM 1.101.0, and the text gives the changes in 1.105.1 where they apply.
 The image now runs 1.108.3. Measurements that name an earlier release were not
@@ -929,7 +932,7 @@ For a request to an Azure OpenAI deployment, the guard callback now removes the
 `status` of each reasoning item. It also removes the ID of any other item that
 is longer than 64 characters. Azure OpenAI accepts the `status` of a message,
 so it does not change. An ID that LiteLLM marked (`encitem_`) also does not
-change, because LiteLLM restores it before it sends the request. The Gateway
+change, because LiteLLM restores it before it sends the request. The AI Gateway
 logs a warning for each request that the guard changes. On the e2e cluster,
 Azure OpenAI answered the same conversation after these changes.
 
@@ -1037,7 +1040,7 @@ deployment and was not tried.
 
 This was measured on the e2e cluster. A key was kept on a deployment that
 answered 500. Before that deployment went into cooldown, the key got three
-500s ("No fallback was attempted"). The guard of the Gateway gives the
+500s ("No fallback was attempted"). The guard of the AI Gateway gives the
 affinity check of LiteLLM only the deployments that the failover can still
 use. After this change, another deployment answered the requests of the same
 key from the first failure.
@@ -1075,7 +1078,7 @@ too long for the context window of the model. An earlier measurement used a
 model with two deployments, and one of them was unreachable. Without a fallback
 group, 6 of 30 requests failed. With a fallback group, no request failed.
 
-Without `operatorIntegration`, as on a standalone Gateway, LiteLLM does not
+Without `operatorIntegration`, as on a standalone AI Gateway, LiteLLM does not
 examine the key for a fallback target. A key then reaches a fallback target
 that it was not given. Name as fallback targets only models that every key of
 the first model can also use.
@@ -1195,7 +1198,7 @@ models:
 ```
 
 The chart supplies the mechanism. The tiers, their models, and the keyword
-rules, if there are any, are the responsibility of the administrator.
+rules, if there are any, are the responsibility of the platform administrator.
 
 The example sends requests to `gpt-4o-mini`, `gpt-4o`, and `o3`. Each of them
 must also be an entry in `models`, because the chart refuses a router whose
@@ -1291,20 +1294,20 @@ following LiteLLM defaults unless a router sets its own values:
 of models. With `operatorIntegration`, the CetiRun operator puts the router on
 the key of an Agent only if the Agent can use all of these models. The models of
 its tiers, its default model, and a context compaction model must be shared
-models that the Agent can use. For an Agent with an AgentPolicy, the
-shared-model list of the policy must name these models. It must also name the
-router.
+models that the Agent can use. For an Agent with an Agent Policy, the
+shared-model list of the Agent Policy must name these models. It must also name
+the router.
 
 A classifier model must be a shared model, but it is not necessary to put it
 in the list. This applies to `classifier_llm_config.model`, to a
 `jev_classifier_config.deployment_name`, and to the `embedding_model` of
 semantic keyword matching. The router calls the classifier model to classify
 the request of the Agent, and this call is charged to the key of the Agent. An
-Agent without a policy can use every shared model. As a result, it gets every
-router whose models are all shared models.
+Agent without an Agent Policy can use every shared model. As a result, it gets
+every router whose models are all shared models.
 
 If the operator cannot read a router completely, it does not give the router
-to Agents with a policy. These routers include:
+to Agents with an Agent Policy. These routers include:
 
 - A router with a `complexity_router_config` field that LiteLLM 1.105.1 does
   not have.
@@ -1313,12 +1316,12 @@ to Agents with a policy. These routers include:
 - Another kind of LiteLLM auto router.
 
 A router that an Agent cannot use stays off the key of the Agent and out of
-its model list. If the policy of the Agent lists the router, the page of the
-Agent in the Portal shows the reason. The operator reads the routers from the
-model list of the Gateway. As a result, a changed router gets to the keys at
-the next listing. This occurs in approximately two minutes or less. The
-configuration of a router is not part of the Gateway projection of an
-AgentPolicy.
+its model list. If the Agent Policy of the Agent lists the router, the page of
+the Agent in the Portal shows the reason. The operator reads the routers from
+the model list of the AI Gateway. As a result, a changed router gets to the keys
+at the next listing. This occurs in approximately two minutes or less. The
+configuration of a router is not part of the AI Gateway projection of an
+Agent Policy.
 
 **An Agent gets the router's limits.** With `operatorIntegration`, the
 operator configures each Agent that gets a router with a context window and
@@ -1346,7 +1349,7 @@ request to the other models of the router, in this order:
 4. The models of the lower tiers, from the highest.
 
 With `operatorIntegration`, LiteLLM uses only the models that the key of the
-caller can use. Without it, as on a standalone Gateway, LiteLLM does not
+caller can use. Without it, as on a standalone AI Gateway, LiteLLM does not
 examine the key for these fallbacks. They give the key no new model, because
 the router can select each of its models for the key's requests.
 
@@ -1354,7 +1357,7 @@ LiteLLM sends the request to another model only before a response starts.
 Errors of all kinds count, for example a 503, a timeout, a 429, or a 400 from
 the model. A refusal by the guard does not count, for example the 403 for a
 model that the key cannot use. The guard adds these fallbacks to the request
-only. It does not change a setting of the Gateway.
+only. It does not change a setting of the AI Gateway.
 
 These fallbacks do not replace other fallbacks:
 
@@ -1395,7 +1398,7 @@ fallbacks, and timeouts. For a Team's router, such a model group is the
 router's internal name, for example "model group 'tier-down ->
 cetirun-router-0123456789abcdef'". The guard sets LiteLLM's
 `expose_router_debug_in_errors` to false when it starts. The client then gets
-the error of the model only. The Gateway's own log keeps LiteLLM's message
+the error of the model only. The AI Gateway's own log keeps LiteLLM's message
 about the fallbacks.
 
 **Models that answer no conversation are not offered to Agents.** Some shared
@@ -1406,12 +1409,12 @@ Agents are configured with. It is not used as their default model, and it is
 not in the catalog that the Portal reads.
 
 In all other ways, such a model stays a shared model. A router can classify
-requests with it, and the key of an Agent without a policy keeps its access
-group. If the tier, the default model, or the compaction model of a router is
-such a model, the router is not configured correctly. Set `mode` on the
-`model_info` of the model. A model without a mode counts as a chat model.
+requests with it, and the key of an Agent without an Agent Policy keeps its
+access group. If the tier, the default model, or the compaction model of a
+router is such a model, the router is not configured correctly. Set `mode` on
+the `model_info` of the model. A model without a mode counts as a chat model.
 
-For the keys that the operator issues, the Gateway refuses some requests with
+For the keys that the operator issues, the AI Gateway refuses some requests with
 HTTP 403. These are requests that a router sends to a model outside the access
 groups of the key. The classifier calls of the router are an exception (see
 [The guard callback](#the-guard-callback)). Other keys get to every model of
@@ -1882,7 +1885,7 @@ to the database. Then the database takes precedence over the chart. Refer to
 
 ## Administration
 
-The admin console is enabled. The Gateway serves it on the same port as the
+The admin console is enabled. The AI Gateway serves it on the same port as the
 API. The chart creates no Ingress. Use a port-forward to reach the console.
 Resource names start with the release name. For a release called `gateway`,
 the command is:
@@ -1916,9 +1919,9 @@ posted to `/login`, the endpoint returned a console session. This session
 grants nothing that the master key does not already grant. As a result, treat
 the setting as a way to hide the console, not as a way to remove it.
 
-### Calling the Gateway
+### Calling the AI Gateway
 
-Clients in the cluster reach the Gateway at its Service,
+Clients in the cluster reach the AI Gateway at its Service,
 `http://<release>-cetirun-ai-gateway.<namespace>.svc:4000`. The chart creates
 no Ingress or load balancer. For clients outside the cluster, expose the
 Service yourself, with TLS. For a first test, the port-forward above is enough.
@@ -1942,8 +1945,8 @@ CLIENT_KEY="$(curl -s http://localhost:4000/key/generate \
 ```
 
 `CLIENT_KEY` is the client's key. An OpenAI-compatible client takes the
-Gateway's address with `/v1` and the key, for example as `OPENAI_BASE_URL` and
-`OPENAI_API_KEY`. The client names a model from `models`:
+AI Gateway's address with `/v1` and the key, for example as `OPENAI_BASE_URL`
+and `OPENAI_API_KEY`. The client names a model from `models`:
 
 ```bash
 curl -si http://localhost:4000/v1/chat/completions \
@@ -1957,8 +1960,8 @@ name to the `models` of the key, and name it as the model.
 A response through a router tells how it was routed.
 `x-litellm-complexity-router-tier` names the tier. `-cause` names what decided
 the tier, and `-score` gives the heuristic score, if there is one. After a
-failed `jev` classification, the response has no tier, and `-cause` is
-`default_model_fallback`. The request log has the model that answered. Refer to
+failed `llm` or `jev` classification, the response has no tier, and `-cause`
+is `default_model_fallback`. The request log has the model that answered. Refer to
 [Smart routing](#smart-routing).
 
 ### Revoking a key takes up to a minute to reach every replica
@@ -1972,7 +1975,7 @@ the result was the same.
 
 `general_settings.user_api_key_cache_ttl` sets this window, and its default
 is 60. When a test set it to 10, the window decreased to 5 to 10 seconds. On a
-standalone Gateway, the chart does not set this value. With
+standalone AI Gateway, the chart does not set this value. With
 `operatorIntegration`, the chart sets it to 0. The environment variable
 `DEFAULT_MANAGEMENT_OBJECT_IN_MEMORY_CACHE_TTL` seems to control this window,
 but it does not. LiteLLM passes its own default of 60 to the key cache, so
@@ -2019,8 +2022,8 @@ to the keys that it issued before:
 The CetiRun operator gives each Agent a key that is limited to access groups.
 It registers the Agent's GitHub Copilot models in the Agent's own group,
 `cetirun-copilot-<Agent UID>`. Each of these models uses the proxy of that
-Agent. For such a Gateway, set `operatorIntegration: true`. The
-`cetirun-platform` chart sets it for the Gateway that it installs. This setting
+Agent. For such an AI Gateway, set `operatorIntegration: true`. The
+`cetirun-platform` chart sets it for the AI Gateway that it installs. This setting
 reserves the `copilot/` prefix (refer to [Reserved names](#reserved-names)),
 and it sets `general_settings.enforce_fallback_model_access`.
 
@@ -2064,28 +2067,28 @@ Any other Copilot model uses its own ID as its name, such as `gpt-5.5`, with
 that the Agent's key reaches. As a result, a 429 from Copilot goes to the Agent
 as it is. The 429 does not remove the route from rotation for every request.
 
-If a model that the Gateway serves already has that name and is a different
+If a model that the AI Gateway serves already has that name and is a different
 real model, the Copilot model is omitted. It is reported on the Agent
 (`status.aiGateway.copilot.skipped`). That model can also be the same real
 model, for example a shared model that the Agent is not granted. In this case,
 the route takes that name in the Agent's own access group. There, the Agent's
 key reaches only its own Copilot route, and never the shared deployments.
 
-For an Agent with an AgentPolicy, the policy's `sharedModels.allowed` also
-applies to Copilot models. It applies to each Copilot model that is the same
-real model as a shared model, by the comparison above. Such a Copilot model is
-registered only when the policy allows one of the shared models that are that
-model. Otherwise it is omitted and reported on the Agent
+For an Agent with an Agent Policy, the Agent Policy's `sharedModels.allowed`
+also applies to Copilot models. It applies to each Copilot model that is the
+same real model as a shared model, by the comparison above. Such a Copilot model
+is registered only when the Agent Policy allows one of the shared models that
+are that model. Otherwise it is omitted and reported on the Agent
 (`status.aiGateway.copilot.notAllowed`). For a Copilot model that is not the
 real model of a shared model, only `modelAccess.copilot.allowed` is necessary.
 
-When the policy no longer allows such a model, the operator removes the model's
-route before it updates the Agent's key. All of the Agent's Copilot routes are
-in the Agent's one access group. While a route cannot be removed, the key does
-not hold that group, and `status.aiGateway.copilot.reason` is
+When the Agent Policy no longer allows such a model, the operator removes the
+model's route before it updates the Agent's key. All of the Agent's Copilot
+routes are in the Agent's one access group. While a route cannot be removed, the
+key does not hold that group, and `status.aiGateway.copilot.reason` is
 `NotAllowedRouteRemovalFailed`. The key also does not hold it while the operator
-cannot read the Gateway's models or prices (`PolicyCheckUnavailable`). The key
-holds the group again when the route is removed.
+cannot read the AI Gateway's models or prices (`PolicyCheckUnavailable`). The
+key holds the group again when the route is removed.
 
 The operator removes the `copilot/<model>` aliases that earlier versions put on
 the Agent's key. These aliases listed each Copilot model a second time in the
@@ -2112,7 +2115,7 @@ send a reasoning effort, by the rules for images. It reads
 deployment of the name, and the Agent's own Copilot route under the name, must
 reason. For a router, every model of its tiers, its default model, and its
 context compaction model must reason. The operator logs the routers configured
-in the Gateway whose models only partly reason. OpenClaw offers no reasoning
+in the AI Gateway whose models only partly reason. OpenClaw offers no reasoning
 levels for a router whose configuration the operator cannot read completely.
 
 A Copilot route reasons when the price table entry that it is billed as reports
@@ -2125,14 +2128,14 @@ the tiers that do not reason (`status.modelRouters[].nonReasoningModels`).
 Hermes does not read this information. It sends its own reasoning effort to
 each model.
 
-Under one Gateway model name, deployments can differ in reasoning support. The
-guard keeps the reasoning parameters when any candidate deployment reasons.
+Under one AI Gateway model name, deployments can differ in reasoning support.
+The guard keeps the reasoning parameters when any candidate deployment reasons.
 LiteLLM can then still answer 400 when it picks a deployment that does not
 reason. Do not put such models under one name. By the rules above, OpenClaw
 sends no reasoning settings for such a name.
 
 LiteLLM validates a key against the requested model only. A fallback that is
-configured for the Gateway in `router_settings` or in the console is selected
+configured for the AI Gateway in `router_settings` or in the console is selected
 after that validation. Without the setting, LiteLLM tries the fallback without
 validation. For a model name that several Agents share, LiteLLM then selects
 from all of them if the caller's groups match none. As a result, a fallback
@@ -2160,7 +2163,7 @@ LiteLLM loads its configuration. The `requestLog` value does not change this.
 Settings that are saved in the console cannot remove the guard. The guard does
 these actions:
 
-- It drops request fields that a caller can use to change the Gateway for its
+- It drops request fields that a caller can use to change the AI Gateway for its
   own call. These fields are `litellm_request_debug` and the retry fields that
   are described in
   [Upstream errors are not retried](#upstream-errors-are-not-retried), also in
@@ -2187,7 +2190,7 @@ these actions:
 
   The router can send a request to a model that the key is not allowed to use.
   This request gets a 403, "This key may not use the model <name>.", with no
-  retry, fallback, or cooldown. The Gateway logs a warning with the model and
+  retry, fallback, or cooldown. The AI Gateway logs a warning with the model and
   the key's alias. The request log line of such a call has the status
   `failure`, `error_code` 403, and the router's name as `provider_model`. As a
   result, the queries in [Measuring the routers](#measuring-the-routers) count
@@ -2216,12 +2219,12 @@ these actions:
   gets a 400. The message is "The model <name> is a decision model: call it
   through /v1/systemone or /v1/decisions." The guard refuses the request
   before any deployment is called, with no retry, fallback, or cooldown. The
-  Gateway logs a warning with the model, the API, and the key's alias.
+  AI Gateway logs a warning with the model, the API, and the key's alias.
 
-  A measurement on a Gateway without the operator, before the guard did this,
-  gave these results. A chat request for Microsoft-Decision-1 from a key that
-  was created in the console got the provider's 404. LiteLLM cooled down the
-  deployment. For about four seconds, every router that classified with it
+  A measurement on an AI Gateway without the operator, before the guard did
+  this, gave these results. A chat request for Microsoft-Decision-1 from a key
+  that was created in the console got the provider's 404. LiteLLM cooled down
+  the deployment. For about four seconds, every router that classified with it
   used its default classifier, for every caller. The Decisions API and a
   router's own classifier calls reach the model as before. A key that the
   operator issued still gets the 403 that is described above.
@@ -2241,7 +2244,7 @@ these actions:
 
   The guard keeps the newest user message whole if it fits. It also keeps the
   start and the end of the rest. If the newest message does not fit, the guard
-  keeps its start and its end. The Gateway logs a warning with the decision
+  keeps its start and its end. The AI Gateway logs a warning with the decision
   model and the sizes, but not with the content. The guard does not change a
   client's own calls to the Decisions API.
 
@@ -2292,7 +2295,7 @@ these actions:
   `temperature: 0` to the model that the user selected or to the router. Each
   time that model was a reasoning model, these tasks failed on both Azure and
   Copilot routes. The user did not see the failures. LiteLLM's own rule
-  decides, and the Gateway logs a warning for each request that it changes.
+  decides, and the AI Gateway logs a warning for each request that it changes.
 - It removes `reasoning_effort: none` from a Chat Completions request to an
   Azure deployment of the GPT-5 or GPT-6 series. This applies when LiteLLM's
   price table does not mark the model of the deployment as one that takes this
@@ -2303,8 +2306,8 @@ these actions:
 
   The model then reasons at its default effort, which is the same result that
   LiteLLM's `drop_params` gives. The guard also removes the sampling
-  parameters that the model then refuses, as described above. The Gateway logs
-  a warning for each request that it changes. The table decides, so a wrong
+  parameters that the model then refuses, as described above. The AI Gateway
+  logs a warning for each request that it changes. The table decides, so a wrong
   entry lets `none` through. Refer to
   [Prices are not pinned to the image by default](#known-gaps).
 - It removes `reasoning_effort` from a Chat Completions request, and the
@@ -2321,7 +2324,7 @@ these actions:
   The guard does not change the request when one of the deployments reasons,
   because that deployment can serve the request. It also does not change the
   request for a GitHub Copilot route, or when LiteLLM does not know the model.
-  The Gateway logs a warning for each request that it changes. An Azure
+  The AI Gateway logs a warning for each request that it changes. An Azure
   deployment of a reasoning model under a name of your own needs `base_model`,
   as [Reasoning models](#reasoning-models) tells. Without it, the guard removes
   the effort, and the model reasons at its default effort.
@@ -2339,18 +2342,18 @@ these actions:
   `base_model` starts with `github_copilot/`, this function asks GitHub for a
   token. The operator registers some GitHub Copilot models in this form.
 
-  The Gateway has no GitHub token, so LiteLLM started GitHub's interactive
+  The AI Gateway has no GitHub token, so LiteLLM started GitHub's interactive
   device sign-in and waited for a user. On the e2e cluster, the hardest tier
   of a router was such a Copilot model. After the router answered one request,
-  a Gateway replica stopped serving for about three minutes. Then its liveness
-  probe restarted the container. The guard makes LiteLLM take such a provider
-  from the model name, as LiteLLM does in its other lookups.
+  an AI Gateway replica stopped serving for about three minutes. Then its
+  liveness probe restarted the container. The guard makes LiteLLM take such a
+  provider from the model name, as LiteLLM does in its other lookups.
 - It removes LiteLLM's internal deployment list from error messages. Error
   messages that are returned to callers no longer include LiteLLM's internal
   list of deployments in cooldown. The response keeps its status, 429, and the
   "Try again in N seconds" text. On the Chat Completions and Responses APIs,
   the response also keeps the `retry-after` header. LiteLLM sets no such
-  header on its Anthropic Messages API. The Gateway's own log and the request
+  header on its Anthropic Messages API. The AI Gateway's own log and the request
   log keep the full message.
 - It replaces LiteLLM's message for a request that is refused because a budget
   is spent. The message says which budget is spent and who can raise it,
@@ -2359,7 +2362,7 @@ these actions:
 
 When `operatorIntegration` is off, the guard's request fields, its decision
 model rules, its parameter changes, and its error messages apply in the same
-way. A standalone Gateway has no `cetirun-copilot-` groups for the guard to
+way. A standalone AI Gateway has no `cetirun-copilot-` groups for the guard to
 separate, and no keys that the operator issued.
 
 A measurement on LiteLLM 1.105.1 used two replicas and two Copilot routes. The
@@ -2425,10 +2428,10 @@ There are four different credentials:
 
 | Credential | Held by | Used for |
 | --- | --- | --- |
-| Provider API key | Gateway | Calls to OpenAI, Anthropic, Azure OpenAI, and other providers |
-| Virtual key | Each agent | Calls to this Gateway |
+| Provider API key | AI Gateway | Calls to OpenAI, Anthropic, Azure OpenAI, and other providers |
+| Virtual key | Each agent | Calls to this AI Gateway |
 | Master key | Operators and scripts | LiteLLM's management API |
-| Console password | A human administrator | Sign-in to the admin console |
+| Console password | A platform administrator | Sign-in to the admin console |
 
 When you do not supply a Secret that already exists, the chart generates the
 master key, salt key, and console password. On upgrade, the chart reads each
@@ -2469,16 +2472,16 @@ way.
 The chart also generates the password of the bundled Valkey in the same way.
 Supply it through `redis.passwordSecret`, or use your own Redis. A password
 that is generated again at each render updates the Secret, but it does not
-restart Valkey or the Gateway. As a result, if the next restart affects only
+restart Valkey or the AI Gateway. As a result, if the next restart affects only
 one of them, the two have different passwords. Then the replicas no longer
 share budgets. When `redis.passwordSecret` is set, the chart generates no
-Valkey password, and both Valkey and the Gateway read your password.
+Valkey password, and both Valkey and the AI Gateway read your password.
 
 ### Changing a credential takes a restart
 
-The Gateway reads its credentials from environment variables when it starts.
+The AI Gateway reads its credentials from environment variables when it starts.
 After you change a provider key, the master key, or the console password in a
-Secret, restart the Gateway:
+Secret, restart the AI Gateway:
 
 ```bash
 kubectl rollout restart deployment/gateway-cetirun-ai-gateway
@@ -2493,7 +2496,7 @@ issues two keys for each resource.
 Inline credentials (`providerCredentials.inline`) are the exception. When an
 inline value changes, the chart restarts the pods itself.
 
-The Gateway also reads a Redis password from `redis.passwordSecret` at
+The AI Gateway also reads a Redis password from `redis.passwordSecret` at
 startup. With the bundled Valkey, the server also reads this password. Until
 both restart after a change, the replicas do not share budgets. After you
 change the password, restart both:
@@ -2506,12 +2509,12 @@ kubectl rollout restart deployment/gateway-cetirun-ai-gateway
 The password of the bundled PostgreSQL takes one more step. The database
 applies `POSTGRES_PASSWORD` only when it initializes an empty volume. As a
 result, if you change only the Secret, the `litellm` role keeps its old
-password, and the next Pods of the Gateway cannot connect.
+password, and the next AI Gateway Pods cannot connect.
 
 First, change the role. Then make sure that the new password works. Then
-change the Secret, which holds the password twice. Then restart the Gateway.
+change the Secret, which holds the password twice. Then restart the AI Gateway.
 
-In the block, set `gateway` to the Gateway's Deployment name
+In the block, set `gateway` to the AI Gateway's Deployment name
 (`<release>-cetirun-ai-gateway`, or `cetirun-ai-gateway` when the platform
 chart installs it). Run the block in bash:
 
@@ -2555,19 +2558,19 @@ chart installs it). Run the block in bash:
 
 Each command runs only after the previous one succeeds. A failure before
 `ALTER ROLE` changes nothing. A failure after it leaves different passwords in
-the database and the Secret. Then the running Gateway keeps the connections
-that it has, but a Gateway Pod that starts cannot connect. Fix the cause. Then,
-before the Gateway restarts, run the block again.
+the database and the Secret. Then the running AI Gateway keeps the connections
+that it has, but an AI Gateway Pod that starts cannot connect. Fix the cause.
+Then, before the AI Gateway restarts, run the block again.
 
 Each run sets a new password, and it makes the database, the Secret, and the
-Gateway use the same password again.
+AI Gateway use the same password again.
 
 The password reaches `psql` and `kubectl patch` through their standard input,
 not as an argument. As a result, the password does not show in process
 listings.
 
 In a measurement on AKS, requests continued to work during the full procedure.
-The restarted Gateway connected with the new password. The database refused
+The restarted AI Gateway connected with the new password. The database refused
 other passwords over the network. A restart of the database Pod kept its data.
 A later `helm upgrade` kept the new password, because the chart reads the
 Secret back.
@@ -2604,11 +2607,11 @@ key and master key without an error or a warning. The running pods continue
 with the old values, so nothing looks wrong. The damage occurs at the next
 restart. The cause of that restart is not important. In a measurement after
 that restart, the models that were added through the console were not in the
-model list, and the Gateway refused them. The Gateway refused the previous
-master key with 401.
+model list. The AI Gateway refused them, and it refused the previous master key
+with 401.
 
 To recover, use these commands. They write the original value back into the
-chart's Secret, and then they restart the Gateway:
+chart's Secret, and then they restart the AI Gateway:
 
 ```bash
 kubectl patch secret gateway-cetirun-ai-gateway-auth --type merge -p \
@@ -2647,7 +2650,7 @@ measurement gave these results:
 For the first column, the only sign was a decryption warning in the log. The
 model rows stay in PostgreSQL, encrypted with a key that no longer exists.
 
-To remove the Gateway completely, delete the Secret yourself after you
+To remove the AI Gateway completely, delete the Secret yourself after you
 uninstall the release. Do this only if you also discard the database. If you
 delete the Secret but keep the database, every model that was added through
 the console becomes permanently unreadable.
@@ -2655,7 +2658,7 @@ the console becomes permanently unreadable.
 ### Upgrading LiteLLM
 
 Build the image again for the new release (refer to [Image](#image)). Then
-upgrade the release. Each new Gateway pod applies the migrations of the new
+upgrade the release. Each new AI Gateway pod applies the migrations of the new
 version in its init container before the proxy starts.
 
 An upgrade from `v1.101.0` to `v1.102.0` with data in place was measured on
@@ -2720,7 +2723,7 @@ block saved `router_settings`, `litellm_settings` and `general_settings`
 together. This included everything that the chart configured.
 
 To recover, delete the row from the `LiteLLM_Config` table. Then restart the
-Gateway. This returns those keys to chart control.
+AI Gateway. This returns those keys to chart control.
 
 For this reason, the chart writes as little as possible into those blocks.
 
@@ -2814,7 +2817,7 @@ request per second went through the Service. One of 183 requests failed with a
 stopped. The new replica was ready 56 seconds later.
 
 For more than one replica, the chart creates a PodDisruptionBudget for the
-Gateway pods with `maxUnavailable: 1` (`podDisruptionBudget.enabled`, on by
+AI Gateway pods with `maxUnavailable: 1` (`podDisruptionBudget.enabled`, on by
 default). As a result, a node drain evicts one replica at a time, and it waits
 while another replica is unavailable. The chart does not create it for a single
 replica. Because it uses `maxUnavailable`, not `minAvailable`, it does not
@@ -2846,17 +2849,17 @@ During a rollout, the Service sends requests to old and new pods. When a model
 is added, removed, or renamed, these pods can list different models.
 
 The CetiRun operator lists the models through the Service. As a result, it
-waits while the ready pods behind the Gateway Service belong to more than one
+waits while the ready pods behind the AI Gateway Service belong to more than one
 pod template. It examines the pods again every 15 seconds. When one template
-serves the Gateway, the operator applies the new model list one time.
+serves the AI Gateway, the operator applies the new model list one time.
 
 The operator keeps its previous view for at most ten minutes of a rollout. If
-it cannot read the Gateway's Service or pods, it does not wait. While the
+it cannot read the AI Gateway's Service or pods, it does not wait. While the
 rollout runs, Agents are not updated or restarted.
 
 ### When Redis is unavailable
 
-The Gateway continues to serve requests. Readiness does not depend on Redis,
+The AI Gateway continues to serve requests. Readiness does not depend on Redis,
 so the replicas stay in the Service. In a measurement, Redis was stopped for up
 to three and a half minutes, with these results:
 
@@ -2880,14 +2883,14 @@ got 402 the whole time, because budgets use the spend in PostgreSQL.
 
 ### When PostgreSQL is unavailable
 
-The Gateway no longer serves requests. In a measurement, PostgreSQL was stopped
-for about three minutes, with these results:
+The AI Gateway no longer serves requests. In a measurement, PostgreSQL was
+stopped for about three minutes, with these results:
 
 - Within a minute, requests with virtual keys started to fail with 503,
-  because the Gateway finds keys in the database. A request to create a key
+  because the AI Gateway finds keys in the database. A request to create a key
   returned 500.
 - After about a minute, readiness failed on both replicas, and the Service had
-  no more endpoints. As a result, the Gateway refused every request, also the
+  no more endpoints. As a result, the AI Gateway refused every request, also the
   requests with the master key.
 - Nothing restarted. Service started again about 20 seconds after PostgreSQL
   returned, and no action was necessary.
@@ -2897,8 +2900,8 @@ for about three minutes, with these results:
   total.
 
 With a highly available PostgreSQL, this problem lasts only for the length of
-a failover. The spend that is lost is limited to what the Gateway serves during
-that time. The 503s keep this amount small.
+a failover. The spend that is lost is limited to what the AI Gateway serves
+during that time. The 503s keep this amount small.
 
 The bundled PostgreSQL is one replica on a `ReadWriteOnce` disk. On the e2e
 cluster, its Pod was deleted, and the new Pod started on another node. It was
@@ -2911,17 +2914,17 @@ Service kept its endpoints, and the Agents stayed `Ready`.
 
 LiteLLM keeps a record of each call in its database, and the console's request
 view reads this record. LiteLLM also keeps daily totals for each key, user,
-Team, and model. Neither of these leaves the Gateway. For collection in other
+Team, and model. Neither of these leaves the AI Gateway. For collection in other
 places, the chart adds a log line for each call, and it can serve LiteLLM's
 Prometheus metrics. The ADX-Mon collection of the cetirun-observability chart
 takes both to Azure Data Explorer; refer to
-[Observability with ADX-Mon](../../../site/content/en/docs/operations/observability.md).
+[Monitoring and logs](../../../site/content/en/docs/operations/observability.md).
 The measurements of LiteLLM's behavior used LiteLLM 1.101.0.
 
 ### One log line per call
 
 With `requestLog.enabled`, which is the default, each model call writes one
-JSON line to the Gateway's stdout, through a callback in the image. The line
+JSON line to the AI Gateway's stdout, through a callback in the image. The line
 records this metadata of the call:
 
 - The virtual key's alias and hash, the user, the Team, and the Agent, from
@@ -2996,7 +2999,7 @@ chart's setting, such a call wrote no line. The chart always sets
 field.
 
 **Registered by the image, not in LiteLLM's configuration.** The chart sets
-`CETIRUN_REQUEST_LOG=true` on the Gateway container. The image's entrypoint
+`CETIRUN_REQUEST_LOG=true` on the AI Gateway container. The image's entrypoint
 registers the callback before LiteLLM loads its configuration.
 
 If `litellm_settings.callbacks` lists the callback, the callback depends on how
@@ -3016,7 +3019,7 @@ and it starts with the chart's configuration.
 The proxy runs as one uvicorn process for each pod, which is how LiteLLM starts
 by default. The entrypoint refuses more workers, or another server. These load
 LiteLLM again without the image's callbacks, also without the guard. The
-`requestLog` value does not change this. To scale the Gateway, use
+`requestLog` value does not change this. To scale the AI Gateway, use
 `replicaCount` instead.
 
 ### LiteLLM's spend log
@@ -3051,7 +3054,7 @@ and operator integration do not override an explicit `storePrompts: false`.
 
 This setting does not depend on `requestLog.enabled`. It never adds content to
 the stdout request log. A change to it updates the configuration checksum. As
-a result, Helm replaces the Gateway pods.
+a result, Helm replaces the AI Gateway pods.
 
 If you set `storePrompts` to `false`, the chart writes
 `store_prompts_in_spend_logs: false`. This disables content storage in
@@ -3084,8 +3087,8 @@ up to a minute, which it selects when the pod starts. It also moves the runs of
 each replica by up to five more minutes. A replica skips a run while the run of
 another replica holds a lock in Redis.
 
-LiteLLM's default interval is a day. With this interval, a Gateway whose pods
-are replaced within a day never deletes a row. Every configuration change
+LiteLLM's default interval is a day. With this interval, an AI Gateway whose
+pods are replaced within a day never deletes a row. Every configuration change
 replaces the pods. As a result, if a retention is set, the chart sets the
 interval to an hour. Then rows stay at most about an hour longer than the
 retention. A replaced pod only delays the deletion.
@@ -3108,7 +3111,7 @@ started.
 
 With `spendLogs.enabled: false`, LiteLLM writes no row for a call. You can
 disable it only together with the request log. As a result, no configuration
-leaves the Gateway without a record of each call. For
+leaves the AI Gateway without a record of each call. For
 `spendLogs.enabled: false`, `requestLog.enabled` and
 `spendLogs.storePrompts: false` are necessary. The image's entrypoint disables
 the spend log only after it registers the request log callback.
@@ -3128,11 +3131,11 @@ setting when the proxy starts.
 
 ### Content in Azure Data Explorer
 
-With `content.enabled`, the Gateway writes the request and the response of each
-call to an Azure Data Explorer database of its own, and the spend log keeps
+With `content.enabled`, the AI Gateway writes the request and the response of
+each call to an Azure Data Explorer database of its own. The spend log keeps
 none: the chart renders `store_prompts_in_spend_logs: false` whatever
 `spendLogs.storePrompts` says. The console's request page still shows a call's
-content: LiteLLM asks the Gateway's content callback before it reads the
+content. LiteLLM asks the AI Gateway's content callback before it reads the
 spend log, and the callback reads the call from Azure Data Explorer.
 
 ```yaml
@@ -3157,8 +3160,8 @@ Kusto cluster of the ADX-Mon collection.
   with their type and size. `GatewayContent()` joins the parts again. Calls
   that LiteLLM makes itself are not stored: background health check probes,
   and an auto router's classifier calls, which repeat the routed conversation.
-- **Identity.** The Gateway Pods use a workload identity: the chart labels the
-  Pods and names `clientId` on the ServiceAccount it creates. The identity
+- **Identity.** The AI Gateway Pods use a workload identity: the chart labels
+  the Pods and names `clientId` on the ServiceAccount it creates. The identity
   needs a federated credential for
   `system:serviceaccount:<namespace>:<release ServiceAccount>`, and the roles
   `Ingestor` and `Viewer` on the content database only. The cluster template's
@@ -3169,12 +3172,12 @@ Kusto cluster of the ADX-Mon collection.
   to them or to a Team they may view; a record without a LiteLLM user or Team,
   such as from a key with neither, is refused to them. The operator's Agent
   keys carry the owner as LiteLLM user and `cetirun-team-<Team>` as Team. The
-  Gateway reads only the requested call's rows of this cluster, within a day of
-  the time range the console passes.
+  AI Gateway reads only the requested call's rows of this cluster, within a day
+  of the time range the console passes.
 - **Delivery.** A background thread sends records in batches with queued
   ingestion; a call never waits for it. Content usually appears within a
   minute. It is lost when ADX refuses a batch three times, and when the queue
-  of 2,000 records is full. The Gateway's log says how many records it
+  of 2,000 records is full. The AI Gateway's log says how many records it
   dropped. Until a call's content has arrived, its console page shows the
   spend log's empty content.
 
@@ -3184,9 +3187,9 @@ The CetiRun cluster template turns Container Insights off. Where it runs
 anyway, it copies the environment of every container into its
 `ContainerInventory` table one time each minute. The copy also has the values
 that come from Secrets. Container Insights does this unless environment
-collection is disabled for the cluster or for the container. The Gateway holds
-its master key, salt key, database connection string, and provider keys in its
-environment.
+collection is disabled for the cluster or for the container. The AI Gateway
+holds its master key, salt key, database connection string, and provider keys in
+its environment.
 
 Every container in this chart that holds a credential sets
 `AZMON_COLLECT_ENV=False`, which disables that collection for that container.
@@ -3209,8 +3212,8 @@ across pods.
 The metrics port has no authentication. LiteLLM also serves `/metrics` on the
 Service port, where it accepts only the master key. It refused both an Agent's
 key and a key without route limits with 401. The metrics port is not on the
-Service. Anything that can reach a Gateway pod can read every key alias, user,
-Team, and spend figure that the metrics carry.
+Service. Anything that can reach an AI Gateway pod can read every key alias,
+user, Team, and spend figure that the metrics carry.
 
 As a result, if other workloads are not allowed to read the metrics port,
 restrict it with a NetworkPolicy. A CetiRun Agent's egress reaches only the
@@ -3224,13 +3227,13 @@ labels. Examples of these metrics are `litellm_spend_metric_total`,
 client's address and user agent, and the user's email address. The address and
 the user agent start a new series with every Agent restart and client version.
 
-With `metrics.enabled`, the chart annotates the Gateway pods, so that the
+With `metrics.enabled`, the chart annotates the AI Gateway pods, so that the
 ADX-Mon collector of the cetirun-observability chart scrapes the metrics port
 of each pod. The cetirun-platform chart enables the metrics. Each metric is a
 table of the metrics database, `CetiRunMetrics` by default, with the labels in
 its `Labels` column. On a test cluster, the collector scraped both replicas of
-a Gateway. This query returns the spend of each key, from the latest sample of
-each series:
+an AI Gateway. This query returns the spend of each key, from the latest sample
+of each series:
 
 ```kusto
 LitellmSpendMetricTotal
@@ -3285,7 +3288,7 @@ five calls left one row, but the key was charged for five calls.
 ## Migrations
 
 By default, LiteLLM applies migrations at startup. Instead, the chart runs them
-in an init container of each Gateway pod, with the image's `migrate` command.
+in an init container of each AI Gateway pod, with the image's `migrate` command.
 It starts the proxies with `DISABLE_SCHEMA_UPDATE` set.
 
 Pods take turns. In a measurement, two migrations that ran at the same time
@@ -3310,13 +3313,13 @@ is applicable only to a single replica.
 
 ## Image
 
-The Gateway runs `cetirun-ai-gateway`. This image is built from
+The AI Gateway runs `cetirun-ai-gateway`. This image is built from
 `app/cetirun-ai-gateway` and published with the other CetiRun images. It is
 open-source LiteLLM, 1.108.3, installed as pinned packages on the Azure Linux
 Python base from MCR. It runs as the non-root user 65532.
 
 - `requirements.txt` pins the upstream release's frozen `uv.lock` for the
-  Gateway's existing runtime extras. It is installed with `--no-deps`, so
+  AI Gateway's existing runtime extras. It is installed with `--no-deps`, so
   nothing else is added. `litellm-enterprise`, which carries the BerriAI
   Enterprise License, and the optional Admin MCP group are omitted. The two
   Python 3.12 backports keep their existing CetiRun pins.
@@ -3329,7 +3332,7 @@ Python base from MCR. It runs as the non-root user 65532.
   network with no route out, migrations applied, and the proxy became ready.
 - `cetirun-ai-gateway migrate` applies migrations. Any other arguments start the
   proxy. The start never uses a database, because the same image serves the
-  per-agent Copilot proxy, which has no database. The Gateway proxy starts in
+  per-agent Copilot proxy, which has no database. The AI Gateway proxy starts in
   the entrypoint's own process, with the guard callback registered. With
   `CETIRUN_REQUEST_LOG=true`, which the chart sets, the request log callback is
   also registered.
@@ -3380,7 +3383,7 @@ fail:
 - An uninstall that deleted the salt key. The database kept everything that
   was encrypted with that key.
 
-The test also examines behaviors that only a running Gateway can show:
+The test also examines behaviors that only a running AI Gateway can show:
 
 - An upstream failure is not retried.
 - A replica that shuts down finishes the request that it serves.
@@ -3413,15 +3416,15 @@ after that:
 
 ## Known gaps
 
-These gaps are recorded and deferred. None of them makes the Gateway unable to
-serve agents.
+These gaps are recorded and deferred. None of them makes the AI Gateway unable
+to serve agents.
 
 **Not in the chart yet.** The chart does not have Redis TLS, which is necessary
-for Azure Cache for Redis. It also does not have anti-affinity for the Gateway
-replicas (set `affinity` by hand).
+for Azure Cache for Redis. It also does not have anti-affinity for the
+AI Gateway replicas (set `affinity` by hand).
 
 **Prices are not pinned to the image by default.** LiteLLM downloads its price
-table from GitHub each time a Gateway pod starts. If the download fails,
+table from GitHub each time an AI Gateway pod starts. If the download fails,
 LiteLLM uses the copy that it ships with. As a result, a restart can change
 the prices that `base_model` resolves to.
 
@@ -3434,10 +3437,10 @@ loads the image's copy again.
 
 But new models and price changes arrive only with a new image. A model that is
 not in the image's table is unpriced. While `blockUnpricedModels` is on, the
-Gateway refuses such a model, unless its entry declares a price. With CetiRun,
-the operator prices the Agents' GitHub Copilot models from the table that the
-Gateway loaded. As a result, a Copilot model that is newer than the image is
-not offered.
+AI Gateway refuses such a model, unless its entry declares a price. With
+CetiRun, the operator prices the Agents' GitHub Copilot models from the table
+that the AI Gateway loaded. As a result, a Copilot model that is newer than the
+image is not offered.
 
 In a measurement on LiteLLM 1.105.1, the table's address was set to a mock.
 With the variable, neither the proxy's start, the migrate step's import of
@@ -3462,5 +3465,5 @@ Valkey through `redis.passwordSecret`, or use their own Redis.
 
 They must also use an external PostgreSQL. The password of the bundled
 PostgreSQL is generated in the same way, and there is no option to supply it.
-If the password changes, the Gateway cannot get access to data that was
+If the password changes, the AI Gateway cannot get access to data that was
 initialized with the old one.

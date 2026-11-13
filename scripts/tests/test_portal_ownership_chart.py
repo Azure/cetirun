@@ -17,13 +17,15 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @unittest.skipUnless(shutil.which("helm"), "requires Helm")
 class PortalOwnershipChartTests(unittest.TestCase):
-    def render(self, enabled, identity=None):
+    def render(self, enabled=None, identity=None):
+        istio = {"host": "portal.example.com", "gatewayNamespace": "test-ingress", "gatewayServiceAccount": "test-gateway"}
+        if enabled is not None:
+            istio["internalAuthMTLS"] = enabled
         return subprocess.run(
             ["helm", "template", "owner-test", str(ROOT / "app/cetirun-portal/chart"),
              "--namespace", "test-platform", "--values", "-"],
             input=json.dumps({
-                "istio": {"host": "portal.example.com", "internalAuthMTLS": enabled,
-                          "gatewayNamespace": "test-ingress", "gatewayServiceAccount": "test-gateway"},
+                "istio": istio,
                 "features": {"agentIdentityEnabled": False, "agentToolsEnabled": False},
                 "agentIdentity": identity if identity is not None else {
                     "tenantId": "11111111-1111-1111-1111-111111111111",
@@ -35,7 +37,7 @@ class PortalOwnershipChartTests(unittest.TestCase):
         )
 
     def test_mtls_requires_gateway_principal_on_internal_port(self):
-        result = self.render(True)
+        result = self.render()
         self.assertEqual(result.returncode, 0, result.stderr)
         objects = [x for x in yaml.safe_load_all(result.stdout) if x]
         peer = next(x for x in objects if x["kind"] == "PeerAuthentication")["spec"]
@@ -48,7 +50,7 @@ class PortalOwnershipChartTests(unittest.TestCase):
         self.assertTrue(any(x["kind"] == "NetworkPolicy" for x in objects))
 
     def test_mtls_owner_verification_does_not_depend_on_agent_features(self):
-        result = self.render(True)
+        result = self.render()
         self.assertEqual(result.returncode, 0, result.stderr)
         objects = [x for x in yaml.safe_load_all(result.stdout) if x]
         deployment = next(x for x in objects if x["kind"] == "Deployment")
@@ -64,7 +66,7 @@ class PortalOwnershipChartTests(unittest.TestCase):
             with self.subTest(field=field):
                 identity = {"tenantId": "test-tenant", "portalClientId": "test-client"}
                 identity[field] = ""
-                result = self.render(True, identity)
+                result = self.render(identity=identity)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(f"agentIdentity.{field} is required", result.stderr)
 

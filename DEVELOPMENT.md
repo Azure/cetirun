@@ -43,7 +43,7 @@ component does and how the components work together, refer to
 | `app/cetirun-ai-gateway/` | AI Gateway image and chart |
 | `app/cetirun-observability/` | ADX-Mon chart for logs, events, metrics, and alerts |
 | `app/cetirun-platform/` | Platform chart that `make deploy` installs |
-| `app/cetirun-chart/` | Runtime chart, Agent image definitions, and runtime plugins |
+| `app/cetirun-chart/` | Agent chart, Agent image definitions, and runtime plugins |
 | `app/internal/` | Shared Go packages |
 | `infra/` | Bicep templates, Istio chart, storage, and cert-manager configuration |
 | `scripts/` | Validation runner, release and deployment helpers, and their tests |
@@ -78,7 +78,7 @@ builds only on Linux, and `make go-test`, `make go-lint`, and
 | Git, Bash, Make, curl | Not pinned | All repository commands. Loopback download tests also use curl. |
 | Go | [`.go-version`](.go-version) | Go tests and lint, the Memory native test, and the Hugo installation |
 | Node.js 24 and npm | CI configuration | Portal frontend, Memory native test (`make test`), examples, and the site |
-| Python 3.11 or later | CI uses 3.12 | All Python gates and helpers. `make license-check` needs 3.10 or later. The site validator needs 3.11 or later. |
+| Python 3.11 or later | CI pins 3.12 only for `make python-test` and the Memory Context checks. The other CI jobs use the `python3` of the runner image | All Python gates and helpers. `make license-check` needs 3.10 or later. The site validator needs 3.11 or later. |
 | Python packages | [`scripts/ci/requirements.txt`](scripts/ci/requirements.txt) | `make ci-test`, `make chart-check`, and `make python-test` |
 | Helm 3 or 4 | [`scripts/ci/tools.json`](scripts/ci/tools.json) (CI uses this version) | `make chart-check`, `make set-version`, and the envtest suites |
 | Bicep, ShellCheck, actionlint | [`scripts/ci/tools.json`](scripts/ci/tools.json) | `make bicep-check`, `make shell-check`, and `make workflow-check` |
@@ -225,7 +225,7 @@ gate in the [Quick start](#quick-start) runs the rest.
 | `app/cetirun-memory-context/` | [Memory Context](#memory-context) |
 | `app/cetirun-observability/` | `bash scripts/cetirun-observability-helm-test.sh` and `python3 -B -m unittest scripts.tests.test_observability_chart -v`. CI also runs `python3 scripts/ci/check_observability_images.py`: it pulls the ADX-Mon images that the chart pins, checks that they accept the chart's flags, and scans them. |
 | `app/cetirun-ai-gateway/` | [AI Gateway](#ai-gateway) |
-| `app/cetirun-chart/` | [Runtime chart and Python helpers](#runtime-chart-and-python-helpers) |
+| `app/cetirun-chart/` | [Agent chart and Python helpers](#agent-chart-and-python-helpers) |
 | `app/cetirun-platform/` or `infra/` | [Platform chart and infrastructure](#platform-chart-and-infrastructure) |
 | `scripts/` | The test module of the script, for example `python3 -B -m unittest scripts.tests.test_release_inventory -v` |
 | `.github/workflows/` | `make workflow-check` |
@@ -334,9 +334,9 @@ reach it.
 
 ## Add an agent integration
 
-To run a different agent, package it as a Custom runtime image. A Custom image
+To run a different agent, package it as a Custom Agent image. A Custom image
 does not change this repository. For the image contract, refer to
-[Custom runtime](site/content/en/docs/reference/agent-harness.md#custom-runtime).
+[Custom Agent](site/content/en/docs/reference/agent-harness.md#custom-runtime).
 For working images, refer to [Examples](site/content/en/docs/reference/examples.md).
 
 A new built-in agent type, such as OpenClaw or Hermes, changes several
@@ -347,7 +347,7 @@ components:
 - The Operator registry in
   `app/cetirun-operator/internal/agents/builtin/registry.go` and a harness
   package.
-- The runtime chart: `app/cetirun-chart/agents/<name>/` and its templates.
+- The agent chart: `app/cetirun-chart/agents/<name>/` and its templates.
 - The release inventory in `scripts/release-artifacts.json`.
 - The Portal, which has its own list of agent types.
 
@@ -362,7 +362,7 @@ suite. The full gate in the [Quick start](#quick-start) runs before review.
 
 Many of these checks are API-server tests. They need the assets from
 [Prepare envtest assets](#prepare-envtest-assets). The scheduler, kubelet,
-Gateway, storage, and CSI observations in these tests are synthetic. A pass
+AI Gateway, storage, and CSI observations in these tests are synthetic. A pass
 does not show that a workload runs on a real cluster. It is not a
 qualification of the runtime, Cilium, or CSI.
 
@@ -422,7 +422,7 @@ files that you intend to change.
 - Loopback TLS serving and certificate replacement.
 - CRD upgrades through Helm while requests continue, and CRD retention after an
   uninstall.
-- Native controller cases for the single-policy Team contract, with real Agent
+- Native controller cases for the policy-bound Team contract, with real Agent
   and Pod admission and Helm SDK actions.
 
 `go test ./...` without the `envtest` tag does not run these tests.
@@ -495,12 +495,13 @@ go -C app/cetirun-operator test ./internal/controller -run '^TestContainerSandbo
 go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestContainerSandbox(Common|IngressMTLS)APIServer$' -count=1 -timeout=20m
 ```
 
-These tests cover registration and handler pins, render and admission,
-per-container resources without VM overhead, both built-in harnesses, both HOME
-modes, restart, suspension, and migration. They do not run runc or Kata. For
-the runtime selector in the Portal, run the frontend tests and build.
+These tests cover registration and handler pins, render and admission, and
+per-container resources without VM overhead. They also cover both built-in
+agent types, both HOME modes, restart, suspension, and migration. They do not
+run runc or Kata. For the runtime selector in the Portal, run the frontend
+tests and build.
 
-Rate-limit updates of common Sandbox policies:
+Rate-limit updates in the Agent Policy of a Sandbox Agent:
 
 ```bash
 go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxPendingRateLimitsAPIServer$' -count=1
@@ -532,7 +533,7 @@ withdrawal, and cleanup after a restart. Unit tests cover missing and foreign
 approvals, lost acknowledgements, first-install recovery, and Helm submission
 checks. Token rotation by the kubelet, API requests from a running Agent, and
 Cilium enforcement need a live check. Refer to the
-[administrator setup](examples/native-sandbox/README.md#kubernetes-api-access).
+[platform administrator setup](examples/native-sandbox/README.md#kubernetes-api-access).
 
 Registered Kata SCTP rules:
 
@@ -560,10 +561,10 @@ deletes suspended Custom, OpenClaw, and Hermes Agents that keep older image
 and chart pins and an earlier native-auth rotation marker. The OpenClaw and
 Hermes fixtures also keep a rotation receipt on their native auth Secret. The
 test deletes the Secrets with a separate ServiceAccount that has Secret
-permissions only in the Agent namespace. It does not use the Operator or an
-administrator identity for this. The test checks that the binding is withdrawn
-while the Agent is deleting, that a Portal-style service account with only
-Agent API rights cannot edit the binding, and that the Operator finalizer
+permissions only in the Agent namespace. It does not use the Operator or a
+cluster administrator identity for this. The test checks that the binding is
+withdrawn while the Agent is deleting, that a Portal-style service account with
+only Agent API rights cannot edit the binding, and that the Operator finalizer
 cleanup completes. It simulates the namespace and PVC controllers that envtest
 does not run. It does not test storage reclamation, runtime images, or a live
 cluster.
@@ -590,8 +591,8 @@ make -C app/cetirun-operator build-terminal
 ```
 
 The build target also builds `bin/loopback-probe`, a static HTTP probe in the
-terminal image for governed Custom HTTP workloads. When you change Custom
-rendering, admission, or the terminal, also run these checks:
+terminal image for the HTTP workloads of Custom Sandbox Agents. When you change
+Custom rendering, admission, or the terminal, also run these checks:
 
 ```bash
 go -C app/cetirun-operator test ./cmd/loopback-probe ./internal/helm ./internal/sandboxpolicy ./internal/controller -run 'TestCommonCustom|TestCustomSandbox|TestCompileCustom|TestProbe' -count=1 -timeout=20m
@@ -694,8 +695,8 @@ the open provenance items.
 
 ### Managed Agent ingress mTLS
 
-Run these checks when you change the ingress mTLS endpoint of common-executor
-Agents. The transport test (`-tags=envoy`) needs an Envoy 1.36.3 binary. The
+Run these checks when you change the ingress mTLS endpoint of Sandbox Agents.
+The transport test (`-tags=envoy`) needs an Envoy 1.36.3 binary. The
 test rejects other versions. On Linux x86-64, download and verify the release
 binary outside the repository first. This step needs network access:
 
@@ -757,10 +758,10 @@ separately authorized Docker check. It does not export live data.
 
 ### Agent Identity Broker
 
-The Broker owns owner Connections, per-instance ConnectionBindings, OAuth and
+The Broker owns owner Connections, per-Agent ConnectionBindings, OAuth and
 OBO, and encrypted credential storage. Connections MCP in
 `app/cetirun-connections-mcp/` is a separate native remote MCP server. It
-verifies a Pod-bound workload token and asks the Broker to check the instance
+verifies a Pod-bound workload token and asks the Broker to check the Agent
 and its authorization. Then it sends JSON REST requests to fixed Azure, GitHub,
 Microsoft Graph, and Google service profiles. Provider tokens never enter Agent
 workloads.
@@ -789,7 +790,7 @@ go -C app/cetirun-operator test ./internal/runtimebindings ./internal/helm ./int
 
 While you work on the credential policy or the native integration, run these
 focused tests. They cover the application and readback of the credential
-policy and the native integration of both harnesses:
+policy and the native integration of both built-in agent types:
 
 ```bash
 go -C app/internal test ./agenttools -run 'TestCredentialPolicy|TestNative' -count=1
@@ -800,14 +801,15 @@ go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestN
 ```
 
 The API-server test uses the real chart render, API-issued Pod-bound tokens,
-TokenReviews, and Pod admission for both harnesses. It rejects a token from a
-recreated ServiceAccount. These checks do not test Kata or Cilium routing, TLS
-delivery, Entra federation, provider permissions, or an Azure tenant.
+TokenReviews, and Pod admission for both built-in agent types. It rejects a
+token from a recreated ServiceAccount. These checks do not test Kata or Cilium
+routing, TLS delivery, Entra federation, provider permissions, or an Azure
+tenant.
 
 ### Skill Marketplace
 
 The Operator runs the Skill Marketplace. It publishes approved skills from one
-Git repository to the native Sandbox Agents of policy-bound Teams. The code has
+Git repository to the Sandbox Agents of policy-bound Teams. The code has
 two parts:
 
 - `app/cetirun-operator/internal/skillmarketplace/` runs in the Operator. It
@@ -847,7 +849,7 @@ request an Entra token or connect to a cloud API. For the integration that is
 still necessary, refer to the
 [Entra runtime projection core](app/cetirun-operator/README.md#entra-runtime-projection-core).
 
-### Runtime chart and Python helpers
+### Agent chart and Python helpers
 
 The [shared base image version notes](app/cetirun-chart/base-image.md) record
 the selected tool releases and compatibility limits.
@@ -859,7 +861,7 @@ python3 -B -m unittest discover -s scripts/tests -v
 make python-test
 ```
 
-The Helm scripts lint and render the runtime chart for OpenClaw and Hermes,
+The Helm scripts lint and render the agent chart for OpenClaw and Hermes,
 including values that are not valid. They use synthetic inputs and install
 nothing. They do not check the other charts. For all charts, run
 `make chart-check`.
@@ -882,8 +884,8 @@ CHROMIUM_EXECUTABLE=/path/to/chrome \
 node scripts/tests/hermes_webapp_storage.cjs
 ```
 
-This test checks storage isolation between instance prefixes on loopback
-pages. It needs no Hermes image or model endpoint.
+This test checks storage isolation between the path prefixes of different
+Agents on loopback pages. It needs no Hermes image or model endpoint.
 
 CI builds the runtime images and scans each one with Trivy, with a 10-minute
 timeout for each image. A scan error or a timeout fails the job. The Hermes
@@ -903,7 +905,7 @@ bash scripts/cetirun-ai-gateway-helm-test.sh
 The unit tests replace LiteLLM with a test double. The chart test renders the
 chart with synthetic values.
 
-For AI Gateway changes, CI also installs and upgrades the Gateway on a
+For AI Gateway changes, CI also installs and upgrades the AI Gateway on a
 disposable kind cluster
 ([`ai-gateway-cluster-test.yml`](.github/workflows/ai-gateway-cluster-test.yml)).
 This test needs Docker, kind, and a cluster that only the test uses. Do not
@@ -1147,7 +1149,7 @@ SHA, and builds the base image before the images that use it. It never logs in
 or installs tools.
 
 `REGISTRY` defaults to `mcr.microsoft.com/aks/ai-runtime/cetirun`, including
-the repository prefix. `VERSION` defaults to the Runtime Chart version. You
+the repository prefix. `VERSION` defaults to the agent chart version. You
 can set both as environment variables or Make arguments. A Make argument takes
 precedence. For a local test build:
 
@@ -1192,14 +1194,14 @@ not a clean tree. Only `make set-version` changes the checked-in version.
 `make version-check` checks the source, not a proposed build.
 
 Chart packages contain the selected registry and version defaults. These
-include the Runtime Chart URL and version of the Operator, the embedded
+include the agent chart URL and version of the Operator, the embedded
 subcharts, and the first-party runtime images. The Operator keeps a registry
 prefix, such as `registry.example.com/team/test`, when it resolves the
 OpenClaw, Hermes, Desktop, Terminal, and Memory images. Third-party images and
 explicit Custom image pins keep their own coordinates. Charts use the fixed
 `helm` namespace. Put all repository prefixes in `REGISTRY`.
 
-Existing Agents keep their pinned Runtime Chart and image. An explicit chart
+Existing Agents keep their pinned agent chart and image. An explicit chart
 upgrade changes a default image only in the same registry. To change the
 registry, refer to [Migrating an existing Agent registry](#migrating-an-existing-agent-registry).
 
@@ -1249,7 +1251,7 @@ deployment.
 
 ### Migrating an existing Agent registry
 
-When you change the Runtime Chart URL of the Operator, you also change the
+When you change the agent chart URL of the Operator, you also change the
 registry that the Operator accepts for built-in Agent images. The Operator does
 not rewrite existing `spec.agent.image` pins. If a pin belongs to the previous
 registry, reconciliation rejects it with `AgentConfigInvalid` before Helm

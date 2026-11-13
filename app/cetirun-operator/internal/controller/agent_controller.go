@@ -205,6 +205,7 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		builder = builder.WatchesMetadata(&istiov1beta1.Gateway{}, handler.EnqueueRequestsFromMapFunc(r.enqueueIngressMTLSSource))
 	}
 	if r.AIGateway.Enabled {
+		builder = builder.Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.enqueueCopilotProxy))
 		if r.aiGatewayEvents == nil {
 			r.aiGatewayEvents = make(chan event.GenericEvent, 1024)
 		}
@@ -599,6 +600,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 	gwSecretHash := ""
 	gatewaySecretResourceVersion := ""
+	identityReconcileRequired := true
 	if !reconciledSandbox && (instance.Status.Phase == cetirunv1alpha1.PhaseReady || instance.Status.Phase == cetirunv1alpha1.PhaseSuspended) {
 		brokerRBACErr := r.reconcileConnectionsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team) || r.nativeConnectionsRequested(instance))
 		namespaceMissing := stderrors.Is(brokerRBACErr, errConnectionsMCPBrokerNamespaceMissing)
@@ -638,14 +640,17 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		}
 
 		identityVerificationDue := agentIdentityVerificationDue(instance, time.Now())
-		aiGatewayDue := r.aiGatewayReconcileDue(instance, time.Now())
+		aiGatewayDue := r.aiGatewayReconcileDue(instance, time.Now()) || r.copilotProxyReadinessLost(ctx, instance)
 		// An Agent whose chart could not be downloaded takes the full path,
 		// which retries the download, until a download succeeds.
 		// A missing namespace also requires the full path, even if the cached
 		// hash matches. Establish Broker RBAC after ensureNamespace recreates it.
-		if !namespaceMissing && instance.Status.ObservedGeneration == instance.Generation &&
-			!identityVerificationDue && !aiGatewayDue && !chartUnavailable(instance) &&
-			instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamRuntimeInputFingerprint(team)) {
+		configurationCurrent := !namespaceMissing && instance.Status.ObservedGeneration == instance.Generation &&
+			!chartUnavailable(instance) &&
+			instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamRuntimeInputFingerprint(team))
+		// Gateway retries do not invalidate a fresh identity verification.
+		identityReconcileRequired = !configurationCurrent || identityVerificationDue
+		if configurationCurrent && !identityVerificationDue && !aiGatewayDue {
 			// Lightweight: ensure VirtualService is up to date (may change after operator upgrade).
 			// Update ConditionIngressReady so CR status reflects the actual VS state.
 			// When suspended, ensure VirtualService is absent (retries deletion if
@@ -716,7 +721,16 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed,
 			metav1.ConditionFalse, "ChartNotInstalled", "Helm chart not installed yet")
 	}
-	if reconciledSandbox && instance.Status.Phase == cetirunv1alpha1.PhasePending {
+	if reconciledSandbox && instance.Spec.Suspended {
+		// Shutdown was requested independently above. Keep its phase while
+		// checking prerequisites: an intermediate status write must not
+		// publish Provisioning before a stale mTLS hold confirms suspension.
+		if creating {
+			if err := r.updateStatus(ctx, instance); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	} else if reconciledSandbox && instance.Status.Phase == cetirunv1alpha1.PhasePending {
 		// A held common-executor Agent stays Pending until this pass applies
 		// or holds it again. Writing Provisioning first would make every pass
 		// of a steady hold write two alternating phases. Keep the phase in
@@ -850,7 +864,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// Reconcile the per-instance Agent Identity before rendering the workload.
 	// The Broker reads only the canonical binding persisted in CR status.
 	var agentIdentityRequeueAfter time.Duration
-	if instance.Spec.AgentIdentity != nil || instance.Status.AgentIdentity != nil {
+	if identityReconcileRequired && (instance.Spec.AgentIdentity != nil || instance.Status.AgentIdentity != nil) {
 		logger.Info("Reconciling Agent Identity", "instance", instance.Name)
 		if err := r.reconcileAgentIdentity(ctx, instance); err != nil {
 			logger.Error(err, "Agent Identity reconciliation failed", "instance", instance.Name)
@@ -869,7 +883,8 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			// ingress, while retaining the identity error for a separate retry.
 			agentIdentityRequeueAfter = 30 * time.Second
 		}
-		if agentIdentityRequested(instance) && instance.Status.AgentIdentity != nil && instance.Status.AgentIdentity.Phase == cetirunv1alpha1.AgentIdentityPhaseReady {
+		if agentIdentityRequested(instance) && instance.Status.AgentIdentity != nil && instance.Status.AgentIdentity.Phase == cetirunv1alpha1.AgentIdentityPhaseReady &&
+			agentIdentityVerificationDue(instance, time.Now()) {
 			now := metav1.Now()
 			instance.Status.AgentIdentity.LastVerifiedTime = &now
 		}
@@ -1151,9 +1166,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 
 	// Preserve the heartbeat between periodic passes; its own status event must
-	// not schedule an endless series of otherwise unchanged Sandbox reconciles.
+	// not schedule an endless series of otherwise unchanged reconciles.
 	reconciledAt := metav1.Now()
-	if reconciledSandbox && alreadyDeployed && startPhase == instance.Status.Phase &&
+	if alreadyDeployed && (!reconciledSandbox || startPhase == instance.Status.Phase) &&
 		(startPhase == cetirunv1alpha1.PhaseReady || startPhase == cetirunv1alpha1.PhaseSuspended) &&
 		instance.Status.LastReconcileTime != nil {
 		elapsed := reconciledAt.Sub(instance.Status.LastReconcileTime.Time)

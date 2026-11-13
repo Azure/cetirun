@@ -13,10 +13,10 @@ public-ingress chart or release.
 
 This path supports one exact hostname and HTTP-01 only. It does not create
 wildcard names or certificates, DNS-01 records, a CDN/proxy configuration,
-Entra applications, Broker/MCP trust, admission certificates, models, or
-runtimes. The CetiRun Istio chart still owns the HTTPS port-443 Gateway and
-authentication. The umbrella chart adds the separate port-80 Gateway API
-listener, redirect, ACME Issuers, and Certificates.
+Entra applications, Agent Identity Broker/MCP trust, admission certificates,
+models, or runtimes. The CetiRun Istio chart still owns the HTTPS port-443
+Gateway and authentication. The umbrella chart adds the separate port-80
+Gateway API listener, redirect, ACME Issuers, and Certificates.
 
 ## Prerequisites
 
@@ -200,7 +200,7 @@ make deploy-verify DEPLOY_CONFIG=/absolute/path/environment.yaml
 It checks these items:
 
 - Public DNS
-- The readiness of the Gateway, the HTTPRoute, and the Issuers
+- The readiness of the ACME Gateway, the HTTPRoute, and the Issuers
 - The renewal of the certificate, and the certificate that the ingress serves
 - The redirect from HTTP to HTTPS
 - The exact OAuth callback with S256 PKCE, and the redirect to Microsoft
@@ -228,7 +228,7 @@ new browser sign-in.
 
 Review the complete values and manifest from the same installed Helm revision
 before following this procedure. Offline rendering alone cannot prove a
-TLS-only change. The bundled database and Gateway Secrets use server-side
+TLS-only change. The bundled database and AI Gateway Secrets use server-side
 `lookup`, and they generate replacement values when lookup is unavailable.
 CetiAdmin also has lookup-dependent resources and lifecycle hooks. Do not ignore Secret or
 non-TLS differences to obtain a clean comparison, and do not bypass the hooks.

@@ -54,7 +54,7 @@ make -C site serve
 | Install CetiRun | [Install CetiRun](site/content/en/docs/getting-started/platform.md) |
 | Configure and troubleshoot a deployment | [Operations](site/content/en/docs/operations/_index.md) |
 | Review access, credentials, and data handling | [Security](site/content/en/docs/security/_index.md) and [PRIVACY.md](PRIVACY.md) |
-| Run your own agent image | [Agent Harness](site/content/en/docs/reference/agent-harness.md) |
+| Run your own agent image | [Agent Harness](site/content/en/docs/reference/agent-harness.md) and [Examples](site/content/en/docs/reference/examples.md) |
 | Find resource fields and Helm values | [Reference](site/content/en/docs/reference/_index.md) |
 | Find the meaning of a term | [Glossary](site/content/en/docs/concepts/glossary.md) |
 | See planned improvements | [Roadmap](site/content/en/docs/overview/roadmap.md) |

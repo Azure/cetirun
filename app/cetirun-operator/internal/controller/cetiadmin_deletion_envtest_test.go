@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 	"github.com/go-logr/logr"
 	admissionv1 "k8s.io/api/admissionregistration/v1"
@@ -30,10 +31,57 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
+func TestCetiAdminHeldTargetWithdrawalAPIServer(t *testing.T) {
+	ctrl.SetLogger(logr.Discard())
+	h := newCetiAdminInstallationAPI(t, true)
+	agent, namespace := h.target(t, "held-target", "engineering", api.AgentTypeCustom, true)
+	h.customReceipt(t, agent, namespace)
+	policy, policyBinding := retainedDeletionExecPolicy(agent, namespace)
+	h.create(t, policy)
+	h.create(t, policyBinding)
+	h.converge(t)
+	h.runtimeAccess(t, agent.Name)
+	if err := h.operator.Get(h.ctx, client.ObjectKeyFromObject(agent), agent); err != nil {
+		t.Fatal(err)
+	}
+	if agent.Annotations[registryauth.ExecAdminBindingAnnotation] == "" {
+		t.Fatal("fixture never acquired exec binding")
+	}
+	before := agent.DeepCopy()
+	agent.Finalizers = append(agent.Finalizers, sandbox.HoldFinalizer)
+	if err := h.operator.Patch(h.ctx, agent, client.MergeFrom(before)); err != nil {
+		t.Fatal(err)
+	}
+	agent.Status.Policy = &api.PolicyStatus{Phase: "Denied"}
+	if err := h.operator.Status().Update(h.ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	retained := agent.DeepCopy()
+	if err := h.installer.RevokeInstallationAccess(h.ctx, h.state(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.operator.Get(h.ctx, client.ObjectKeyFromObject(agent), agent); err != nil {
+		t.Fatal(err)
+	}
+	if agent.Annotations[registryauth.ExecAdminBindingAnnotation] != "" ||
+		!reflect.DeepEqual(agent.Spec, retained.Spec) || !reflect.DeepEqual(agent.Finalizers, retained.Finalizers) ||
+		!reflect.DeepEqual(agent.Status.Policy, retained.Status.Policy) || agent.UID != retained.UID {
+		t.Fatal("withdrawal must remove only the exec binding and preserve the held lifetime")
+	}
+	h.converge(t)
+	if !h.state(t).CanRun() {
+		t.Fatal("CetiAdmin did not recover after held-target withdrawal")
+	}
+}
+
 func TestCetiAdminBoundAgentDeletionAPIServer(t *testing.T) {
 	ctrl.SetLogger(logr.Discard())
-	for _, kind := range []api.AgentType{api.AgentTypeCustom, api.AgentTypeOpenClaw, api.AgentTypeHermes} {
-		t.Run(string(kind), func(t *testing.T) {
+	for _, name := range []string{"custom", "openclaw", "hermes", "held-helm-hermes"} {
+		t.Run(name, func(t *testing.T) {
+			kind := api.AgentType(name)
+			if name == "held-helm-hermes" {
+				kind = api.AgentTypeHermes
+			}
 			h := newCetiAdminInstallationAPI(t, true)
 			if _, err := envtest.InstallCRDs(h.config, envtest.CRDInstallOptions{CRDs: []*apiextensionsv1.CustomResourceDefinition{
 				nativeStartExternalCRD("networking.istio.io", "v1beta1", "VirtualService", "virtualservices"),
@@ -41,6 +89,15 @@ func TestCetiAdminBoundAgentDeletionAPIServer(t *testing.T) {
 				t.Fatal(err)
 			}
 			agent, namespace := h.target(t, "retained", "engineering", kind, true)
+			if name == "held-helm-hermes" {
+				namespace.Labels["app.kubernetes.io/managed-by"] = "cetirun-operator"
+				if err := h.operator.Update(h.ctx, namespace); err != nil {
+					t.Fatal(err)
+				}
+				if err := h.admin.Delete(h.ctx, namespace); !apierrors.IsForbidden(err) {
+					t.Fatalf("managed namespace deletion must remain Operator-only: %v", err)
+				}
+			}
 			// Seed an already retained runtime. Neither its old chart nor its image
 			// is fetched or upgraded by the candidate control-plane cleanup.
 			agent.Spec.Suspended = true
@@ -86,6 +143,11 @@ func TestCetiAdminBoundAgentDeletionAPIServer(t *testing.T) {
 					Containers: []corev1.Container{{Name: "cetirun", Image: *agent.Spec.Agent.Image}},
 				}},
 			}}
+			if name == "held-helm-hermes" {
+				workload.OwnerReferences = nil
+				workload.Labels = map[string]string{"app.kubernetes.io/managed-by": "Helm"}
+				workload.Annotations = map[string]string{"meta.helm.sh/release-name": helmReleaseName(agent.Name), "meta.helm.sh/release-namespace": namespace.Name}
+			}
 			h.create(t, workload)
 			policy, policyBinding := retainedDeletionExecPolicy(agent, namespace)
 			h.create(t, policy)
@@ -97,6 +159,13 @@ func TestCetiAdminBoundAgentDeletionAPIServer(t *testing.T) {
 			}
 			if agent.Annotations[registryauth.ExecAdminBindingAnnotation] == "" {
 				t.Fatal("retained fixture never acquired its Operator-managed binding")
+			}
+			if name == "held-helm-hermes" {
+				before := agent.DeepCopy()
+				agent.Finalizers = append(agent.Finalizers, sandbox.HoldFinalizer)
+				if err := h.operator.Patch(h.ctx, agent, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+					t.Fatal(err)
+				}
 			}
 			retained := agent.DeepCopy()
 			machine := h.machine(t)

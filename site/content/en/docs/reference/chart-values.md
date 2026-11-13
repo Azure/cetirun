@@ -47,7 +47,7 @@ Source: [app/cetirun-chart/values.yaml]({{< repo "app/cetirun-chart/values.yaml"
 | `serviceAccount` |  | Service account configuration |
 | `serviceAccount.create` | `false` | Specifies whether a service account should be created |
 | `serviceAccount.annotations` | `{}` | Annotations to add to the service account |
-| `serviceAccount.name` | `""` | The name of the service account to use (BYO service account). If set, no ClusterRoleBinding is created (user manages RBAC externally). If not set and create is true, a name is generated using the fullname template. |
+| `serviceAccount.name` | `""` | The name of the service account to use (an existing service account). If set, no ClusterRoleBinding is created (user manages RBAC externally). If not set and create is true, a name is generated using the fullname template. |
 | `serviceAccount.role` | `""` | Bind service account to a built-in Kubernetes ClusterRole for kubectl access. Options: "" (none), "view" (read-only), "cluster-admin" (full access) Only applies when using chart-created service account (name is not set). When set, automounts the service account token automatically. |
 | `serviceAccount.automountToken` | `null` | Explicitly control the default Kubernetes API token mount. Null preserves historical behavior. The operator forces false for Agent Identity workloads. |
 | `azureWorkloadIdentity` |  | Azure Workload Identity configuration Enables Azure AD workload identity for the pod, allowing passwordless access to Azure resources (Key Vault, Storage, etc.) via managed identity. Requires: AKS cluster with OIDC issuer and workload identity enabled, plus a federated credential linking the managed identity to this service account. |
@@ -61,20 +61,20 @@ Source: [app/cetirun-chart/values.yaml]({{< repo "app/cetirun-chart/values.yaml"
 | `connectionsMCP.namespace` | `"cetirun-tools"` |  |
 | `connectionsMCP.serviceAccount` | `"cetirun-connections-mcp"` |  |
 | `connectionsMCP.caSecretName` | `""` |  |
-| `aiGateway` |  | Required platform AI Gateway access, supplied by the Operator. Every Agent uses an Agent-scoped virtual key; upstream credentials stay in the Gateway. Policy-owned network controls enforce the allowed egress. |
+| `aiGateway` |  | Required platform AI Gateway access, supplied by the Operator. Every Agent uses an Agent-scoped virtual key; upstream credentials stay in the AI Gateway. Policy-owned network controls enforce the allowed egress. |
 | `aiGateway.enabled` | `true` |  |
 | `aiGateway.keySecretName` | `""` | Secret in the release namespace holding this Agent's virtual key |
 | `aiGateway.keySecretKey` | `"api-key"` | Key within that Secret |
-| `aiGateway.models` | `[]` | Models the Gateway offers this Agent: id (the Gateway model name), name, and optionally contextWindow and maxTokens. The Agent is configured with all of them; secrets.model names the default. |
+| `aiGateway.models` | `[]` | Models the AI Gateway offers this Agent: id (the AI Gateway model name), name, and optionally contextWindow and maxTokens. The Agent is configured with all of them; secrets.model names the default. |
 | `aiGateway.visionModels` | `[]` | Ids of the models in models that accept images, supplied by the Operator. OpenClaw and Hermes send images with a request to these models. For other models, Hermes has the image described first, and OpenClaw has another model describe it. |
 | `aiGateway.reasoningModels` | `[]` | Ids of the models in models that reason, supplied by the Operator. OpenClaw offers its reasoning levels for these models and sends the level the owner picks as the reasoning effort. For other models, OpenClaw offers only the level off. Hermes does not read this value. |
-| `aiGateway.hermes` |  | Hermes on the Gateway: the environment variable that carries the Agent's key to Hermes' Gateway provider. The chart sets it from the key Secret, so the key is in neither Hermes' configuration nor its .env file; init removes any assignment of it from .env, which Hermes loads over its environment. Since the key replaces the variable in the container, it must be an API key variable, ending in _API_KEY, such as OPENAI_API_KEY, and not one the chart writes into .env for another setting, such as BRAVE_API_KEY. |
+| `aiGateway.hermes` |  | Hermes on the AI Gateway: the environment variable that carries the Agent's key to Hermes' AI Gateway provider. The chart sets it from the key Secret, so the key is in neither Hermes' configuration nor its .env file; init removes any assignment of it from .env, which Hermes loads over its environment. Since the key replaces the variable in the container, it must be an API key variable, ending in _API_KEY, such as OPENAI_API_KEY, and not one the chart writes into .env for another setting, such as BRAVE_API_KEY. |
 | `aiGateway.hermes.keyEnv` | `"CETIRUN_GATEWAY_API_KEY"` |  |
-| `aiGateway.copilotProxy` |  | Per-Agent GitHub Copilot proxy: a small LiteLLM, in its own Pod, that holds the owner's Copilot sign-in. Only the Gateway reaches it; the Agent reaches Copilot models through the Gateway with its own key. |
+| `aiGateway.copilotProxy` |  | Per-Agent GitHub Copilot proxy: a small LiteLLM, in its own Pod, that holds the owner's Copilot sign-in. Only the AI Gateway reaches it; the Agent reaches Copilot models through the AI Gateway with its own key. |
 | `aiGateway.copilotProxy.enabled` | `false` |  |
 | `aiGateway.copilotProxy.replicaCount` | `null` | Operator-owned component replicas; null retains standalone Helm behavior. |
 | `aiGateway.copilotProxy.image` | `""` | Proxy image: the AI Gateway image |
-| `aiGateway.copilotProxy.masterKeySecretName` | `""` | Secret holding the proxy's master key (key master-key), which the Gateway's routes to the proxy carry |
+| `aiGateway.copilotProxy.masterKeySecretName` | `""` | Secret holding the proxy's master key (key master-key), which the AI Gateway's routes to the proxy carry |
 | `aiGateway.copilotProxy.masterKeyId` | `""` | Identifies the current master key without revealing it (the start of its SHA-256 hash). The proxy reads the key when it starts, so a new value restarts it. |
 | `aiGateway.copilotProxy.signInGeneration` | `""` | Generation of the GitHub Copilot sign-in whose models the Agent uses. The proxy keeps the Copilot token it exchanged until that token expires, so a new sign-in, possibly of another account, restarts it. |
 | `aiGateway.copilotProxy.tokenSecretName` | `""` | Secret holding the owner's GitHub token (key access-token), written by the Portal at sign-in. The proxy waits for it. |
@@ -195,12 +195,12 @@ Source: [app/cetirun-chart/values.yaml]({{< repo "app/cetirun-chart/values.yaml"
 | `secrets.braveApiKey` | `""` | Web search API keys (enables tools.web.search when set) Brave Search - structured results with free tier |
 | `secrets.perplexityApiKey` | `""` |  |
 | `secrets.tailscaleAuthKey` | `""` | Tailscale auth key (from https://login.tailscale.com/admin/settings/keys) Recommended: Reusable + Ephemeral. Setting this enables Tailscale (no separate toggle). |
-| `secrets.provider` | `"openai"` | Gateway wire protocol; upstream providers are configured in the Gateway. |
+| `secrets.provider` | `"openai"` | AI Gateway wire protocol; upstream providers are configured in the AI Gateway. |
 | `secrets.model` | `""` | Model name. The operator supplies this from spec.model or its deployment default. |
-| `secrets.authMode` | `""` | Gateway authentication mode. |
+| `secrets.authMode` | `""` | AI Gateway authentication mode. |
 | `secrets.apiKey` | `""` | Removed direct credential setting; must remain empty. |
 | `secrets.apiBase` | `""` | Operator-selected AI Gateway URL. |
-| `secrets.openclawGatewayToken` | `""` | Gateway authentication token |
+| `secrets.openclawGatewayToken` | `""` | OpenClaw gateway token |
 | `livenessProbe` |  | Liveness probe configuration |
 | `livenessProbe.enabled` | `true` |  |
 | `livenessProbe.initialDelaySeconds` | `30` |  |
@@ -297,7 +297,7 @@ Source: [app/cetirun-chart/values.yaml]({{< repo "app/cetirun-chart/values.yaml"
 | `podDisruptionBudget.minAvailable` | `1` | Minimum available pods (number or percentage) |
 | `execRestriction` |  | Block kubectl exec into openclaw pods via ValidatingAdmissionPolicy. Requires Kubernetes 1.30+. |
 | `execRestriction.enabled` | `true` | Enable the exec restriction policy |
-| `memoryContext.enabled` | `true` | Install the helper in ordinary Agent runtimes; protected Sandbox rendering retains its upstream contract. |
+| `memoryContext.enabled` | `true` | Install the helper in standard Agents; protected Sandbox rendering retains its upstream contract. |
 | `memoryContext.image` | `""` | Optional full image reference; empty follows global.registry/version. |
 | `memoryContext.home` | `"/home/vibe"` |  |
 
@@ -362,13 +362,13 @@ Source: [app/cetirun-platform/values.yaml]({{< repo "app/cetirun-platform/values
 | `cetirun-portal.sandboxStorage.platformNamespace` | `""` |  |
 | `cetirun-portal.sandboxStorage.platformConfigMapName` | `""` |  |
 | `cetirun-portal.sandboxStorage.defaultStorageClassName` | `""` |  |
-| `cetirun-ai-gateway.enabled` | `true` | Install the AI Gateway with the operator and Portal. Turn it off only when a Gateway is installed separately in the operator namespace. |
+| `cetirun-ai-gateway.enabled` | `true` | Install the AI Gateway with the operator and Portal. Turn it off only when an AI Gateway is installed separately in the operator namespace. |
 | `cetirun-ai-gateway.fullnameOverride` | `"cetirun-ai-gateway"` |  |
 | `cetirun-ai-gateway.operatorIntegration` | `true` |  |
-| `cetirun-ai-gateway.models` | `[]` | Shared model candidates granted through the selected AgentPolicy. The Gateway chart generates their deployment IDs and per-model access groups; the old cetirun-shared group is not a policy grant. Each model still needs pricing while the Gateway blocks unpriced models. An empty list is valid, but console-only models are not trusted shared bindings. Agents need an authorized model entitlement before model use. |
-| `cetirun-ai-gateway.metrics` |  | LiteLLM's Prometheus metrics, on a port of their own in each Gateway pod, which the ADX-Mon collection of cetirun-observability scrapes. |
+| `cetirun-ai-gateway.models` | `[]` | Shared model candidates granted through the selected AgentPolicy. The AI Gateway chart generates their deployment IDs and per-model access groups; the old cetirun-shared group is not a policy grant. Each model still needs pricing while the AI Gateway blocks unpriced models. An empty list is valid, but console-only models are not trusted shared bindings. Agents need an authorized model entitlement before model use. |
+| `cetirun-ai-gateway.metrics` |  | LiteLLM's Prometheus metrics, on a port of their own in each AI Gateway pod, which the ADX-Mon collection of cetirun-observability scrapes. |
 | `cetirun-ai-gateway.metrics.enabled` | `true` |  |
-| `cetirun-ai-gateway.spendLogs` |  | LiteLLM's own row per call in its database, which the console's request log pages read, kept for seven days (the Gateway chart's spendLogs.retention). The Gateway's request log on stdout records each call as well, and the cluster's log collection keeps it outside the database. The database rows also hold each call's prompt and response unless spendLogs.storePrompts is false. The stdout request log never does. |
+| `cetirun-ai-gateway.spendLogs` |  | LiteLLM's own row per call in its database, which the console's request log pages read, kept for seven days (the AI Gateway chart's spendLogs.retention). The AI Gateway's request log on stdout records each call as well, and the cluster's log collection keeps it outside the database. The database rows also hold each call's prompt and response unless spendLogs.storePrompts is false. The stdout request log never does. |
 | `cetirun-ai-gateway.spendLogs.enabled` | `true` |  |
 | `cetirun-observability` |  | ADX-Mon collection of the platform's and the Agents' logs, Kubernetes events and metrics into Azure Data Explorer. make deploy turns it on with the observability block of its environment file, which names the Kusto cluster, the databases and the ingestor's Azure identity. |
 | `cetirun-observability.enabled` | `false` |  |
@@ -487,11 +487,11 @@ Source: [app/cetirun-operator/chart/values.yaml]({{< repo "app/cetirun-operator/
 | `sandboxSources.skillsClaimName` | `"skills"` |  |
 | `sandboxSources.skillsCatalogConfigMapName` | `""` | Optional separate operator-namespace ConfigMap containing skills.json. Requires owned bootstrap. Selects already-published Blob NFS content by Team UID; creates only retained, read-only static PV/PVC bindings, never source content. |
 | `sandboxSources.placementConfigMapName` | `""` | Optional placement.json registry for durable namespace/HOME/Node binding. Must match sandboxAdmission.placementConfigMapName. Records the existing reservation after zero-replica staging; does not enroll Nodes or grant execution. |
-| `sandboxSources.helpers` |  | Approved helpers for legacy held preparation only. Reconciled (v2) lifetimes use runtime chart helper settings instead. |
+| `sandboxSources.helpers` |  | Approved helpers for legacy held preparation only. Reconciled (v2) lifetimes use agent chart helper settings instead. |
 | `sandboxSources.helpers.doctor` | `false` |  |
 | `sandboxSources.helpers.logger` | `false` |  |
 | `sandboxSources.helpers.desktop` | `false` |  |
-| `skillMarketplace.enabled` | `false` | Use the Skill Marketplace for Team skills of policy-bound Agents. On, every skill entry without the npm: prefix names a marketplace skill: the operator stops passing such Team entries to the reserved ClawHub list, and refuses an Agent whose skillOverrides add or remove one (marketplace skills are selected on the Team). The operator lists the policy-bound Teams for the worker and gives each of their Agents a read-only claim of the storage, named sandboxSources.skillsClaimName. The worker, a separate Deployment that runs the operator image, synchronizes the repository, publishes the Team releases and writes the catalog. Requires sandboxSources.enabled and sandboxSources.nativeExecution, and an empty sandboxSources.skillsCatalogConfigMapName: the marketplace replaces the published skills catalog. |
+| `skillMarketplace.enabled` | `false` | Use the Skill Marketplace for Team skills of Sandbox Agents. On, every skill entry without the npm: prefix names a marketplace skill: the operator stops passing such Team entries to the reserved ClawHub list, and refuses an Agent whose skillOverrides add or remove one (marketplace skills are selected on the Team). The operator lists the policy-bound Teams for the worker and gives each of their Agents a read-only claim of the storage, named sandboxSources.skillsClaimName. The worker, a separate Deployment that runs the operator image, synchronizes the repository, publishes the Team releases and writes the catalog. Requires sandboxSources.enabled and sandboxSources.nativeExecution, and an empty sandboxSources.skillsCatalogConfigMapName: the marketplace replaces the published skills catalog. |
 | `skillMarketplace.repository` |  | One Git repository of skills for the installation. Every directory that holds a SKILL.md below `path` is a skill. The worker never executes repository content. |
 | `skillMarketplace.repository.url` | `""` | https:// URL, or ssh:// / user@host:path with auth ssh. Never put credentials in the URL. |
 | `skillMarketplace.repository.ref` | `""` | Branch, tag or full ref. Empty uses the remote HEAD. |
@@ -541,21 +541,21 @@ Source: [app/cetirun-operator/chart/values.yaml]({{< repo "app/cetirun-operator/
 | `agentIdentity.blueprintClientId` | `""` |  |
 | `agentIdentity.namePrefix` | `"cetirun-agent"` |  |
 | `agentIdentity.brokerURL` | `"http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"` |  |
-| `aiGateway` |  | Platform AI Gateway integration: the operator gives each built-in Agent its own virtual key and routes OpenClaw model traffic through the Gateway: the shared models every Agent may use and, per Agent, a GitHub Copilot proxy for the owner's account. The cetirun-platform chart installs the Gateway and requires this. While the operator has a Gateway to call, with enabled on or url set, deleting an Agent waits until its key is revoked; turning enabled off stops creating keys, not revoking them. Set neither to stop calling the Gateway, for example once it has been removed. |
+| `aiGateway` |  | Platform AI Gateway integration: the operator gives each built-in Agent its own virtual key and routes OpenClaw model traffic through the AI Gateway: the shared models every Agent may use and, per Agent, a GitHub Copilot proxy for the owner's account. The cetirun-platform chart installs the AI Gateway and requires this. While the operator has an AI Gateway to call, with enabled on or url set, deleting an Agent waits until its key is revoked; turning enabled off stops creating keys, not revoking them. Set neither to stop calling the AI Gateway, for example once it has been removed. |
 | `aiGateway.enabled` | `true` | Every Agent harness takes its models from the platform AI Gateway. The platform chart requires it. Disabling it holds Agent execution; there is no platform-provided direct-provider fallback. |
-| `aiGateway.url` | `""` | In-cluster Gateway URL: http://\<service>.\<namespace>.svc.cluster.local:\<port>. Empty means the Gateway named cetirun-ai-gateway in the operator namespace, where the platform chart installs it. |
+| `aiGateway.url` | `""` | In-cluster AI Gateway URL: http://\<service>.\<namespace>.svc.cluster.local:\<port>. Empty means the AI Gateway named cetirun-ai-gateway in the operator namespace, where the platform chart installs it. |
 | `aiGateway.peerNamespaces` | `[]` | Namespaces of the AI Gateway Pods that native Sandbox egress selects by the protected label sandbox.cetirun.microsoft.com/peer. With native execution on, an admission policy in these namespaces lets only the ReplicaSet controller create Pods with that label and refuses changes to it on existing Pods. Empty means the operator namespace. |
-| `aiGateway.masterKeySecret` |  | Secret in the operator namespace that holds the Gateway master key. A Gateway installed separately must run in the operator namespace, or its master key Secret must be copied there. |
+| `aiGateway.masterKeySecret` |  | Secret in the operator namespace that holds the AI Gateway master key. An AI Gateway installed separately must run in the operator namespace, or its master key Secret must be copied there. |
 | `aiGateway.masterKeySecret.name` | `"cetirun-ai-gateway-auth"` |  |
 | `aiGateway.masterKeySecret.key` | `"master-key"` |  |
-| `aiGateway.defaultBudget` | `10000` | Monthly budget in US dollars written when a key is created. Changes an administrator makes later in the Gateway are kept. |
-| `aiGateway.defaultModel` | `""` | Preferred default model of Agents that name none. Agents fall back to the first model available to them when it is not: a shared model, then a GitHub Copilot model, and an auto router of the Gateway only when nothing else is offered (a router picks a model per request, at a cost the Agent did not choose). Naming a router here or on the Agent makes it the default. |
+| `aiGateway.defaultBudget` | `10000` | Monthly budget in US dollars written when a key is created. Changes an administrator makes later in the AI Gateway are kept. |
+| `aiGateway.defaultModel` | `""` | Preferred default model of Agents that name none. Agents fall back to the first model available to them when it is not: a shared model, then a GitHub Copilot model, and an auto router of the AI Gateway only when nothing else is offered (a router picks a model per request, at a cost the Agent did not choose). Naming a router here or on the Agent makes it the default. |
 | `aiGateway.copilotProxy` |  | Per-Agent GitHub Copilot proxy. Agents keep it unless their owner disables GitHub Copilot. It runs the AI Gateway image. When it is disabled here, OpenClaw Agents use only shared models, and the Portal creates no Agent while no shared model is offered. |
 | `aiGateway.copilotProxy.enabled` | `true` |  |
 | `aiGateway.copilotProxy.image.repository` | `"mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-ai-gateway"` |  |
 | `aiGateway.copilotProxy.image.tag` | `""` | Defaults to the release version. |
 | `aiGateway.copilotProxy.image.digest` | `""` |  |
-| `aiGateway.copilotProxy.healthChecks` |  | Let the Gateway's background health checks probe each Agent's GitHub Copilot routes. Off by default: each probe is a real model call on the Agent owner's own Copilot allowance, about 288 a day per route at the Gateway's default interval, and an Agent has a route per Copilot model. On, the routes are probed like the Gateway's other deployments (its router.healthChecks), without retries. Off, a route whose proxy cannot be reached stays in rotation: where it shares a model's name with shared deployments, the requests that land on it fail until the proxy is back. A change registers each Agent's routes again within about ten minutes, without restarting Agents. |
+| `aiGateway.copilotProxy.healthChecks` |  | Let the AI Gateway's background health checks probe each Agent's GitHub Copilot routes. Off by default: each probe is a real model call on the Agent owner's own Copilot allowance, about 288 a day per route at the AI Gateway's default interval, and an Agent has a route per Copilot model. On, the routes are probed like the AI Gateway's other deployments (its router.healthChecks), without retries. Off, a route whose proxy cannot be reached stays in rotation: where it shares a model's name with shared deployments, the requests that land on it fail until the proxy is back. A change registers each Agent's routes again within about ten minutes, without restarting Agents. |
 | `aiGateway.copilotProxy.healthChecks.enabled` | `false` |  |
 | `skillsStorageAccount` | `""` | Override the chart's default skills storage account. Empty string (default) means use the chart's built-in default. Deprecated: use cetirun.helmValues.skills.storageAccount instead. |
 | `customRuntime` |  | Provisioning for approved Custom images. Qualify each image's UID/GID against this HOME storage. Every approved image must consume the platform AI Gateway binding (OPENAI_BASE_URL and OPENAI_API_KEY). |
@@ -570,7 +570,7 @@ Source: [app/cetirun-operator/chart/values.yaml]({{< repo "app/cetirun-operator/
 | `azure` |  | Azure workload identity configuration for the Operator. |
 | `azure.clientId` | `""` | Client ID of the operator's managed identity (enables workload identity). |
 | `memoryContext.enabled` | `true` | Install Memory for Agents with a compatible pinned Chart. Request-level restrictions still apply. |
-| `memoryContext.image` | `""` | Optional full image reference. Empty uses cetirun-memory-context from each selected runtime chart's registry and appVersion. A digest may pin exact bytes. |
+| `memoryContext.image` | `""` | Optional full image reference. Empty uses cetirun-memory-context from each selected agent chart's registry and appVersion. A digest may pin exact bytes. |
 
 <!-- /generated: values-operator -->
 
@@ -607,7 +607,7 @@ Source: [app/cetirun-portal/chart/values.yaml]({{< repo "app/cetirun-portal/char
 | `istio.gatewayServiceAccount` | `"aks-istio-ingressgateway-external"` | Service account name of the Istio ingress gateway (used by AuthorizationPolicy). |
 | `istio.legacyHost` | `""` | Optional legacy hostname to redirect to istio.host with a 301. Set to the old portal subdomain (e.g. portal.example.com) to redirect old users. Leave empty to disable. |
 | `istio.sidecarInjection` | `true` | Confirm the target namespace has Istio sidecar injection enabled. Must be set to true; the AuthorizationPolicy requires mTLS enforcement. |
-| `istio.internalAuthMTLS` | `false` | Require mesh mTLS on the internal ownership endpoint. Enable together with the Istio chart's portalAuth.mtls settings before forwarding ID tokens. |
+| `istio.internalAuthMTLS` | `true` | Require mesh mTLS and verified Entra identity on the internal ownership endpoint. Configure the Portal tenant, client and host together with the Istio chart's `portalAuth.mtls` settings. Explicit `false` selects legacy alias-only ownership. |
 | `resources` |  | Resource requests/limits. |
 | `resources.requests.cpu` | `"100m"` |  |
 | `resources.requests.memory` | `"256Mi"` |  |

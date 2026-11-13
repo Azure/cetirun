@@ -10,7 +10,8 @@ it for the commands in these steps.
 
 1. Find the component that you want to change in the
    [repository layout]({{< repo "DEVELOPMENT.md" >}}#repository-layout). For
-   what each component does, refer to [Architecture](../../concepts/architecture/).
+   what each component does, refer to
+   [Components](../../concepts/architecture/#components).
 2. Install the tools for that component. Refer to
    [Tools and dependencies]({{< repo "DEVELOPMENT.md" >}}#tools-and-dependencies).
 3. Download the Go, npm, and site dependencies one time. This step needs

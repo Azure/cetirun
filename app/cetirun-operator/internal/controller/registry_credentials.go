@@ -427,32 +427,8 @@ func (r *AgentReconciler) suspendRegistryBuiltin(ctx context.Context, agent *api
 	}
 	beforeStatus := agent.DeepCopy().Status
 	keyErr := r.suspendGatewayKey(ctx, agent)
-	sts := &appsv1.StatefulSet{}
-	key := client.ObjectKey{Namespace: instanceNamespace(agent.Name), Name: instanceServiceName(agent.Name)}
-	err := r.customReader().Get(ctx, key, sts)
-	if err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, fmt.Errorf("inspect workload for suspension")
-	}
-	if err == nil {
-		ns := &corev1.Namespace{}
-		if r.customReader().Get(ctx, client.ObjectKey{Name: key.Namespace}, ns) != nil || !hasAgentOwner(ns, agent) {
-			return ctrl.Result{}, fmt.Errorf("workload namespace ownership must be confirmed before suspension")
-		}
-		if release := sts.Annotations["meta.helm.sh/release-name"]; release != "" && release != helmReleaseName(agent.Name) {
-			return ctrl.Result{}, fmt.Errorf("workload ownership conflicts with suspension")
-		}
-		if sts.Spec.Replicas == nil || *sts.Spec.Replicas != 0 {
-			before := sts.DeepCopy()
-			zero := int32(0)
-			sts.Spec.Replicas = &zero
-			if sts.Spec.PersistentVolumeClaimRetentionPolicy == nil {
-				sts.Spec.PersistentVolumeClaimRetentionPolicy = &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{WhenDeleted: appsv1.RetainPersistentVolumeClaimRetentionPolicyType}
-			}
-			sts.Spec.PersistentVolumeClaimRetentionPolicy.WhenScaled = appsv1.RetainPersistentVolumeClaimRetentionPolicyType
-			if err := r.Patch(ctx, sts, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
+	if err := r.stopRegistryBuiltinWorkload(ctx, agent); err != nil {
+		return ctrl.Result{}, err
 	}
 	if err := r.suspendCopilotProxy(ctx, agent); err != nil {
 		return ctrl.Result{}, err
@@ -479,6 +455,36 @@ func (r *AgentReconciler) suspendRegistryBuiltin(ctx context.Context, agent *api
 		r.EventRecorder.Event(agent, corev1.EventTypeNormal, "InstanceSuspended", "Instance suspended — scaled to zero and ingress removed")
 	}
 	return ctrl.Result{RequeueAfter: time.Minute}, keyErr
+}
+
+func (r *AgentReconciler) stopRegistryBuiltinWorkload(ctx context.Context, agent *api.Agent) error {
+	sts := &appsv1.StatefulSet{}
+	key := client.ObjectKey{Namespace: instanceNamespace(agent.Name), Name: instanceServiceName(agent.Name)}
+	err := r.customReader().Get(ctx, key, sts)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect workload for suspension")
+	}
+	ns := &corev1.Namespace{}
+	if r.customReader().Get(ctx, client.ObjectKey{Name: key.Namespace}, ns) != nil || !hasAgentOwner(ns, agent) {
+		return fmt.Errorf("workload namespace ownership must be confirmed before suspension")
+	}
+	if release := sts.Annotations["meta.helm.sh/release-name"]; release != "" && release != helmReleaseName(agent.Name) {
+		return fmt.Errorf("workload ownership conflicts with suspension")
+	}
+	if sts.Spec.Replicas == nil || *sts.Spec.Replicas != 0 {
+		before := sts.DeepCopy()
+		zero := int32(0)
+		sts.Spec.Replicas = &zero
+		if sts.Spec.PersistentVolumeClaimRetentionPolicy == nil {
+			sts.Spec.PersistentVolumeClaimRetentionPolicy = &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{WhenDeleted: appsv1.RetainPersistentVolumeClaimRetentionPolicyType}
+		}
+		sts.Spec.PersistentVolumeClaimRetentionPolicy.WhenScaled = appsv1.RetainPersistentVolumeClaimRetentionPolicyType
+		return r.Patch(ctx, sts, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+	}
+	return nil
 }
 
 // suspendCopilotProxy stops the Agent's GitHub Copilot proxy, which its chart

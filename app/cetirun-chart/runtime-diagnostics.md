@@ -1,14 +1,14 @@
 # Issue 486 runtime-call diagnostics
 
 This note records the offline evidence for the runtime-call observations in
-#486. It uses synthetic files, loopback servers, and stubbed Gateway behavior
+#486. It uses synthetic files, loopback servers, and stubbed AI Gateway behavior
 only. It does not contact a model provider or establish provider capacity,
 authorization, billing, or browser acceptance.
 
 ## OpenClaw effective model selection
 
 The native OpenClaw chart writes both `agents.defaults.model.primary` and
-`agents.defaults.utilityModel` from the approved Gateway model. Its HOME
+`agents.defaults.utilityModel` from the approved AI Gateway model. Its HOME
 initializer replaces saved primary, fallback, model-list, and Gateway override
 state with that rendered configuration. The synthetic regression below verifies
 that behavior across two initialization runs.
@@ -20,28 +20,29 @@ pytest -q app/cetirun-chart/tests/test_init_home.py \
 
 This does not explain an observed request for a different upstream model. A
 live diagnosis must compare the Agent's final rendered configuration with the
-Gateway model entry (`model_name`, `litellm_params.model`,
-`model_info.base_model`, and `model_info.mode`) and the requested upstream API.
+AI Gateway model entry and the requested upstream API. In the model entry,
+compare `model_name`, `litellm_params.model`, `model_info.base_model`, and
+`model_info.mode`.
 Those values distinguish a chart/configuration mismatch from a LiteLLM alias
 or provider-side route. Do not broaden model grants before that comparison.
 
 ## Hermes reasoning parameters
 
-The Gateway guard has synthetic coverage for the LiteLLM rules that remove
-sampling parameters from reasoning models and remove `reasoning_effort: none`
-when an Azure deployment refuses that value. It also removes the whole
-reasoning effort (`reasoning_effort`, or the Responses API `reasoning` object)
-when the LiteLLM-supported parameters of every candidate deployment lack
-`reasoning_effort`. A GitHub Copilot route, or a model that LiteLLM does not
-know, counts as a deployment that takes the effort. Otherwise the guard leaves
-effort values to LiteLLM/provider compatibility checks.
+The AI Gateway guard has synthetic coverage for the LiteLLM rules that remove
+sampling parameters from reasoning models. It also has coverage for the removal
+of `reasoning_effort: none` when an Azure deployment refuses that value. It also
+removes the whole reasoning effort (`reasoning_effort`, or the Responses API
+`reasoning` object) when the LiteLLM-supported parameters of every candidate
+deployment lack `reasoning_effort`. A GitHub Copilot route, or a model that
+LiteLLM does not know, counts as a deployment that takes the effort. Otherwise
+the guard leaves effort values to LiteLLM/provider compatibility checks.
 
 ```text
 python3 -B -m unittest scripts.tests.test_ai_gateway_guard -v
 ```
 
 An `UnsupportedParamsError` therefore still requires the actual request model,
-API mode, effort value, tools, and Gateway model metadata. In particular,
+API mode, effort value, tools, and AI Gateway model metadata. In particular,
 `model_info.base_model` and `model_info.supports_reasoning` affect LiteLLM
 recognition differently for Azure and OpenAI-style routes. A later provider
 429 is separate capacity/request-sizing evidence; this check does not retry or
@@ -60,16 +61,16 @@ go -C app/cetirun-portal test ./internal/chatproxy -count=1
 ```
 
 With the locked Pi dependencies installed, `npm --prefix examples/pi-agent test`
-passes the Gateway adapter's loopback success, tool, output-limit, failure,
-and redirect cases as well as the SSE server checks. The suite reports 34
+passes the AI Gateway adapter's loopback success, tool, output-limit, failure,
+and redirect cases. It also passes the SSE server checks. The suite reports 34
 passed tests and four image-specific skips. Those skips do not qualify the
 built image's npm/Undici behavior. These checks do not prove that a browser
 rendered a provider failure or that a real provider request completed.
 
 ## Required live evidence before a runtime change
 
-For each runtime, capture one bounded synthetic prompt's selected alias, final
-Agent configuration, Gateway route metadata, API mode, terminal status, and a
-safe correlation/time reference. Do not repeat unchanged 403 or 429 requests.
-Capacity, effective model selection, Hermes parameter compatibility, and
-browser rendering remain live acceptance work.
+For each agent type, use one bounded synthetic prompt. Capture its selected
+alias, the final Agent configuration, AI Gateway route metadata, API mode,
+terminal status, and a safe correlation/time reference. Do not repeat unchanged
+403 or 429 requests. Capacity, effective model selection, Hermes parameter
+compatibility, and browser rendering remain live acceptance work.

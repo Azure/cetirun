@@ -410,18 +410,52 @@ class ReleaseInventoryTests(unittest.TestCase):
                             "with open(os.environ['ARTIFACT_COMMANDS'], 'a') as out:\n"
                             "    out.write(json.dumps(sys.argv) + '\\n')\n")
             tool.chmod(0o755)
-        for component in ("operator", "portal"):
-            result = subprocess.run(["bash", f"app/cetirun-{component}/deploy/deploy.sh"], env={**self.env, "VERSION": "1.2.3-dev.1", "ISTIO_HOST": "portal.example.com"},
+        for component, local_chart in (("operator", ""), ("portal", ""), ("portal", "true")):
+            result = subprocess.run(["bash", f"app/cetirun-{component}/deploy/deploy.sh"], env={
+                **self.env, "VERSION": "1.2.3-dev.1", "ISTIO_HOST": "portal.example.com", "LOCAL_CHART": local_chart,
+                "ENTRA_TENANT_ID": "11111111-1111-1111-1111-111111111111",
+                "PORTAL_OIDC_CLIENT_ID": "22222222-2222-2222-2222-222222222222"},
                                     cwd=ROOT, capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             upgrade = next(c for c in reversed(self.commands()) if len(c) > 2 and c[1:3] == ["upgrade", "--install"])
-            self.assertIn(f"oci://{self.env['REGISTRY']}/helm/cetirun-{component}", upgrade)
-            self.assertEqual(upgrade[upgrade.index("--version") + 1], "1.2.3-dev.1")
+            if local_chart:
+                self.assertEqual(Path(upgrade[4]).resolve(), ROOT / f"app/cetirun-{component}/chart")
+                self.assertNotIn("--version", upgrade)
+            else:
+                self.assertIn(f"oci://{self.env['REGISTRY']}/helm/cetirun-{component}", upgrade)
+                self.assertEqual(upgrade[upgrade.index("--version") + 1], "1.2.3-dev.1")
             self.assertIn(f"image.repository={self.env['REGISTRY']}/cetirun-{component}", upgrade)
             self.assertIn("image.tag=1.2.3-dev.1", upgrade)
             if component == "operator":
                 self.assertIn(f"cetirun.chart.repoURL=oci://{self.env['REGISTRY']}/helm/cetirun", upgrade)
                 self.assertIn("cetirun.chart.version=1.2.3-dev.1", upgrade)
+            else:
+                self.assertIn("istio.internalAuthMTLS=true", upgrade)
+                for value in ("istio.host=portal.example.com",
+                              "agentIdentity.tenantId=11111111-1111-1111-1111-111111111111",
+                              "agentIdentity.portalClientId=22222222-2222-2222-2222-222222222222"):
+                    self.assertEqual(upgrade[upgrade.index(value) - 1], "--set-string")
+
+    def test_portal_deploy_rejects_missing_identity_before_cluster_calls(self):
+        for name in ("helm", "kubectl"):
+            tool = self.root / name
+            tool.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
+                            "with open(os.environ['ARTIFACT_COMMANDS'], 'a') as out:\n"
+                            "    out.write(json.dumps(sys.argv) + '\\n')\n"
+                            "sys.exit(99)\n")
+            tool.chmod(0o755)
+        required = {"ISTIO_HOST": "portal.example.com",
+                    "ENTRA_TENANT_ID": "11111111-1111-1111-1111-111111111111",
+                    "PORTAL_OIDC_CLIENT_ID": "22222222-2222-2222-2222-222222222222"}
+        for field in required:
+            with self.subTest(field=field):
+                env = {**self.env, **required}
+                env.pop(field)
+                result = subprocess.run(["bash", "app/cetirun-portal/deploy/deploy.sh"],
+                                        env=env, cwd=ROOT, capture_output=True, text=True, timeout=30)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(field + " must be set", result.stderr)
+                self.assertEqual(self.commands(), [])
 
     def test_inventory_and_plan_do_not_contact_registry(self):
         self.assertEqual(set(self.run_release("list", "images").stdout.splitlines()), IMAGES)

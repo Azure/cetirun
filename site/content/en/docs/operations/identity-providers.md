@@ -7,8 +7,8 @@ weight: 35
 Use this page to prepare the external providers that owner-scoped Agent
 connections use. Follow [Prepare Agent connections](../agent-identity/)
 through its encryption and namespace preparation. Then use this page at the
-provider registration step, before you deploy the Broker. For Entra
-applications and Azure or Microsoft delegated identities,
+provider registration step, before you deploy the Agent Identity Broker. For
+Entra applications and Azure or Microsoft delegated identities,
 use [Prepare Microsoft Entra Agent Identity](../entra-agent-identity/).
 
 The provider clients below are for Agent connections. They are separate from
@@ -52,7 +52,7 @@ connected user already has is acceptable for the Agent. This method is
 intentionally broad. The Broker requests the `repo` scope and acts as the
 connected user. This method cannot limit a personal OAuth token to selected
 repositories, branches, or individual GitHub operations. For
-repository-specific access, we recommend that you use the shared App.
+repository-specific access, use the shared App.
 
 ### Register the OAuth App
 
@@ -215,8 +215,8 @@ Then use a disposable message or calendar that has no customer data.
 
 If an `invalid_grant` is recorded, the user must sign in again. For a provider
 401 error, examine the connection status and the token refresh before you ask
-for reauthentication. Addition of another Agent binding does not repair
-expired or revoked provider authorization.
+the user to select **Sign in again**. Addition of another Agent binding does
+not repair expired or revoked provider authorization.
 
 ## Restart the Broker
 
@@ -264,6 +264,6 @@ not revoke external consent. Users or provider administrators must revoke the
 OAuth App in GitHub or Google separately. For the shared App, they must also
 uninstall or change the App's GitHub installation.
 
-Platform operators are still trusted to operate the Broker and its credential
+Platform administrators are still trusted to operate the Broker and its credential
 encryption authority. Encryption at rest does not make a hosted provider
 credential unavailable to the platform.

@@ -1,11 +1,11 @@
 ---
 title: "Examples"
-description: "Example Custom Agents and native Sandbox walkthroughs, with what each needs and where to start."
+description: "Example Custom Agents and Sandbox Agent walkthroughs, with what each needs and where to start."
 weight: 40
 ---
 
 The [`examples/`]({{< repo "examples" "tree" >}}) directory contains Custom
-Agent images and a native Sandbox walkthrough. Use them to try CetiRun or as a
+Agent images and a Sandbox Agent walkthrough. Use them to try CetiRun or as a
 start for your own image. Each example has a README with its full steps.
 
 | Example | What it shows | Runs offline | Needs a cluster | Start here |
@@ -20,25 +20,24 @@ start for your own image. Each example has a README with its full steps.
 
 ## Requirements for Custom Agent examples
 
-- Custom provisioning is enabled by default. An administrator adds the exact
-  image digest to `customRuntime.approvedImages` of the Operator. For the image
-  contract,
-  refer to [Custom runtime](../agent-harness/#custom-runtime).
+- Custom provisioning is enabled by default. A platform administrator adds the
+  exact image digest to `customRuntime.approvedImages` of the Operator. For the
+  image contract, refer to [Custom Agents](../agent-harness/#custom-runtime).
 - The image needs a registry that the cluster can pull from. Build and publish
-  the image yourself, or use a published release image that your administrator
-  approved.
+  the image yourself, or use a published release image that your platform
+  administrator approved.
 - The VS Code Server example needs your acceptance of the
   [VS Code Server license](https://code.visualstudio.com/license/server)
   before you build the image.
 - In the coding agents example, each Agent uses the model routes that the AI
   Gateway authorizes for it. Some routes need a separate provider account.
 
-## Requirements for native Sandbox examples
+## Requirements for Sandbox Agent examples
 
-- An administrator registers the Sandbox platform and enables Sandbox
+- A platform administrator registers the Sandbox platform and enables Sandbox
   execution in the Operator. Refer to
   [Policy-bound Teams](../../operations/policy-teams/).
-- A Team binds the Sandbox to an AgentPolicy that allows the Agent's model.
+- A Team binds the Sandbox to an Agent Policy that allows the Agent's model.
 - The local validation needs Docker, Kind, and QEMU/KVM on a workstation that
   you own. Do not use it on AKS.
 

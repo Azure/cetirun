@@ -5,7 +5,7 @@ weight: 39
 ---
 
 Portal Chat lets the owner of a Custom Agent chat with it in the Portal when
-the Agent has no native Web UI. This page is for platform administrators. For
+the Agent has no Web UI. This page is for platform administrators. For
 the user tasks, refer to [Chat with a Custom Agent](../../guides/custom-chat/).
 
 Portal Chat is available for Custom Agents that set `spec.agent.port` and leave
@@ -17,7 +17,7 @@ tools, or manage image-specific login.
 ## Enable the feature
 
 Chat is disabled by default. Before you enable it, deploy compatible Portal,
-Operator and runtime charts. The runtime chart must advertise
+Operator and agent charts. The agent chart must advertise
 `cetirun.microsoft.com/portal-chat: v1`. Older pinned charts keep their
 behavior and do not get Chat access automatically.
 
@@ -37,9 +37,9 @@ and normal upgrades. A change to the realm selects a different browser-history
 partition.
 
 The trusted authentication gateway must supply its opaque
-`X-Auth-Request-User` identity header. Agent Identity and its Broker are not
-necessary for Chat. If that subject is not present, Chat does not use an alias
-as a fallback.
+`X-Auth-Request-User` identity header. Agent Identity and the Agent Identity
+Broker are not necessary for Chat. If that subject is not present, Chat does
+not use an alias as a fallback.
 
 This setting does not enable Custom provisioning, approve an image, add a Team
 entitlement, or release a Sandbox hold. Keep those controls in place. The
@@ -66,10 +66,10 @@ access to Services, NetworkPolicies, CiliumNetworkPolicies and private
 VirtualServices. Chat itself reads no Secrets, and it does no exec operations
 and no workload writes.
 
-For governed Custom, `chat.sandboxStateNamespace` selects the Operator
-namespace. By default, this is the configured Gateway catalog namespace, which
-is usually `cetirun-system`. The setting also grants read-only access to the
-execution ConfigMaps in that namespace.
+For Custom Sandbox Agents, `chat.sandboxStateNamespace` selects the Operator
+namespace. By default, this is the configured AI Gateway catalog namespace,
+which is usually `cetirun-system`. The setting also grants read-only access to
+the execution ConfigMaps in that namespace.
 
 ## Request validation and routing
 
@@ -86,7 +86,7 @@ fallback.
 
 Operator configures the private caller through the common policy compiler.
 Without Sandbox selection, Operator configures it through the Custom bindings
-that already exist instead. It does not publish the Chat port on the public
+that already exist instead. It does not publish the Chat port on the ingress
 gateway. A common-policy caller change is part of normal policy reprojection.
 Non-Sandbox caller changes that affect only bindings do not replace an
 unchanged Agent Pod.
@@ -102,7 +102,7 @@ concurrency limits.
 
 ## Browser storage boundary
 
-Portal and Agent Web UIs can use paths on the same hostname. In normal Chat
+The Portal and the Agent UIs can use paths on the same hostname. In normal Chat
 operations, account and Agent UID partitions keep records separate. But paths
 and database names do not isolate same-origin scripts. A Custom Web UI on that
 origin can access the browser storage that holds these records.
@@ -110,8 +110,8 @@ origin can access the browser storage that holds these records.
 A deployment that uses local history accepts this shared browser trust
 boundary. To protect against untrusted same-origin applications, a separate
 origin is necessary. This feature does not supply that protection. Keep the
-gateway-only Portal access restrictions. Before you open access, validate the
-actual NetworkPolicy and mesh path.
+restrictions that allow access to the Portal only through the ingress gateway.
+Before you open access, validate the actual NetworkPolicy and mesh path.
 
 The platform cannot remotely remove the copies of the history that browsers
 already saved.

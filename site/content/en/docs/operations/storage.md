@@ -4,33 +4,33 @@ description: "Configure Azure Disk home volumes and the shared Azure Blob storag
 weight: 20
 ---
 
-CetiRun uses persistent volumes for instance workspaces and separate read-only
-volumes for shared skills.
+CetiRun uses persistent volumes for the HOME of each Agent and separate
+read-only volumes for shared skills.
 
 ## Two storage purposes
 
-An instance’s `/home/vibe` contains private workspace state. By default, the
-operator, the standalone runtime chart, and the Custom provider all use
-a `100Gi` `ReadWriteOnce` home claim with the StorageClass named `default`. On
+The HOME of an Agent, `/home/vibe`, contains its private state. By default,
+the operator, the standalone agent chart, and Custom Agents all use a `100Gi`
+`ReadWriteOnce` home claim with the StorageClass named `default`. On
 AKS, this class uses Azure Disk. If `persistence.storageClass` is empty,
 Kubernetes selects the cluster's default class instead. That class can have a
 different name. The namespace is `cetirun-<metadata.name>`, which is not always
 the owner's alias.
 
 Sources: [controller values]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}}),
-[runtime values]({{< repo "app/cetirun-chart/values.yaml" >}}), and
+[agent chart values]({{< repo "app/cetirun-chart/values.yaml" >}}), and
 [StatefulSet storage]({{< repo "app/cetirun-chart/templates/statefulset.yaml" >}}).
 
 If `skills.shared` is enabled or a team supplies `skillStorage`, shared skills
 use a separate static PV/PVC. The agent mounts this PV/PVC read-only. The
 defaults for shared skills stay `azureblob-nfs-premium`, `ReadWriteMany`, and
-`100Gi`. The runtime chart disables `skills.shared` by default, but
+`100Gi`. The agent chart disables `skills.shared` by default, but
 `make deploy` enables it for all Agents. Refer to
 [Shared skills storage for `make deploy`](#shared-skills-storage-for-make-deploy).
 
 ## Home provisioning
 
-Hermes, OpenClaw, and Custom instances create HOME through the runtime chart's
+Hermes, OpenClaw, and Custom Agents create HOME through the agent chart's
 StatefulSet `volumeClaimTemplates`. A single Helm installation submits the
 StatefulSet. The StatefulSet controller creates the PVC and the Pod.
 
@@ -43,8 +43,8 @@ pre-created HOME PVC is not an alternative way to provision HOME.
 
 The changes to the default values do not migrate or resize claims that already
 exist. When you upgrade, keep the explicit storage settings of built-in
-instances that already exist. Custom HOME must match the configured storage
-profile and the instance's recorded claim template. A separate approved
+Agents that already exist. Custom HOME must match the configured storage
+profile and the recorded claim template of the Agent. A separate approved
 migration or expansion is still necessary to change the storage class or size
 of a claim that already exists.
 
@@ -61,10 +61,10 @@ provisioner before showing it. A configured default is only a form preference;
 it is not an approval.
 
 The Portal does not show a stale, missing, or replaced class as a choice. It
-keeps that value visible when editing an older Sandbox so that an administrator
-can make an explicit replacement. A failed source read or an empty approved
-set prevents a save. HOME access modes are declared by the selected runtime
-registration. They are not inferred from the storage driver.
+keeps that value visible when editing an older Sandbox so that a Portal
+administrator can make an explicit replacement. A failed source read or an
+empty approved set prevents a save. HOME access modes are declared by the
+selected runtime registration. They are not inferred from the storage driver.
 
 This UI behavior is not a CSI qualification. Sandbox admission and the
 controller continue to verify the selected class when configuration is saved
@@ -77,7 +77,7 @@ account and a private container (default `aks-skills`). Its top-level Bicep
 accepts `location`, `storageAccountName`, `containerName`, `tags`,
 `allowedSubnetIds`, `privateEndpointSubnetId`, `privateDnsZoneId`, and
 `publicNetworkAccess`. This account serves shared artifacts. If you provision it,
-this does not create the instance-home StorageClass or mount a volume.
+this does not create the HOME StorageClass or mount a volume.
 
 Prerequisites:
 
@@ -263,16 +263,16 @@ scaled down. The template adds that retention field only for a rendered
 Kubernetes version of at least 1.25. This setting does not override a PV's
 reclaim policy or protect a PVC from namespace deletion. The AKS `default`
 StorageClass usually uses a `Delete` reclaim policy. As a result, the deletion
-of a HOME PVC can also delete its Azure Disk. Before you delete an instance,
+of a HOME PVC can also delete its Azure Disk. Before you delete an Agent,
 examine the actual PV policy and arrange a backup, as
 [Make and restore backups](../backup-restore/) shows.
 
-The [instance deletion handler]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}})
+The [Agent deletion handler]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}})
 uninstalls Helm and deletes the entire instance namespace, which includes the
 PVCs. The PV and its data then follow the actual reclaim policy and CSI
 behavior. Suspension keeps the home of an operator-managed Agent: while the
 Agent is suspended, the Operator sets `persistence.retainPolicy: Retain`, also
-when the values select `Delete`. In a standalone runtime chart release, a
+when the values select `Delete`. In a standalone agent chart release, a
 `persistence.retainPolicy: Delete` value can delete claims on scale-down. Do
 not use suspension as a backup.
 
@@ -283,11 +283,11 @@ StorageClass and CSI driver, subnet access, and mount events. Keep sensitive
 file listings out of public diagnostics. Test restore procedures. Neither pod
 persistence nor a `Retain` policy is a substitute for backup.
 
-When immutable fields differ, the runtime's
+When immutable fields differ, the agent chart's
 [pre-upgrade/pre-rollback hook]({{< repo "app/cetirun-chart/templates/pre-upgrade-hook.yaml" >}})
 can orphan-delete and recreate a StatefulSet. It does not migrate data or
 automatically resize a PVC that already exists. After a successful chart update,
 you must examine the mounted storage class, size, and contents.
 
-Before you delete an instance or namespace, see
-[lifecycle](../../guides/lifecycle/).
+Before you delete an Agent or its namespace, read
+[Delete only with a recovery plan](../agent-lifecycle/#delete-only-with-a-recovery-plan).

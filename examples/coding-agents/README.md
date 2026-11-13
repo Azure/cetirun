@@ -12,15 +12,15 @@ introduction to CetiRun, refer to the [root README](../../README.md).
 
 ## What this example contains
 
-This example uses the Custom runtime contract. It does not add a built-in
-harness or a CRD type, and each image runs one CLI. The example hosts the
+This example uses the Custom Agent contract. It does not add a built-in
+agent type or a CRD type, and each image runs one CLI. The example hosts the
 CLIs, not the GitHub cloud agent service, Claude hosted sessions, or Codex Web.
 
 | Agent | Native runtime | Role configuration | Model route |
 | --- | --- | --- | --- |
 | `coding-copilot` | GitHub Copilot CLI | `app/profiles/.github/agents/` | GitHub Copilot through the private per-Agent Copilot proxy |
-| `coding-claude` | Claude Code | `app/profiles/.claude/agents/` | A Gateway model through an Anthropic Messages-compatible route |
-| `coding-codex` | Codex CLI | `app/profiles/.codex/agents/` | A Gateway model through the Responses API, with translation to the provider protocol |
+| `coding-claude` | Claude Code | `app/profiles/.claude/agents/` | An AI Gateway model through an Anthropic Messages-compatible route |
+| `coding-codex` | Codex CLI | `app/profiles/.codex/agents/` | An AI Gateway model through the Responses API, with translation to the provider protocol |
 
 The Agent names are examples. The three CLIs use different native agent
 formats and delegation mechanisms. They do not share a prompt-runner
@@ -42,11 +42,11 @@ runtime in the main container.
 | Layer | Responsibility | Boundary |
 | --- | --- | --- |
 | Authentication | Istio, cert-manager, OAuth2 Proxy, and the OIDC issuer supply HTTPS, OIDC with PKCE, and controlled owner claims | Portal sign-in is not Copilot model authorization or a GitHub repository connection |
-| Control plane | The Portal manages instances, admission validates resources, and the Operator reconciles workloads, policies, storage, and model access | These are managed Agent resources, not standalone Deployments |
+| Control plane | The Portal manages Agents, admission validates resources, and the Operator reconciles workloads, policies, storage, and model access | These are managed Agent resources, not standalone Deployments |
 | Execution | One native runtime in each main container, a separate terminal workload, and Memory init for each Agent | The runtime user is `1024:1024`. Agents do not share a writable HOME or checkout. |
 | Storage | A private ReadWriteOnce HOME for each Agent, with the workspace at `$HOME/workspace` | RWO is not physical single-writer fencing. Sessions do not move between runtimes. |
 | Model access | The AI Gateway authorizes each Virtual Key, its model groups, budget, and rate limits | The runtime containers get no raw provider keys |
-| Delivery | Your registry stores the pinned images and the Runtime Helm Chart | Deployment inputs and credentials stay outside Git |
+| Delivery | Your registry stores the pinned images and the agent chart | Deployment inputs and credentials stay outside Git |
 
 **Interactive request path:** owner sign-in, terminal and session
 authorization, restricted exec, `coding-tui`, the native CLI, the AI Gateway,
@@ -56,7 +56,7 @@ manages resources. It does not replace the native inference loop.
 `server.py` also has private HTTP and SSE endpoints: `/healthz`, `/v1/models`,
 and `/v1/chat/completions`. The application has no public authentication layer
 of its own. Keep **`webUI: false`**. Do not expose its port 8080 through an
-anonymous Ingress or LoadBalancer. For the Gateway, skills, and Memory
+anonymous Ingress or LoadBalancer. For the AI Gateway, skills, and Memory
 integration and the HTTP limits, refer to the
 [application README](app/README.md).
 
@@ -66,10 +66,10 @@ integration and the HTTP limits, refer to the
 | --- | --- |
 | Workstation | macOS or Linux with Bash, Git, and Make. Python 3.11 or later for the checks. |
 | Image builds | Docker with Buildx. The images are `linux/amd64` only. An ARM64 workstation needs a builder that can target amd64. |
-| Platform | An installed CetiRun platform with the AI Gateway and Custom runtime support. Refer to [Install CetiRun](../../site/content/en/docs/getting-started/platform.md). |
+| Platform | An installed CetiRun platform with the AI Gateway and Custom Agent support. Refer to [Install CetiRun](../../site/content/en/docs/getting-started/platform.md). |
 | Nodes | Linux amd64 nodes that can pull from your registry |
 | Storage | A StorageClass for the private HOME of each Agent |
-| Model access | For the Copilot Agent, a GitHub account with Copilot access to the selected model. For the other two Agents, Gateway models that the Agent policy allows. |
+| Model access | For the Copilot Agent, a GitHub account with Copilot access to the selected model. For the other two Agents, AI Gateway models that the Agent Policy allows. |
 
 The runtime images contain Python, Git, and the HOME initialization tools.
 Each image installs and runs one pinned native CLI. The images also contain
@@ -112,8 +112,8 @@ maintains.
    docker push registry.example.com/team/cetirun-claude:<tag>
    ```
 
-2. Custom provisioning is enabled by default. Ask an administrator to approve
-   the three digests in the platform values:
+2. Custom provisioning is enabled by default. Ask a platform administrator to
+   approve the three digests in the platform values:
 
    ```yaml
    cetirun-operator:
@@ -162,7 +162,7 @@ maintains.
 
 The platform creates the namespace, the HOME PVC, and the Virtual Key of each
 Agent. Do not create them in advance. For the Custom image contract, refer to
-[Custom runtime](../../site/content/en/docs/reference/agent-harness.md#custom-runtime).
+[Custom Agent](../../site/content/en/docs/reference/agent-harness.md#custom-runtime).
 
 ## Use the Agents
 
@@ -181,8 +181,8 @@ For Copilot, first complete the **GitHub Copilot sign-in** of the owner in the
 Portal. The account must have access to the model that you select. This
 authorization of the model source does not give repository access. It does not
 replace a separate product sign-in of the CLI. Claude Code and Codex use their
-Gateway Virtual Keys. Do not paste provider keys into the terminal, and do not
-change to personal provider endpoints.
+AI Gateway Virtual Keys. Do not paste provider keys into the terminal, and do
+not change to personal provider endpoints.
 
 ### 2. Check the authorized catalog
 
@@ -205,7 +205,7 @@ coding-tui --model "$MODEL"
 
 `doctor` must report `"requestedModelAuthorized": true`. It does not test
 inference. If the catalog lookup or the authorization fails, stop. Do not
-select a different model or bypass the Gateway.
+select a different model or bypass the AI Gateway.
 
 ### 3. Do a coding smoke test
 
@@ -236,7 +236,7 @@ of the provider.
 
 ### Credentials
 
-Keep provider credentials in the Gateway Secrets. A credential rotation needs
+Keep provider credentials in the AI Gateway Secrets. A credential rotation needs
 an approved rollout and a verification. Never publish private keys, bootstrap credentials,
 kubeconfigs, or deployment records that contain secrets.
 
@@ -244,13 +244,13 @@ kubeconfigs, or deployment records that contain secrets.
 
 Claude Code with a third-party model through Anthropic Messages is a
 compatibility route, not a claim of official Claude model support. Codex needs
-a Gateway route that translates Responses requests to the protocol of the
+an AI Gateway route that translates Responses requests to the protocol of the
 provider. Test tools, streaming, errors, and cancellation for each combination
 of CLI, provider, and model.
 
-Gateway budgets and spend are management values. They are not provider
+AI Gateway budgets and spend are management values. They are not provider
 invoices or provider quotas. Make sure that the terms of the provider allow
-the Gateway forwarding and the intended use before real use. Do not run
+the AI Gateway forwarding and the intended use before real use. Do not run
 unattended paid API tests. Cancellation does not undo tool side effects or
 charges.
 

@@ -9,8 +9,8 @@ separate **Agent Identity** for each Agent. This guide is for the platform and
 Entra administrators who operate the cluster. It is not for an Agent owner who
 assigns Azure RBAC after an identity exists. Start with
 [Prepare Agent connections](../agent-identity/) for the shared Key Vault, TLS,
-Broker, MCP, network, and Portal prerequisites. Those prerequisites apply here
-also.
+Agent Identity Broker, Connections MCP, network, and Portal prerequisites.
+Those prerequisites apply here also.
 
 An Agent Identity is an `agentIdentity` service principal in Microsoft Entra
 Agent ID. The operator creates it from one **Agent Identity Blueprint**. The Blueprint is an
@@ -255,9 +255,9 @@ run, decide on one of these approaches:
   the owner selects Agent Identity. It also sets the field when the Agent Policy
   of the Team makes an identity necessary. Set **Agent Identity** to
   **Disabled** in every Agent Policy. Then the Portal and the Operator refuse
-  identity requests for the Agents of the Teams of these Policies. This setting
-  does not apply to Agents without a Team, or of a Team without a policy. Tell
-  their owners not to select Agent Identity.
+  identity requests for the Agents of the Teams of these Agent Policies. This
+  setting does not apply to Agents without a Team, or of a Team without an
+  Agent Policy. Tell their owners not to select Agent Identity.
 - Install with the component charts instead of `make deploy`, and keep
   `agentIdentity.enabled` and `cleanupEnabled` false. Refer to
   [Use the component chart directly]({{< repo "app/cetirun-platform/README.md" >}}#use-the-component-chart-directly).

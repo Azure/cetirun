@@ -48,8 +48,8 @@ python3 -B scripts/sandbox-platform-qualify.py deployment-preflight \
   --admission-service-account-uid "$ADMISSION_SERVICE_ACCOUNT_UID"
 ```
 
-If the target uses AKS system namespace exclusions, an administrator can add
-`--allow-aks-system-exclusions`; it accepts only the documented exact AKS
+If the target uses AKS system namespace exclusions, a platform administrator can
+add `--allow-aks-system-exclusions`; it accepts only the documented exact AKS
 selectors. It does not alter a webhook or its failure policy.
 
 ## Synthetic network smoke

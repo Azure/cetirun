@@ -123,8 +123,8 @@ param agentNodePoolMinCount = 1
 param agent2NodePoolMinCount = 0
 ```
 
-Before you create instances, examine the installed `kata-vm-isolation`
-RuntimeClass and its scheduling rules. The runtime chart does not create that
+Before you create Agents, examine the installed `kata-vm-isolation`
+RuntimeClass and its scheduling rules. The agent chart does not create that
 class. Its `nodeSelector` and `tolerations` are empty by default. The chart
 does not explicitly select the Bicep `agent` or `agent2` pool. Examine the
 scheduling configuration of the RuntimeClass. When necessary, set the workload
@@ -177,8 +177,8 @@ The helper does these steps:
 4. It validates and creates the Bicep deployment.
 5. It fetches credentials with `--overwrite-existing`.
 6. It creates the Container Insights agent settings in `kube-system`, for the
-   case that Container Insights is turned on later; the template turns it
-   off. These settings are in `infra/cluster/container-azm-ms-agentconfig.yaml`.
+   case that Container Insights is enabled later. The template disables it.
+   These settings are in `infra/cluster/container-azm-ms-agentconfig.yaml`.
    If it cannot create them, it stops with an error. If the cluster already
    has agent settings, the helper does not change them. In that case, it stops
    unless these settings disable environment variable collection.
@@ -242,8 +242,9 @@ An example is **Azure Kubernetes Service RBAC Cluster Admin**. A new role
 assignment can take some minutes to apply.
 
 If you assigned the role to yourself at the scope of the resource group before
-the helper ran, it already applies to this cluster. For other administrators,
-assign the role at the scope of the cluster. **Connected, mutating:**
+the helper ran, it already applies to this cluster. For other platform
+administrators, assign the role at the scope of the cluster.
+**Connected, mutating:**
 
 ```bash
 CLUSTER_ID=$(az aks show --resource-group example-rg --name example-cluster \
@@ -300,14 +301,15 @@ all Entra registrations, issue TLS certificates, or prepare end-user provider
 accounts. Complete the [platform checklist](../../getting-started/platform/).
 For Agent connections, follow [Prepare Agent connections](../agent-identity/). Use
 it for the encryption identity and Key Vault key, provider applications,
-certificates, and the coordinated Broker/MCP/Portal configuration.
+certificates, and the coordinated configuration of the Agent Identity Broker,
+MCP, and Portal.
 
 For a single public Portal hostname, configure `publicTLS` in the environment
 file after AKS managed Istio and Gateway API exist. The normal `make deploy`
 path can configure an Azure Public IP DNS label or verify a user-managed A/CNAME
-record, then issue the externally managed Gateway certificate. It does not
-configure Entra, Broker/MCP or admission certificates, and it does not change
-the cluster template.
+record. Then it issues the externally managed certificate of the ingress gateway.
+It does not configure Entra, Broker/MCP or admission certificates, and it does
+not change the cluster template.
 
 The cluster template turns Container Insights and managed Prometheus off. By
 default, it creates the Azure Data Explorer resources of the
@@ -345,7 +347,7 @@ az monitor account delete --yes --resource-group example-rg \
 
 The earlier template created no workspace when `logAnalyticsWorkspaceId` named
 an existing one, and no resources for Container Insights or managed Prometheus
-that its parameters turned off. A parameter file that still sets
+that its parameters disabled. A parameter file that still sets
 `enableContainerInsights`, `enablePrometheusMetrics`, or
 `logAnalyticsWorkspaceId` does not compile with this template, so the helper
 stops before any Azure call. Remove these parameters from the file.
@@ -444,9 +446,9 @@ Gateway prompts and responses:
 - The database `CetiRunContent` with 7 days of retention, its table `Content`,
   the ingestion mapping `ContentMapping`, and the function `GatewayContent()`.
 - The user-assigned managed identity `<clusterName>-gateway-content`, with a
-  federated credential for the Gateway's service account `cetirun-ai-gateway`
-  in `platformNamespace`, and the roles `Ingestor` and `Viewer` on that
-  database only. The ADX-Mon ingestor gets no role on it.
+  federated credential for the AI Gateway's service account
+  `cetirun-ai-gateway` in `platformNamespace`. It has the roles `Ingestor` and
+  `Viewer` on that database only. The ADX-Mon ingestor gets no role on it.
 - The role `Viewer` for the principals in `adxContentViewers`. Every prompt and
   response is in this database: keep the list short.
 
@@ -454,7 +456,7 @@ The outputs `adxContentDatabase` and `adxContentClientId` are
 `observability.content.database` and `observability.content.clientId` of the
 `make deploy` environment file: the AI Gateway's `content.adx.database` and
 `content.clientId`. See "Content in Azure Data Explorer" in the
-[Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}).
+[AI Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}).
 
 The logs database also gets the materialized view `GatewayDailyUsage`: the AI
 Gateway calls, tokens, and spend of each day per Agent, owner, Team, and model.

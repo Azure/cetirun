@@ -8,8 +8,8 @@ It is restricted to a newly reserved, single-use User pool that contains one VM
 and has autoscaling disabled. The cluster must have exactly one untouched
 system pool and no other User pools.
 
-**No Agent workloads are allowed in this API-only qualification.** The operator
-must keep the task-owned cluster isolated from unrelated users and workloads
+**No Agent workloads are allowed in this API-only qualification.** The platform
+administrator must keep the task-owned cluster isolated from unrelated users and workloads
 for the entire experiment. A run tag is ownership correlation, not admission
 isolation. This command does not establish that isolation or supply a
 `CheckQuiesced` provider, pre-start/data-plane validation, an execution permit,
@@ -205,7 +205,7 @@ Use a private, durable directory outside the checkout as `PRIVATE_DIRECTORY`.
    if they have the expected tag. A failed or unauthorized read is not an
    absence result.
 
-2. The authorized operator creates the new pool, not this command. The pool
+2. An authorized platform administrator creates the new pool, not this command. The pool
    has one **User** VM, autoscaling explicitly disabled, and the pool tag
    `cetirun-fence-run=RUN_ID`. Do not create Agent workloads or give another
    actor access to the pool. Do not change the system pool.

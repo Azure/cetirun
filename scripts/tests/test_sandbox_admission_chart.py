@@ -83,6 +83,12 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         # These cases isolate the existing Sandbox contract. CetiAdmin's default
         # enabled path and the shared server are exercised in its own suite.
         if chart.name == "cetirun-platform":
+            portal = dict(inputs.get("cetirun-portal", {}))
+            portal.setdefault("agentIdentity", {
+                "tenantId": "11111111-1111-1111-1111-111111111111",
+                "portalClientId": "22222222-2222-2222-2222-222222222222",
+            })
+            inputs["cetirun-portal"] = portal
             operator = dict(inputs.get("cetirun-operator", {}))
             operator.setdefault("cetiadmin", {"enabled": False})
             inputs["cetirun-operator"] = operator
