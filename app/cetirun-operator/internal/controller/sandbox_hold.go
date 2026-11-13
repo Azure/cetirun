@@ -212,12 +212,21 @@ func (r *AgentReconciler) stopSandboxBuiltin(ctx context.Context, agent *cetirun
 func (r *AgentReconciler) stopSandboxBuiltinWorkload(ctx context.Context, agent *cetirunv1alpha1.Agent) error {
 	reader := r.customReader()
 	namespace := instanceNamespace(agent.Name)
-	if err := reader.Get(ctx, types.NamespacedName{Name: namespace}, &corev1.Namespace{}); err != nil {
+	ns := &corev1.Namespace{}
+	if err := reader.Get(ctx, types.NamespacedName{Name: namespace}, ns); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
 		return err
 	}
+	// An ordinary Helm Agent can retain a hold from a failed policy lookup.
+	// Only deletion may use its original ownership contract; never release the
+	// hold or use this path for an established Sandbox lifetime.
+	legacyDeletion := !agent.DeletionTimestamp.IsZero() && sandboxBuiltinOwned(ns, agent) &&
+		agent.Spec.SandboxRef == "" && agent.Status.Sandbox == nil && !sandboxbinding.Present(agent) &&
+		!controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) &&
+		!controllerutil.ContainsFinalizer(agent, sandbox.BootstrapFinalizer) &&
+		(agent.Status.AIGateway == nil || agent.Status.AIGateway.PolicyRevision == "")
 	var failures []error
 	sts := &appsv1.StatefulSet{}
 	key := types.NamespacedName{Namespace: namespace, Name: instanceServiceName(agent.Name)}
@@ -225,7 +234,9 @@ func (r *AgentReconciler) stopSandboxBuiltinWorkload(ctx context.Context, agent 
 		if !apierrors.IsNotFound(err) {
 			failures = append(failures, fmt.Errorf("inspect sandbox-held workload: %w", err))
 		}
-	} else if !sandboxBuiltinOwned(sts, agent) {
+	} else if !sandboxBuiltinOwned(sts, agent) && !(legacyDeletion && len(sts.OwnerReferences) == 0 &&
+		(sts.Annotations[customAgentUID] == "" || sts.Annotations[customAgentUID] == string(agent.UID)) &&
+		attributableRuntimeObject(sts, agent, helmReleaseName(agent.Name))) {
 		failures = append(failures, fmt.Errorf("sandbox-held workload ownership is unconfirmed; recovery is required"))
 	} else if sts.Spec.Replicas == nil || *sts.Spec.Replicas != 0 ||
 		(sts.Spec.PersistentVolumeClaimRetentionPolicy != nil &&
@@ -249,7 +260,8 @@ func (r *AgentReconciler) stopSandboxBuiltinWorkload(ctx context.Context, agent 
 		if !apierrors.IsNotFound(err) {
 			failures = append(failures, fmt.Errorf("inspect sandbox-held route: %w", err))
 		}
-	} else if !sandboxBuiltinOwned(route, agent) {
+	} else if !sandboxBuiltinOwned(route, agent) && !(legacyDeletion && route.UID != "" && len(route.OwnerReferences) == 0 &&
+		route.Labels["app.kubernetes.io/managed-by"] == "cetirun-operator" && route.Labels["app.kubernetes.io/instance"] == agent.Name) {
 		failures = append(failures, fmt.Errorf("sandbox-held route ownership is unconfirmed; recovery is required"))
 	} else if err := r.Delete(ctx, route, client.Preconditions{UID: &route.UID, ResourceVersion: &route.ResourceVersion}); err != nil && !apierrors.IsNotFound(err) {
 		failures = append(failures, fmt.Errorf("remove sandbox-held route: %w", err))

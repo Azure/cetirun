@@ -9,6 +9,8 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/cetiadmin"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -16,6 +18,94 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+func TestCetiAdminExecBindingOnHeldAgentPassesBothWebhooks(t *testing.T) {
+	for _, operation := range []string{"add", "replace", "remove"} {
+		for _, actor := range []string{"operator", "portal", "unauthenticated-operator"} {
+			t.Run(operation+"/"+actor, func(t *testing.T) {
+				f := newCetiAdminFixture(t)
+				h, err := NewHandler(f.kube, f.guard.config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				old := f.target.DeepCopy()
+				old.Finalizers = append(old.Finalizers, sandbox.HoldFinalizer)
+				old.Annotations = map[string]string{registryauth.ExecAdminBindingAnnotation: "old-binding"}
+				next := old.DeepCopy()
+				switch operation {
+				case "add":
+					delete(old.Annotations, registryauth.ExecAdminBindingAnnotation)
+				case "replace":
+					next.Annotations[registryauth.ExecAdminBindingAnnotation] = "new-binding"
+				case "remove":
+					delete(next.Annotations, registryauth.ExecAdminBindingAnnotation)
+				}
+				user := authenticationv1.UserInfo{Username: testController, Groups: []string{"system:authenticated"}}
+				if actor == "portal" {
+					user.Username = "portal"
+				}
+				if actor == "unauthenticated-operator" {
+					user.Groups = []string{"system:unauthenticated"}
+				}
+				request := adminRequest(t, admissionv1.Update, api.GroupVersion.Group, "Agent", "agents", next, old, user)
+				for name, response := range map[string]bool{"cetiadmin": f.guard.Validate(context.Background(), request).Allowed, "policy": h.Validate(context.Background(), request).Allowed} {
+					if response != (actor == "operator") {
+						t.Fatalf("%s webhook allowed=%v for %s", name, response, actor)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestCetiAdminExecBindingExceptionRejectsOtherChanges(t *testing.T) {
+	for _, mutation := range []string{"spec", "authorization", "labels", "finalizers", "owner", "status", "unknown-spec", "disabled"} {
+		t.Run(mutation, func(t *testing.T) {
+			f := newCetiAdminFixture(t)
+			config := f.guard.config
+			config.ValidationMode = ValidationCompatible
+			if mutation == "disabled" {
+				config.CetiAdmin = nil
+			}
+			h, err := NewHandler(f.kube, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			old := f.target.DeepCopy()
+			old.Finalizers = append(old.Finalizers, sandbox.HoldFinalizer)
+			old.Annotations = map[string]string{registryauth.ExecAdminBindingAnnotation: "old-binding"}
+			next := old.DeepCopy()
+			delete(next.Annotations, registryauth.ExecAdminBindingAnnotation)
+			switch mutation {
+			case "spec":
+				next.Spec.Suspended = true
+			case "authorization":
+				next.Annotations[sandboxbinding.AuthorizationAnnotation] = "changed"
+			case "labels":
+				next.Labels = map[string]string{"changed": "true"}
+			case "finalizers":
+				next.Finalizers = nil
+			case "owner":
+				next.UID = "replacement-uid"
+			case "status":
+				next.Status.Policy = &api.PolicyStatus{Phase: "Allowed"}
+			}
+			request := adminRequest(t, admissionv1.Update, api.GroupVersion.Group, "Agent", "agents", next, old,
+				authenticationv1.UserInfo{Username: testController, Groups: []string{"system:authenticated"}})
+			if mutation == "unknown-spec" {
+				var raw map[string]any
+				if err := decodeJSON(request.Object.Raw, &raw, false); err != nil {
+					t.Fatal(err)
+				}
+				raw["spec"].(map[string]any)["futureField"] = "changed"
+				request.Object.Raw = adminJSON(t, raw)
+			}
+			if response := h.Validate(context.Background(), request); response.Allowed {
+				t.Fatal("exec receipt update bypassed another protected field")
+			}
+		})
+	}
+}
 
 func TestCetiAdminExecBindingMutationAndDeletion(t *testing.T) {
 	for _, actor := range []string{"administrator", "portal", "ordinary-writer", "operator", "unauthenticated-operator", "cetiadmin"} {
