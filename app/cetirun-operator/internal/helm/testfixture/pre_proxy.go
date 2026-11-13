@@ -56,6 +56,23 @@ var laterAdditions = map[string][]string{
       "deviceAutoApprove" (dict "enabled" true))) }}
 {{- $_ := set $config "gateway" $gateway }}
 {{- end }}
+`, `{{- /* The CetiRun session log: the logger sidecar copies what this plugin writes.
+   A configuration that turns OpenClaw plugins or this plugin off keeps them off. */}}
+{{- if .Values.logger.enabled }}
+{{- $plugins := dig "plugins" (dict) $config }}
+{{- $entries := dig "entries" (dict) $plugins }}
+{{- $sessionLog := deepCopy (dig "cetirun-session-log" (dict) $entries) }}
+{{- if not (or (and (hasKey $plugins "enabled") (not $plugins.enabled)) (and (hasKey $sessionLog "enabled") (not $sessionLog.enabled))) }}
+{{- $pluginLoad := dig "load" (dict) $plugins }}
+{{- $_ := set $pluginLoad "paths" (append (dig "paths" (list) $pluginLoad) "/usr/local/lib/cetirun/openclaw-plugins/cetirun-session-log" | uniq) }}
+{{- $_ := set $plugins "load" $pluginLoad }}
+{{- $_ := set $plugins "allow" (append (dig "allow" (list) $plugins) "cetirun-session-log" | uniq) }}
+{{- $_ := set $sessionLog "enabled" true }}
+{{- $_ := set $entries "cetirun-session-log" $sessionLog }}
+{{- $_ := set $plugins "entries" $entries }}
+{{- $_ := set $config "plugins" $plugins }}
+{{- end }}
+{{- end }}
 `},
 	"values.schema.json": {`                "ingressMTLS": {"const": true, "description": "Internal common-executor managed Envoy endpoint; absent for ordinary ingress"},
 `, `                "ingressServerName": {"type": "string", "minLength": 1},
@@ -123,13 +140,21 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 			[]byte(`"default": "mcr.microsoft.com/aks/ai-runtime/cetirun/`+image+`"`),
 			[]byte(`"default": "cetirun.azurecr.io/`+image+`"`))
 	}
-	// The session logger's description later stopped naming Container Insights.
-	logger := []byte(`"description": "Session logger sidecar that tails JSONL files to stdout for the cluster's log collection"`)
-	if bytes.Count(chrt.Schema, logger) != 1 {
-		return fmt.Errorf("pre-proxy fixture requires the later session logger description")
+	// The session logger's descriptions changed later: they stopped naming
+	// Container Insights, and the logger now copies the session log plugin's records.
+	for _, change := range [][2]string{
+		{`"description": "Session logger sidecar that copies the records of the CetiRun session log to stdout for the cluster's log collection"`,
+			`"description": "Session logger sidecar that tails JSONL files to stdout for Container Insights"`},
+		{`"description": "Enable the session logger sidecar and the runtime's session log plugin"`,
+			`"description": "Enable the session logger sidecar container"`},
+		{`"description": "Interval (seconds) between reads of the session log files"`,
+			`"description": "Interval (seconds) between scans for new session files"`},
+	} {
+		if bytes.Count(chrt.Schema, []byte(change[0])) != 1 {
+			return fmt.Errorf("pre-proxy fixture requires the later session logger descriptions")
+		}
+		chrt.Schema = bytes.Replace(chrt.Schema, []byte(change[0]), []byte(change[1]), 1)
 	}
-	chrt.Schema = bytes.Replace(chrt.Schema, logger,
-		[]byte(`"description": "Session logger sidecar that tails JSONL files to stdout for Container Insights"`), 1)
 	var err error
 	chrt.Schema, err = restoreHermesWebappSchema(chrt.Schema)
 	if err != nil {

@@ -72,8 +72,11 @@ type Bindings struct {
 	ContextRevision   string
 	MemoryEnabled     bool
 	DesktopEnabled    bool
-	WebBasePath       string
-	WebInstance       string
+	// LoggerEnabled reports that the session logger sidecar runs, so the
+	// runtime's session log plugin writes the records that it copies.
+	LoggerEnabled bool
+	WebBasePath   string
+	WebInstance   string
 	// NoSignInHelper reports that the selected chart runs no in-agent model
 	// sign-in helper: the Agent's models come through the platform AI
 	// Gateway, and GitHub Copilot sign-in happens in the Portal.

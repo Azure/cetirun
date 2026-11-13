@@ -108,6 +108,7 @@ func nativeTemplateContext(agent ResolvedAgent, bindings Bindings) map[string]an
 	values := map[string]any{
 		"memoryContext":  map[string]any{"enabled": bindings.MemoryEnabled},
 		"desktop":        map[string]any{"enabled": bindings.DesktopEnabled},
+		"logger":         map[string]any{"enabled": bindings.LoggerEnabled},
 		agent.Type:       native,
 		"aiGateway":      gateway,
 		"connectionsMCP": map[string]any{"enabled": bindings.ConnectionsMCP.Enabled, "url": bindings.ConnectionsMCP.URL},

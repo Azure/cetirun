@@ -1,0 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+name: cetirun-session-log
+version: "1"
+requires_hermes: ">=0.22.7"
+description: CetiRun session log. Writes the user input, assistant output, and tool calls and results of each turn for the agent chart's logger.

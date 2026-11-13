@@ -341,6 +341,7 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 	bindings := agents.Bindings{
 		MemoryEnabled:     (values[sandboxworkload.ValuesKey] == nil || object(values[sandboxworkload.ValuesKey])["reconciled"] == true) && object(values["memoryContext"])["enabled"] == true,
 		DesktopEnabled:    object(values["desktop"])["enabled"] == true,
+		LoggerEnabled:     object(values["logger"])["enabled"] == true,
 		ProfileID:         profile.ID,
 		ChartVersion:      chrt.Metadata.Version,
 		NativeConfig:      config,

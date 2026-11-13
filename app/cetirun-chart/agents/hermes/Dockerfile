@@ -136,6 +136,7 @@ USER root
 COPY --from=hermes-build /usr/local/lib/hermes-agent/ /usr/local/lib/hermes-agent/
 COPY --from=hermes-sqlite-build /opt/sqlite-fixed/lib/libsqlite3.so.3.53.4 /usr/local/lib/hermes-agent/sqlite/
 COPY agents/hermes/plugins/cetirun-memory-context/ /usr/local/lib/hermes-agent/plugins/cetirun-memory-context/
+COPY agents/hermes/plugins/cetirun-session-log/ /usr/local/lib/hermes-agent/plugins/cetirun-session-log/
 COPY agents/hermes/pm/hermes-python agents/hermes/pm/hermes-prepare-dependencies /usr/local/bin/
 ENV LD_LIBRARY_PATH=/usr/local/lib/hermes-agent/sqlite
 RUN tdnf install -y tzdata && tdnf clean all && \

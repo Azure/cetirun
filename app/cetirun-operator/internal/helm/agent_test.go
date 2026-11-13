@@ -311,6 +311,8 @@ func TestNativeRenderBaseline(t *testing.T) {
 					// The original snapshots predate Memory; its default-on delivery
 					// has dedicated tests and must not rewrite these baselines.
 					input["memoryContext"] = map[string]any{"enabled": false}
+					// The same holds for the session log plugin of the default-on logger.
+					input["logger"] = map[string]any{"enabled": false}
 					// Pin the original StorageClass input; defaults are tested separately.
 					input["persistence"] = map[string]any{"storageClass": ""}
 					path := filepath.Join("testdata", "harness", name+".json")

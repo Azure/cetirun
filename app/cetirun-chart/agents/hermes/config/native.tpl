@@ -61,6 +61,12 @@ Licensed under the MIT License.
 {{- $_ := set $plugins "enabled" (append (dig "enabled" (list) $plugins) "cetirun-memory-context" | uniq) }}
 {{- $_ := set $config "plugins" $plugins }}
 {{- end }}
+{{- /* The CetiRun session log: the logger sidecar copies what this plugin writes. */}}
+{{- if .Values.logger.enabled }}
+{{- $plugins := dig "plugins" (dict) $config }}
+{{- $_ := set $plugins "enabled" (append (dig "enabled" (list) $plugins) "cetirun-session-log" | uniq) }}
+{{- $_ := set $config "plugins" $plugins }}
+{{- end }}
 {{- if .Values.connectionsMCP.enabled }}
 {{- $servers := dig "mcp_servers" (dict) $config }}
 {{- $_ := set $servers "cetirun-connections" (dict "url" .Values.connectionsMCP.url "transport" "streamable-http" "strict_redirect_headers" true "ssl_verify" true) }}

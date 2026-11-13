@@ -338,6 +338,23 @@ Licensed under the MIT License.
 {{- $_ := set $plugins "entries" $entries }}
 {{- $_ := set $config "plugins" $plugins }}
 {{- end }}
+{{- /* The CetiRun session log: the logger sidecar copies what this plugin writes.
+   A configuration that turns OpenClaw plugins or this plugin off keeps them off. */}}
+{{- if .Values.logger.enabled }}
+{{- $plugins := dig "plugins" (dict) $config }}
+{{- $entries := dig "entries" (dict) $plugins }}
+{{- $sessionLog := deepCopy (dig "cetirun-session-log" (dict) $entries) }}
+{{- if not (or (and (hasKey $plugins "enabled") (not $plugins.enabled)) (and (hasKey $sessionLog "enabled") (not $sessionLog.enabled))) }}
+{{- $pluginLoad := dig "load" (dict) $plugins }}
+{{- $_ := set $pluginLoad "paths" (append (dig "paths" (list) $pluginLoad) "/usr/local/lib/cetirun/openclaw-plugins/cetirun-session-log" | uniq) }}
+{{- $_ := set $plugins "load" $pluginLoad }}
+{{- $_ := set $plugins "allow" (append (dig "allow" (list) $plugins) "cetirun-session-log" | uniq) }}
+{{- $_ := set $sessionLog "enabled" true }}
+{{- $_ := set $entries "cetirun-session-log" $sessionLog }}
+{{- $_ := set $plugins "entries" $entries }}
+{{- $_ := set $config "plugins" $plugins }}
+{{- end }}
+{{- end }}
 {{- $meta := dig "meta" (dict) $config }}
 {{- $_ := set $meta "lastTouchedVersion" (.Chart.Version | default "unknown") }}
 {{- $_ := set $config "meta" $meta }}
