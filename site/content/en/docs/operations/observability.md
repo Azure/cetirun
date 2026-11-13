@@ -128,7 +128,7 @@ The cluster template creates these functions:
 |---|---|---|
 | `CetiRunLogs` | `GatewayRequests()` | One AI Gateway call with its Agent, owner, Team, model, tokens, spend, routing and outcome. No request or response content. `CallOrigin` is `health_check` for LiteLLM's own probes, the origin of the classifier for the classifier call of a router, and empty for a client's call |
 | `CetiRunLogs` | `KubeEvents()` | One Kubernetes event version |
-| `CetiRunLogs` | `AgentInventoryHistory()`, `AgentInventory()` | Each record of an Agent's namespace, owner, Team and policy; the current Agents |
+| `CetiRunLogs` | `AgentInventoryHistory()`, `AgentInventory()` | Each record of an Agent's namespace, owner, Team and Agent Policy; the current Agents |
 | `CetiRunLogs` | `InventorySnapshots()` | One complete inventory snapshot of a kind, per cluster |
 | `CetiRunAgents` | `AgentLogsWithOwner()` | Agent output with the Agent, owner and Team that had the namespace at the time |
 | `CetiRunMetrics` | `CollectionHealth(window)` | One check of the collection per cluster, with `Status` `OK`, `Warning` or `Failed` |
@@ -143,7 +143,7 @@ GatewayRequests()
 
 `CollectionHealth()` checks the last 15 minutes by default:
 
-- Platform or Gateway logs still arrive, and the metrics of the collector
+- Platform or AI Gateway logs still arrive, and the metrics of the collector
   still arrive.
 - The collector dropped no log lines, and no backlog was refused.
 - The oldest unsent data is not older than 10 minutes. Older data gives

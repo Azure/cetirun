@@ -41,7 +41,7 @@ interruption. A model response that reaches its output-token limit keeps
 `finish_reason: length`. It is not a successfully completed answer.
 
 For the platform rules beyond this example, see the
-[Custom runtime contract](../../site/content/en/docs/reference/agent-harness.md#custom-runtime).
+[Custom Agent contract](../../site/content/en/docs/reference/agent-harness.md#custom-runtime).
 
 ## Code map
 
@@ -138,17 +138,18 @@ After repository onboarding, the release pipeline publishes
 `cetirun-base`. Use an available release digest that your platform
 administrator approved.
 
-## Deploy an approved instance
+## Deploy an approved Agent
 
-Use an Operator/runtime Chart release that includes the Custom terminal and
+Use an Operator and agent chart release that includes the Custom terminal and
 its published `cetirun-terminal` image. The Operator provisions the terminal
 ServiceAccount, restricted exec access, routing, and storage. Keep the current
-gateway configuration. `ttyd.gatewayServiceAccount` must match its identity.
+ingress gateway configuration. `ttyd.gatewayServiceAccount` must match its
+identity.
 
-Custom provisioning is enabled by default; an administrator approves the exact
-image digest before an Agent can start.
+Custom provisioning is enabled by default; a platform administrator approves the
+exact image digest before an Agent can start.
 Custom platform model access always uses the AI Gateway.
-The Operator provisions the Agent's Virtual Key and private Gateway access.
+The Operator provisions the Agent's Virtual Key and private AI Gateway access.
 The image receives `OPENAI_BASE_URL` and a Secret-backed `OPENAI_API_KEY`.
 Merge these settings into the platform values:
 
@@ -164,22 +165,22 @@ cetirun-operator:
     fsGroup: 1024
 ```
 
-Gateway mode keeps its key in memory, ignores native `auth.json`, and disables
-the image's local login listener. Pi discovers models through the Gateway with
+AI Gateway mode keeps its key in memory, ignores native `auth.json`, and disables
+the image's local login listener. Pi discovers models through the AI Gateway with
 its own key and runs its tools locally. The HTTP adapter still owns no history,
 and Portal Chat supplies the context of each conversation. Automatic model and
 compaction retries are disabled.
 
 The Operator supplies authorized model limits through the platform-owned
 `CETIRUN_GATEWAY_MODEL_LIMITS` environment variable. Pi intersects these limits
-with the models discoverable using its own Gateway key. The metadata cannot
+with the models discoverable using its own AI Gateway key. The metadata cannot
 grant access to another model. A missing, invalid, or incomplete limit produces
 `model_limits_unavailable` before a completion request; Pi does not guess the
 model's context window from its name or fall back to a fixed 32K window.
-For a missing limit, an administrator must verify the Gateway's
+For a missing limit, a platform administrator must verify the AI Gateway's
 `model_info.max_input_tokens` and `model_info.max_output_tokens` for every
 eligible deployment and router answer target. Correct the authoritative model
-metadata; do not insert an instance environment override to bypass the check.
+metadata; do not insert an environment override on the Agent to bypass the check.
 
 The default output budget is 2,048 tokens, bounded by the model's output limit
 and any smaller explicit SDK caller budget. Before each model call, including
@@ -189,27 +190,27 @@ when it comes from model metadata. If the full selected budget does not fit, it 
 `context_budget_exceeded` instead of silently clamping the request to one token.
 This estimate includes the context the SDK receives, not just the owner's last
 message. Earlier tools in the same run may already have completed. Pi does not
-truncate the conversation or retry it automatically. Gateway and provider limits
-still apply; an SDK estimate is not a provider tokenizer measurement.
+truncate the conversation or retry it automatically. AI Gateway and provider
+limits still apply; an SDK estimate is not a provider tokenizer measurement.
 
 Budget diagnostics contain numeric limits and estimates, the final outbound
 cap, and request correlation identifiers. They do not contain conversation
 content, tool arguments, credentials, or model response text. Compare the Pi
-outbound cap with the corresponding Gateway observation to locate a changed
-limit. A stored Gateway cap alone does not establish where it was introduced,
+outbound cap with the corresponding AI Gateway observation to locate a changed
+limit. A stored AI Gateway cap alone does not establish where it was introduced,
 and provider `prompt_tokens` must not be substituted for the SDK estimate.
-Pi's local cost display is not the Gateway's usage ledger.
+Pi's local cost display is not the AI Gateway's usage ledger.
 
-Shared models appear only when the Gateway grants access. If Copilot is enabled,
-use **Sign in with GitHub** on the Portal Overview. The platform deploys a
-separate proxy with a chart marked `cetirun.microsoft.com/custom-copilot: v1`.
+Shared models appear only when the AI Gateway grants access. If Copilot is
+enabled, use **Sign in with GitHub** on the Portal Overview. The platform deploys
+a separate proxy with a chart marked `cetirun.microsoft.com/custom-copilot: v1`.
 Its token and proxy key never reach the Agent container or HOME. Ready with an
 empty model list means that model access is still not complete. It does not
 mean successful inference.
 
-A Gateway configuration that is not set or that failed never selects native
-login automatically. If the Gateway environment variables are partial, startup
-fails. For a platform-managed Agent, all model access uses the Gateway.
+An AI Gateway configuration that is not set or that failed never selects native
+login automatically. If the AI Gateway environment variables are partial, startup
+fails. For a platform-managed Agent, all model access uses the AI Gateway.
 
 The Operator prepares the namespace, canonical context, and HOME claim template
 in one Chart installation. The StatefulSet creates the PVC and Pod. A PVC or UID
@@ -260,10 +261,10 @@ does not reseed it. Select an image that is compatible with the user, files,
 and native sessions that exist. Deletion of an Agent deletes its namespace and
 PVCs and is not a restart procedure.
 
-### Upgrade a retained Pi instance
+### Upgrade a retained Pi Agent
 
 Updating the Operator or Portal does **not** update an existing Custom Agent's
-`spec.agent.image`. Portal's **Upgrade** action advances the Runtime Chart pin;
+`spec.agent.image`. Portal's **Upgrade** action advances the agent chart pin;
 it also leaves the Custom image unchanged. A Pi budget repair therefore needs
 an explicitly selected, approved Pi image digest. The executable and SDK live
 under `/opt/cetirun-pi` in the image; no HOME reseeding is necessary.
@@ -271,30 +272,30 @@ under `/opt/cetirun-pi` in the image; no HOME reseeding is necessary.
 Use the following procedure only in an authorized environment and after the
 candidate artifacts have been published and approved:
 
-1. Keep the instance suspended. Record its old image and Chart pins, Agent UID,
+1. Keep the Agent suspended. Record its old image and Chart pins, Agent UID,
    namespace and workload identities, and PVC UIDs and specs. Confirm there are
    no running Pods or replicas. Do not copy HOME contents or credentials into a
    diagnostic report.
 2. Deploy the compatible control plane and approve the new Pi image digest in
    the platform's Custom image configuration. Preserve the existing storage
-   profile, username, Team, Policy, Sandbox, and model grants.
-3. Keep a compatible Runtime Chart pin. The historical Custom templates from
+   profile, username, Team, Agent Policy, Sandbox, and model grants.
+3. Keep a compatible agent chart pin. The historical Custom templates from
    source `97224f57` already render the Harness environment list; metadata
    delivery does not itself require changing their Chart contract. Verify the
    actual selected Chart, not just the currently installed control plane. If
    that Chart does not support the required Custom contract, explicitly use
    **Upgrade** to select the platform's qualified Chart version first.
-4. Reload the instance and use Portal's edit operation to select the approved
+4. Reload the Agent and use Portal's edit operation to select the approved
    Pi digest. The API equivalent is `PATCH /api/v1/instances/{name}` with the
    current `uid`, `resourceVersion`, and `agent.image`. Reload between separate
    edits; do not bypass stale-object or admission checks. Keep `suspended: true`.
-   If any step fails, leave the instance suspended.
+   If any step fails, leave the Agent suspended.
 5. Resume normally. Require Ready at the current generation, confirm the actual
    running image digest and the projected model limits, and compare the retained
    namespace/workload/PVC identities and PVC specs with the baseline.
 6. Submit one fresh synthetic exact-marker prompt through authenticated Portal
    Chat, without retries. Capture the marker, terminal `finish_reason: stop`,
-   and `[DONE]`, and correlate the numeric Pi/Gateway budget observations. Only
+   and `[DONE]`, and correlate the numeric Pi/AI Gateway budget observations. Only
    after this succeeds, check browser-local history across normal suspend/resume.
    This does not establish server/HOME conversation persistence.
 7. Suspend normally and verify shutdown and PVC continuity. If qualification
@@ -309,8 +310,8 @@ Portal, mesh, provider, or storage path. The historical one-token response in
 [#516](https://github.com/Azure/cetirun/issues/516) remains distinct from proof
 that the SDK introduced that particular request's limit.
 
-Only `ttyd.enabled` is an instance override. The terminal image, port, and
-gateway identity belong in the Operator's platform values, not in
+Only `ttyd.enabled` is a per-Agent override. The terminal image, port, and
+ingress gateway identity belong in the Operator's platform values, not in
 `spec.helm.values`. Desktop is independent.
 `spec.helm.values.desktop.enabled: false` disables Desktop but does not disable
 Terminal.
@@ -318,11 +319,11 @@ Terminal.
 ## Open Pi from the Portal
 
 For web chat, enable [Portal Chat](../../site/content/en/docs/guides/custom-chat.md).
-Then select **Chat** in the instance. The Portal saves conversations in this
+Then select **Chat** in the Agent. The Portal saves conversations in this
 browser and sends their context with each request. Pi runs the model and tools.
 This history is separate from Pi's native terminal sessions.
 
-Open the instance and select **Terminal**. Then run:
+Open the Agent and select **Terminal**. Then run:
 
 ```bash
 pi-tui          # Continue the most recent saved native session
@@ -334,7 +335,7 @@ It tries `zsh`, `bash`, and then `sh`. This image does not install or start
 ttyd. The browser uses `/<instance>/term/`. By default, the terminal Service
 uses port 7681, which is separate from the Agent's HTTP port.
 
-In Gateway mode, model login stays in Portal Overview. In image-owned mode,
+In AI Gateway mode, model login stays in Portal Overview. In image-owned mode,
 approve Pi's Copilot model-policy updates before you use
 `/login github-copilot`. Then select a model with `/model`. Complete the GitHub
 device flow with your own approved account. Terminal access does not log you in

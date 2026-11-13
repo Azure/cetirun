@@ -17,14 +17,14 @@ users. A persistent volume or a `Retain` setting is not a backup.
 
 | Data | Location | Effect of a loss |
 | --- | --- | --- |
-| Agent HOME | The HOME PVC of each Agent, in its namespace `cetirun-<agent>`. By default, a 100 GiB Azure Disk of the `default` StorageClass | The workspace files, the Memory notes in `$HOME/.cetirun/memory`, and the settings that the Agent keeps in HOME are lost |
+| Agent HOME | The HOME PVC of each Agent, in its namespace `cetirun-<agent>`. By default, a 100 GiB Azure Disk of the `default` StorageClass | The files of the Agent, the Memory notes in `$HOME/.cetirun/memory`, and the settings that the Agent keeps in HOME are lost |
 | AI Gateway database | The PVC `data-cetirun-ai-gateway-postgresql-0` in `cetirun-system` | The model keys of the Agents, the budgets and spend, the models that the console added, and the console settings are lost |
 | AI Gateway Secrets that you created | `cetirun-ai-gateway-auth`, `gateway-provider-keys`, and `gateway-valkey-auth` in `cetirun-system` | A new salt key makes the models that the console added unusable |
 | Database password | `cetirun-ai-gateway-postgresql` in `cetirun-system`. The chart generates it | `make deploy` refuses to continue while the database volume exists without this Secret |
 | OAuth2 Proxy cookie key | `oauth2-proxy-credentials` in `cetirun-istio`. The chart generates it | The upgrade of the Istio release fails until you restore the Secret |
 | Password of the OAuth2 Proxy session store | `oauth2-proxy-sessions` in `cetirun-istio`. The chart generates it | `make deploy` refuses to continue while the session store or its PVC exists without this Secret |
 | Certificates, keys, and other Secrets that you supply | The Secrets that [Certificates and credentials](../certificates/) lists with the source "You" | `make deploy` stops in its checks, and the components that use them fail |
-| Key Vault key of the connection records | `identity.keyVaultKeyUrl` | The Broker cannot decrypt the connection records |
+| Key Vault key of the connection records | `identity.keyVaultKeyUrl` | The Agent Identity Broker cannot decrypt the connection records |
 | Shared skills and the Skill Marketplace | Their Blob NFS containers | The Agents do not get the skills. Keep the source of the material, for example the Git repository of the Skill Marketplace |
 | Environment file | Outside the repository | You must write the inputs of `make deploy` again |
 
@@ -57,7 +57,7 @@ done
 ```
 
 The HOME PVC of a standard Agent has a name that starts with `data-`. The HOME
-PVC of a policy-bound Agent has no labels. Its name is `home`, the default of
+PVC of a Sandbox Agent has no labels. Its name is `home`, the default of
 `platform.values.cetirun-operator.sandboxSources.homeClaimName`.
 
 CetiRun has no procedure to restore a snapshot into an existing Agent. A

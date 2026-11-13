@@ -35,8 +35,8 @@ admission administrator to use the Admin pages.
 | Page | Path | What it changes | Resource |
 | --- | --- | --- | --- |
 | **Teams** | `/admin/teams` | The Agent Policy, the allowed Sandboxes, and the default Sandbox of each Team. Also the member context, the skills, and the smart-routing models. **Details** shows the compatibility report of the Team | `Team` |
-| **Agent policies** | `/admin/policies` | The harnesses, skills, shared models, GitHub Copilot, budget, request limits, identity, Sandbox selection, security, network, and ingress mode of each Policy | `AgentPolicy` |
-| **Sandboxes** | `/admin/sandboxes` | The runtime, the resources of the Agent and its helpers, the HOME StorageClass and size, and the scratch size | `Sandbox` |
+| **Agent policies** | `/admin/policies` | The allowed agent types, skills, shared models, GitHub Copilot, budget, request limits, identity, Sandbox selection, security, network, and ingress mode of each Agent Policy | `AgentPolicy` |
+| **Sandboxes** | `/admin/sandboxes` | The isolation type (**Runtime**), the resources of the Agent and its helpers, the HOME StorageClass and size, and the scratch size | `Sandbox` |
 | **Skills** | `/admin/skills` | Nothing. It shows the state of the Skill Marketplace. It appears only when the Skill Marketplace is enabled | None |
 | **Agents** | `/admin/instances` | The display name, image, Web UI, and model of each Agent. It also deletes Agents, and it shows their status and events. Its page title is **All agents** | `Agent` |
 
@@ -45,7 +45,7 @@ The navigation also shows **Settings**. This entry is not available.
 For the tasks that use these pages, refer to:
 
 - [Policy-bound Teams](../policy-teams/#check-the-setup) for the first
-  Sandbox, Policy, and Team
+  Sandbox, Agent Policy, and Team
 - [Configure a team](../../guides/teams/) for the settings of a Team
 - [Smart routing](../smart-routing/) for routers
 - [Skill Marketplace](../skill-marketplace/#select-the-skills-of-a-team) for
@@ -55,8 +55,8 @@ For the tasks that use these pages, refer to:
 
 ## Settings that only kubectl can change
 
-The Policy editor shows these settings, but you cannot change them in the
-Portal. When you save other settings, the Portal keeps them:
+The Agent Policy editor shows these settings, but you cannot change them in
+the Portal. When you save other settings, the Portal keeps them:
 
 | Setting in the editor | Field of the Agent Policy |
 | --- | --- |
@@ -67,7 +67,7 @@ Portal. When you save other settings, the Portal keeps them:
 To change them, apply the Agent Policy with `kubectl` as an admission
 administrator. The registration of the platform must also support each
 setting. Refer to
-[Policy settings and registration capabilities](../policy-teams/#policy-settings-and-registration-capabilities).
+[Agent Policy settings and registration capabilities](../policy-teams/#policy-settings-and-registration-capabilities).
 
 ## Save changes
 
@@ -89,5 +89,5 @@ details. For an HTTP 403 from the Sandbox admission webhook, refer to
 
 Sources: [Admin routes]({{< repo "app/cetirun-portal/web/src/App.tsx" >}}),
 [Admin navigation]({{< repo "app/cetirun-portal/web/src/pages/admin/AdminLayout.tsx" >}}),
-[Policy editor]({{< repo "app/cetirun-portal/web/src/pages/admin/PolicyEditPage.tsx" >}}),
+[Agent Policy editor]({{< repo "app/cetirun-portal/web/src/pages/admin/PolicyEditPage.tsx" >}}),
 and [Portal values]({{< repo "app/cetirun-portal/chart/values.yaml" >}}).

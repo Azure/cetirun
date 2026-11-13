@@ -109,11 +109,11 @@ OAuth2 Proxy sign-in:
 
 The ownership filter defines its own fixed path exemptions. The Istio
 templates use `authPolicy.aliasExemptPrefixes` only to identify which hosts
-are explicit shared subdomain hosts and which are legacy instance subdomains.
+are explicit shared subdomain hosts and which are legacy subdomains of Agents.
 They do not use the `authPolicy.adminAliases` value that the
 [deployment helper]({{< repo "infra/istio/deploy.sh" >}}) supplies. If you set
-this value, it does not configure an administrator ownership bypass. The
-shared subdomain hosts skip the ownership check, as
+this value, it does not configure an ownership bypass for Portal
+administrators. The shared subdomain hosts skip the ownership check, as
 [Exemptions](../operations/istio/#exemptions) describes.
 
 ### Other access paths
@@ -196,7 +196,7 @@ membership. An Agent Policy limits the Agents of a Team. It does not limit
 which users select the Team.
 
 Sources: [portal claims]({{< repo "app/cetirun-portal/internal/auth/claims.go" >}}),
-[administrator list]({{< repo "app/cetirun-portal/internal/auth/admin.go" >}}),
+[Portal administrator list]({{< repo "app/cetirun-portal/internal/auth/admin.go" >}}),
 [ownership checks]({{< repo "app/cetirun-portal/internal/handler/instance_management.go" >}}),
 and [Team selection]({{< repo "app/cetirun-portal/internal/handler/create_options.go" >}}).
 
@@ -255,7 +255,7 @@ and ephemeral containers. In the namespace of a Sandbox Agent, Sandbox
 admission refuses these operations and `pods/exec`, except the exec of the
 Custom terminal. These operations use the Kubernetes API directly, not the
 ingress gateway. Give these permissions in Agent namespaces only to trusted
-administrators.
+platform administrators.
 
 This policy applies to the Kubernetes exec API, not to every route to command
 execution. The enabled ttyd terminal and the agent tools are separate access
@@ -317,7 +317,7 @@ Provider sign-in state and agent configuration can persist under `/home/vibe`. T
 chart keeps the session PVC and its password Secret.
 
 Keep browser access, terminal access, model credentials, and Kubernetes Secret
-permissions consistent with instance ownership. Some platform identities have
+permissions consistent with Agent ownership. Some platform identities have
 wider Secret access, for example [CetiAdmin](../operations/cetiadmin/#access)
 and the [Broker](../operations/agent-identity/#3-prepare-namespaces-and-tls).
 Never include token files, cookies, private keys, complete Helm values, browser

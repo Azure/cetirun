@@ -36,7 +36,7 @@ one of these steps in **Terminal**:
 - Push your work to a Git repository that you own.
 - Copy your files to storage that you control.
 
-Do not keep the only copy of important work in the Agent. Ask your
+Do not keep the only copy of important work in the Agent. Ask your platform
 administrator if the platform also makes backups of the home directories.
 
 ## Install software that stays
@@ -55,8 +55,8 @@ it in your home directory. In the Sandbox of a policy-bound Team,
   response of each model call in its database for seven days. People who can
   use the AI Gateway console or read its database can read them. A deployment
   can keep this content in Azure Data Explorer instead. Then the console shows
-  it to administrators, and people with read access to that database can read
-  it.
+  it to platform administrators, and people with read access to that database
+  can read it.
 - **Logs.** By default, the session logger copies the Hermes gateway log to
   the container logs. Agents can also write text to these logs. The platform
   logs can collect this text, and it can include parts of your conversations.
@@ -67,7 +67,7 @@ it in your home directory. In the Sandbox of a policy-bound Team,
 
 Your deployment can change these defaults. For the details, refer to
 [PRIVACY.md]({{< repo "PRIVACY.md" >}}) and [Security](../../security/), or ask
-your administrator.
+your platform administrator.
 
 ## Protect your credentials
 
@@ -86,6 +86,6 @@ permissions. **Identities** does not control or record this use. When you do
 not need the tool, remove its sign-in, for example with `gh auth logout` or
 `az logout`.
 
-Sources: [runtime chart values]({{< repo "app/cetirun-chart/values.yaml" >}}),
+Sources: [agent chart values]({{< repo "app/cetirun-chart/values.yaml" >}}),
 [AI Gateway chart values]({{< repo "app/cetirun-ai-gateway/chart/values.yaml" >}}),
 and [suspension behavior](../../operations/agent-lifecycle/#suspend-and-resume-an-agent).

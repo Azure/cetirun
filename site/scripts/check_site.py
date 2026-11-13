@@ -597,20 +597,15 @@ STYLE_RULES = (
     StyleRule(
         "phrasal-verb",
         "error",
-        "use one verb, such as start, stop, remove, or find",
+        "use one verb, such as start, stop, enable, disable, remove, or find",
         r"\b(?:(?:spin|spins|spinning|spun|start|starts|starting|started"
-        r"|bring|brings|bringing|brought|look|looks|looking|looked)\s+up"
+        r"|bring|brings|bringing|brought|look|looks|looking|looked"
+        r"|set|sets|setting|clean|cleans|cleaning|cleaned"
+        r"|back|backs|backing|backed)\s+up"
         r"|(?:shut|shuts|shutting|tear|tears|tearing|tore|torn)\s+down"
         r"|(?:find|finds|finding|found|carry|carries|carrying|carried"
         r"|figure|figures|figuring|figured)\s+out"
-        r"|(?:fill|fills|filling|filled)\s+(?:in|out))\b",
-    ),
-    StyleRule(
-        "phrasal-verb",
-        "pending",
-        "use one verb, such as configure, enable, disable, or remove",
-        r"\b(?:(?:set|sets|setting|clean|cleans|cleaning|cleaned"
-        r"|back|backs|backing|backed)\s+up"
+        r"|(?:fill|fills|filling|filled)\s+(?:in|out)"
         r"|(?:turn|turns|turning|turned)\s+(?:on|off)"
         r"|(?:roll|rolls|rolling|rolled)\s+back)\b",
     ),
@@ -623,14 +618,17 @@ STYLE_RULES = (
         r"|if\s+the\s+checkout\s+includes|earlier\s+checkout|this\s+increment"
         r"|separately\s+delivered|not\s+defined\s+yet|now\s+supplies"
         r"|we\s+(?:are|['’]re)\s+(?:refactoring|rewriting|rebuilding)"
-        r"|(?:is|are|was|were)\s+being\s+(?:refactored|rewritten|rebuilt))\b",
+        r"|(?:is|are|was|were)\s+being\s+(?:refactored|rewritten|rebuilt)"
+        r"|this\s+repository\s+change|initial\s+scope|in\s+this\s+version"
+        r"|now\s+exports|in\s+a\s+measurement|measured\s+on\s+an?\s+test)\b",
     ),
     StyleRule(
-        "dev-narrative",
-        "pending",
-        "describe product behavior rather than development progress",
-        r"\b(?:this\s+repository\s+change|initial\s+scope|in\s+this\s+version"
-        r"|now\s+exports|in\s+a\s+measurement|measured\s+on\s+an?\s+test)\b",
+        "glossary-name",
+        "error",
+        "use the name that the glossary gives, such as agent chart or AI Gateway",
+        r"\b(?:runtime\s+charts?|(?:ordinary|legacy|governed)\s+agents?"
+        r"|policy-bound\s+(?:instances?|agents?)|policy-(?:enabled|configured)\s+teams?"
+        r"|(?-i:BYO)|(?-i:[Tt]he\s+Gateway)(?!\s+API))\b",
     ),
     StyleRule(
         "verb-tense",
@@ -660,7 +658,7 @@ STYLE_RULES = (
     ),
     StyleRule(
         "first-person",
-        "pending",
+        "error",
         'address the reader; do not use "we"',
         r"\b(?:we|ours?|(?-i:us))\b",
     ),

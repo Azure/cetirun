@@ -151,7 +151,7 @@ Also follow these project rules:
   only the templates", not "A local render does not examine Azure".
 - Name concepts and reference pages with short noun phrases, such as
   **Architecture** and **Security**. Name tasks with actions, such as
-  **Choose a model** or **Manage an instance**.
+  **Choose a model** or **Manage an Agent**.
 - Write titles, headings, and navigation labels in sentence case. Capitalize
   only the first word, the first word after a colon, and proper names, for
   example "Choose a model" or "Models through the AI Gateway". The
@@ -204,6 +204,11 @@ code, link targets, and bold UI labels. The `heading-case` rule keeps the
 capital letters of the names in `PROPER_NAMES`. When you add a product name to
 the glossary, also add it to this list. The rule also compares each navigation
 group in `site/data/navigation.toml` with the title of its page.
+
+The `glossary-name` rule fails on the names that the
+[Glossary](../../concepts/glossary/#other-names) replaces, for example
+"runtime chart" or "the Gateway". To mention such a name on purpose, put it in
+quotation marks.
 
 ## Publication
 

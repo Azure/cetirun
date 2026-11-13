@@ -21,7 +21,7 @@ It pins the target cluster by its UID and does a safe cleanup. Refer to
 | Istio ingress | Necessary. The Operator routes each Agent through the Istio Gateway `aks-istio-ingress/cetirun-gateway` by default. |
 | HOME storage | An Agent without `spec.sandboxRef` uses the StorageClass `default`, or a storage override. On AKS, `default` is Azure Disk with `WaitForFirstConsumer` binding. A Sandbox Agent uses the HOME storage of its Sandbox (`spec.storage.home`). |
 | A kubectl context for the target | Use an explicit context in each command. |
-| A Team, if the Agent selects a Sandbox | An Agent without `spec.sandboxRef` does not need a Team. A Sandbox Agent needs a Team that allows the Sandbox, and an AgentPolicy that allows its model. Refer to [Policy-bound Teams](../../../site/content/en/docs/operations/policy-teams.md). |
+| A Team, if the Agent selects a Sandbox | An Agent without `spec.sandboxRef` does not need a Team. A Sandbox Agent needs a Team that allows the Sandbox, and an Agent Policy that allows its model. Refer to [Policy-bound Teams](../../../site/content/en/docs/operations/policy-teams.md). |
 
 Set the context. Then compare the UID of its `kube-system` namespace with the
 UID that you got from your cluster inventory:
@@ -49,10 +49,10 @@ available, and the Operator log must show no repeated errors.
 
 ## Step 2: Create a test Agent
 
-Create a new Agent with your own alias. Use the Portal, or the Kubernetes
-procedure that
-[Your first instance](../../../site/content/en/docs/getting-started/first-instance.md)
-describes.
+Create a new Agent with your own alias. Use the Portal, as
+[Create your first Agent](../../../site/content/en/docs/getting-started/first-instance.md)
+describes, or the Kubernetes procedure in
+[Create an Agent with Kubernetes](../../../site/content/en/docs/operations/agent-lifecycle.md#create-an-agent-with-kubernetes).
 Select a new name, for example `manual-test`. Do not create the Agent
 namespace or its Secrets in advance. The Operator creates them.
 
@@ -110,7 +110,7 @@ kubectl --context "$CONTEXT" logs -n "$NAMESPACE" "statefulset/openclaw-$NAME-ce
 ## Step 5: Check the route and the access
 
 1. Open `status.accessUrl` in a browser and sign in as the owner. Make sure
-   that the native UI of the Agent opens.
+   that the Agent UI opens.
 2. Send a request without a session. Make sure that the response is a redirect
    to the sign-in page, not the Agent UI:
 
@@ -145,7 +145,7 @@ before you delete the Agent.
 > **Warning:** Do not delete the CetiRun CRDs to remove test resources. The
 > CRDs are cluster-scoped. When you delete a CRD, Kubernetes deletes every
 > object of that kind in the cluster: all Agents, Teams, Sandboxes, or
-> AgentPolicies. Do not delete the `default` StorageClass or shared skills
+> Agent Policies. Do not delete the `default` StorageClass or shared skills
 > storage.
 
 ## Troubleshooting
@@ -158,4 +158,4 @@ A failed Helm install shows the `HelmDeployed` condition with the status
 If the Agent stays in `Deleting`, examine the Operator logs, and make sure that
 the Operator runs. Let the Operator complete the cleanup. Do not remove the
 finalizer by hand. If you remove it, the Operator cannot remove the namespace,
-the Helm release, and the Gateway key of the Agent.
+the Helm release, and the AI Gateway key of the Agent.

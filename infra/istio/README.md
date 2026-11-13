@@ -7,7 +7,7 @@ webhook exceptions, egress configuration, and warnings about removal.
 `values.yaml` configures the shared chart. `templates/ingress/` contains the
 gateway and authentication resources. `templates/egress/` contains the
 destination and logging controls for all of the mesh. The operator manages the
-VirtualServices for each instance.
+VirtualServices for each Agent.
 
 `make deploy` installs and upgrades this chart. Use `deploy.sh` or a manual Helm
 install only for development or for an installation without `make deploy`. Do
@@ -123,9 +123,9 @@ verification. PKCE, secure cookies, session storage and Portal ownership checks
 remain enabled. Bearer-token session bypass remains disabled in OIDC modes.
 
 Use only a provider whose administrators control the login claims. With Agent
-Identity and Tools disabled, Portal API ownership and administrator checks use
-the lowercased local part of `preferred_username`, falling back to the email
-header if it is absent. The ingress ownership check uses the email header, which
+Identity and Tools disabled, Portal API ownership and Portal administrator checks
+use the lowercased local part of `preferred_username`. If it is absent, they use
+the email header. The ingress ownership check uses the email header, which
 comes from `oauth2Proxy.emailClaim` (`preferred_username` by default).
 
 The provider must assign these claims, prevent users from changing them, and
@@ -178,9 +178,9 @@ with `cetirun-portal.features.agentIdentityEnabled=false`,
 `cetirun-portal.features.agentToolsEnabled=false`,
 `cetirun-operator.agentIdentity.enabled=false`, and
 `cetirun-connections-mcp.enabled=false`. These are umbrella values; all four
-already default to false. Do not install the Broker. The full `make deploy` and
-the legacy `infra/istio/deploy.sh` helper still expect the Entra federated-token
-configuration; they do not select
+already default to false. Do not install the Agent Identity Broker. The full
+`make deploy` and the legacy `infra/istio/deploy.sh` helper still expect the
+Entra federated-token configuration; they do not select
 this OIDC path. These settings do not establish live China login, image access,
 or runtime qualification.
 

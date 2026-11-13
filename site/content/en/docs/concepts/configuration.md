@@ -19,7 +19,7 @@ For a standard Agent, the operator builds Helm values in this order:
 3. Referenced `Team` member context and skills.
 4. Controller-derived integration settings and image repositories.
 5. Per-Agent `spec.helm.values`.
-6. The enforced agent type, the OpenClaw native UI base path, and the AI
+6. The enforced agent type, the OpenClaw Agent UI base path, and the AI
    Gateway projection.
 7. The profile of the agent type resolves the image and the port. Then it
    builds the native configuration for the chart's reserved `runtime` input.

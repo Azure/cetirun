@@ -14,10 +14,10 @@ this method is under **Other access methods** → **Personal account**, and you
 cannot limit it to selected repositories. Refer to
 [Authorize personal GitHub access](../agent-identity/#authorize-personal-github-access).
 
-Before you can use the App, an administrator must register it for your
+Before you can use the App, a platform administrator must register it for your
 deployment. If the wizard says "Selected repository access is not configured in
 this environment. Contact your platform administrator.", the App is not
-registered. Administrators refer to
+registered. Platform administrators refer to
 [Register the platform App](#register-the-platform-app).
 
 ## Give an Agent access
@@ -64,9 +64,10 @@ permissions. To uninstall the App, use the GitHub settings.
 
 ## Authorization and trust
 
-Before the Broker issues each credential, it examines the current installation,
-your repository administration authority, and the selected repositories and
-permissions. If you revoke the user authorization, you must sign in again.
+Before the Agent Identity Broker issues each credential, it examines the
+current installation, your repository administration authority, and the
+selected repositories and permissions. If you revoke the user authorization,
+you must sign in again.
 Removed repositories, suspended installations, unavailable GitHub checks, and
 changed access prevent further issuance. There is no fallback to personal
 OAuth.
@@ -79,14 +80,14 @@ sent.
 
 The platform holds the App private key and can mint tokens up to the full
 GitHub authorization of the installation. Per-Agent limits are not a
-replacement for trust in the platform operator. Separate installations isolate
+replacement for trust in the platform administrators. Separate installations isolate
 individual tokens, but a compromised private key of the shared App can affect
 all its installations.
 
 The Broker also stores encrypted GitHub App user access and refresh tokens.
 With these tokens, the Broker examines again the authority of the user who
 configured the access. These tokens are not personal access tokens, but
-operators with access to the Broker and its decryption authority can access
+platform administrators with access to the Broker and its decryption authority can access
 them. Encryption at rest does not prevent the use of credentials by the
 platform. To limit the GitHub authority of the platform, install the App on
 selected repositories.
@@ -100,13 +101,13 @@ repository allowlist does not make it private.
 
 ## Register the platform App
 
-We recommend that platform administrators first follow
-[Prepare Agent connections](../../operations/agent-identity/) until the namespace,
-encryption, and certificate preparation is complete. After you register the
-App with the steps below, return to that guide to finish the Broker and
-platform deployment.
+This section is for platform administrators. Before you register the App,
+follow [Prepare Agent connections](../../operations/agent-identity/) until the
+namespace, encryption, and certificate preparation is complete. After you
+register the App with the steps below, return to that guide to finish the
+Broker and platform deployment.
 
-An environment maintainer creates the App in GitHub **Settings → Developer
+A platform administrator creates the App in GitHub **Settings → Developer
 settings → GitHub Apps → New GitHub App**. Replace
 `https://portal.example.com` with the actual Portal origin of the deployment:
 

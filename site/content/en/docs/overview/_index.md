@@ -75,8 +75,8 @@ complete list, read
   Identity.
 - **Microsoft Entra ID:** an application for the Portal sign-in, and the Agent
   Identity resources that `make deploy` requires.
-- **Certificates:** certificates for the Agent Identity Broker, Connections
-  MCP, and Sandbox admission, and a TLS certificate for the apex domain.
+- **Certificates:** certificates for the Broker, Connections MCP, and Sandbox
+  admission, and a TLS certificate for the apex domain.
 - **Models:** model deployments and keys for the AI Gateway. The default smart
   routing also needs a deployment of the classifier model. Your organization
   supplies the model-provider accounts. An owner who uses GitHub Copilot uses

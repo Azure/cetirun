@@ -28,8 +28,8 @@ support agreement.
 
 | Change | Source |
 | --- | --- |
-| Instance reconciliation or API | [Operator]({{< repo "app/cetirun-operator" "tree" >}}) |
-| Agent packaging or Helm settings | [Runtime chart]({{< repo "app/cetirun-chart" "tree" >}}) |
+| Agent reconciliation or API | [Operator]({{< repo "app/cetirun-operator" "tree" >}}) |
+| Agent packaging or Helm settings | [Agent chart]({{< repo "app/cetirun-chart" "tree" >}}) |
 | Portal backend or frontend | [Portal]({{< repo "app/cetirun-portal" "tree" >}}) |
 | Shared infrastructure | [Infrastructure]({{< repo "infra" "tree" >}}) |
 | Reader documentation | [Site content]({{< repo "site/content/en/docs" "tree" >}}) |

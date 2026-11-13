@@ -11,8 +11,8 @@ before it expires. `make deploy` examines the certificates before it writes,
 so an expired certificate also stops the next run.
 
 The names on this page are the default names of an installation with
-`make deploy`, in the default namespaces. The Broker namespace is the
-`broker.namespace` of the environment file.
+`make deploy`, in the default namespaces. The Agent Identity Broker runs in the
+Broker namespace, the `broker.namespace` of the environment file.
 
 ## TLS certificates
 

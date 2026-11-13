@@ -27,7 +27,7 @@ The local integration used:
 - Istio 1.31.1, a real local Dex 2.46.0 OIDC issuer, and OAuth2 Proxy with a
   task-local CA. Local OIDC is an explicit chart opt-in. The Entra defaults do
   not change.
-- The actual CetiRun Operator, admission server, Portal, runtime chart, and
+- The actual CetiRun Operator, admission server, Portal, agent chart, and
   OpenClaw 2026.9.6 image.
 - The actual CetiRun AI Gateway/PostgreSQL/Valkey, backed by local Qwen3-4B
   inference with llama.cpp. A canned model response is not equivalent.
@@ -55,7 +55,7 @@ ancestry, guest kernel, and guest limits.
 Runtime images can use `imagePullPolicy: Always`. In that case, it is not
 sufficient to only load an image into Kind. Supply the exact image through a
 local registry that the node can resolve and trust, alongside the versioned
-runtime chart. Keep TLS verification enabled. A local CA certificate must be
+agent chart. Keep TLS verification enabled. A local CA certificate must be
 readable by the nonroot processes that use it. Its directories must be
 traversable by these processes.
 
@@ -102,16 +102,16 @@ python3 -B -m unittest discover \
 
 When this probe passes, only the platform step is complete:
 
-1. Populate the administrator-owned native registration from the current
+1. Populate the platform administrator's native registration from the current
    RuntimeClass and CSI identities, the actual topology, and the observed
    controls. For this non-Azure environment, select `native-single-start` and
    the generic `cilium` adapter. Bind the approved service peers to their
    current backend Pods. Keep their protected peer labels in workload templates.
 2. Install the matching components with native execution and enforced Agent
-   and Pod admission. Configure one real Gateway model and normal owner
-   authentication. Do not copy provider credentials into AgentPolicy or public
-   files.
-3. Create a Sandbox, an AgentPolicy, a Team, and an Agent through authorized
+   and Pod admission. Configure one real AI Gateway model and normal owner
+   authentication. Do not copy provider credentials into an Agent Policy or
+   public files.
+3. Create a Sandbox, an Agent Policy, a Team, and an Agent through authorized
    APIs. Make sure that the actual application is ready. A created Pod or a
    declared capability alone is not sufficient.
 4. Complete the owner login and the explicit browser-device pairing with the
@@ -121,7 +121,7 @@ When this probe passes, only the platform step is complete:
 5. Send a real task through the Agent. Correlate a harmless tool request with
    a fresh nonce at an independently observed task-owned endpoint.
 6. Delete that same Agent with UID and resourceVersion preconditions. Make sure
-   that the Gateway grant is revoked and the live sessions are closed. Make
+   that the AI Gateway grant is revoked and the live sessions are closed. Make
    sure that the owned namespace and PV are removed.
 
 Admission replicas on distinct Nodes are still necessary for the deployment

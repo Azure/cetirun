@@ -13,7 +13,7 @@ these actions:
 | **Edit Agent** | Changes the display name, the image, the gateway token, or the Tailscale key. The Agent restarts. |
 | **Restart Agent** | Starts the Agent again. The home directory is kept. |
 | **Suspend Agent** and **Resume Agent** | Stops the Agent and keeps its home directory. Then starts it again. |
-| **Upgrade to Latest** | Moves the Agent to the agent chart version that your administrator selected. The button shows only when the selected version is different from the version of the Agent. |
+| **Upgrade to Latest** | Moves the Agent to the agent chart version that your platform administrator selected. The button shows only when the selected version is different from the version of the Agent. |
 | **Delete Agent** | Removes the Agent and its data. You cannot undo this action. |
 
 For the data that each action keeps or removes, refer to
@@ -67,7 +67,7 @@ again.
 ## Suspend and resume your Agent
 
 Suspend the Agent when you do not use it for some time. A suspended Agent does
-not run, and it does not answer messages. Its home directory and its Gateway
+not run, and it does not answer messages. Its home directory and its AI Gateway
 key are kept.
 
 > **Warning:** Suspension removes the GitHub Copilot sign-in of the Agent.
@@ -98,7 +98,7 @@ for governance prerequisites before its first start.
 ## Upgrade your Agent
 
 The agent chart installs the Agent software. When the version that your
-administrator selected is different from the version of your Agent,
+platform administrator selected is different from the version of your Agent,
 **Upgrade to Latest** shows on the **Overview** tab.
 
 1. Select **Upgrade to Latest**.
@@ -124,7 +124,7 @@ use, and it still counts toward your
 complete, you can create a new Agent with the same name. The new Agent does not
 get the data, the memory, or the Agent Identity of the deleted Agent.
 
-## Administrator tasks
+## Platform administrator tasks
 
 Some lifecycle tasks need permission to change Agent resources in the cluster.
 Examples are a pinned chart version and a move to another Kubernetes node that

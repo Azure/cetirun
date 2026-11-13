@@ -1,6 +1,6 @@
 # CetiRun agent chart
 
-The chart deploys an OpenClaw, Hermes, or approved Custom instance. For
+The chart deploys an OpenClaw, Hermes, or approved Custom Agent. For
 settings and defaults, read the
 [Helm configuration reference](../../site/content/en/docs/reference/helm.md)
 and the [list of chart values](../../site/content/en/docs/reference/chart-values.md#agent-chart).
@@ -30,8 +30,8 @@ For runtime package and Git settings, see
 
 ## Native npm initialization
 
-The ordinary native runtime installs `skills.npm` packages into its private
-HOME. The initializer copies each package into a temporary directory and
+The native runtime of a standard Agent installs `skills.npm` packages into its
+private HOME. The initializer copies each package into a temporary directory and
 examines the completion marker before it replaces an installed package. A
 failed copy does not publish a completed installation.
 
@@ -72,11 +72,11 @@ stays on disk. A Team that explicitly sets `skills.mountPath` to
 The platform Memory skill comes from `/opt/cetirun-memory`, so it needs no
 directory or nested mount inside the shared source.
 
-The native `context-view` contains only platform material. Ordinary instances
+The native `context-view` contains only platform material. Standard Agents
 use a `40Mi` emptyDir limit; reconciled Sandboxes keep their configured scratch
 limit. Custom context composition and held Sandbox preparation keep their
 existing contracts. Use native images that include the reserved-skill patch.
-Upgrade existing native instances through
+Upgrade existing native Agents through
 the supported retained restart procedure to install the changed mounts. The
 upgrade does not move or delete HOME files or change shared Skills content.
 For damaged Memory files or interrupted deletion, use the
@@ -91,7 +91,7 @@ applies the complete protected bundle last. `sandboxWorkload` is an internal
 chart contract. It is not a tenant override or a way to enable Sandbox
 execution.
 
-For a common-executor OpenClaw Sandbox with registered ingress mTLS,
+For an OpenClaw Sandbox Agent with registered ingress mTLS,
 `openclaw.portalSignIn.enabled: true` lets the owner open the Control UI from
 the Portal without a gateway-token paste or device approval. OpenClaw trusts
 only the managed loopback proxy. Plain Sandbox ingress and retained
@@ -99,9 +99,9 @@ single-start lifetimes keep token authentication. See the
 [mTLS Portal sign-in contract](../../site/content/en/docs/guides/agent-ingress-mtls.md#openclaw-control-ui-portal-sign-in)
 for prerequisites, CLI credentials, and upgrade behavior.
 
-Common reconciliation supports OpenClaw, Hermes, and Gateway-qualified Custom.
-The retained preparation-only path still renders zero replicas and does not
-authorize execution. Custom must use the common executor. It never uses an
+Common reconciliation supports OpenClaw, Hermes, and AI Gateway-qualified
+Custom. The retained preparation-only path still renders zero replicas and does
+not authorize execution. Custom must use the common executor. It never uses an
 ungoverned runtime as a fallback.
 
 Custom keeps its approved image entrypoint and its inherited numeric non-root
@@ -124,7 +124,7 @@ Changes to pull references use the sealed desired manifest of the common
 executor. After the manifest is sealed, the legacy deferred-rollout flag must
 not change those values. For registration, artifact pins, and unsupported
 combinations, see the
-[governed Custom contract](../../site/content/en/docs/reference/agent-harness.md#policy-governed-custom-execution).
+[Custom Sandbox Agent contract](../../site/content/en/docs/reference/agent-harness.md#policy-governed-custom-execution).
 
 The protected inventory includes:
 
@@ -134,7 +134,7 @@ The protected inventory includes:
   effective init/helper accounting. RuntimeClass overhead is accounted
   separately and validated after the API applies defaults.
 - Non-root security contexts, dropped capabilities, disabled privilege
-  escalation, and RuntimeDefault seccomp. An explicit policy
+  escalation, and RuntimeDefault seccomp. An explicit Agent Policy
   `readOnlyRootFilesystem: false` changes only that control.
 - A private HOME claim that already exists, a distinct read-only skills claim,
   and a size-limited writable scratch volume. On the native path,
@@ -152,8 +152,8 @@ The protected inventory includes:
   requested cross-namespace RoleBindings and cluster-wide ClusterRoleBindings
   keep their scopes. They must target only the exact ServiceAccount of the
   workload. Shared Role and ClusterRole objects are never emitted or adopted.
-  Ordinary mode uses the default ServiceAccount of the namespace. It does not
-  create that ServiceAccount or project identity.
+  The render of a standard Agent uses the default ServiceAccount of the
+  namespace. It does not create that ServiceAccount or project identity.
 - `dnsPolicy: None` with exactly the compiler's one to three trusted DNS server
   IPs. Node/cluster resolver defaults, fallback servers, search suffixes, and
   DNS options are not inherited, and users cannot configure them. No
@@ -223,7 +223,7 @@ access during suspension.
 
 Kubernetes identity volumes and mounts must be present and unchanged on the
 main container. They cannot be added to helpers. See the
-[administrator setup](../../examples/native-sandbox/README.md#kubernetes-api-access).
+[platform administrator setup](../../examples/native-sandbox/README.md#kubernetes-api-access).
 This chart does not approve roles or enable capabilities.
 
 Offline regression checks include:
@@ -242,9 +242,10 @@ protected contract is absent, legacy chart defaults stay unchanged.
 
 The native OpenClaw MVP reuses the protected renderer and the OpenClaw image
 that already exists. It does not add an alternative image, an Istio sidecar, or
-a Helm value that authorizes execution. The controller owns Sandbox/AgentPolicy
-selection, owner access, activation, and deletion. The chart still prepares a
-held workload. A render alone does not test any of those live operations.
+a Helm value that authorizes execution. The controller owns Sandbox and
+Agent Policy selection, owner access, activation, and deletion. The chart still
+prepares a held workload. A render alone does not test any of those live
+operations.
 
 The Operator supplies this contract:
 
@@ -256,7 +257,7 @@ The Operator supplies this contract:
 | `sandboxWorkload.skillsMode: empty` (internal, otherwise omitted) | Replaces only the skills claim with an unpopulated `emptyDir`, mounted read-only at `/home/vibe/.aks/skills` in the main container |
 | `openclaw.image.repository`, `tag`, optional `digest` | The Agent and its initializers use the same OpenClaw image that already exists. Shared registry/version overrides stay supported |
 | `aiGateway.enabled: true`, `keySecretName`, `keySecretKey` | The Agent's virtual key, passed as `OPENAI_API_KEY` through a Secret reference only in the main container |
-| `aiGateway.models`, `secrets.provider: openai`, `secrets.model`, `secrets.apiBase` | The authorized model list, default, and Gateway endpoint. If an endpoint is not set, or a default is outside that list, the render fails |
+| `aiGateway.models`, `secrets.provider: openai`, `secrets.model`, `secrets.apiBase` | The authorized model list, default, and AI Gateway endpoint. If an endpoint is not set, or a default is outside that list, the render fails |
 | `aiGateway.visionModels` | The IDs of the models that accept images. OpenClaw gets `input: ["text", "image"]` and Hermes gets `supports_vision: true` for these models only |
 | `aiGateway.reasoningModels` | The IDs of the models that reason. OpenClaw gets `reasoning: true` and `compat.supportsReasoningEffort: true` for these models, and `reasoning: false` for the others. Hermes does not read this value |
 | `openclaw.config.gateway` | Controller-selected ingress/auth configuration, copied without persisted auth overrides on each native start |
@@ -277,7 +278,7 @@ items:
 - a shared claim
 - package requests
 - another mount path
-- a non-OpenClaw runtime
+- an agent type other than OpenClaw
 - native Gateway/lifetime inputs that are not set
 
 No helper can populate the empty skills volume. Requested skills and configured
@@ -293,15 +294,15 @@ it sends no model credentials. It exits nonzero on HTTP errors, connection
 failures, or its bounded deadline. Explicit probe timing, thresholds, and
 enablement settings are kept.
 
-With `startupProbe.failureThreshold: null` (the default), common-executor
-OpenClaw Sandboxes allow 60 failed startup probes at the current 10-second
+With `startupProbe.failureThreshold: null` (the default), OpenClaw
+Sandbox Agents allow 60 failed startup probes at the current 10-second
 interval. They do not restart a gateway after 30 failures while its
 initialization continues. Other built-in paths keep 30 failures, for example
 retained single-start OpenClaw and Hermes. An explicit positive integer
 overrides either default. This also applies to `30`.
 
-Liveness/readiness checks and their timings stay unchanged. Legacy OpenClaw and
-held Hermes renders keep their HTTP probes.
+Liveness/readiness checks and their timings stay unchanged. The renders of
+standard OpenClaw Agents and held Hermes Agents keep their HTTP probes.
 
 The startup probe starts after init containers finish. It is not a deadline for
 doctor or credential retirement. It does not extend the acceptance bound of a
@@ -326,15 +327,16 @@ Native OpenClaw doctor and gateway processes also disable Node's optional
 on-disk compile cache. If that cache is created again in ephemeral Pod scratch,
 this adds startup I/O on virtualized filesystems. This does not change the
 JavaScript that is executed, plugin selection, resource limits, health checks,
-or lifecycle deadlines. Legacy OpenClaw and Hermes keep their settings.
+or lifecycle deadlines. Standard OpenClaw Agents and Hermes Agents keep their
+settings.
 
-The Gateway deployment must enable `operatorIntegration` and configure shared
-models in its chart. This lets the Operator bind AgentPolicy grants to the
-[chart-derived model identities](../cetirun-ai-gateway/chart/README.md#cetirun-agentpolicy-model-bindings).
-Provider credentials stay with the Gateway. The controller must reject
-arbitrary direct provider routes, unimplemented policy restrictions, identity
-extensions, and other deferred profiles. It must not forward them as ordinary
-runtime values.
+The AI Gateway deployment must enable `operatorIntegration` and configure
+shared models in its chart. This lets the Operator bind Agent Policy grants to
+the [chart-derived model identities](../cetirun-ai-gateway/chart/README.md#cetirun-agent-policy-model-bindings).
+Provider credentials stay with the AI Gateway. The controller must reject
+arbitrary direct provider routes, unimplemented Agent Policy restrictions,
+identity extensions, and other deferred profiles. It must not forward them as
+ordinary runtime values.
 
 Focused offline checks (with the documented dependencies, Node and Helm 3 or 4):
 

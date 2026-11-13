@@ -1,12 +1,12 @@
 # CetiRun Platform chart
 
 Deploy with `make deploy DEPLOY_CONFIG=/path/to/environment.yaml`.
-This command manages the CetiRun Istio/OAuth2 Proxy release, the Broker and
-Auth SDK in a private credential namespace, and the platform release. The
-platform includes the Operator, admission server, Portal, AI Gateway,
+This command manages the CetiRun Istio/OAuth2 Proxy release, the Agent Identity
+Broker and Auth SDK in a private credential namespace, and the platform release.
+The platform includes the Operator, admission server, Portal, AI Gateway,
 PostgreSQL, Valkey, and Connections MCP. The Operator installs CetiAdmin through
 its Hermes runtime and asset export path. The same configuration enables Portal
-Chat and supplies Custom runtime, terminal, Memory, and shared Skills/HOME
+Chat and supplies Custom Agent, terminal, Memory, and shared Skills/HOME
 references. The optional [Skill Marketplace](#skill-marketplace) is installed
 only when the environment file configures it.
 
@@ -58,15 +58,15 @@ The file contains these inputs:
 | Input | Meaning |
 | --- | --- |
 | `target` | Explicit kubeconfig context, its cluster name and HTTPS API server exactly as in the kubeconfig, and the `kube-system` namespace UID that you get independently |
-| `release` | Registry with any repository prefix, release version, full source Git SHA, and optionally `excludeImages` for declared optional images. Omitted registry/version use the public MCR prefix and source Runtime Chart version. `make deploy` checks only the format of the Git SHA. Run it from the commit that built the artifacts |
-| `domain`, `identityRealm`, `ownerAlias` | Public hostname, Portal Chat identity realm, and the Portal administrator alias of the real platform owner |
+| `release` | Registry with any repository prefix, release version, full source Git SHA, and optionally `excludeImages` for declared optional images. Omitted registry/version use the public MCR prefix and source agent chart version. `make deploy` checks only the format of the Git SHA. Run it from the commit that built the artifacts |
+| `domain`, `identityRealm`, `ownerAlias` | Public hostname, Portal Chat identity realm, and the alias of the first Portal administrator |
 | `publicTLS` | Optional Azure Public IP DNS or custom-DNS HTTP-01 certificate configuration. It derives the Helm release from `platform`, and the ingress namespace from `istio` |
 | `identity` | Entra tenant, Portal, blueprint, authorization, and encryption client IDs, and the Key Vault key URL. Use the URL without a key version, for example `https://<vault>.vault.azure.net/keys/<key>`, so that new records use a rotated version |
 | `istio` | Separate release/namespace, the managed control plane and ingress identities that exist, mesh ConfigMap, and Istio Chart values |
 | `broker` | Separate credential namespace/release and Broker Chart values, for example, references to TLS Secrets that exist and references to provider credential Secrets. The helper stops if a provider Secret that the file names does not exist. Remove the providers that you do not register |
 | `platform` | Platform release/namespace and umbrella values, for example, admission, provider credentials, model deployments, and qualified Custom images |
 | `platform.values.cetirun-operator.cetiadmin` | CetiAdmin owner assignment, initial budget, exact API access, optional migration source, and runtime options |
-| `sharedSkills` | Necessary. The shared Skills storage fields that exist in the runtime chart: storage class, resource group, account, and container. The helper sets `skills.shared: true` for all Agents. It examines only that the StorageClass exists, so provision the Blob NFS account and container first. Refer to [Storage](../../site/content/en/docs/operations/storage.md#shared-skills-storage-for-make-deploy) |
+| `sharedSkills` | Necessary. The shared Skills storage fields that exist in the agent chart: storage class, resource group, account, and container. The helper sets `skills.shared: true` for all Agents. It examines only that the StorageClass exists, so provision the Blob NFS account and container first. Refer to [Storage](../../site/content/en/docs/operations/storage.md#shared-skills-storage-for-make-deploy) |
 | `skillMarketplace` | Optional. The Git repository of the [Skill Marketplace](#skill-marketplace), its credentials Secret, and its Blob NFS container |
 | `observability` | The ADX-Mon collection of logs, events, and metrics: the name of this CetiRun cluster in every row, the query URI of the Kusto cluster, its logs, metrics, and Agent logs databases, and the client ID of the ingestor's managed identity. See [Monitoring and logs](../../site/content/en/docs/operations/observability.md) |
 
@@ -123,12 +123,12 @@ kubectl get namespace kube-system --context <context> -o jsonpath='{.metadata.ui
 
 `release.excludeImages` can omit a declared optional artifact, currently only
 `cetirun-vscode`. It must be the same selection used during publication. Remove
-every reference to an excluded image, including a Custom runtime
+every reference to an excluded image, including a Custom Agent
 `approvedImages` digest; the helper rejects a configuration that still
 references it. When the Agent CRD already exists, it also stops before a Helm
 write if a retained Custom Agent still uses that image.
 
-If the Operator must have registry credentials to pull the runtime chart, set
+If the Operator must have registry credentials to pull the agent chart, set
 `platform.values.cetirun-operator.acrDockerSecret` to a
 `kubernetes.io/dockerconfigjson` Secret in the platform namespace. The helper
 then stops if that Secret does not exist.
@@ -287,7 +287,7 @@ need a metadata-only ownership repair before retrying. Verify its UID and spec
 against a trusted prior receipt and use UID/resourceVersion preconditions for
 that repair. If its provenance cannot be established, stop for investigation.
 
-Primary runtime images are governed by the published runtime chart's defaults
+Primary runtime images are governed by the published agent chart's defaults
 and qualified image list. Do not put `image`, `hermes.image`, or
 `openclaw.image` in `cetirun.helmValues`; the Operator rejects those overrides.
 Publish trusted runtime image pins in the chart, then select an exact approved
@@ -356,20 +356,21 @@ approved procedure. The helper does not migrate arbitrary stored Helm values.
 
 The Operator's `connectionsMCP.runtimeTypes`, the Portal's
 `agentTools.runtimeTypes`, and the Broker's `toolService.runtimeTypes` must name
-the same runtimes. A consistent explicit `[hermes]` selection is still
+the same agent types. A consistent explicit `[hermes]` selection is still
 supported. `custom` is an explicit opt-in and requires the native Connections
-prerequisites: native execution and Pod admission, an approved Custom image,
-the matching Policy and model access, and a registered protected Connections
-MCP peer. Adding `custom` does not enable native Connections by itself.
+prerequisites. These are native execution and Pod admission, an approved Custom
+image, the matching Agent Policy and model access, and a registered protected
+Connections MCP peer. Adding `custom` does not enable native Connections by
+itself.
 
-For existing Hermes and OpenClaw Agents in a selected runtime, the helper extracts the
-name, the runtime, the Team/Sandbox markers, and the necessary ServiceAccount
-settings. It does not output owner details, unrelated Helm values, or
-conversation data. The helper rejects an ordinary Agent if it depends on a
-custom ServiceAccount, an API role, or an API token. The rejection occurs
-before the MCP enablement can override those settings.
+The helper examines the existing Hermes and OpenClaw Agents of each selected
+agent type. It extracts the name, the agent type, the Team/Sandbox markers, and
+the necessary ServiceAccount settings. It does not output owner details,
+unrelated Helm values, or conversation data. The helper rejects a standard Agent
+if it depends on a custom ServiceAccount, an API role, or an API token. The
+rejection occurs before the MCP enablement can override those settings.
 
-Ordinary Custom Agents do not activate Connections MCP. Their ServiceAccount,
+Standard Custom Agents do not activate Connections MCP. Their ServiceAccount,
 API role, and token settings are not treated as an MCP migration conflict.
 
 An explicitly pinned CetiAdmin migration source is exempt only after the helper
@@ -377,7 +378,7 @@ confirms four conditions. The conditions are its retained suspension, blocked
 model key, stopped writers, and the removal of its direct ServiceAccount grants.
 
 Policy-bound Sandbox Agents use the separate native path. This check does not
-treat them as ordinary Agents. Kubernetes still returns complete objects for
+treat them as standard Agents. Kubernetes still returns complete objects for
 these projections. The helper only parses the selected fields. The caller must
 have permission to read these Agent, Team, Deployment, and webhook resources.
 The helper does not grant itself more permissions.
@@ -427,21 +428,21 @@ not query the directory, create an account, or treat an email address as proof
 of identity. Owner access still uses SSO claims that match the assigned
 identity.
 
-CetiAdmin automatically manages all ordinary Agents owned by this Operator,
+CetiAdmin automatically manages all standard Agents owned by this Operator,
 regardless of their Team. There is no Agent or Team allowlist. The optional
 `platformReadNamespaces` list adds read-only platform diagnostics. It does not
 select managed Agents and is not passed to the runtime. If you do not want
 diagnostics for other platform namespaces, omit it or use `[]`.
 
-Native Custom Sandbox namespaces use their exact Agent owner reference and
-Agent UID/name protection markers. They do not require a legacy Custom
-ownership receipt. Legacy Custom namespaces still require their immutable
-receipt. Both paths reject foreign ownership. Protected Sandbox namespace
-access does not grant a CetiAdmin exec exception or Secret reads or writes.
-Pod, log, and Event diagnostics remain available. Ordinary runtime namespace
-Secret permissions are unchanged.
+The namespaces of Custom Sandbox Agents use their exact Agent owner reference
+and Agent UID/name protection markers. They do not require the ownership
+receipt of a standard Custom Agent. The namespaces of standard Custom Agents
+still require their immutable receipt. Both paths reject foreign ownership.
+Protected Sandbox namespace access does not grant a CetiAdmin exec exception or
+Secret reads or writes. Pod, log, and Event diagnostics remain available.
+Secret permissions in standard Agent namespaces are unchanged.
 
-An authorized administrator or Portal can delete an ordinary Agent that has
+An authorized administrator or Portal can delete a standard Agent that has
 an Operator-managed CetiAdmin exec binding, including a suspended retained
 Agent or one with a retained native-auth rotation marker. The Operator
 withdraws that binding and performs normal finalizer and namespace cleanup.
@@ -498,7 +499,7 @@ and unspecified addresses are rejected. The API origin must be the configured
 target or the in-cluster Kubernetes Service. Format checks do not prove that the
 audience, network path, or owner is usable.
 
-CetiAdmin uses the Operator image and the runtime chart of the same release. It
+CetiAdmin uses the Operator image and the agent chart of the same release. It
 does not add an image, a chart, or an entry point for publication. Optional
 `runtime.version`, `runtime.image`, and `runtime.port` must select that release
 and the qualified Hermes profile, whose port is 8642. An explicit image is also
@@ -512,7 +513,7 @@ them or enable native Sandbox execution.
 
 Use the images and charts of the same new release for both upgrades. The old
 admission server cannot accept `platformReadNamespaces` before its version
-changes. The old runtime chart also must have the old projection, so keep
+changes. The old agent chart also must have the old projection, so keep
 CetiAdmin stopped during this configuration transition.
 
 1. Keep the same owner, instance name, retained identities, and storage. Set
@@ -525,7 +526,7 @@ CetiAdmin stopped during this configuration transition.
    for the admission Deployment rollout and for old admission Pods and service
    endpoints to leave.
 2. Set `legacyDisabledSource=false` and restore the intended `enabled` value.
-   Run a second normal upgrade with the runtime chart and Hermes image of the
+   Run a second normal upgrade with the agent chart and Hermes image of the
    new release. The final configuration uses the new shape. Wait for the
    post-upgrade check. Then make sure that the retained Agent UID and HOME did
    not change.
@@ -656,7 +657,7 @@ Broker/MCP readiness endpoints do not show that the provider or Auth SDK APIs
 are available. The helper examines the workload rollouts, the necessary
 containers and Istio sidecars, the wired references, and the admission
 dry-run. It does not run an OAuth sign-in, a provider token exchange, a real
-model call, or a terminal session. The Gateway's own health probes use its
+model call, or a terminal session. The AI Gateway's own health probes use its
 configured model settings. After startup, these probes can make model calls.
 
 Native Sandbox execution and physical writer fencing are separate
@@ -667,14 +668,14 @@ exists must keep its real qualification inputs.
 CetiAdmin's post-install and post-upgrade checks cover
 its current installation state. They do not prove end-to-end operations,
 model access, Slack delivery, backup restoration, or native runtime behavior.
-Other ordinary Agents with a ServiceAccount conflict still stop deployment
+Other standard Agents with a ServiceAccount conflict still stop deployment
 before writes. The helper does not silently remove OpenClaw from the allowlist.
-Arbitrary instance creation requests in this file are rejected.
+Arbitrary Agent creation requests in this file are rejected.
 
 ## Use the component chart directly
 
 Direct chart consumers can optionally enable CetiRun Connections MCP. Install
-the Agent Broker separately in its private credential namespace. The umbrella
+the Broker separately in its private credential namespace. The umbrella
 rejects an enabled Broker that is colocated with the Tool service. Provision
 TLS and OAuth separately. Then configure these items:
 
@@ -737,7 +738,7 @@ the namespace of its Gateway resource. Also set
 `cetirun-operator.cetirun.helmValues.networkPolicy.istioIngressNamespace` to
 the namespace of that gateway workload. If the value is not that namespace,
 the instance NetworkPolicies block ingress traffic. `make deploy` sets these
-values from its `istio` inputs: the Gateway `cetirun-gateway` in
+values from its `istio` inputs: the Istio Gateway `cetirun-gateway` in
 `istio.ingressNamespace`, and `istio.ingressServiceAccount`.
 
 Helm upgrades the CRD templates with this release. For compatible changes, a
@@ -779,12 +780,12 @@ umbrella. The chart never adopts resources that another release owns.
 ## Sandbox creation profiles
 
 Configure `cetirun-portal.sandboxRuntimeProfiles` for each supported built-in
-Sandbox runtime. Each entry contains `chartVersion`, a digest-pinned `image`,
-and `port` (18789 for OpenClaw, 8642 for Hermes). The chart version must match
-the Operator's configured runtime chart. That chart's profile must approve the
-image and port. Configure only the harnesses that the selected platform
-supports. The common native executor supports OpenClaw and Hermes, but retained
-single-start records are for OpenClaw only.
+agent type of Sandbox Agents. Each entry contains `chartVersion`, a
+digest-pinned `image`, and `port` (18789 for OpenClaw, 8642 for Hermes). The
+chart version must match the Operator's configured agent chart. That chart's
+profile must approve the image and port. Configure only the agent types that
+the selected platform supports. The common native executor supports OpenClaw
+and Hermes, but retained single-start records are for OpenClaw only.
 
 The Portal records these inputs in the initial Agent creation request. As a
 result, users do not enter deployment coordinates in the creation form.
@@ -802,7 +803,7 @@ enabled.
 For standalone Portal releases, make sure that the Operator configuration
 matches before you enable the opt-in. For these releases, disable the opt-in
 before you disable native execution. These defaults do not authorize a runtime
-or change the selected AgentPolicy/Sandbox checks.
+or change the checks of the selected Agent Policy and Sandbox.
 
 ### Sandbox HOME StorageClass choices
 
@@ -833,26 +834,26 @@ fields from the Operator source, so its environment file needs only an optional
 The form shows only classes whose current UID and provisioner still match the
 platform's approved pin. It shows a retryable error instead of accepting an
 unknown list when the source cannot be read. An existing Sandbox whose class is
-no longer selectable keeps its recorded value but requires an administrator to
-choose a current approved class before saving. HOME access-mode choices come
-from the selected runtime registration, not from assumptions about a CSI
-driver. This selection aid does not qualify CSI behavior or replace Sandbox
-admission and controller checks at save and execution time.
+no longer selectable keeps its recorded value. To save it, a Portal
+administrator must first choose a current approved class. HOME access-mode
+choices come from the selected runtime registration, not from assumptions
+about a CSI driver. This selection aid does not qualify CSI behavior or replace
+Sandbox admission and controller checks at save and execution time.
 
 When `cetirun-operator.sandboxAdmission` is enabled, the chart adds the Portal's
 service account, `system:serviceaccount:<release namespace>:cetirun-portal`, to
 the admission administrators. The Portal writes Agents, Teams, Sandboxes and
-AgentPolicies with this account. If the account is not an admission
+Agent Policies with this account. If the account is not an admission
 administrator, the enforced admission webhook refuses its writes to
-policy-bound Agents. For example, the webhook refuses the write that saves an
+Sandbox Agents. For example, the webhook refuses the write that saves an
 owner's GitHub Copilot models after a sign-in.
 
 `cetirun-operator.sandboxAdmission.portalServiceAccount` identifies the
 account. By default, the account is `cetirun-portal`. An installation that
 already lists the account in `adminUsers` keeps the same admission
-configuration. The Portal service account does not count as the administrator
-that `adminUsers` or `adminGroups` must name. For example, reauthorization has
-no Portal page.
+configuration. The Portal service account does not count as the admission
+administrator that `adminUsers` or `adminGroups` must name. For example,
+reauthorization has no Portal page.
 
 - If you use a custom `cetirun-portal.serviceAccount.name`, set
   `portalServiceAccount` to the same name. The chart refuses different names.
@@ -863,7 +864,7 @@ no Portal page.
   `portalServiceAccount`. Set it, or list the Portal's service account in
   `adminUsers`. If you do neither, the chart refuses enforced admission.
 
-Administrator groups cannot be blanket groups, for example
+Admission administrator groups cannot be blanket groups, for example
 `system:authenticated` or `system:serviceaccounts:<namespace>`. The admission
 server refuses to start with these groups. As a result, the chart also refuses
 them.
@@ -940,23 +941,23 @@ Because OpenClaw and Hermes Agents take their models from the AI Gateway, the
 AI Gateway is necessary for the platform. The chart refuses to install with
 `cetirun-operator.aiGateway.enabled` or
 `cetirun-portal.features.aiGatewayEnabled` disabled. Hermes Agents pinned to a
-chart version without Hermes' Gateway provider keep their own model provider
+chart version without Hermes' AI Gateway provider keep their own model provider
 and sign-in until their chart is upgraded.
 
-By default, the release also installs the Gateway with its PostgreSQL and
-Valkey in the release namespace. The name of the Gateway is
+By default, the release also installs the AI Gateway with its PostgreSQL and
+Valkey in the release namespace. The name of the AI Gateway is
 `cetirun-ai-gateway`. The release namespace must be the operator's namespace
-because the operator reads the Gateway master key from there. Refer to the
-[Gateway chart](../cetirun-ai-gateway/chart/README.md) for its settings, which
-are under `cetirun-ai-gateway` in this chart.
+because the operator reads the AI Gateway master key from there. Refer to the
+[AI Gateway chart](../cetirun-ai-gateway/chart/README.md) for its settings,
+which are under `cetirun-ai-gateway` in this chart.
 
-Shared models are the models set in `cetirun-ai-gateway.models`. The Gateway
+Shared models are the models set in `cetirun-ai-gateway.models`. The AI Gateway
 chart gives each model a deployment ID and an access group derived from its
 name. The operator offers each model through its deployment ID and access
-group. It offers every model to Agents without a policy, and it offers
-policy-bound Agents the models that their AgentPolicy grants. If the Gateway
-blocks models that do not have a price, as it does by default, each model must
-also have a price.
+group. It offers every model to Agents without an Agent Policy, and it offers
+Sandbox Agents the models that their Agent Policy grants. If the AI
+Gateway blocks models that do not have a price, as it does by default, each
+model must also have a price.
 
 In this example, the provider key is in a Secret that you create in the release
 namespace. With `make deploy`, put the same entries under
@@ -988,9 +989,9 @@ example its endpoint, provider parameters or price, the model keeps its access
 group. As a result, Agents continue to use the model and are not restarted for
 this change.
 
-Also, an upgrade of the Gateway does not interrupt the Agents. The Gateway pods
-keep the configuration that they started with until they are replaced. The
-operator applies a changed model list after the rollout ends.
+Also, an upgrade of the AI Gateway does not interrupt the Agents. The AI
+Gateway pods keep the configuration that they started with until they are
+replaced. The operator applies a changed model list after the rollout ends.
 
 Shared models are optional for a direct install of this chart. `make deploy`
 must have them. Its default routing mode requires `auto`; explicit
@@ -998,14 +999,14 @@ must have them. Its default routing mode requires `auto`; explicit
 and Hermes Agents use their owners' GitHub Copilot. With
 `cetirun-operator.aiGateway.copilotProxy.enabled` disabled, the Portal creates
 no Agent until a shared model is offered.
-The Gateway's health checks do not probe the Agents' GitHub Copilot routes
+The AI Gateway's health checks do not probe the Agents' GitHub Copilot routes
 because each probe is a real call on the owner's Copilot allowance.
 `cetirun-operator.aiGateway.copilotProxy.healthChecks.enabled` enables their
 probes.
 
 A model added in the console is shared only if it has the access group
-`cetirun-shared` and a price. It is shared only with Agents without a policy.
-To open the console, use these commands:
+`cetirun-shared` and a price. It is shared only with Agents without an Agent
+Policy. To open the console, use these commands:
 
 ```bash
 kubectl get secret cetirun-ai-gateway-auth -n cetirun-system \
@@ -1015,18 +1016,18 @@ kubectl port-forward -n cetirun-system svc/cetirun-ai-gateway 4000:4000
 
 Then open <http://localhost:4000/ui> and sign in as `admin`.
 
-You can use a separately installed Gateway instead, but not with `make deploy`,
-which installs the bundled one. To do this, set
-`cetirun-ai-gateway.enabled=false`. Install the Gateway in the operator
+You can use a separately installed AI Gateway instead, but not with
+`make deploy`, which installs the bundled one. To do this, set
+`cetirun-ai-gateway.enabled=false`. Install the AI Gateway in the operator
 namespace under the name `cetirun-ai-gateway`, with
-`operatorIntegration: true`. If you install the Gateway elsewhere, set
-`cetirun-operator.aiGateway.url` to the URL of that Gateway. In this case, also
-copy its master key into the operator namespace as the
+`operatorIntegration: true`. If you install the AI Gateway elsewhere, set
+`cetirun-operator.aiGateway.url` to the URL of that AI Gateway. In this case,
+also copy its master key into the operator namespace as the
 `cetirun-ai-gateway-auth` Secret.
 
 A Team is optional for a new Agent. Without a Team, the Agent can use every
 shared model. Policy-bound Teams are created in the Portal's administration
-pages. A Team without a policy can also be created with a manifest:
+pages. A Team without an Agent Policy can also be created with a manifest:
 
 ```bash
 kubectl apply -f - <<'EOF'

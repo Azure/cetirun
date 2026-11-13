@@ -16,7 +16,7 @@ to its participants. The controls below narrow access when that is not wanted.
 ## Limit Memory in a CetiRun Agent
 
 The owner of a CetiRun Agent adds `owner_access` to `~/.hermes/config.yaml`
-or `~/.openclaw/openclaw.json` in the portal's **Terminal**, and then selects
+or `~/.openclaw/openclaw.json` in the Portal's **Terminal**, and then selects
 **Restart Agent**. The platform merges its generated configuration into these
 files at each start and keeps `owner_access`. OpenClaw removes the
 `cetirun-memory-context` entry when the deployment disables Memory. For the

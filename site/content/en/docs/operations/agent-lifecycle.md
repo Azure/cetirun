@@ -14,7 +14,7 @@ tasks, refer to [Manage your Agent](../../guides/lifecycle/).
 In the Portal, open **Admin** → **Agents**. The page title is **All agents**.
 Search by Agent name or owner, or filter by Team, Agent type, and phase. To
 open the management page of an Agent, select its name or **View details**. To
-get access, a user must be a member of the Portal's configured administrator
+get access, a user must be a member of the configured Portal administrator
 allowlist. Team membership alone does not grant this access.
 
 For this role and the other Admin pages, refer to
@@ -28,9 +28,9 @@ registry authentication means that a credential reference exists. It does not
 prove that an image can be pulled.
 
 This page does not expose credentials. It does not grant access to the owner's
-chat, terminal, or native Agent workspace. The page does not include arbitrary
+chat, terminal, or Agent UI. The page does not include arbitrary
 Helm values and annotations. The ordinary owner APIs keep their ownership
-checks. This is also true when the caller is an administrator.
+checks. This is also true when the caller is a Portal administrator.
 
 Select **Edit** to open the configuration dialog. In this dialog, you can
 change the display name, image, model override, or supported integration
@@ -42,9 +42,9 @@ Web UI applies only to Custom Agents with a port.
 If you clear the model, the platform's default resolution is selected. Agent
 type, runtime username, resource name, owner, Team, Sandbox binding, and Chart
 version are read-only here. You cannot clear a pinned image. An image change
-keeps any private registry credential reference that exists. Administrators
-cannot replace credentials through this page. Platform type restrictions and
-admission still apply.
+keeps any private registry credential reference that exists. Portal
+administrators cannot replace credentials through this page. Platform type
+restrictions and admission still apply.
 
 When you save, only the changed fields are sent. It is possible that the
 Operator did not apply a saved configuration yet. Before you consider the
@@ -127,15 +127,15 @@ Keep `metadata.name` and `spec.user.alias` stable. The Agent namespace, Helm
 release, and URL path come from the name. The ownership comes from the alias.
 Do not use `ui`, because the controller reserves it.
 
-`spec.team` and `spec.sandboxRef` select the policy and isolation settings that
-an administrator defines. You must set `spec.agent`. If you do not set its
-`type`, Hermes is the default. The effective type and runtime username cannot
-change after creation.
+`spec.team` and `spec.sandboxRef` select the Agent Policy and the isolation
+settings that an administrator defines. You must set `spec.agent`. If you do
+not set its `type`, Hermes is the default. The effective type and runtime
+username cannot change after creation.
 
 An Agent with `spec.sandboxRef` must request its model sources. Without
 `modelAccess.sharedModels: true` or `modelAccess.githubCopilot: true`, it gets
-no model. The Policy of the Team must also allow each source that the Agent
-requests.
+no model. The Agent Policy of the Team must also allow each source that the
+Agent requests.
 
 Validate the manifest against the cluster's installed CRD. This command does
 not save the manifest:
@@ -174,8 +174,8 @@ its contents.
 
 `spec.model` is optional. It names the default model of the Agent, as the AI
 Gateway offers it, for example `auto`. Without it, the operator supplies its
-deployment default. For an Agent of a policy-bound Team, the Policy must allow
-the model. If it does not, the Agent does not run. Its `PolicyResolved`
+deployment default. For an Agent of a policy-bound Team, the Agent Policy must
+allow the model. If it does not, the Agent does not run. Its `PolicyResolved`
 condition is then `False` with the reason `PolicyDenied`, and the message names
 the model.
 
@@ -209,8 +209,8 @@ access URL or overall `Ready` is not the same as a successful request through
 the ingress gateway. Examine TLS, sign-in, and model-provider access
 separately.
 
-Each runtime has its own startup, liveness, and readiness probes. For the probe
-paths and ports, refer to
+Each agent type has its own startup, liveness, and readiness probes. For the
+probe paths and ports, refer to
 [Agent services](../troubleshooting/#agent-services). These are pod probes.
 They do not examine Entra login, model entitlement, or tailnet reachability.
 
@@ -221,9 +221,9 @@ operations. For a slow Agent, inspect the current Conditions before you extend a
 wait or change timeouts. `PolicyDenied` is a validation failure, not a slow
 start of the workload. For `DependencyUnavailable`, find if the reported
 dependency is not provisioned yet, temporarily unreachable, or misconfigured. A
-longer Agent startup-probe window does not repair a failed policy validation or
-a missing configuration. Examine scheduling, image pulls, init containers, and
-HOME binding separately from application probes.
+longer Agent startup-probe window does not repair a failed Agent Policy
+validation or a missing configuration. Examine scheduling, image pulls, init
+containers, and HOME binding separately from application probes.
 
 For GitHub Copilot, also inspect `status.aiGateway.copilot.phase` and `reason`.
 Successful owner authorization, a Ready Copilot proxy, registered model routes,
@@ -237,10 +237,10 @@ that these model-provider stages are complete.
 
 In the Portal, owners select **Suspend Agent** or **Resume Agent**. These
 controls change only the `spec.suspended` intent. They do not delete the
-Agent, HOME, or Gateway key. They do not reset the spend history or create
+Agent, HOME, or AI Gateway key. They do not reset the spend history or create
 another lifecycle operation.
 
-Suspension keeps HOME and the Gateway spend, but it does **not** keep the
+Suspension keeps HOME and the AI Gateway spend, but it does **not** keep the
 Copilot sign-in. The Operator removes the per-Agent Copilot token and
 proxy-key Secrets during explicit suspension. After resume, the owner must sign
 in to GitHub again. Do not use Suspend/Resume in place of an ordinary image or
@@ -250,10 +250,10 @@ necessary, include owner reauthorization in the maintenance plan.
 
 | Current Agent | Suspend | Resume |
 | --- | --- | --- |
-| Ordinary OpenClaw, Hermes, or Custom Agents, and common-executor Sandbox Agents | Allowed when the current owned workload has a confirmed PVC-backed HOME, also during provisioning or recovery | Allowed when suspension is requested |
-| Governed Agent held before bootstrap | Allowed without HOME storage when read-only checks confirm that no runtime namespace, lifetime receipts, grant journal, or execution history exists. A missing workload alone is not sufficient. The prerequisite failure stays available for diagnosis, and no runtime resources are created | Continues bootstrap with the current prerequisites |
+| Standard OpenClaw, Hermes, or Custom Agents, and Sandbox Agents | Allowed when the current owned workload has a confirmed PVC-backed HOME, also during provisioning or recovery | Allowed when suspension is requested |
+| Sandbox Agent held before bootstrap | Allowed without HOME storage when read-only checks confirm that no runtime namespace, lifetime receipts, grant journal, or execution history exists. A missing workload alone is not sufficient. The prerequisite failure stays available for diagnosis, and no runtime resources are created | Continues bootstrap with the current prerequisites |
 | Ephemeral HOME, or workload storage that is unverified or absent | Unavailable. No retained suspension is accepted | A resume intent that already exists stays available |
-| Pending restart or administrator migration | Suspension takes precedence | Continues the original operation and keeps its request ID and controller safeguards |
+| Pending restart, or a migration that a platform administrator requested | Suspension takes precedence | Continues the original operation and keeps its request ID and controller safeguards |
 | Recorded legacy single-start Sandbox lifetime | Rejected. The lifetime is not converted | Rejected |
 | Agent in deletion | Rejected. Deletion takes precedence | Rejected |
 | Same requested intent on the same Agent UID | Observe without another write | Observe without another write |
@@ -262,7 +262,7 @@ necessary, include owner reauthorization in the maintenance plan.
 
 The owner endpoints are `POST /api/v1/instances/{name}/suspend` and
 `POST /api/v1/instances/{name}/resume`. The equivalent endpoints for the
-default instance use `/api/v1/instance/suspend` and `/api/v1/instance/resume`.
+default Agent use `/api/v1/instance/suspend` and `/api/v1/instance/resume`.
 For both actions, the JSON body must contain the current `uid` and
 `resourceVersion`. The caller must be the owner, and the request must pass the
 normal management origin checks.
@@ -334,7 +334,7 @@ the StatefulSet is zero. Also make sure that no workload pods are left and that
 the VirtualService was removed. The suspension branch does not wait for pod
 termination.
 
-For ordinary OpenClaw and Hermes Agents, the controller enforces zero replicas
+For standard OpenClaw and Hermes Agents, the controller enforces zero replicas
 and `persistence.retainPolicy: Retain` after all Helm overrides. As a result,
 a configured `Delete` policy cannot remove HOME during scale-down. The stored
 Agent, deployment, and chart preferences do not change. Resume applies the
@@ -349,7 +349,7 @@ This also applies to defaults that are resolved from the selected chart. A
 configuration change must not turn an accepted retained stop into a
 destructive scale-down.
 
-The runtime chart allows only `replicaCount: 0` or `1`. Its HPA validation
+The agent chart allows only `replicaCount: 0` or `1`. Its HPA validation
 accepts only `minReplicas=maxReplicas=1`. As a result, the HPA cannot scale an
 Agent horizontally, and it is not a substitute for explicit suspension. There
 is no automatic idle-suspend/resume policy in this controller.
@@ -363,15 +363,15 @@ not revoke a tailnet device.
 For a current, ready Agent, the owner selects **Restart Agent** in the Portal
 and confirms the interruption. This requests a replacement Pod through the
 controller. It does not delete the Agent, namespace, or HOME PVC. Persistent
-files, the current Gateway key identity, and the spend history are kept.
+files, the current AI Gateway key identity, and the spend history are kept.
 Active process sessions are interrupted, and Pod-local temporary files are not
 kept.
 
 Suspension and deletion take precedence. Restart cannot resume a suspended
 Agent. Current policy and runtime checks still apply. Earlier single-start
-Sandbox lifetimes reject this operation and do not convert their records.
-Governed Custom uses the common Sandbox restart path. Custom without Sandbox
-selection keeps its approved shutdown and apply path.
+Sandbox lifetimes reject this operation and do not convert their records. A
+Custom Sandbox Agent uses the common Sandbox restart path. Custom without
+Sandbox selection keeps its approved shutdown and apply path.
 
 The Operator renders the Custom restart marker through the `podAnnotations`
 chart contract that already exists. As a result, approved older Custom chart
@@ -418,7 +418,7 @@ its readiness, it does not request another apply.
 Platform administrators can opt in to planned cold migration for Agents that
 meet these conditions:
 
-- The Agent is a common-executor OpenClaw, Hermes, or governed Custom Agent.
+- The Agent is a Sandbox Agent of the OpenClaw, Hermes, or Custom agent type.
 - The Agent has one filesystem CSI HOME that uses `ReadWriteOncePod` (RWOP) or
   `ReadWriteOnce` (RWO).
 - The selected Kata or container platform registration explicitly supports
@@ -454,8 +454,8 @@ accepted request, an absent Pod, or a changed placement alone is not
 completion. Before the controller allows the destination to start, it keeps
 the observations of the source Pod's termination and CSI detach. For
 completion, the current Ready replacement and the reattached original HOME are
-necessary. The Agent, namespace, PVC, PV, and Gateway spend identities do not
-change. Process sessions and Pod-local scratch do not survive.
+necessary. The Agent, namespace, PVC, PV, and AI Gateway spend identities do
+not change. Process sessions and Pod-local scratch do not survive.
 
 To recover from an uncertain response, you must read the current request. Do
 not send another ID. In-progress requests cannot be overwritten. Retries with
@@ -481,7 +481,7 @@ source read or a protection write fails during `Protecting`, suspension stays
 pending. When those operations recover, retries continue the same request.
 
 These retries still examine the current authorization. If model access is
-withdrawn or unverified, the Gateway key that exists is blocked. This block
+withdrawn or unverified, the AI Gateway key that exists is blocked. This block
 does not depend on the deferred source shutdown, and it does not reset the
 accounting identity of the key. A failed key operation stays an explicit error
 with retries, not a successful block.
@@ -517,8 +517,8 @@ operator saves that image before it deploys the new chart.
 
 Other built-in image choices stay pinned and must satisfy the selected runtime
 profile's qualification rules. Custom images stay pinned under their image
-approval checks. Policy and lifecycle authorization still apply. An operator
-upgrade alone does not change an Agent's pinned chart or image.
+approval checks. Agent Policy and lifecycle authorization still apply. An
+operator upgrade alone does not change an Agent's pinned chart or image.
 
 Treat model, chart, credential, and agent configuration changes as possibly
 disruptive. Before you change users' Agents, review the backups and test
@@ -579,11 +579,12 @@ replica. It does not use the built-in orphan-delete hook or replace the HOME
 claim. Changes to the Model Key and to the context revision go through the
 same gate. The process environment does not refresh in place.
 
-The Operator chart enables the Custom provider by default, with no approved
-images. The non-Sandbox provider reports `CustomImageNotApproved` while image
-approval is missing and `CustomBindingsPending` while other binding
-prerequisites are unavailable. Governed Custom instead must have a current
-common-executor registration and a Gateway-qualified image approval.
+The Operator chart enables the Custom agent type by default, with no approved
+images. For a standard Custom Agent, the operator reports
+`CustomImageNotApproved` while image approval is missing and
+`CustomBindingsPending` while other binding prerequisites are unavailable. A
+Custom Sandbox Agent instead must have a current common-executor registration
+and an AI Gateway-qualified image approval.
 Chat/headless Agents have no public Agent UI URL. A declared Web UI uses its
 authenticated route. See
 [Agent Harness](../../reference/agent-harness/#custom-runtime) for the
@@ -591,9 +592,10 @@ implementation boundary and offline qualification tests.
 
 ## Delete only with a recovery plan
 
-Governed Custom cleanup uses the common bootstrap ownership and grant journal.
-Non-Sandbox Custom must have its separate durable ownership receipt. A
-never-bound Custom does not delete resources only because their names match.
+The cleanup of a Custom Sandbox Agent uses the common bootstrap ownership and
+grant journal. Non-Sandbox Custom must have its separate durable ownership
+receipt. A never-bound Custom does not delete resources only because their
+names match.
 
 For a bound Custom, cleanup makes sure that the namespace has the recorded UID
 before deletion. Then cleanup waits for the namespace to disappear. It does not
@@ -615,6 +617,6 @@ under the same authorized scope.
 Before you authorize deletion, examine the reclaim policy of the storage
 backend. Do not remove finalizers only to hide a blocked cleanup.
 
-Sources: [instance controller]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}}),
+Sources: [Agent controller]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}}),
 [value builder]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}}),
 and [chart validation]({{< repo "app/cetirun-chart/templates/_helpers.tpl" >}}).

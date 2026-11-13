@@ -2,7 +2,7 @@
 
 This example tests one OpenClaw Agent with a Kata Sandbox and a shared AI
 Gateway model. New Agents use the explicitly enabled common executor, not a
-production failover or complete AgentPolicy conformance test.
+production failover or complete `AgentPolicy` conformance test.
 
 For the scoped Kubernetes API checks that can be run on an authorized AKS
 target, read [AKS workflow](aks/README.md). For a local Kind, Docker, QEMU, and
@@ -12,19 +12,19 @@ AKS qualification tool.
 
 ## How to use this page
 
-Most sections of this page are one-time platform preparation for an
+Most sections of this page are one-time platform preparation for a platform
 administrator. The steps for each run are at the end. Read the sections in this
 order:
 
 | Section | Reader | When |
 | --- | --- | --- |
-| [Ordinary-container backend](#ordinary-container-backend) | Administrator | One time, only for the `container` backend |
-| [Prepare one authorized target](#prepare-one-authorized-target) | Administrator | One time for each target |
+| [Ordinary-container backend](#ordinary-container-backend) | Platform administrator | One time, only for the `container` backend |
+| [Prepare one authorized target](#prepare-one-authorized-target) | Platform administrator | One time for each target |
 | [Helper memory](#helper-memory), [Default startup window](#default-startup-window), and [HOME access mode](#home-access-mode) | Administrator | When you configure the Sandbox |
 | [Kubernetes API access](#kubernetes-api-access), [Scoped internal egress](#scoped-internal-egress), [Governed SCTP egress](#governed-sctp-egress), and [Rollout-stable managed ingress](#rollout-stable-managed-ingress) | Administrator | Only for the optional feature in the heading |
-| [Rollout-stable DNS and AI Gateway](#rollout-stable-dns-and-ai-gateway) | Agent owner and administrator | Each run, because Sandbox Pods resolve only full DNS names. The selectors are optional. |
-| [Create, connect and use](#create-connect-and-use) | Agent owner and administrator | Each run |
-| [Delete and verify cleanup](#delete-and-verify-cleanup) | Agent owner and administrator | Each run |
+| [Rollout-stable DNS and AI Gateway](#rollout-stable-dns-and-ai-gateway) | Agent owner and platform administrator | Each run, because Sandbox Pods resolve only full DNS names. The selectors are optional. |
+| [Create, connect and use](#create-connect-and-use) | Agent owner and admission administrator | Each run |
+| [Delete and verify cleanup](#delete-and-verify-cleanup) | Agent owner and admission administrator | Each run |
 
 ## Ordinary-container backend
 
@@ -56,19 +56,19 @@ you use the example on a separately authorized target, do these steps:
    is part of the Kubernetes effective Pod accounting. The example
    intentionally has no overhead.
 4. Under `platforms.container`, supply the same complete, revisioned
-   Cilium/DNS/Gateway/ingress topology and confirmed network capabilities that
-   the common executor uses. Register the actual CSI StorageClass
+   Cilium/DNS/AI Gateway/ingress topology and confirmed network capabilities
+   that the common executor uses. Register the actual CSI StorageClass
    UID/provisioner. Register only the tested `homeAccessModes`
    (`ReadWriteOncePod`, `ReadWriteOnce`, or both). RWO alone is not a
    single-writer guarantee.
-5. Use the matching CRDs, Portal, Operator/admission, and runtime chart. Enable
+5. Use the matching CRDs, Portal, Operator/admission, and agent chart. Enable
    the common executor/admission settings below. Then create a Team that binds
-   the new Sandbox to its AgentPolicy. Create a new OpenClaw or Hermes Agent
+   the new Sandbox to its Agent Policy. Create a new OpenClaw or Hermes Agent
    with that selection. This does not add online runtime conversion for an
    Agent or HOME that already exists.
 
 The common pipeline still owns authorization, final-Pod checks, HOME retention,
-restart/suspend/resume, Gateway key/budget/spend, and Cilium policies. Opt-in
+restart/suspend/resume, AI Gateway key/budget/spend, and Cilium policies. Opt-in
 healthy-source CSI migration uses the same acknowledged shutdown/detach path,
 not physical failover fencing. Separate platform auxiliary Deployments keep
 their current role-specific contracts.
@@ -84,7 +84,7 @@ key. mTLS does not grant them. Keep `enforcementObservation` and
 `restrictiveFailure` false.
 
 The [offline checks](../../DEVELOPMENT.md) use synthetic platform observations.
-Live Kata and ordinary-container acceptance, CSI file retention, actual Gateway
+Live Kata and ordinary-container acceptance, CSI file retention, actual AI Gateway
 spend, and Cilium traffic tests stay a separate target-specific qualification.
 The [local Kata validation tools](local/README.md) are not a container
 runtime installer.
@@ -95,19 +95,19 @@ Start with the [development checks](../../DEVELOPMENT.md). Installation,
 image/chart publication, and live requests must have authorization for the
 actual target. These examples do not provision a cluster or grant credentials.
 
-Use matching CRDs, Operator/admission binaries, runtime chart, and Gateway chart
-from the same integration build. The platform must already have:
+Use matching CRDs, Operator/admission binaries, agent chart, and AI Gateway
+chart from the same integration build. The platform must already have:
 
 - The selected Kata runtime, compatible CSI storage for the explicitly
   registered HOME access mode, and baseline Cilium
   networking. A RuntimeClass object alone is not runtime qualification.
-- A Sandbox platform configuration that an administrator keeps accurate.
+- A Sandbox platform configuration that a platform administrator keeps accurate.
   Do not invent qualification flags, object UIDs, or topology to pass
   admission.
 - Enforced Sandbox configuration and Pod admission with TLS that works.
 - A configured AI Gateway model, its real provider credentials in the approved
   secret mechanism, and `operatorIntegration: true`. Model IDs and access
-  groups must match the chart-derived policy bindings.
+  groups must match the chart-derived Agent Policy bindings.
 - The current native ingress/authentication deployment and an authorized
   owner who can sign in. An HTTPS redirect alone does not prove owner access.
 
@@ -132,17 +132,17 @@ separate terminal helper must have its restricted API connection. Do not enable
 Agent Kubernetes access or allow a broad internal CIDR to satisfy this helper
 dependency.
 
-For common-executor Custom, configure HOME through
-`Sandbox.spec.storage.home`. Do not copy the ordinary runtime chart's
-`persistence` values into the Operator's shared `cetirun.helmValues`. Custom
+For a Custom Sandbox Agent, configure HOME through
+`Sandbox.spec.storage.home`. Do not copy the agent chart `persistence` values of
+a standard Agent into the Operator's shared `cetirun.helmValues`. Custom
 rejects that override surface. The non-Sandbox Custom storage settings do not
 replace the selected Sandbox storage contract.
 
 Native OpenClaw runs without an Istio proxy in the same Pod. As a result, its
 proxy trust comes from the registered ingress peers, not from the legacy
-`127.0.0.6` sidecar address. Exact peer IPs stay the default. Managed gateways
-can select [rollout-stable ingress](#rollout-stable-managed-ingress) below.
-Do not use a wildcard proxy range or a per-Agent Helm override.
+`127.0.0.6` sidecar address. Exact peer IPs stay the default. Managed ingress
+gateways can select [rollout-stable ingress](#rollout-stable-managed-ingress)
+below. Do not use a wildcard proxy range or a per-Agent Helm override.
 
 The packaged native OpenClaw init containers use `/usr/bin/tini -g --` to
 supervise the current HOME, doctor, and credential-retirement commands.
@@ -169,12 +169,12 @@ list, and the Agent does not start with unrelated published content. This
 applies to OpenClaw, Hermes, and Custom. Publish the necessary content through
 the approved source contract. Do not bypass the hold with a raw chart value.
 
-For a Custom request that the policy authorizes, unavailable materialization
-does not revoke the Gateway key that exists. It blocks that key and holds
-compute. When you remove the unmaterialized request, recovery can use the same
-key and spend record. A request that is outside the policy still revokes
-access. This does not automatically replace a key that was already revoked or
-lost.
+For a Custom request that the Agent Policy authorizes, unavailable
+materialization does not revoke the AI Gateway key that exists. It blocks that
+key and holds compute. When you remove the unmaterialized request, recovery can
+use the same key and spend record. A request that is outside the Agent Policy
+still revokes access. This does not automatically replace a key that was already
+revoked or lost.
 
 When Memory Context is enabled, reconciled OpenClaw and Hermes lifetimes
 mount the common instructions read-only at `$HOME/.agents/AGENTS.md` and load
@@ -203,17 +203,17 @@ sandboxAdmission:
 ```
 
 The legacy `sandboxSources.helpers` flags do not control reconciled (`v2`)
-native lifetimes. Those lifetimes use the helper settings of the runtime chart.
+native lifetimes. Those lifetimes use the helper settings of the agent chart.
 By default, OpenClaw doctor runs on each Pod initialization, even if
 `sandboxSources.helpers.doctor` is `false`.
 
 This is an **overlay**, not a complete installation configuration. Supply the
 target's admission TLS/administrator/coordination settings, domain, registry,
-Gateway configuration, and source registries through your normal private
+AI Gateway configuration, and source registries through your normal private
 deployment configuration. Do not commit that configuration.
 
 On AKS, the control plane can append its system-namespace exclusions to
-admission webhooks. By default, deployment preflight stays strict. An
+admission webhooks. By default, deployment preflight stays strict. A platform
 administrator can explicitly pass `--allow-aks-system-exclusions` to
 `deployment-preflight`. With this option, preflight accepts only the two exact
 `NotIn` clauses for `control-plane: ["true"]` and
@@ -229,7 +229,7 @@ Copy [configuration.yaml](configuration.yaml) and [agent.yaml](agent.yaml) to a
 private run directory. Replace these items:
 
 - `native-home` with the registered CSI storage class.
-- `example-model` with the exact authorized Gateway catalog ID.
+- `example-model` with the exact authorized AI Gateway catalog ID.
 - The image and chart pins with the candidate artifacts. The OpenClaw image is
   `<registry>/openclaw-gateway:<appVersion>`, with the `appVersion` of the
   selected chart.
@@ -266,13 +266,13 @@ exist. It also does not bypass lifecycle and admission checks.
 
 ## Default startup window
 
-With the matching runtime chart, common-executor OpenClaw uses 60 failed startup
+With the matching agent chart, an OpenClaw Sandbox Agent uses 60 failed startup
 probes at 10-second intervals by default. This prevents a restart that is too
 early, before the gateway completes its initialization on Kata. Startup,
 readiness, and liveness checks all stay enabled.
 `startupProbe.failureThreshold: null` selects this default, but an explicit
-positive value is kept. Retained single-start OpenClaw, Hermes, and ordinary
-non-Sandbox paths keep their previous default of 30.
+positive value is kept. Retained single-start OpenClaw, Hermes, and standard
+Agents keep their previous default of 30.
 
 Probe time starts after initialization, not when a restart or resume is
 requested. Doctor and credential retirement still run. On each start,
@@ -310,7 +310,8 @@ either registered HOME access mode. The examples below use `kata`. For an
 independently qualified ordinary-container backend, use the applicable
 `container` registration and platform keys. Retained single-start (`v1`)
 lifetimes still reject Kubernetes access. This is Kubernetes ServiceAccount
-authorization, not Entra ID, Agent Identity, Broker, or Connections support.
+authorization, not Entra ID, Agent Identity, Agent Identity Broker, or
+Connections support.
 
 Upgrade **all Operator and admission replicas before enabling** Kubernetes
 access in a shared platform registration. The expectation/journal versions stay
@@ -325,11 +326,12 @@ finish normal consumer deletion and make sure that grant/journal cleanup is
 complete before you downgrade. Never remove journals, expectations, or
 finalizers to bypass this rule.
 
-Only platform administrators manage this policy field and its separate
+Only platform administrators manage this Agent Policy field and its separate
 approvals. The Portal shows it as read-only and keeps it when other fields are
 saved. The Portal administrator role does not authorize changes to Kubernetes
-grants. A policy request alone grants nothing. For example, this **policy
-fragment** requests a namespaced binding to a ClusterRole that already exists:
+grants. An Agent Policy request alone grants nothing. For example, this
+**Agent Policy fragment** requests a namespaced binding to a ClusterRole that
+already exists:
 
 ```yaml
 kubernetesAccess:
@@ -339,15 +341,15 @@ kubernetesAccess:
       clusterRoleName: agent-pod-reader
 ```
 
-Before the policy is bound to a Team, the administrator must:
+Before the Agent Policy is bound to a Team, the platform administrator must:
 
 1. Explicitly register `registrations.kata.Capabilities.kubernetesAccess: true`
    in the protected platform configuration. By default, it stays disabled.
 2. Approve each requested role and binding scope in `platforms.kata.grants`.
-   Every entry pins the policy UID and the UID of the ClusterRole that already
-   exists. Every entry also pins the resource version, the complete rules, and
-   a separate approval revision. An empty grant namespace authorizes a
-   ClusterRoleBinding, not a namespaced RoleBinding.
+   Every entry pins the Agent Policy UID and the UID of the ClusterRole that
+   already exists. Every entry also pins the resource version, the complete
+   rules, and a separate approval revision. An empty grant namespace authorizes
+   a ClusterRoleBinding, not a namespaced RoleBinding.
 3. Under `platforms.kata.topology.kubernetesAPI`, register the actual
    Kubernetes API Service and backend IP destinations and ports. Do not
    substitute a broad internal CIDR grant. The necessary API destinations cannot
@@ -386,11 +388,11 @@ creates the owned account and per-Agent bindings. It never creates, edits, or
 deletes the referenced shared ClusterRoles.
 
 When the operator creates bindings, Kubernetes also examines the operator's
-RBAC. If the operator does not already have the permissions of a role, an
-administrator must separately grant the operator `bind` on **that named
-ClusterRole**. When possible, the administrator must scope this grant to the
-intended namespace. This feature does not add a blanket `bind`, `escalate`, or
-Portal RBAC permission.
+RBAC. If the operator does not already have the permissions of a role, a
+platform administrator must separately grant the operator `bind` on **that named
+ClusterRole**. When possible, the platform administrator must scope this grant
+to the intended namespace. This feature does not add a blanket `bind`,
+`escalate`, or Portal RBAC permission.
 
 Only the main Agent container receives a read-only projected token that
 rotates. This token is at `/var/run/secrets/kubernetes.io/serviceaccount`,
@@ -406,9 +408,9 @@ Current Pod admission must have these items:
 - Confirmed UIDs in the grant journal that already exists.
 - Unchanged role UID/version/rules.
 
-Policy `Accepted` is configuration acceptance, not proof of execution. Examine
-the Agent's current `SandboxReady`, applied revision, aggregate `PolicyApplied`,
-and workload readiness.
+Agent Policy `Accepted` is configuration acceptance, not proof of execution.
+Examine the Agent's current `SandboxReady`, applied revision, aggregate
+`PolicyApplied`, and workload readiness.
 
 Revoked or changed approvals hold compute and withdraw the recorded grants.
 Suspension and deletion revoke both namespaced and cluster-wide bindings, but
@@ -433,7 +435,7 @@ release history. Older records without per-grant evidence are treated
 conservatively.
 
 Admission also examines the owned ClusterRole-binding inventory, even when the
-new policy removes all Kubernetes grants. An obsolete or unrecorded owned
+new Agent Policy removes all Kubernetes grants. An obsolete or unrecorded owned
 workload grant blocks admission. Platform source-reader Roles are separate.
 As a result, read-only `list` access to RoleBindings and ClusterRoleBindings is
 necessary for the admission reader. This access is in addition to the
@@ -450,7 +452,7 @@ HOME, or send it to a test witness.
 
 New common-executor Kata OpenClaw/Hermes lifetimes can use
 `AgentPolicy.spec.network.allowedInternalCIDRs` with either registered HOME
-mode. For example, this synthetic **policy fragment** grants TCP `443`
+mode. For example, this synthetic **Agent Policy fragment** grants TCP `443`
 throughout one private subnet. It adds UDP `8080` only in a subrange that
 overlaps this subnet:
 
@@ -483,10 +485,10 @@ port. Do not grant node ranges, broaden selectors, or change the Cilium
 deployment as a workaround for an incomplete registration.
 
 When configuration coordination is enabled, suspend all consumers before you
-update reserved policy or platform sources. Also complete their normal shutdown
-before the update. After the coordinated configuration change, resume through
-the ordinary lifecycle. Do not remove reservations or edit status. Retained
-version-1 single-start lifetimes still reject internal grants.
+update reserved Agent Policy or platform sources. Also complete their normal
+shutdown before the update. After the coordinated configuration change, resume
+through the ordinary lifecycle. Do not remove reservations or edit status.
+Retained version-1 single-start lifetimes still reject internal grants.
 
 Offline compiler, chart, and API-server checks do not qualify real traffic.
 On an explicitly authorized target, use owner-authenticated Agent requests and
@@ -512,8 +514,8 @@ New common-executor Kata OpenClaw/Hermes lifetimes can request SCTP in both
 Cilium compiler and owned CiliumNetworkPolicy, not a new proxy or dataplane.
 Retained version-1 single-start lifetimes still reject SCTP port requests.
 
-The current administrator-controlled
-`registrations.kata.Capabilities.protocols` list is the protocol opt-in.
+The platform administrator controls the current
+`registrations.kata.Capabilities.protocols` list, which is the protocol opt-in.
 Registration examples and the local platform probe still use TCP/UDP by
 default. Neither an API value of `SCTP` nor a successful TCP/UDP probe
 qualifies SCTP. Only after a separately authorized qualification of the exact
@@ -532,7 +534,7 @@ Keep the native adapter's `qualified: false`. This increment does not supply
 independent enforcement observation or physical fencing. Do not enable SCTP in
 Cilium or change host/kernel settings as part of an offline check.
 
-This synthetic **policy fragment** grants SCTP `3868` to approved direct
+This synthetic **Agent Policy fragment** grants SCTP `3868` to approved direct
 internal endpoints and denies SCTP `3869` at every destination:
 
 ```yaml
@@ -547,7 +549,7 @@ network:
 
 The internal grant does not allow TCP/UDP `3868` or other SCTP ports. Grants
 that overlap combine exact protocol/port pairs. Explicit CIDR and port denies
-still take precedence. TCP/UDP DNS `53` and the registered Gateway ports are
+still take precedence. TCP/UDP DNS `53` and the registered AI Gateway ports are
 still necessary. A configuration that blocks those pairs is rejected. When SCTP
 is blocked on a numeric port, TCP/UDP on the same port is not blocked.
 
@@ -567,21 +569,21 @@ permissions.
 Cilium's [SCTP limitations](https://docs.cilium.io/en/stable/configuration/sctp/)
 include unsupported pod-to-VIP policies, multihoming, port rewriting, BPF
 masquerading, and egress gateway. This feature does not add those capabilities.
-The administrator must qualify the actual direct path and any NAT in it.
+The platform administrator must qualify the actual direct path and any NAT in it.
 
 The current [compiler budgets](../../app/cetirun-operator/internal/sandboxpolicy/limits.go)
 and 40-entry port groups apply and do not truncate controls. An unregistered
 protocol, unsupported family, malformed rule, protected destination, or
-excessive expansion rejects the request. Admission validates a policy against
-its selected Sandbox/platform. The storage of an unused AgentPolicy alone is
-not authorization.
+excessive expansion rejects the request. Admission validates an Agent Policy
+against its selected Sandbox/platform. The storage of an unused Agent Policy
+alone is not authorization.
 
-For policy or registration changes, use the ordinary stop/change/resume
-lifecycle. Active policy reservations stay enforced. Administrator changes to
-platform inventory invalidate old Pod authority. These changes are not an
-in-place capability upgrade for Pods that are in operation. The compiler and
-controller bind both the requested rules and registration into the current
-revisions and source checks.
+For Agent Policy or registration changes, use the ordinary stop/change/resume
+lifecycle. Active Agent Policy reservations stay enforced. Changes that the
+platform administrator makes to the platform inventory invalidate old Pod
+authority. These changes are not an in-place capability upgrade for Pods that
+are in operation. The compiler and controller bind both the requested rules and
+registration into the current revisions and source checks.
 
 The served-API and compiler tests examine these contracts with synthetic
 inventory. They do not run SCTP traffic through Kata/Cilium or qualify a
@@ -591,7 +593,7 @@ target. On a separately authorized target, examine these items:
 - Wrong ports and TCP/UDP on the same port
 - Grants that overlap
 - Explicit denies
-- Necessary DNS and Gateway access
+- Necessary DNS and AI Gateway access
 - Protected destinations
 - Peer isolation
 - Grant removal
@@ -651,9 +653,9 @@ Pod UID. A selector must contain valid Pod labels and an exact namespace.
 
 A selector-bound AI Gateway peer must select the protected label
 `sandbox.cetirun.microsoft.com/peer: ai-gateway`. The registration is refused
-without it. The AI Gateway chart sets this label on the Gateway Pods only, not
-on PostgreSQL or Valkey. Without the protected label, any identity that can
-create or relabel Pods in the Gateway namespace could receive Agent traffic.
+without it. The AI Gateway chart sets this label on the AI Gateway Pods only,
+not on PostgreSQL or Valkey. Without the protected label, any identity that can
+create or relabel Pods in the AI Gateway namespace could receive Agent traffic.
 
 With `sandboxSources.nativeExecution` on, the operator chart installs the
 ValidatingAdmissionPolicy `cetirun-sandbox-protected-peer`. In the namespaces
@@ -662,10 +664,10 @@ of `aiGateway.peerNamespaces` (by default the operator namespace), it:
 - Lets only the ReplicaSet controller create Pods with that label.
 - Refuses an update that adds, changes or removes that label on a Pod.
 
-This policy does not stop an identity that can change the Gateway Deployment
+This policy does not stop an identity that can change the AI Gateway Deployment
 or ReplicaSet, because the ReplicaSet controller then creates the Pods. Make
 sure that only platform administrators can create Pods, or change Deployments
-and ReplicaSets, in the Gateway namespace. For each ServiceAccount, user and
+and ReplicaSets, in the AI Gateway namespace. For each ServiceAccount, user and
 group that has access to that namespace, run:
 
 ```bash
@@ -682,11 +684,11 @@ Only cluster administrators and system components can create, patch or own
 Pods there. The platform owns this protection and the Service-to-Pod
 association.
 
-Selector-bound DNS/Gateway entries must contain only Service IPs within the
+Selector-bound DNS/AI Gateway entries must contain only Service IPs within the
 registered `serviceCIDRs`, outside `podCIDRs`. Do not pin backend Pod IPs.
 `dnsResolverIPs` still selects at most three approved DNS Service addresses.
 The generated endpoint rules follow replacement Pods and keep the exact DNS
-TCP/UDP and Gateway port restrictions. Complementary denies still exclude
+TCP/UDP and AI Gateway port restrictions. Complementary denies still exclude
 unselected Pods, wrong namespaces and ports, including when another policy
 adds an allow. Kubernetes API and arbitrary inventory peers retain their
 existing registration contract.
@@ -710,7 +712,7 @@ select the protected label, and the operator refuses it. Before you upgrade
 the operator, upgrade the AI Gateway chart: its Pods restart one time with the
 label. Then add the label to the registration in the same change as the
 operator upgrade. Until the registration selects the label, Agents that use it
-stay held. When the registration is not valid, the AgentPolicy `Accepted`
+stay held. When the registration is not valid, the Agent Policy `Accepted`
 condition and the Agent `PolicyResolved` condition show the reason.
 After that transition, a Pod rollout or scale-out does not change the
 registration or the Agent's network-policy revision. Changing Service IPs,
@@ -720,17 +722,18 @@ backend IPs and protected peer labels.
 
 Offline compiler tests cover replacement addresses, namespace/label and port
 denies, mixed legacy peers, resolver stability, terminal isolation and bounded
-selector expansion. Controller tests cover repeated DNS/Gateway Pod replacement
-without changing Agent workloads on both backends. These tests do not replace
-separately authorized AKS/Cilium rollout, scaling and dataplane acceptance.
+selector expansion. Controller tests cover repeated DNS/AI Gateway Pod
+replacement without changing Agent workloads on both backends. These tests do
+not replace separately authorized AKS/Cilium rollout, scaling and dataplane
+acceptance.
 
 ## Rollout-stable managed ingress
 
-For an AKS-managed Istio gateway, register the stable labels that the gateway
-Deployment already supplies. Use these labels instead of manual labels on the
-individual gateway Pods. The native single-start profile accepts this
+For an AKS-managed Istio ingress gateway, register the stable labels that the
+gateway Deployment already supplies. Use these labels instead of manual labels
+on the individual gateway Pods. The native single-start profile accepts this
 **one-entry fragment** under `platforms.kata.topology.ingress` in the
-administrator's `platform.json`:
+platform administrator's `platform.json`:
 
 ```json
 [
@@ -757,7 +760,7 @@ register its API port (`8642`) and Webapp port (`9120`) instead of the
 OpenClaw port above. Refer to
 [Create, connect and use](#create-connect-and-use).
 
-This mode must have matching Operator and runtime chart support and these
+This mode must have matching Operator and agent chart support and these
 items:
 
 - At least one valid Pod label. All labels are matched within the exact
@@ -820,7 +823,7 @@ for context in "$OWNER_CONTEXT" "$ADMIN_CONTEXT"; do
 done
 ```
 
-Create the edited configuration with the administrator context. Use
+Create the edited configuration with the admission administrator context. Use
 `kubectl create -f configuration.yaml` with the same explicit kubeconfig and
 context arguments. If any named configuration already exists, stop and select
 new names or arrange deliberate reuse. Do not overwrite it.
@@ -853,9 +856,10 @@ before you continue. Do not retry creation or delete by name.
    not change replicas, expectations, or finalizers as an alternative.
 2. Open the returned native URL as the owner and sign in normally. After the
    controller publishes the confirmed workload namespace, the current Portal
-   Overview supplies **Copy credential** for the Gateway token. Paste that
-   token into the native UI, or use OpenClaw's browser-only `#token=` handoff.
-   Never put the token in a query string, log, example file, or shared receipt.
+   Overview supplies **Copy credential** for the OpenClaw gateway token. Paste
+   that token into the Agent UI, or use OpenClaw's browser-only `#token=`
+   handoff. Never put the token in a query string, log, example file, or shared
+   receipt.
 
    Normal device pairing is still necessary for a new browser. If OpenClaw asks
    for approval, examine the request. After you examine it, run
@@ -873,7 +877,7 @@ before you continue. Do not retry creation or delete by name.
    device authentication. Make sure that an authenticated native WebSocket
    session works. A handshake challenge alone is not sufficient. Make sure that
    unauthenticated and nonowner access cannot use the Agent.
-3. Select the allowed real model. Then get a response through the Gateway.
+3. Select the allowed real model. Then get a response through the AI Gateway.
 4. Select a task-owned synthetic witness endpoint that baseline networking
    allows. Ask the Agent to make a harmless request with a fresh random nonce
    to that endpoint. Independently examine the receipt at that endpoint. Model
@@ -890,9 +894,9 @@ They must not be silently ignored.
 
 ### Optional CIDR and TCP/UDP denies
 
-The policy can include `network.blockedCIDRs` for registered address families
-and `network.blockedPorts` for TCP/UDP. For example, these synthetic values deny
-one documentation subnet and two destination ports:
+The Agent Policy can include `network.blockedCIDRs` for registered address
+families and `network.blockedPorts` for TCP/UDP. For example, these synthetic
+values deny one documentation subnet and two destination ports:
 
 ```yaml
 network:
@@ -905,25 +909,26 @@ network:
     mode: authenticated
 ```
 
-This is a policy fragment, not a complete AgentPolicy or a reachable test
-endpoint. For port denies, the platform support must be confirmed and recorded
-as `registrations.kata.Capabilities.blockedPorts: true`. The baseline example
-does not set that flag. Rules cannot block necessary DNS or Gateway traffic.
-The current public-egress baseline continues to apply. These fields are not a
-public destination allowlist or FQDN policy.
+This is an Agent Policy fragment, not a complete Agent Policy or a reachable
+test endpoint. For port denies, the platform support must be confirmed and
+recorded as `registrations.kata.Capabilities.blockedPorts: true`. The baseline
+example does not set that flag. Rules cannot block necessary DNS or AI Gateway
+traffic. The current public-egress baseline continues to apply. These fields are
+not a public destination allowlist or FQDN policy.
 
-On an authorized target, use separate Team/Policy bindings for a restricted
-Agent and a control Agent. Compare both Agents against the same independently
-observed task-owned endpoint. In this comparison, include an allowed port that
-is known to work for each protocol. Make sure that DNS and a real allowed model
-request still work. Service failures and generic transport errors must not
-count as policy denials. Do not use the documentation addresses above as if a
-listener exists there.
+On an authorized target, use separate Team and Agent Policy bindings for a
+restricted Agent and a control Agent. Compare both Agents against the same
+independently observed task-owned endpoint. In this comparison, include an
+allowed port that is known to work for each protocol. Make sure that DNS and a
+real allowed model request still work. Service failures and generic transport
+errors must not count as policy denials. Do not use the documentation addresses
+above as if a listener exists there.
 
-Apply Team/Sandbox/AgentPolicy changes only through the supported coordination
-path after their consumers complete cleanup. Keep the approved platform
-inventory fixed during the run. A fresh Agent can test a changed policy. This
-is not resume, live rollout, or transfer of a HOME that already exists.
+Apply Team, Sandbox, and Agent Policy changes only through the supported
+coordination path after their consumers complete cleanup. Keep the approved
+platform inventory fixed during the run. A fresh Agent can test a changed
+Agent Policy. This is not resume, live rollout, or transfer of a HOME that
+already exists.
 
 ### Repeat the network comparison
 
@@ -934,9 +939,9 @@ Agents, change policies, execute in protected Pods, or establish owner
 authentication, real model/tool use, or runtime qualification.
 
 Use three fresh OpenClaw Agents from this example, with different Team and
-AgentPolicy objects and the same approved Sandbox/artifact configuration:
+Agent Policy objects and the same approved Sandbox/artifact configuration:
 
-| Role | Policy controls |
+| Role | Agent Policy controls |
 | --- | --- |
 | `control` | No `blockedCIDRs` or `blockedPorts` |
 | `cidr` | One CIDR that covers the restricted witness, but not the outside witness. No denied ports. |
@@ -1060,7 +1065,7 @@ k wait --for=delete "namespace/cetirun-$AGENT_NAME" --timeout=10m
 
 For a conflict or an unknown delete outcome, observation is necessary, not
 automatic replay. Never force-delete the namespace, Pod, storage, or lifecycle
-finalizers. Make sure that the route is withdrawn, the Gateway grant is
+finalizers. Make sure that the route is withdrawn, the AI Gateway grant is
 revoked, and the owned resources are cleaned up. Follow the storage reclaim
 policy. Report any PVs that are kept and any continued cost.
 
@@ -1068,8 +1073,8 @@ When a skills publication is configured, its read-only shared source is not
 owned by this Agent and must survive. The no-skills example has no shared
 skills storage to keep or delete.
 
-Reusable Sandbox/AgentPolicy/Team configuration is separate from Agent cleanup.
-If this configuration was created only for this run, make sure that no
+Reusable Sandbox, Agent Policy, and Team configuration is separate from Agent
+cleanup. If this configuration was created only for this run, make sure that no
 consumers are left. After that, remove it with the current
 [coordinated configuration deletion procedure](../../app/cetirun-operator/README.md).
 Report deliberately kept configuration and any target infrastructure. Unknown

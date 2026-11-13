@@ -5,7 +5,7 @@ description: "Run component, chart, and documentation checks that do not connect
 weight: 20
 ---
 
-## Render the runtime chart
+## Render the agent chart
 
 With Helm installed, run these commands from the repository root. The commands
 use the local chart and synthetic values. They do not start an agent, pull
@@ -61,7 +61,7 @@ are gates of the [validation runner]({{< repo "scripts/ci/validate.py" >}}):
 | `make test` | Python CI helper and script tests, auth and runtime tests, Go tests of every module, Portal frontend tests, and the Memory Context native test |
 | `make lint` | Release version and inventory checks, license headers, Python syntax, Go vet, the Portal TypeScript check, `make chart-check`, Bicep, shell scripts, and the validation workflows |
 | `make check` | `make lint` and `make test`. Documentation is separate. |
-| `make chart-check` | Lint and render of every first-party chart, both runtime chart variants, and the render regression scripts |
+| `make chart-check` | Lint and render of every first-party chart, both agent chart variants, and the render regression scripts |
 | `make docs-check` | Site tests, build, links, and content checks |
 
 For the full list of what each gate runs, refer to

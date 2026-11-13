@@ -62,7 +62,7 @@ stages do not write to the cluster.
 | `Refusing to adopt <kind> <namespace>/<name> from another owner` | Another Helm release or a manual command created the object | Read the `meta.helm.sh/release-name` annotation of the object |
 | `Required Secret reference is missing: <namespace>/<name>` or `Required Secret key is missing: <namespace>/<name>:<key>` | A Secret or a key that the environment file names does not exist | `kubectl get secret <name> -n <namespace>`. Do not print the values |
 | `Retained Secret <namespace>/<name> is missing; refusing regeneration` or `Retained PostgreSQL data has no password Secret; refusing to generate a replacement` | A Secret that a release generated was deleted. For the second message, the database volume of the AI Gateway still exists | Restore the Secret. Refer to [Make and restore backups](../backup-restore/) |
-| `openssl verify failed with exit ...`, `openssl x509 failed with exit 1`, `The ingress certificate does not cover the configured domain`, or `The ingress certificate is not yet valid` | A certificate check failed. `openssl verify` covers the admission, MCP, and Broker certificates, and its message does not name the certificate. The other messages are about `cetirun-tls` | Examine each certificate, as [Certificates and credentials](../certificates/) shows |
+| `openssl verify failed with exit ...`, `openssl x509 failed with exit 1`, `The ingress certificate does not cover the configured domain`, or `The ingress certificate is not yet valid` | A certificate check failed. `openssl verify` covers the admission, MCP, and Agent Identity Broker certificates, and its message does not name the certificate. The other messages are about `cetirun-tls` | Examine each certificate, as [Certificates and credentials](../certificates/) shows |
 | `docker buildx imagetools inspect <image> failed with exit 1` or `helm show chart oci://<registry>/helm/<chart> --version <version> failed with exit 1` | The image or the chart is not in the registry, or the workstation cannot read the registry | Run the same command |
 | A message that starts with `Preserve existing` | The environment file tries to change a protected setting of the installation | Refer to [Settings that make deploy keeps](../upgrade/#settings-that-make-deploy-keeps) |
 
@@ -129,7 +129,7 @@ OAuth2 Proxy can contain user identities.
 ## Agent status
 
 Start with the status and the events. Then examine only the layer that fails.
-Replace the example values with the actual instance name and its reported
+Replace the example values with the actual Agent name and its reported
 namespace. The `alice-example` name is synthetic.
 
 ```bash
@@ -151,11 +151,11 @@ and [reconciler]({{< repo "app/cetirun-operator/internal/controller/agent_contro
 
 ### Read governance status in the Portal
 
-The **My Agents** and administrator **All agents** lists show a governance
-cause next to the lifecycle phase. The Agent detail page shows the same cause
-and a suggested next step on every tab. For example, an Agent can remain
-`Pending` while the Portal shows **Blocked by policy** with `PolicyDenied` and
-the policy's reason.
+The **My Agents** list and the **All agents** list of Portal administrators
+show a governance cause next to the lifecycle phase. The Agent detail page
+shows the same cause and a suggested next step on every tab. For example, an
+Agent can remain `Pending` while the Portal shows **Blocked by policy** with
+`PolicyDenied` and the reason from the Agent Policy.
 
 | Portal status | Next step |
 | --- | --- |
@@ -164,7 +164,7 @@ the policy's reason.
 | Binding or identity approval required | Ask an administrator to verify the Team binding and the Agent's identity or role approvals. |
 | Identity not ready | Read the reported reason. Then follow [Troubleshoot Agent Identity](../entra-agent-identity/#troubleshoot-agent-identity). |
 | Platform support required | Verify platform support for the requested Sandbox controls. |
-| Governance dependency unavailable | Examine the required policy, Sandbox, and platform dependencies. |
+| Governance dependency unavailable | Examine the required Agent Policy, Sandbox, and platform dependencies. |
 | Waiting for governance | Wait for the Operator to verify prerequisites. If the condition persists, examine the detailed conditions. |
 
 `UnauthorizedBinding` can mean a binding or identity grant is not authorized.
@@ -173,10 +173,11 @@ keeps that distinction and does not infer a specific identity failure from a
 generic enforcement wait.
 
 The summary requires an observation for the current Agent generation. Some
-policy and Agent Identity conditions do not have their own observed generation.
-For those conditions, the Portal checks the generation and matching state in
-the corresponding policy or identity status. It omits older observations after
-a configuration change and does not override deletion or suspension.
+Agent Policy and Agent Identity conditions do not have their own observed
+generation. For those conditions, the Portal checks the generation and matching
+state in the corresponding Agent Policy or identity status. It omits older
+observations after a configuration change and does not override deletion or
+suspension.
 
 Specific causes take precedence over a generic enforcement wait. Full reported
 conditions remain available under **Status**. The summary describes the latest
@@ -197,16 +198,16 @@ reported observation; it does not approve a grant or verify live enforcement.
 | `HomeSeedStateUnknown` or `HomeSeedImageUnconfirmed` | The HOME and initialization records that exist, and the source image of the interrupted copy. Do not clear the PVC or delete records to retry. |
 | Native configuration apply fails | JSON/YAML or environment-file syntax, destination permissions and symlinks. The initializer keeps the files that failed. |
 | `PodReady` is false | StatefulSet rollout generation, ready and updated replicas, probes, and desktop dependencies |
-| `IngressReady` is false | Instance VirtualService and shared gateway |
+| `IngressReady` is false | Instance VirtualService and the shared ingress gateway |
 | Login loop or 403 | OAuth callback and TLS, groups, sidecar injection, and ownership |
 | Portal returns HTTP 403 `invalid_identity` | The user name. The part before `@` must give a valid alias. The Portal does not replace characters. Refer to [User names](../../getting-started/platform/#user-names) |
 | Agent opens but model fails | AI Gateway conditions, Portal sign-in, selected model entitlement, DNS, and egress. Readiness does not test inference. Refer to [Troubleshoot model requests](../ai-gateway/#troubleshoot-model-requests). |
 
-The controller can mark the overall instance `Ready` even when the
+The controller can mark the Agent `Ready` even when the
 VirtualService reconciliation failed. Read `IngressReady`. Then do a separate
 check to make sure that access works. Also, `HelmDeployed=True` means that the
 chart submission succeeded, but it does not wait for pod readiness. A suspended
-instance intentionally has zero desired replicas and no VirtualService. Before
+Agent intentionally has zero desired replicas and no VirtualService. Before
 you decide that absent pods are a failure, examine `spec.suspended` and the
 phase.
 
@@ -243,10 +244,10 @@ These commands use the umbrella's `cetirun-system` namespace. For a standalone
 portal installation, examine its configured namespace (`cetirun-portal` by
 default).
 
-The shared gateway namespace and the VirtualService namespace of each instance
-are different. The internal ownership service of the portal is part of the
-access path. Do not disable OAuth2 Proxy, ownership validation, or network
-policy as a diagnostic shortcut.
+The shared ingress gateway namespace and the VirtualService namespace of each
+instance are different. The internal ownership service of the portal is part
+of the access path. Do not disable OAuth2 Proxy, ownership validation, or
+network policy as a diagnostic shortcut.
 
 For login loops, make sure that the Entra redirect URI matches the rendered
 `https://<domain>/oauth2/callback`, not an OAuth subdomain. Also examine these
@@ -261,23 +262,24 @@ items:
 
 A Helm render cannot validate those dependencies.
 
-For ownership 403 errors, examine the instance owner and the portal service
-address. Also examine the actual portal sidecar injection and the
-gateway-to-portal NetworkPolicy.
+For ownership 403 errors, examine the Agent owner and the Portal service
+address. Also examine the actual Portal sidecar injection and the
+NetworkPolicy from the ingress gateway to the Portal.
 
 With `make deploy`, the ownership call to port 8081 uses mesh mTLS. In this
 case, also examine the `portalAuth.mtls.serverIdentity` value of the Istio
 release. A standalone Portal chart can keep port 8081 without mTLS. Refer to
-[Authentication and ownership](../istio/#authentication-and-ownership). An admin
-alias is not an exception to native instance ownership. For the separate
-authentication and ownership exemptions, refer to [Istio operations](../istio/).
+[Authentication and ownership](../istio/#authentication-and-ownership). The
+alias of a Portal administrator is not an exception to the ownership check of
+an Agent. For the separate authentication and ownership exemptions, refer to
+[Istio operations](../istio/).
 
 ## Agent services
 
 | Interface | Default |
 | --- | --- |
 | OpenClaw gateway | `18789` |
-| Hermes API / native Webapp | `8642` / `9120` |
+| Hermes API / Webapp | `8642` / `9120` |
 | Desktop noVNC / Chrome debugging | `6080` / `18800` |
 | ttyd terminal | `7681` |
 
@@ -319,7 +321,7 @@ running environment. Authorization is necessary for each of these changes.
 None of them belongs in the read-only checks above. For deliberate changes, use
 [Administer Agents](../agent-lifecycle/).
 
-If immutable fields are different, the runtime pre-upgrade/pre-rollback hook
+If immutable fields are different, the agent chart pre-upgrade/pre-rollback hook
 can recreate a StatefulSet. The hook does not migrate PVC data. Deletion of the
 CR also deletes its namespace. As a result, a StatefulSet `Retain` value is not
 sufficient protection. Do not delete PVCs or remove finalizers to hide a failed

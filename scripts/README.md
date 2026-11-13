@@ -20,10 +20,11 @@ deployment, publication, or end-to-end scripts.
 ## Default platform deployment and release
 
 `cetirun-platform-deploy.sh --config /path/to/environment.yaml` manages the
-separate Istio, Broker, and platform releases. The `--plan` option validates
-the inputs and renders the charts locally. The root `make deploy` and
-`make deploy-plan` targets pass `DEPLOY_CONFIG` to this helper.
-Refer to [the platform guide](../app/cetirun-platform/README.md#deploy-the-platform)
+separate Istio, Agent Identity Broker, and platform releases. The `--plan`
+option validates the inputs and renders the charts locally. The root
+`make deploy` and `make deploy-plan` targets pass `DEPLOY_CONFIG` to this
+helper. Refer to
+[the platform guide](../app/cetirun-platform/README.md#deploy-the-platform)
 for the input shape, the certificate ownership modes, and staged admission.
 This guide also shows which identity and runtime qualification is still
 necessary.
@@ -38,7 +39,7 @@ all other deployment checks remain in effect.
 pipeline from `release-artifacts.json`. Its `list`, `check`, and `plan`
 commands do not connect to a registry. `REGISTRY` defaults to the public
 `mcr.microsoft.com/aks/ai-runtime/cetirun` prefix; `VERSION` defaults to the
-Runtime Chart version, and the source SHA defaults to HEAD. Environment or
+agent chart version, and the source SHA defaults to HEAD. Environment or
 CLI overrides affect temporary build/package inputs, not the source checkout.
 `ACCEPT_VSCODE_SERVER_LICENSE_TERMS` defaults to `true`, so selections containing
 VS Code do not require a separate acceptance flag or prompt. An explicit `false`
@@ -48,7 +49,7 @@ that do not exist, and makes sure that chart pulls work. You can still use each
 component build script independently.
 
 The unified release driver and `cetirun-helm-release.sh` normally package the
-source Runtime Chart unchanged.
+source agent chart unchanged.
 For a new immutable private chart prefix, set both `OPENCLAW_IMAGE_DIGEST` and
 `HERMES_IMAGE_DIGEST` to `sha256:` digests. The helper copies the chart to a
 temporary staging directory, pins only its built-in native image defaults, and
@@ -66,7 +67,7 @@ against MCR.
 
 Chart publishers share the same packager, registry preflight and mandatory
 pull comparison. Packages carry the selected image defaults and the Operator's
-downstream Runtime Chart URL/version. MCR publication keeps public pull
+downstream agent chart URL/version. MCR publication keeps public pull
 coordinates separate from its backing ACR and staging push destinations:
 the pipeline's MCR `REGISTRY` assignment is for `package-charts` only, while
 all image and chart writes go to ACR.
@@ -111,7 +112,7 @@ publishes the image.
 `cetirun-connections-mcp-helm-release.sh` lints and packages the independent
 chart. It pushes the chart under `oci://$REGISTRY/helm`.
 `CHART_NAMESPACE` must be `helm`; put repository prefixes in `REGISTRY` so
-the Operator can derive the same image repositories from its Runtime Chart URL.
+the Operator can derive the same image repositories from its agent chart URL.
 Set `REGISTRY` to an authorized writable registry; the default MCR address
 is valid for packaging, not publication.
 Then it compares the pulled package with the published package. Pull verification
@@ -175,14 +176,14 @@ explicit recovery, and never adopts it by its name or label.
 script reports this explicit choice, which can incur charges. Keep the alias
 and the private run output for an authorized cleanup.
 
-The application checks keep their scope. This does not implement governed
-creation, prove physical writer fencing, qualify enforcement, or complete a
-real model or tool acceptance run. The Hermes check still uses Pod exec and is
-not a workaround for governed-Pod admission. All six live workflow jobs stay
-disabled. Before you enable the test job independently, provision its
-`E2E_CONTEXT` and `E2E_CLUSTER_UID` secrets together with its kubeconfig,
-which already exists. The job uses a task-local file and does not overwrite
-the runner's default kubeconfig.
+The application checks keep their scope. This does not implement the
+creation of Sandbox Agents, prove physical writer fencing, qualify enforcement,
+or complete a real model or tool acceptance run. The Hermes check still uses Pod
+exec and is not a workaround for the Pod admission of Sandbox Agents. All six
+live workflow jobs stay disabled. Before you enable the test job independently,
+provision its `E2E_CONTEXT` and `E2E_CLUSTER_UID` secrets together with its
+kubeconfig, which already exists. The job uses a task-local file and does not
+overwrite the runner's default kubeconfig.
 
 The offline lifecycle regressions replace kubectl and Helm with synthetic
 processes:
@@ -351,7 +352,7 @@ python3 -B scripts/sandbox-platform-qualify.py lifecycle-snapshot \
 ```
 
 The default is `--state ready`, with the ready input and output contract that
-already exists. To collect an **already suspended** instance, add
+already exists. To collect an **already suspended** Agent, add
 `--state suspended`. This selector never requests suspension. Deleted states and
 states during a migration are not supported.
 
@@ -405,7 +406,7 @@ The supported collection footprint is deliberately strict:
   `qualification.cetirun.microsoft.com/run` label. Workload/storage objects are
   scoped by the pinned identities and ownership/binding chain. Any run label
   that they carry must agree. The namespace must be Active, and the Agent must
-  report the selected runtime and exact pinned `status.observedGeneration`.
+  report the selected agent type and exact pinned `status.observedGeneration`.
 
   Ready mode must have an unsuspended intent and phase `Ready`. Suspended mode
   must have `spec.suspended: true`, phase `Suspended`, and exactly one each of
@@ -556,7 +557,7 @@ make python-check license-check
 ### Native ingress sign-in challenge
 
 The application runner uses `e2e-ingress-check.py` to request the canonical
-`https://<domain>/ui/<agent>/` route, not an instance subdomain. `DOMAIN` is an
+`https://<domain>/ui/<agent>/` route, not an Agent subdomain. `DOMAIN` is an
 explicit override of the operator release's `domainSuffix`. Absent/unreadable
 values cause a failure, and the runner does not fall back to an example domain.
 `E2E_OIDC_CLIENT_ID` can supply the expected public application identifier.
@@ -667,12 +668,12 @@ The supported footprint is deliberately narrow:
   does not wait for rollouts.
 - Inline `CETIRUN_SANDBOX_SOURCES` and `CETIRUN_SANDBOX_ADMISSION`,
   controller/admission identities that match, the controller state namespace,
-  strict admission, explicit administrator lists, and distinct HOME/skills
-  claim names. Platform and placement ConfigMap references must agree between
-  the two processes. The helper examines only the identities of the named
-  ConfigMaps and the bounded `platform.json` / `placement.json` v1 document
-  envelopes. Their declarations, capabilities, and references are **not**
-  validated as runtime evidence.
+  strict admission, explicit admission administrator lists, and distinct
+  HOME/skills claim names. Platform and placement ConfigMap references must
+  agree between the two processes. The helper examines only the identities of
+  the named ConfigMaps and the bounded `platform.json` / `placement.json` v1
+  document envelopes. Their declarations, capabilities, and references are
+  **not** validated as runtime evidence.
 - The chart's fixed `cetirun-sandbox-admission` Service, its selector and
   443-to-9443 listener, readiness probe, and TLS Secret **reference**, plus its
   exact-name core/v1 Endpoints object. The helper does not fetch a Secret. Two
@@ -736,8 +737,8 @@ credentials, token-file indirection, impersonation, and insecure/non-HTTPS
 targets are rejected before cluster requests.
 
 The mode prints one JSON object below 4 KiB, with no observed names, UIDs,
-versions, images, addresses, administrator identities, kubeconfig data, or raw
-diagnostics:
+versions, images, addresses, admission administrator identities, kubeconfig
+data, or raw diagnostics:
 
 - `version: "v1"`, `mode: "deployment-preflight"`.
 - `status: "completed"` means that the **scoped observations** were collected
@@ -823,9 +824,9 @@ Results include `networkProtocol` (`TCP` or `UDP`) and keep
 `qualifiesExecution: false`. UDP timeouts are observed loss of replies. They are
 not an independent proof of which device or policy dropped a datagram. Neither
 protocol qualifies full network isolation, DNS semantics, other IP families,
-physical fencing, or a running governed Agent. These are synthetic primitive
-probes. They are not permission to exec into governed Pods or to enable a live
-E2E workflow.
+physical fencing, or a running Sandbox Agent. These are synthetic primitive
+probes. They are not permission to exec into the Pods of Sandbox Agents or to
+enable a live E2E workflow.
 
 Offline validation covers both the TCP behavior that already exists and UDP
 policy wiring, strict response handling, and actual echo traffic over IPv4/IPv6

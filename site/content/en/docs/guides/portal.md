@@ -14,7 +14,7 @@ The header shows on every page of the portal.
 | Item | What it does | When it shows |
 | --- | --- | --- |
 | **CetiRun Portal** | Opens **My Agents**. | Always. |
-| **Admin** | Opens the administration pages. | Only for portal administrators. |
+| **Admin** | Opens the administration pages. | Only for Portal administrators. |
 | **Connections** | Lists the personal accounts that you connected, and the Agents that use them. Refer to [Agent Connections and Identity](../agent-identity/#manage-identities-and-connections). | Only when the deployment allows connected services. |
 | **Local history** | Opens the Chat conversations that this browser keeps. Refer to [Chat with a Custom Agent](../custom-chat/#where-history-lives). | Only when the deployment allows Portal Chat. |
 | **Theme** | Selects **System**, **Light**, or **Dark**. | Always. |

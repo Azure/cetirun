@@ -12,7 +12,7 @@ your Team allow.
 
 | | Hermes | OpenClaw | Custom |
 | --- | --- | --- | --- |
-| **What it is** | The Hermes agent. This is the default agent type. | The OpenClaw agent. | Your own agent image, which an administrator approves. |
+| **What it is** | The Hermes agent. This is the default agent type. | The OpenClaw agent. | Your own agent image, which a platform administrator approves. |
 | **Agent UI** | Hermes Webapp. **Agent UI** in the Portal signs you in automatically. A direct Webapp login uses `cetirun` and the Hermes key. | OpenClaw Control UI. You enter the gateway token and pair each browser one time. | A Web UI, Portal Chat, or no interface. This depends on the image. |
 | **Message channels and scheduled jobs** | Yes. Hermes connects to message channels, such as Discord, and runs scheduled jobs. | Yes. OpenClaw connects to message channels, and runs scheduled jobs and heartbeats. | Depends on the image. |
 | **Coding agents through ACP** | The platform does not configure them. | Yes. OpenClaw can give tasks to other coding agents. | Depends on the image. |
@@ -26,7 +26,8 @@ your Team allow.
   Portal. Hermes is the default type.
 - Select **OpenClaw** if you want the OpenClaw Control UI, or if you want to
   give coding tasks to other coding agents.
-- Select **Custom** only when your administrator gives you an approved image.
+- Select **Custom** only when your platform administrator gives you an
+  approved image.
 
 Hermes and OpenClaw can both use message channels and scheduled jobs.
 
@@ -46,13 +47,13 @@ Control UI, refer to
 OpenClaw can start other coding agents through the Agent Client Protocol
 (ACP). By default, the allowed coding agents are `claude`, `codex`, and
 `opencode`. By default, OpenClaw also approves the tool requests of these
-coding agents automatically. Ask your administrator if your deployment changes
-these settings.
+coding agents automatically. Ask your platform administrator if your
+deployment changes these settings.
 
 ## Custom
 
 A Custom Agent runs an image that is not Hermes or OpenClaw. Before you create
-a Custom Agent, get these values from your administrator:
+a Custom Agent, get these values from your platform administrator:
 
 | Field | What to enter |
 | --- | --- |
@@ -68,5 +69,5 @@ for a Custom Agent. For images that follow the Custom contract, refer to
 [Examples](../../reference/examples/).
 
 Sources: [creation form]({{< repo "app/cetirun-portal/web/src/components/CreateForm.tsx" >}}),
-[runtime chart values]({{< repo "app/cetirun-chart/values.yaml" >}}),
+[agent chart values]({{< repo "app/cetirun-chart/values.yaml" >}}),
 and [Agent Harness](../../reference/agent-harness/#custom-runtime).
