@@ -187,7 +187,11 @@ func TestWatchShellRecoversAndProbesEachReplacement(t *testing.T) {
 		},
 	}
 	var readiness []bool
-	err := watchShell(ctx, testConfig(), backend, time.Millisecond, func(value bool) { readiness = append(readiness, value) }, func(value startupObservation, fatal bool) {
+	var currentReady bool
+	err := watchShell(ctx, testConfig(), backend, time.Millisecond, func(value bool) { currentReady = value }, func(value startupObservation, fatal bool) {
+		// Only sample completed observations. Cancellation can race with the
+		// retry timer and permit one final read before watchShell returns.
+		readiness = append(readiness, currentReady)
 		if fatal {
 			t.Error("transient error became fatal")
 		}
