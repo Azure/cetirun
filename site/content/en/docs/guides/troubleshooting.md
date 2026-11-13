@@ -87,6 +87,20 @@ For a Custom Agent, **Terminal** and **Desktop** stay unavailable when the
 deployment does not configure them for its image. A Custom Agent shows
 **Web UI** only when it serves a Web UI.
 
+If a running Hermes Agent loses its Webapp, its API can stay healthy while
+the Agent becomes **Provisioning**. **Restart Agent** and **Terminal** remain
+unavailable until the Agent is **Ready**. The **Overview** tab shows the
+reported readiness reason, such as `PodNotReady`; that reason alone does not
+identify a Webapp failure. Select **View Status** for the conditions.
+
+When **Overview** offers suspension as a recovery step, select **Suspend
+Agent** and confirm. Suspension interrupts active sessions and retains HOME.
+Wait for the controller to report **Suspended**, then select **Resume Agent**
+to retry with the current configuration. An accepted resume does not mean
+that the Agent is ready. If the failure remains, or suspension is unavailable,
+send the reported reason to your administrator. This procedure does not fix
+an incompatible image or a policy denial.
+
 ## The Agent UI rejects your sign-in
 
 | What you see | What to do |
