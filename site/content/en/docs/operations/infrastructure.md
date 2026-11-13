@@ -500,8 +500,10 @@ these resources:
 - The database `CetiRunAudit`, which keeps `adxAuditRetentionDays` days, 90 by
   default. Its table `KubeAuditLogs` has one row for each Event Hubs message.
   Its function `AuditEvents()` gives one row for each audit event.
-- The Event Hubs data connection `kube-audit` of that database, and the role
-  `Viewer` for the principals in `adxAuditViewers`.
+- An Event Hubs data connection of that database for the hub of this cluster,
+  and the role `Viewer` for the principals in `adxAuditViewers`. Its name is
+  `kube-audit-` and a hash of the resource ID of the hub. So CetiRun clusters
+  that share the Kusto cluster each keep a connection of their own.
 
 The first events arrive a few minutes after the deployment. On a test cluster
 with four nodes and two Agents, AKS sent about 30,000 events an hour. Two

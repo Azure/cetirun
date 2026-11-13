@@ -474,6 +474,15 @@ class CompiledObservabilityTests(unittest.TestCase):
         self.assertIn("variables('receiverRoleId')", role["properties"]["roleDefinitionId"])
         self.assertIn("Microsoft.EventHub/namespaces", role["scope"])
 
+    def test_each_event_hub_gets_a_data_connection_of_its_own(self):
+        # CetiRun clusters that share the Kusto cluster share the audit database too. With one fixed
+        # name, the last deployment would point the connection of every cluster at its own hub.
+        template = self.module("deploy-adx-audit-connection")["properties"]["template"]
+        connection = next(resource for resource in template_resources(template)
+                          if resource["type"] == "Microsoft.Kusto/clusters/databases/dataConnections")
+        self.assertIn("uniqueString(parameters('eventHubId'))", connection["name"])
+        self.assertEqual(connection["properties"]["eventHubResourceId"], "[parameters('eventHubId')]")
+
 
 class ManagedPrometheusStandInTests(unittest.TestCase):
     def test_stand_in_serves_the_podmonitor_api_of_earlier_platform_releases(self):

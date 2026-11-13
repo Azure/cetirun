@@ -25,9 +25,12 @@ resource database 'Microsoft.Kusto/clusters/databases@2024-04-13' existing = {
   name: databaseName
 }
 
+// Each Event Hub gets a connection of its own: CetiRun clusters that share the
+// Kusto cluster also share the audit database, and with one fixed name the last
+// deployment would take the connection over from the others.
 resource connection 'Microsoft.Kusto/clusters/databases/dataConnections@2024-04-13' = {
   parent: database
-  name: 'kube-audit'
+  name: 'kube-audit-${uniqueString(eventHubId)}'
   location: location
   kind: 'EventHub'
   properties: {
