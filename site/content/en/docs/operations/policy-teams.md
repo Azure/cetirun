@@ -598,6 +598,12 @@ raw webhook details, and admission and RBAC enforcement do not change.
   **Disabled** and **Optional** does not restart the Agents that request no
   identity. **Required** stops these Agents. Refer to
   [Choose the capabilities](../agent-identity/#choose-the-capabilities).
+- When a policy denies a running Agent, the operator blocks its existing AI
+  Gateway key, stops the Agent, and withdraws ingress. It keeps the key's
+  spend and budget reset time. After a valid policy grant is verified, the
+  operator removes its temporary block but keeps an administrator emergency
+  block. For a missing record, refer to
+  [Recover a missing key record](../ai-gateway/#recover-a-missing-key-record).
 - Kubernetes `exec`, `attach`, and `port-forward` requests to the Pods of
   Sandbox Agents fail with `ConnectForbidden`, also for cluster
   administrators. Use the terminal of the Agent in the Portal.
@@ -710,6 +716,7 @@ operator README's
 | --- | --- | --- |
 | A Sandbox or an Agent Policy reports `PrerequisitesUnavailable` with the status `Unknown` | `platform.json` is not valid, for example with an unknown field, a duplicate field, or a wrong type. The condition message gives only the type of error, such as `malformed, unknown or duplicate platform JSON fields`. It does not name the field | Compare each field of `platform.json` with the example on this page. Make sure that the file is valid JSON, for example with `jq empty platform.json`. Then replace the ConfigMap |
 | A Sandbox Agent does not start, and its `Ready` and `SandboxReady` conditions have the reason `SandboxHeld` | The operator holds the Agent. If `PolicyResolved` is `False`, the message ends with the message of `PolicyResolved`, for example when the current registration cannot enforce the Agent Policy. Other holds, for example a wait for a prerequisite, show only the general message | For a policy message, read the `Accepted` condition of the Agent Policy, and correct the Agent Policy or the platform registration. For the general message, examine the other conditions of the Agent and the operator log |
+| `AIGatewayReady` has the reason `KeyRecordLost` | A historical AI Gateway record is missing | Refer to [Recover a missing key record](../ai-gateway/#recover-a-missing-key-record) |
 | The Portal refuses a new Agent with `runtime_unavailable` | Sandbox execution is not enabled, or the Portal has no runtime profile for the agent type | Do [Enable Sandbox execution](#enable-sandbox-execution) |
 | `kubectl exec`, `attach`, or `port-forward` fails with `ConnectForbidden` | Pod admission refuses interactive access to the Pods of Sandbox Agents | Use the terminal of the Agent in the Portal |
 | Writes to Agents, Teams, Sandboxes, and Agent Policies fail | The admission server is not ready, for example because its certificate expired | Renew the certificate. Refer to [Renew the admission certificate](#renew-the-admission-certificate). If the CetiAdmin webhooks are installed, status updates and the deletion of Agents also fail until the server is ready. So do writes to Pods and other workloads in Agent namespaces |

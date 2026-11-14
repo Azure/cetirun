@@ -132,18 +132,16 @@ func TestCommonCustomMaterializationHoldPreservesIssuedKey(t *testing.T) {
 					t.Fatal(err)
 				}
 				f.reconcileOK(t)
+				wantPolicyPhase := "Pending"
 				if selected == "not-allowed" {
-					if f.gateway.keys[token] != nil || len(f.gateway.deletedTokens) == 0 {
-						t.Fatal("an actual policy denial must still revoke the key")
-					}
-					return
+					wantPolicyPhase = "Denied"
 				}
 				held := f.gateway.keys[token]
 				if held == nil || !held.Blocked || len(f.gateway.deletedTokens) != 0 || len(f.gateway.deletedAliases) != 0 {
-					t.Fatal("materialization failure destroyed or failed to block the issued key")
+					t.Fatal("skill hold destroyed or failed to block the issued key")
 				}
-				if f.current(t).Status.Policy.Phase != "Pending" || *f.workload(t).Spec.Replicas != 0 {
-					t.Fatal("missing materialization did not hold policy and compute")
+				if f.current(t).Status.Policy.Phase != wantPolicyPhase || *f.workload(t).Spec.Replicas != 0 {
+					t.Fatal("skill hold did not report policy state and stop compute")
 				}
 				agent = f.current(t)
 				agent.Spec.SkillOverrides.Add = nil

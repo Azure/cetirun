@@ -1004,6 +1004,13 @@ func (r *AgentReconciler) recordAIGatewayBlockIntent(ctx context.Context, instan
 // clear it only after it has read back the replacement grant. A pre-existing
 // block without that ownership remains an administrator emergency block.
 func (r *AgentReconciler) beginAIGatewayPolicyReprojection(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
+	return r.beginAIGatewayPolicyHold(ctx, instance, false)
+}
+
+// beginAIGatewayPolicyHold preserves the key while access is held. During a
+// denial an administrator block already enforces the hold, but it never grants
+// the operator ownership or permission to clear that block on recovery.
+func (r *AgentReconciler) beginAIGatewayPolicyHold(ctx context.Context, instance *cetirunv1alpha1.Agent, denied bool) error {
 	secret, err := r.aiGatewayKeySecret(ctx, instance)
 	if err != nil {
 		return err
@@ -1034,7 +1041,13 @@ func (r *AgentReconciler) beginAIGatewayPolicyReprojection(ctx context.Context, 
 	}
 	status := ensureAIGatewayStatus(instance)
 	if key.Blocked && !aiGatewayOperatorOwnedBlock(status.Reason) {
-		return fmt.Errorf("the AI Gateway key is already blocked outside an operator policy reprojection")
+		if !denied {
+			return fmt.Errorf("the AI Gateway key is already blocked outside an operator policy reprojection")
+		}
+		status.Blocked = true
+		status.Routed = false
+		aiGatewayDegraded(instance, "KeyBlocked", fmt.Errorf("the AI Gateway key is blocked outside a CetiRun policy transition"))
+		return r.updateStatus(ctx, instance)
 	}
 	// Persist ownership before the external side effect. If this write fails,
 	// compute is still held by the caller but the key is left untouched. If a
@@ -1063,6 +1076,10 @@ func (r *AgentReconciler) beginAIGatewayPolicyReprojection(ctx context.Context, 
 		}
 		if key == nil || !key.Blocked {
 			return fmt.Errorf("the AI Gateway key was not blocked for policy reprojection")
+		}
+		if denied {
+			r.EventRecorder.Event(instance, corev1.EventTypeNormal, "AIGatewayKeyBlocked",
+				"Blocked the existing AI Gateway virtual key while policy access is denied")
 		}
 	}
 	status.Blocked = true

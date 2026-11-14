@@ -332,6 +332,13 @@ the AI Gateway instead. The operator then creates a new key. If the field has a
 value, the operator does not create a new key, even after you delete the old
 one.
 
+When a policy denies an Agent of a policy-bound Team, the operator blocks its
+existing key, stops its workload, and withdraws its route. It does not delete
+the key. The key keeps its spend and budget reset time. After the policy allows
+the Agent again, the operator first verifies the current grant and then removes
+only the temporary block that it recorded. A block made by an administrator
+remains blocked.
+
 With `operatorIntegration`, the AI Gateway sets
 `general_settings.user_api_key_cache_ttl` to zero. Each new request examines
 the current authorization in the database. It does not use the cached grant of
@@ -343,6 +350,42 @@ Before you rely on this setting, let the AI Gateway rollout finish on every
 replica. A later change to a key does not cancel requests that are already
 authorized. It also does not stop Agent processes or revoke credentials that
 other services hold.
+
+### Recover a missing key record
+
+`AIGatewayReady=False` with the reason `KeyRecordLost` means that the Agent
+still records a key identity, but the AI Gateway has no live record for the key
+value in its Secret. This is a continuity boundary: the operator cannot safely
+tell whether the missing record was an intentional emergency removal or a loss
+of AI Gateway data.
+
+Restore the AI Gateway database record from a backup when possible. Restore the
+record for the key value that remains in the Agent's `ai-gateway-virtual-key`
+Secret, including its spend, budget reset time, and blocked state. The operator
+then verifies the restored current grant before it resumes the Agent. Do not
+replace the Secret or delete and recreate the Agent to work around this error;
+the latter can also remove the Agent's HOME volume.
+
+If the record and its accounting state are known to be permanently lost, an
+administrator can explicitly accept a new AI Gateway ledger. Keep the Agent
+suspended or denied until the decision is complete, and confirm that the live
+AI Gateway has no record for the key. A principal that is authorized to update
+`agents/status` can then clear the recorded key ID:
+
+```bash
+kubectl patch agents.cetirun.microsoft.com <agent> --subresource=status \
+  --type=merge -p '{"status":{"aiGateway":{"keyId":null}}}'
+```
+
+The operator creates a fresh AI Gateway record on its next authorized
+reconciliation. It uses the key value that is already in the Secret, but the
+new record starts with zero spend and the current policy budget and starts a
+new budget period. The old budget reset time and administrator block are lost;
+a suspended Agent receives an Operator-owned suspension block. Keep it
+suspended while an administrator decides whether access can be restored and
+how to account for the lost spend. Do not resume an Agent that still requires
+an emergency block. Do not clear `keyId` when the AI Gateway record might
+still exist.
 
 ## Credentials and the console
 
@@ -512,6 +555,7 @@ kubectl logs -n cetirun-system -c gateway --since=15m --tail=-1 \
 | Copilot reason `SignInCompleting` | The Portal is completing the current sign-in | Wait for that sign-in to finish; do not start another |
 | Copilot reason `NotAllowedRouteRemovalFailed` or `PolicyCheckUnavailable` | The operator cannot remove a Copilot route that the Agent Policy no longer allows, or it cannot read the models or prices of the AI Gateway | Shared models continue to work. The operator tries again about every 15 seconds. Examine the AI Gateway |
 | `AIGatewayReady` is `False` with the reason `KeySecretLost` | The Secret of the key is lost | Refer to [Virtual keys](#virtual-keys) |
+| `AIGatewayReady` is `False` with the reason `KeyRecordLost` | The AI Gateway no longer has the record for a key that the Agent recorded | Refer to [Recover a missing key record](#recover-a-missing-key-record) |
 | `AIGatewayModelsLimited` event | The Agent can use more models than its configuration can list | Refer to [Model access](../models/#limits) |
 | The models that you added in the console disappeared after a restart | The salt key changed | Restore the salt key. Refer to the chart README's [Upgrade contract]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#upgrade-contract) |
 

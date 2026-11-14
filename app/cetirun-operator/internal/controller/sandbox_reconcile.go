@@ -1148,8 +1148,8 @@ type reconciledSandboxHoldStatus struct {
 
 // holdReconciledSandboxForDeniedSuspension preserves a completed suspension
 // while the current policy remains denied. It is only called after the
-// revocation request has completed successfully; ordinary missing-key and
-// revocation failures continue through the generic pending hold.
+// existing key is confirmed blocked (or no key was issued); missing-key and
+// block failures continue through the generic pending hold.
 func (r *AgentReconciler) holdReconciledSandboxForDeniedSuspension(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
 	return r.holdReconciledSandboxWithStatus(ctx, agent, reconciledSandboxHoldStatus{
 		phase: api.PhaseSuspended, reason: "Suspended",
@@ -1193,7 +1193,7 @@ func (r *AgentReconciler) holdReconciledSandboxWithStatus(ctx context.Context, a
 			status.reason, status.message)
 	}
 	if status.verifiedSuspension {
-		if agent.Status.AIGateway != nil && agent.Status.AIGateway.Phase == api.AIGatewayPhaseDeleting {
+		if agent.Status.AIGateway != nil {
 			setCondition(&agent.Status.Conditions, api.ConditionAIGatewayReady, metav1.ConditionFalse,
 				status.reason, status.message)
 			conditions = append(conditions, api.ConditionAIGatewayReady)
@@ -1244,11 +1244,10 @@ func (r *AgentReconciler) stopReconciledSandbox(ctx context.Context, agent *api.
 	}
 	var blockErr error
 	if r.AIGateway.configured() {
-		if agent.Status.AIGateway != nil && agent.Status.AIGateway.Phase == api.AIGatewayPhaseDeleting {
-			// A denied policy revokes the key and records Deleting before the
-			// external side effect. Retrying that revocation proves the old key
-			// remains unavailable without recreating it. A Deleting phase alone
-			// is only intent, so every revoke error still keeps suspension pending.
+		if !agent.DeletionTimestamp.IsZero() && agent.Status.AIGateway != nil && agent.Status.AIGateway.Phase == api.AIGatewayPhaseDeleting {
+			// Migration cleanup can run again after ordinary Agent deletion
+			// revoked the key. Confirm deletion instead of blocking a missing
+			// record; a live Agent's policy hold never takes this path.
 			blockErr = r.revokeAIGatewayKey(ctx, agent)
 		} else {
 			gateway, err := r.aiGatewayClient(ctx)

@@ -2027,6 +2027,12 @@ Agent. For such an AI Gateway, set `operatorIntegration: true`. The
 reserves the `copilot/` prefix (refer to [Reserved names](#reserved-names)),
 and it sets `general_settings.enforce_fallback_model_access`.
 
+When a policy-bound Agent is denied, the Operator blocks its key and retains
+its AI Gateway accounting record. It unblocks only an Operator-owned temporary
+block after it verifies the current policy grant; an administrator emergency
+block remains. For the procedure when an AI Gateway record is genuinely missing,
+refer to [Virtual keys](../../../site/content/en/docs/operations/ai-gateway.md#recover-a-missing-key-record).
+
 An Agent sees one name for each model. If a Copilot model is the same model as
 a shared model that the Agent is granted, it uses the name of the shared model.
 For each deployment of the shared model, the real model is its
