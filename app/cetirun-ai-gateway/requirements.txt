@@ -65,7 +65,7 @@ ddtrace==4.15.6  # GHSA-3633-r77q-h3v3
 ddtrace-internal==0.1.0
 detect-secrets==1.5.0
 distro==1.9.0
-dnspython==2.9.1
+dnspython==2.9.2
 docstring_parser==0.18.0
 email-validator==2.3.0
 envier==0.6.1
