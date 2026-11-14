@@ -41,7 +41,7 @@ import (
 const usage = `Usage: sandbox-config-change
   --kubeconfig ABSOLUTE_FILE --context EXPLICIT_CONTEXT
   --authority-namespace NAMESPACE --authority-name NAME --authority-uid UID
-  --before FILE --after FILE [--action observe|update] [--timeout 30s]
+  --before FILE --after FILE [--action observe|update|recover-update] [--timeout 30s]
   --before FILE --action observe-delete|delete [--timeout 30s]
   --operation-id ID --action observe-delete|delete [--timeout 30s]
 
@@ -55,6 +55,17 @@ matching committed version, or unchanged writable content at a superseding
 version of the same UID, permits update to release the reservation. The latter
 is reported as update-superseded: the old conditional Update cannot commit,
 and the desired configuration has not been applied.
+recover-update explicitly ends an existing changing update without replaying it.
+It requires the SAME original before/after inputs. If observation is inconclusive
+and the source still matches the complete original image, it submits one status
+Update with the ORIGINAL UID/resourceVersion and a ConfigurationChangeFenced
+condition bound to the operation. This requires update permission on the source's
+status subresource. A newer authoritative version must prove either the desired
+write applied or the original writable content remains before release. A timeout,
+rejection, or successful status response alone never permits release. The latter
+outcome is update-superseded; prepare any new update from a fresh read.
+Existing conditions and configuration are preserved. No new reservation is made.
+
 delete is a separate explicit opt-in and forbids --after. It reserves the whole
 original source and submits one UID/resourceVersion-conditional background Delete.
 observe-delete only observes that exact recorded deletion; it never writes.
@@ -77,11 +88,12 @@ the write; explicit values and list order are preserved. No-op updates,
 including changes that only omit defaults, are rejected before reservation.
 
 Unchanged UID/resourceVersion pairs, failed reads and otherwise unknown changing
-outcomes remain reserved.
+outcomes remain reserved unless explicit recover-update establishes supersession.
 After any uncertain result, run --action observe (updates) or observe-delete
 (deletions) with the SAME inputs. A deletion with recorded recovery metadata
 may instead use its --operation-id. Do not refresh their UID/resourceVersion,
-replay a write, or edit the journal.
+replay a write, or edit the journal. For an update that remains uncertain with
+an unchanged source, use --action recover-update with the same files.
 An applied-reservation-retained observation is read-only; explicit update can
 then reconcile that same changing operation to release it, without submission.
 The same applies to update-superseded-reservation-retained. After explicit
@@ -92,14 +104,16 @@ required; exec/auth-provider login plugins and redirects are refused. There is
 no in-cluster/default-context fallback, cloud login or automatic mutation retry.
 timeout must be positive and at most 5m.
 
-Output is bounded operation/phase/identity status only; configuration bodies,
-credentials and raw server/file errors are never printed. phase is the last
+Output is bounded operation/phase/identity status and sanitized diagnostics.
+Configuration bodies, credentials and raw server/file errors are never printed. phase is the last
 recorded phase, including when status=completed confirms its release.
+A diagnostic describes only this invocation's submission, not whether another
+invocation has a delayed request. It never authorizes release of a reservation.
 Exit 0 = successful observation/completion, 1 = uncertain/unavailable/I/O failure,
 2 = invalid arguments or configuration inputs.
 `
 
-const observationInstruction = "run --action observe with the same --before and --after inputs; do not replay an Update or edit the coordination journal"
+const observationInstruction = "run --action observe with the same --before and --after inputs; if the source remains unchanged, use --action recover-update with the same inputs; do not replay an Update or edit the coordination journal"
 const deletionObservationInstruction = "run --action observe-delete with the same --before input or recorded --operation-id; do not replay a Delete or edit the coordination journal"
 
 type options struct {
@@ -112,13 +126,14 @@ type options struct {
 type clientFactory func(options) (client.Client, client.Reader, error)
 
 type operationStatus struct {
-	Action             string                    `json:"action"`
-	Status             string                    `json:"status"`
-	AuthorityNamespace string                    `json:"authorityNamespace"`
-	Authority          w.ObjectIdentity          `json:"authority"`
-	Source             w.SourceReference         `json:"source"`
-	Operation          string                    `json:"operation,omitempty"`
-	Phase              sandboxcoordination.Phase `json:"phase,omitempty"`
+	Diagnostic         *sandboxcoordination.SubmissionDiagnostic `json:"diagnostic,omitempty"`
+	Action             string                                    `json:"action"`
+	Status             string                                    `json:"status"`
+	AuthorityNamespace string                                    `json:"authorityNamespace"`
+	Authority          w.ObjectIdentity                          `json:"authority"`
+	Source             w.SourceReference                         `json:"source"`
+	Operation          string                                    `json:"operation,omitempty"`
+	Phase              sandboxcoordination.Phase                 `json:"phase,omitempty"`
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -137,7 +152,7 @@ func runWithClientFactory(ctx context.Context, args []string, stdout, stderr io.
 	flags.StringVar(&o.beforePath, "before", "", "persisted original image")
 	flags.StringVar(&o.afterPath, "after", "", "desired image with original UID/resourceVersion")
 	flags.StringVar(&o.operationID, "operation-id", "", "recorded changing deletion operation")
-	flags.StringVar(&o.action, "action", "observe", "observe, update, observe-delete or delete")
+	flags.StringVar(&o.action, "action", "observe", "observe, update, recover-update, observe-delete or delete")
 	flags.DurationVar(&o.timeout, "timeout", 30*time.Second, "overall deadline, at most 5m")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -158,9 +173,9 @@ func runWithClientFactory(ctx context.Context, args []string, stdout, stderr io.
 		len(validation.IsDNS1123Subdomain(o.authorityName)) != 0 || !boundedToken(o.uid, 128) ||
 		(deleting && (hasBefore == hasOperationID || o.afterPath != "" || (hasOperationID && !boundedToken(o.operationID, 128)))) ||
 		(!deleting && (!hasBefore || hasOperationID || o.afterPath == "")) ||
-		(!deleting && o.action != "observe" && o.action != "update") ||
+		(!deleting && o.action != "observe" && o.action != "update" && o.action != "recover-update") ||
 		o.timeout <= 0 || o.timeout > 5*time.Minute {
-		fmt.Fprintln(stderr, "sandbox-config-change: explicit identities are required; updates require --before and --after, deletions require exactly one of --before or --operation-id and forbid --after; action must be observe, update, observe-delete or delete and timeout must be positive and at most 5m; see --help")
+		fmt.Fprintln(stderr, "sandbox-config-change: explicit identities are required; updates require --before and --after, deletions require exactly one of --before or --operation-id and forbid --after; action must be observe, update, recover-update, observe-delete or delete and timeout must be positive and at most 5m; see --help")
 		return 2
 	}
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
@@ -224,7 +239,7 @@ func runWithClientFactory(ctx context.Context, args []string, stdout, stderr io.
 				ticket, err = store.ReadConfigurationDeletion(ctx, before)
 			case "delete":
 				ticket, err = store.AcquireConfigurationDeletion(ctx, before)
-			case "observe":
+			case "observe", "recover-update":
 				ticket, err = store.ReadConfigurationChange(ctx, before, after)
 			case "update":
 				ticket, err = store.AcquireConfigurationChange(ctx, before, after)
@@ -255,6 +270,13 @@ func runWithClientFactory(ctx context.Context, args []string, stdout, stderr io.
 		if deleting {
 			result.Status = "deletion-accepted-reservation-retained"
 		}
+	} else if o.action == "recover-update" {
+		var recovered sandboxcoordination.ChangeTicket
+		recovered, observed.outcome, err = store.RecoverConfigurationChange(ctx, before, after)
+		if recovered.Change.ID != "" {
+			result.Operation, result.Phase = recovered.Change.ID, recovered.Change.Phase
+		}
+		result.Status = "completed"
 	} else {
 		ticket, err = store.ReconcileChange(ctx, ticket, observed)
 		result.Operation, result.Phase = ticket.Change.ID, ticket.Change.Phase
@@ -274,6 +296,9 @@ func runWithClientFactory(ctx context.Context, args []string, stdout, stderr io.
 	}
 	if err != nil {
 		result.Status = "uncertain"
+		if diagnostic, ok := sandboxcoordination.SubmissionDiagnosticFor(err); ok {
+			result.Diagnostic = &diagnostic
+		}
 		fmt.Fprintln(stderr, "sandbox-config-change: outcome uncertain; reservation not confirmed released;", observationHint(o.action))
 		return printStatus(stdout, stderr, result, 1)
 	}
@@ -481,6 +506,16 @@ func (c *singleMutationClient) Delete(ctx context.Context, object client.Object,
 	return c.Client.Delete(context.WithValue(ctx, mutationAttemptKey{}, &mutationAttempt{method: http.MethodDelete}), object, opts...)
 }
 
+func (c *singleMutationClient) Status() client.SubResourceWriter {
+	return &singleStatusMutationWriter{SubResourceWriter: c.Client.Status()}
+}
+
+type singleStatusMutationWriter struct{ client.SubResourceWriter }
+
+func (w *singleStatusMutationWriter) Update(ctx context.Context, object client.Object, opts ...client.SubResourceUpdateOption) error {
+	return w.SubResourceWriter.Update(context.WithValue(ctx, mutationAttemptKey{}, &mutationAttempt{method: http.MethodPut}), object, opts...)
+}
+
 type singleMutationTransport struct{ next http.RoundTripper }
 
 func (t *singleMutationTransport) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -490,6 +525,11 @@ func (t *singleMutationTransport) RoundTrip(request *http.Request) (*http.Respon
 			!ok || attempt == nil || attempt.method != request.Method || !attempt.attempted.CompareAndSwap(false, true) {
 			return nil, errors.New("unapproved mutation or automatic retry refused")
 		}
+		// client-go provides GetBody for its encoded requests. Prevent the
+		// underlying HTTP transport from rewinding a consumed mutation body
+		// inside one RoundTrip, beyond the outer retry guard above.
+		request = request.Clone(request.Context())
+		request.GetBody = nil
 	}
 	return t.next.RoundTrip(request)
 }

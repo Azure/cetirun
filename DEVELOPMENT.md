@@ -443,8 +443,10 @@ unknown outcomes. The provider responses and the machine and storage
 identities are synthetic.
 
 The coordination package and `cmd/sandbox-config-change` tests cover
-conditional configuration updates and deletions, and a recovery that only
-observes the current state. To build the configuration-change command, run
+conditional configuration updates and deletions, read-only observation, and
+explicit `recover-update` status fencing of an uncertain update. Recovery tests
+prove that a new resourceVersion rejects delayed original writes, including
+lost responses and concurrent writes. They use isolated API servers only. To build the configuration-change command, run
 `make -C app/cetirun-operator build-sandbox-config-change`. Do not run this
 command against a cluster as an offline check. It needs authorized before and
 after inputs and an explicit authority pin.
