@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 """Structure of the cetirun-observability chart's rendered objects."""
 
+import json
 import os
 from pathlib import Path
 import re
@@ -71,15 +72,29 @@ class ObservabilityChartTests(unittest.TestCase):
         def collected(name):
             return any(p.search(name) for p in keep) and not any(p.search(name) for p in drop)
 
-        # What CollectionHealth() and the docs read is collected.
-        for name in ("adxmon_table_backlog_rejected_records", "adxmon_table_backlog_rejected_bytes",
-                     "adxmon_table_backlog_oldest_age_seconds", "adxmon_collector_logs_dropped",
-                     "adxmon_collector_wal_segments_max_age_seconds", "adxmon_ingestor_health_status",
-                     "kube_pod_container_status_restarts_total", "kube_pod_status_phase", "kube_node_status_condition"):
+        # What CollectionHealth() and the dashboard read is collected: each metric
+        # table that they name, as its metric name.
+        reads = [(ROOT / "infra/cluster/modules/adx/cetirun-health.kql").read_text()]
+        dashboard = json.loads((ROOT / "app/cetirun-observability/dashboards/cetirun.json").read_text())
+        metrics = {source["id"] for source in dashboard["dataSources"] if source["database"] == "CetiRunMetrics"}
+        reads += [query["text"] for query in dashboard["queries"] if query["dataSource"]["dataSourceId"] in metrics]
+        tables = {table for text in reads for table in re.findall(r"\b((?:Adxmon|Kube|Litellm|Cetirun)[A-Z]\w*)\b", text)}
+        names = {re.sub(r"(?<!^)(?=[A-Z])", "_", table).lower() for table in tables}
+        self.assertLessEqual({"adxmon_table_quota_rejected_records_total", "adxmon_ingestor_upload_failures_total",
+                              "adxmon_ingestor_health_status", "kube_pod_container_status_restarts_total"}, names)
+        for name in sorted(names) + ["kube_pod_status_phase", "kube_node_status_condition",
+                                     "adxmon_collector_scrape_duration_seconds_sum",
+                                     "adxmon_collector_scrape_duration_seconds_count",
+                                     "litellm_request_total_latency_metric_bucket"]:
             self.assertTrue(collected(name), name)
-        # Series that repeat each Pod's spec or each table's backlog every minute are not.
-        for name in ("adxmon_table_backlog_bytes", "adxmon_table_backlog_limit_bytes", "kube_pod_tolerations",
-                     "kube_pod_container_info", "kube_pod_status_qos_class", "container_network_receive_bytes_total"):
+        # Series that repeat each Pod's spec, or each table's backlog, uploads
+        # and latency every minute, and ADX-Mon's histogram buckets are not.
+        for name in ("adxmon_table_backlog_bytes", "adxmon_table_backlog_limit_bytes",
+                     "adxmon_table_backlog_rejected_records", "adxmon_table_backlog_oldest_age_seconds",
+                     "adxmon_ingestor_wal_segments_uploaded_total", "adxmon_ingestor_sample_latency",
+                     "adxmon_collector_scrape_duration_seconds_bucket", "adxmon_collector_transfer_latency_seconds_bucket",
+                     "kube_pod_tolerations", "kube_pod_container_info", "kube_pod_status_qos_class",
+                     "container_network_receive_bytes_total"):
             self.assertFalse(collected(name), name)
         self.assertFalse([pattern for pattern in scrape["keep-metrics"] if "network" in pattern])
         # Each metric names its node, which ADX-Mon lifts into the Host column: the
@@ -87,8 +102,9 @@ class ObservabilityChartTests(unittest.TestCase):
         self.assertEqual(config["add-labels"], {"cluster": "example", "host": "$(HOSTNAME)"})
         self.assertIn({"name": "host", "column": "Host"}, config["lift-labels"])
         urls = [target["url"] for target in scrape["static-scrape-target"]]
-        # The kubelet is addressed by the node's name, the only variable of every
-        # ADX-Mon release; --hostname sets it.
+        # The kubelet is addressed by the node's name, as in ADX-Mon's own
+        # manifests; --hostname sets it. ADX-Mon v0.4 also has $(HOSTIP), from
+        # --host-ip, which the chart does not pass.
         self.assertIn("https://$(HOSTNAME):10250/metrics/cadvisor", urls)
         self.assertFalse([url for url in urls if "$(HOSTIP)" in url])
         daemonset = self.find(self.render(), "DaemonSet", "cetirun-adx-mon-collector")
@@ -221,6 +237,20 @@ class ObservabilityChartTests(unittest.TestCase):
         documents = self.render(*ALERTER, "--set", "alerter.rules.collectionHealth.enabled=false")
         self.assertFalse([doc for doc in documents if doc["kind"] == "AlertRule"])
 
+    def test_collection_health_interval_is_at_least_30_seconds(self):
+        # The AlertRule resource of ADX-Mon refuses a shorter interval; as a hook,
+        # the rule would fail the release after its other changes.
+        for interval in ("30s", "1m", "5m", "1h", "030s", "20s10s"):
+            rule = self.find(self.render(*ALERTER, "--set-string", f"alerter.rules.collectionHealth.interval={interval}"),
+                             "AlertRule", "cetirun-collection-health")
+            self.assertEqual(rule["spec"]["interval"], interval)
+        for interval in ("10s", "29s", "0m", "5", "5ms", ""):
+            result = subprocess.run(["helm", "template", "observability", str(CHART), *BASE, *ALERTER,
+                                     "--set-string", f"alerter.rules.collectionHealth.interval={interval}"],
+                                    env=OFFLINE, capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(result.returncode, 0, interval)
+            self.assertIn("alerter.rules.collectionHealth.interval must", result.stderr, interval)
+
     def test_ingestor_writes_three_databases_with_its_workload_identity(self):
         documents = self.render()
         statefulset = self.find(documents, "StatefulSet", "cetirun-adx-mon-ingestor")
@@ -242,6 +272,12 @@ class ObservabilityChartTests(unittest.TestCase):
         names = sorted(doc["metadata"]["name"] for doc in documents if doc["kind"] == "CustomResourceDefinition")
         self.assertEqual(names, ["alertrules.adx-mon.azure.com", "functions.adx-mon.azure.com",
                                  "managementcommands.adx-mon.azure.com", "summaryrules.adx-mon.azure.com"])
+        # The chart's check of alerter.rules.collectionHealth.interval follows this rule.
+        crd = self.find(documents, "CustomResourceDefinition", "alertrules.adx-mon.azure.com")
+        spec = crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+        self.assertIn("interval", spec["required"])
+        self.assertEqual([rule["rule"] for rule in spec["properties"]["interval"]["x-kubernetes-validations"]],
+                         ["self != '' && duration(self) >= duration('30s')"])
 
 
 if __name__ == "__main__":

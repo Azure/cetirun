@@ -103,8 +103,18 @@ names the value to set.
 {{- if not (regexMatch "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" (.Values.alerter.clientId | toString)) }}
 {{- fail "alerter.clientId must be the client ID of the managed identity that the alerter uses through workload identity" }}
 {{- end }}
-{{- if not (regexMatch "^([0-9]+(s|m|h))+$" (.Values.alerter.rules.collectionHealth.interval | toString)) }}
+{{- $interval := .Values.alerter.rules.collectionHealth.interval | toString }}
+{{- if not (regexMatch "^([0-9]+(s|m|h))+$" $interval) }}
 {{- fail "alerter.rules.collectionHealth.interval must be a Go duration in seconds, minutes or hours, such as 5m" }}
+{{- end }}
+{{- /* The AlertRule resource of ADX-Mon refuses a shorter interval, and the
+   rule is a hook, so the release would fail after its other changes. */}}
+{{- $seconds := 0 }}
+{{- range $part := regexFindAll "[0-9]+[smh]" $interval -1 }}
+{{- $seconds = add $seconds (mul (atoi (regexFind "[0-9]+" $part)) (get (dict "s" 1 "m" 60 "h" 3600) (regexFind "[smh]" $part))) }}
+{{- end }}
+{{- if lt (int $seconds) 30 }}
+{{- fail "alerter.rules.collectionHealth.interval must be at least 30s, the shortest interval of an ADX-Mon AlertRule" }}
 {{- end }}
 {{- end }}
 {{- end }}

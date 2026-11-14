@@ -16,8 +16,11 @@
     let staleAfter = window;
     let none = datatable(Timestamp: datetime, SeriesId: long, Labels: dynamic, Value: real, Cluster: string, Pod: string) [];
     let droppedRows = union isfuzzy=true none, AdxmonCollectorLogsDropped;
-    let rejectedRecordRows = union isfuzzy=true none, AdxmonTableBacklogRejectedRecords;
-    let rejectedByteRows = union isfuzzy=true none, AdxmonTableBacklogRejectedBytes;
+    // Data refused because a write-ahead log was full, or because a table
+    // budget was full where ADX-Mon enforces table budgets.
+    let refusedRecordRows = union isfuzzy=true none, AdxmonTableQuotaRejectedRecordsTotal;
+    let refusedByteRows = union isfuzzy=true none, AdxmonTableQuotaRejectedBytesTotal;
+    let uploadFailureRows = union isfuzzy=true none, AdxmonIngestorUploadFailuresTotal;
     let collectorAge = union isfuzzy=true none, AdxmonCollectorWalSegmentsMaxAgeSeconds;
     let ingestorAge = union isfuzzy=true none, AdxmonIngestorWalSegmentsMaxAgeSeconds;
     // The newest row of each cluster in the log databases and in the metrics.
@@ -50,21 +53,24 @@
             Detail = iff(isnull(Last), "no rows in the last day", strcat("newest row ", format_timespan(now_ - Last, 'd.hh:mm:ss'), " ago"))
     };
     let dropped = increase(droppedRows);
-    let rejected = union increase(rejectedRecordRows), increase(rejectedByteRows)
-        | summarize Value = sum(Value) by Cluster;
-    // The ingestor's health: its status with the reason where ADX-Mon reports
-    // one, and otherwise the heartbeat that the ingestor sets every minute.
+    let refused = counted(increase(refusedRecordRows))
+        | join kind=inner (counted(increase(refusedByteRows)) | project Cluster, Bytes = Value) on Cluster;
+    let uploadFailures = increase(uploadFailureRows);
+    // The ingestor's health: its status with the reason, which is "None" for a
+    // healthy ingestor, and otherwise the heartbeat that the ingestor sets every
+    // minute. ADX-Mon before v0.4 reports only the heartbeat.
     let status = union isfuzzy=true none, AdxmonIngestorHealthStatus
         | where Timestamp > now_ - window
         | summarize arg_max(Timestamp, Value, Labels) by Cluster, Pod
-        | project Cluster, Pod, Value, Reason = tostring(Labels.unhealthy_reason);
+        | project Cluster, Pod, Value, Reason = tostring(Labels.unhealthy_reason), Heartbeat = false;
     let heartbeat = union isfuzzy=true none, AdxmonIngestorHealthCheck
         | where Timestamp > now_ - window
         | summarize arg_max(Timestamp, Value) by Cluster, Pod
         | join kind=leftanti status on Cluster, Pod
-        | project Cluster, Pod, Value, Reason = "";
+        | project Cluster, Pod, Value, Reason = "", Heartbeat = true;
     let ingestor = union status, heartbeat
-        | summarize Value = min(Value), Reasons = make_set_if(Reason, isnotempty(Reason)) by Cluster;
+        | summarize Value = min(Value), Reasons = make_set_if(Reason, isnotempty(Reason) and Reason != "None"),
+            Heartbeat = countif(Heartbeat) > 0 by Cluster;
     let restarts = union isfuzzy=true none, KubePodContainerStatusRestartsTotal
         | where Timestamp > now_ - 1h
         | extend Namespace = tostring(Labels.namespace)
@@ -77,9 +83,14 @@
         (counted(dropped)
             | project Cluster, Check = "Collector dropped no log lines", Value,
                 Status = iff(Value > 0, "Failed", "OK"), Detail = strcat(tostring(Value), " lines dropped in the window")),
-        (counted(rejected)
+        (refused
             | project Cluster, Check = "No backlog was refused", Value,
-                Status = iff(Value > 0, "Failed", "OK"), Detail = "records and bytes refused for a full table backlog in the window"),
+                Status = iff(Value > 0 or Bytes > 0, "Failed", "OK"),
+                Detail = strcat(tostring(Value), " records and ", tostring(Bytes), " bytes refused for a full backlog in the window")),
+        (counted(uploadFailures)
+            | project Cluster, Check = "Ingestor uploads to ADX succeed", Value,
+                Status = iff(Value > 0, "Warning", "OK"),
+                Detail = strcat(tostring(Value), " uploads failed in the window; the ingestor tries them again")),
         (union
             (collectorAge | where Timestamp > now_ - window | summarize Value = max(Value) by Cluster | extend Check = "Collector backlog is recent"),
             (ingestorAge | where Timestamp > now_ - window | summarize Value = max(Value) by Cluster | extend Check = "Ingestor backlog is recent")
@@ -92,7 +103,8 @@
             | project Cluster, Check = "Ingestor is healthy", Value, Status = iff(Value < 1, "Failed", "OK"),
                 Detail = case(not(Reported), "the ingestor reported no health in the window",
                     array_length(Reasons) > 0, strcat("reasons: ", strcat_array(Reasons, ", ")),
-                    "running; this ADX-Mon version reports no reasons")),
+                    Heartbeat, "this ADX-Mon version reports no reasons",
+                    Value < 1, "not healthy", "healthy")),
         (clusters
             | join kind=leftouter restarts on Cluster
             | project Cluster, Check = "Platform containers do not restart repeatedly", Value = coalesce(Value, 0.0),
