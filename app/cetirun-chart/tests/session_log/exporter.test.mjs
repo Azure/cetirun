@@ -51,6 +51,13 @@ function transcriptStore() {
   return store;
 }
 
+// The exporter's clock: it starts before the events of the tests.
+const START = "2023-11-14T00:00:00.000Z";
+
+function exporterFor(dir, readDelta, options = {}) {
+  return createExporter({ dir, readDelta, redact, now: () => START, ...options });
+}
+
 function temporaryDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cetirun-session-log-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -85,7 +92,7 @@ test("exports user input, assistant output, and tool calls and results, and noth
   const dir = temporaryDir(t);
   const store = transcriptStore();
   store.append(...conversation);
-  const exporter = createExporter({ dir, readDelta: store.readDelta, redact, now: () => "2026-11-13T00:00:00.000Z" });
+  const exporter = exporterFor(dir, store.readDelta);
   await exporter.schedule(target);
   const records = readRecords(dir);
   assert.deepEqual(records.map((record) => record.kind), ["user", "assistant", "tool_call", "tool_result"]);
@@ -125,10 +132,10 @@ test("a restart continues from the saved cursor without repeating records", asyn
   const dir = temporaryDir(t);
   const store = transcriptStore();
   store.append(...conversation.slice(0, 3));
-  await createExporter({ dir, readDelta: store.readDelta, redact }).schedule(target);
+  await exporterFor(dir, store.readDelta).schedule(target);
   store.append(message("e-second", { role: "user", content: "second question" }));
   // A new process: no update arrives for the session, but its saved cursor is resumed.
-  await createExporter({ dir, readDelta: store.readDelta, redact }).resume();
+  await exporterFor(dir, store.readDelta).resume();
   assert.deepEqual(readRecords(dir).map((record) => record.id), ["openclaw:main:session-1:e-user", "openclaw:main:session-1:e-second"]);
 });
 
@@ -136,7 +143,7 @@ test("a replaced transcript is exported again with the ids that its events had",
   const dir = temporaryDir(t);
   const store = transcriptStore();
   store.append(...conversation);
-  const exporter = createExporter({ dir, readDelta: store.readDelta, redact });
+  const exporter = exporterFor(dir, store.readDelta);
   await exporter.schedule(target);
   store.replace("g2", [conversation[2], message("e-after", { role: "user", content: "after the rewrite" })]);
   await exporter.schedule(target);
@@ -149,7 +156,7 @@ test("the cursor of a session that no longer exists is dropped", async (t) => {
   const dir = temporaryDir(t);
   const store = transcriptStore();
   store.append(...conversation.slice(0, 3));
-  const exporter = createExporter({ dir, readDelta: store.readDelta, redact });
+  const exporter = exporterFor(dir, store.readDelta);
   await exporter.schedule(target);
   assert.ok(JSON.parse(fs.readFileSync(path.join(dir, "cursors.json"), "utf8")).sessions["main/session-1"]);
   store.missing = true;
@@ -161,7 +168,7 @@ test("the file rotates at its limit and keeps one predecessor", async (t) => {
   const dir = temporaryDir(t);
   const store = transcriptStore();
   for (let index = 0; index < 40; index += 1) store.append(message(`e-${index}`, { role: "user", content: `question ${index}` }));
-  await createExporter({ dir, readDelta: store.readDelta, redact, maxFileBytes: 2000 }).schedule(target);
+  await exporterFor(dir, store.readDelta, { maxFileBytes: 2000 }).schedule(target);
   const current = readRecords(dir);
   const rotated = readRecords(dir, "openclaw.jsonl.1");
   assert.ok(rotated.length > 0);
@@ -184,7 +191,7 @@ test("a failed read is retried later", async (t) => {
     return store.readDelta(params);
   };
   const warnings = [];
-  const exporter = createExporter({ dir, readDelta, redact, retryMs: 20, log: (level, text) => warnings.push(`${level}: ${text}`) });
+  const exporter = exporterFor(dir, readDelta, { retryMs: 20, log: (level, text) => warnings.push(`${level}: ${text}`) });
   await exporter.schedule(target);
   assert.deepEqual(readRecords(dir), []);
   assert.match(warnings[0], /^warn: session transcript session-1 was not exported: database is locked/);
@@ -198,7 +205,7 @@ test("an event larger than a page is read with the size that it needs", async (t
   const store = transcriptStore();
   store.append(...conversation.slice(0, 3));
   store.requiredBytes = 9 * 1024 * 1024;
-  await createExporter({ dir, readDelta: store.readDelta, redact }).schedule(target);
+  await exporterFor(dir, store.readDelta).schedule(target);
   assert.deepEqual(store.reads.map((read) => read.maxBytes), [8 * 1024 * 1024, 9 * 1024 * 1024]);
   assert.deepEqual(readRecords(dir).map((record) => record.kind), ["user"]);
 });
@@ -206,8 +213,63 @@ test("an event larger than a page is read with the size that it needs", async (t
 test("updates without a complete session identity are ignored", async (t) => {
   const dir = temporaryDir(t);
   const store = transcriptStore();
-  const exporter = createExporter({ dir, readDelta: store.readDelta, redact });
+  const exporter = exporterFor(dir, store.readDelta);
   await exporter.schedule(undefined);
   await exporter.schedule({ agentId: "main", sessionId: "session-1" });
   assert.deepEqual(store.reads, []);
+});
+
+const OLD = Date.parse("2023-11-13T00:00:00.000Z");
+
+test("messages from before the first start stay out, also after a restart", async (t) => {
+  const dir = temporaryDir(t);
+  const store = transcriptStore();
+  store.append(message("e-old", { role: "user", content: "before the session log" }, OLD), message("e-new", { role: "user", content: "after it" }));
+  await exporterFor(dir, store.readDelta).schedule(target);
+  assert.deepEqual(readRecords(dir).map((record) => record.id), ["openclaw:main:session-1:e-new"]);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "cursors.json"), "utf8")).since, START);
+  // A restart keeps the start: a later clock does not hide messages that came after it.
+  store.append(message("e-later", { role: "user", content: "one hour later" }, Date.parse("2023-11-14T23:00:00.000Z")));
+  await exporterFor(dir, store.readDelta, { now: () => "2023-11-15T00:00:00.000Z" }).resume();
+  assert.deepEqual(readRecords(dir).map((record) => record.id).slice(1), ["openclaw:main:session-1:e-later"]);
+});
+
+test("the start is saved before the first export", (t) => {
+  const dir = temporaryDir(t);
+  exporterFor(dir, transcriptStore().readDelta);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, "cursors.json"), "utf8")), { version: 1, since: START, sessions: {} });
+});
+
+test("saved cursors without a start are kept, and the start is now", async (t) => {
+  const dir = temporaryDir(t);
+  const store = transcriptStore();
+  store.append(message("e-1", { role: "user", content: "exported earlier" }), message("e-2", { role: "user", content: "not yet exported" }));
+  const cursor = Buffer.from(JSON.stringify({ generation: "g1", lastSeq: 0 })).toString("base64url");
+  fs.writeFileSync(path.join(dir, "cursors.json"), JSON.stringify({ version: 1, sessions: { "main/session-1": { ...target, cursor } } }));
+  await exporterFor(dir, store.readDelta).resume();
+  assert.deepEqual(readRecords(dir).map((record) => record.id), ["openclaw:main:session-1:e-2"]);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "cursors.json"), "utf8")).since, START);
+});
+
+test("a replaced transcript keeps its messages from before the start out", async (t) => {
+  const dir = temporaryDir(t);
+  const store = transcriptStore();
+  const old = message("e-old", { role: "user", content: "before the session log" }, OLD);
+  const kept = message("e-new", { role: "user", content: "after it" });
+  store.append(old, kept);
+  const exporter = exporterFor(dir, store.readDelta);
+  await exporter.schedule(target);
+  store.replace("g2", [old, kept, message("e-newer", { role: "user", content: "after the rewrite" })]);
+  await exporter.schedule(target);
+  assert.deepEqual(readRecords(dir).map((record) => record.id), [
+    "openclaw:main:session-1:e-new", "openclaw:main:session-1:e-new", "openclaw:main:session-1:e-newer",
+  ]);
+});
+
+test("a message without a time is exported", async (t) => {
+  const dir = temporaryDir(t);
+  const store = transcriptStore();
+  store.append({ type: "message", id: "e-untimed", message: { role: "user", content: "no time" } });
+  await exporterFor(dir, store.readDelta).schedule(target);
+  assert.deepEqual(readRecords(dir).map((record) => record.id), ["openclaw:main:session-1:e-untimed"]);
 });

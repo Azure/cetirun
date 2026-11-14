@@ -89,6 +89,13 @@ data-retention or privacy guarantee. Anyone with access to the container logs
 that contain this output, or to their downstream log store, can possibly read
 the content.
 
+The plugins export only the conversations from their start in an Agent on.
+After an upgrade to a chart version with them, the earlier messages of a
+continued session are not exported. When `logger.enabled` becomes `false`, the
+next start of the Agent removes the plugin from its configuration in HOME and
+deletes the plugin's files. While the logger is off, nothing is recorded, and
+after it is on again, the plugin exports only the conversations from then on.
+
 The logger does not copy the log files of the runtimes, such as
 `/home/vibe/.hermes/logs/gateway.log`.
 

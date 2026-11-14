@@ -96,6 +96,11 @@ agent_apply_config() (
         | if (.skills.load.extraDirs | type) == "array" and (($source.skills.load.extraDirs // []) | index("/home/vibe/.agents/skills") | not)
           then .skills.load.extraDirs |= map(select(. != "/home/vibe/.agents/skills")) else . end
       else . end
+    | if $source.plugins.entries["cetirun-session-log"].enabled != true then
+        if (.plugins.entries | type) == "object" then .plugins.entries |= del(.["cetirun-session-log"]) else . end
+        | if (.plugins.allow | type) == "array" then .plugins.allow |= map(select(. != "cetirun-session-log")) else . end
+        | if (.plugins.load.paths | type) == "array" then .plugins.load.paths |= map(select(. != "/usr/local/lib/cetirun/openclaw-plugins/cetirun-session-log")) else . end
+      else . end
     | .agents.defaults.models = ($source.agents.defaults.models // {})
     | .models = ($source.models // {})
     | .auth = ($source.auth // {"profiles": {}})
@@ -125,6 +130,16 @@ agent_apply_config() (
   mv -f "$temp" "$dest"
   health_record=$(home_path .openclaw/logs/config-health.json)
   if [ -f "$health_record" ]; then rm -f "$health_record"; fi
+  # Without the session log plugin, nothing that it wrote stays to be copied
+  # after the logger is turned on again, and its read positions go too.
+  if ! jq -e '.plugins.entries["cetirun-session-log"].enabled == true' "$source" >/dev/null 2>&1; then
+    session_log=$(home_path .openclaw)/cetirun-session-log
+    if [ -d "$session_log" ] && [ ! -L "$session_log" ]; then
+      rm -rf "$session_log"
+    elif [ -e "$session_log" ] || [ -L "$session_log" ]; then
+      rm -f "$session_log"
+    fi
+  fi
 )
 
 prepare_plugin_link() {

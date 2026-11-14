@@ -167,6 +167,18 @@ function readJson(file) {
   }
 }
 
+// The time of a transcript event in milliseconds, or NaN when it has none.
+export function eventTime(event) {
+  for (const value of [event?.timestamp, event?.message?.timestamp]) {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value) {
+      const parsed = Date.parse(value);
+      if (!Number.isNaN(parsed)) return parsed;
+    }
+  }
+  return Number.NaN;
+}
+
 function writeJsonAtomic(file, value) {
   const temporary = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(temporary, JSON.stringify(value), { mode: 0o600 });
@@ -175,7 +187,11 @@ function writeJsonAtomic(file, value) {
 
 // Exports the transcripts of the sessions that OpenClaw updates. A record is
 // written before its cursor moves, so a restart can write a record again but
-// never skips one; its stable id makes such a repeat easy to remove.
+// never skips one; its stable id makes such a repeat easy to remove. Only the
+// messages from the exporter's first start on are exported: a session from
+// before, such as one from before an upgrade, keeps its older messages to
+// itself. The HOME initialization deletes the state when the logger is off,
+// so after the logger is on again, the exporter starts anew.
 export function createExporter({
   dir, readDelta, redact, log = () => {}, maxFileBytes = MAX_FILE_BYTES, maxLineBytes = MAX_LINE_BYTES,
   now = () => new Date().toISOString(), retryMs = RETRY_MS,
@@ -184,6 +200,8 @@ export function createExporter({
   const cursorFile = path.join(dir, "cursors.json");
   const saved = readJson(cursorFile);
   const sessions = new Map(isRecord(saved) && isRecord(saved.sessions) ? Object.entries(saved.sessions) : []);
+  const savedSince = isRecord(saved) && typeof saved.since === "string" ? Date.parse(saved.since) : Number.NaN;
+  const since = Number.isNaN(savedSince) ? (Date.parse(now()) || Date.now()) : savedSince;
   const pending = new Map();
   const retrying = new Map();
   let running = Promise.resolve();
@@ -197,7 +215,16 @@ export function createExporter({
       for (const [name] of oldest.slice(0, sessions.size - MAX_SAVED_SESSIONS)) sessions.delete(name);
     }
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    writeJsonAtomic(cursorFile, { version: 1, sessions: Object.fromEntries(sessions) });
+    writeJsonAtomic(cursorFile, { version: 1, since: new Date(since).toISOString(), sessions: Object.fromEntries(sessions) });
+  }
+
+  if (Number.isNaN(savedSince)) {
+    // Keep the start time before the first export, so a restart does not move it.
+    try {
+      persist();
+    } catch (error) {
+      log("warn", `the start of the session log was not saved: ${error?.message ?? error}`);
+    }
   }
 
   async function drain(target) {
@@ -231,7 +258,9 @@ export function createExporter({
         maxBytes = result.requiredBytes;
         continue;
       }
-      const lines = events.flatMap((item) => recordsFor(item?.event, target, redact, now))
+      // Events without a time are exported: losing a record is worse than an early one.
+      const lines = events.filter((item) => !(eventTime(item?.event) < since))
+        .flatMap((item) => recordsFor(item?.event, target, redact, now))
         .map((record) => encodeRecord(record, maxLineBytes));
       output.append(lines);
       sessions.set(name, { ...target, cursor: result.cursor, updatedAt: now() });
