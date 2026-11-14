@@ -73,7 +73,10 @@ def main():
                 else:
                     print(f"{image} {program or 'entrypoint'} accepts {len(flags)} flags", flush=True)
             try:
-                scan(image)
+                # Read from the registry: through the Docker daemon of the CI runner, the scanner cannot read an
+                # image with a single Docker v2 manifest ("file blobs/sha256/<config> not found in tar"), as the
+                # ADX-Mon v0.4.1 ingestor and alerter have. The digest pins the same content either way.
+                scan(image, remote=True)
             except subprocess.CalledProcessError:
                 failures.append(f"{image} did not pass the CVE gate: the scanner found a fixable high or critical "
                                 "CVE, or it failed. Its output above names the cause")
