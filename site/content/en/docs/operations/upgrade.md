@@ -164,6 +164,12 @@ Some changes need a specific order:
   environment file. Otherwise the missing budget stops preflight before any
   write. Refer to
   [Authentication availability during node maintenance](../istio/#authentication-availability-during-node-maintenance).
+- **ADX-Mon alert rules with a short interval:** the alerter of ADX-Mon
+  v0.4.1 skips an `AlertRule` whose interval is shorter than 30 seconds. It
+  logs `Skipping invalid AlertRule` once a minute and leaves the status of the
+  rule as it was. Before you upgrade, give each such rule an `interval` of at
+  least `30s`. After the upgrade, the API server refuses a shorter interval.
+  Refer to [Alerts](../observability/#alerts).
 
 ## If an upgrade fails
 

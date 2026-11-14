@@ -273,10 +273,14 @@ resources of its hooks. Delete the rule with
 When a query fails, the alerter sends an alert with the title
 `Alert <namespace>/<rule> has query errors on <Kusto endpoint>`. The alerter
 uses its own managed identity, with the `Viewer` role on the logs and metrics
-databases only. To alert on more, create `AlertRule` objects with a
-`database`, an `interval`, and a `query`. The alerter reads the rules of all
-namespaces every minute. The query must project `Title` and `Severity`, and
-can project `Summary`, `Description`, and `CorrelationId`. The alerter puts
+databases only.
+
+To alert on more, create `AlertRule` objects with a
+`database`, an `interval` of at least `30s`, and a `query`. The alerter reads
+the rules of all namespaces every minute. It skips a rule with a shorter
+interval and logs `Skipping invalid AlertRule`; the status of that rule keeps
+its last result. The query must project `Title` and `Severity`, and can
+project `Summary`, `Description`, and `CorrelationId`. The alerter puts
 `<namespace>/<rule>://` in front of each correlation ID, and sends the other
 columns as custom fields.
 
