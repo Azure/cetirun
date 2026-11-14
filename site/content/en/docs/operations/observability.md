@@ -72,9 +72,28 @@ The chart uses three databases. Grant each one separately.
 | `CetiRunMetrics` | One table for each metric | Kubelet, kube-state-metrics, AI Gateway (LiteLLM), CetiRun operator and admission, ADX-Mon |
 | `CetiRunAgents` | `AgentLogs`, `CopilotProxy` | Output of every container of the Agent Pods, Custom terminals and GitHub Copilot proxies |
 
-Agent output can contain conversation content: for example, what a session
-logger or an Agent command prints. Give `CetiRunAgents` a smaller group of
-readers and a shorter retention than the other databases.
+Agent output contains conversation content. The session logger of the agent
+chart prints one JSON record for each user input, assistant output, tool call,
+and tool result of an Agent. The collector parses each record into `Body`.
+`Body.kind` is `user`, `assistant`, `tool_call`, or `tool_result`.
+`Body.content` holds the text, and `Body.sessionId`, `Body.ts`, `Body.model`,
+and `Body.tool` describe it.
+
+An Agent command can also print any text. Give `CetiRunAgents` a smaller group
+of readers and a shorter retention than the other databases.
+
+In a new Agent Pod, the logger prints the records that HOME keeps again. The
+`id` of a record identifies the repeats. For example, the conversations of the
+last day, each record once:
+
+```kusto
+AgentLogs
+| where Timestamp > ago(1d) and Container == "logger" and isnotempty(Body.id)
+| summarize arg_min(Timestamp, Body) by Cluster, Namespace, Id = tostring(Body.id)
+| project Time = todatetime(Body.ts), Namespace, Session = tostring(Body.sessionId),
+    Kind = tostring(Body.kind), Content = tostring(Body.content)
+| order by Namespace asc, Time asc
+```
 
 When its value `content.enabled` is `true`, the AI Gateway writes the prompt and
 the response of each call to a separate database, by default `CetiRunContent`.

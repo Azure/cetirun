@@ -20,6 +20,7 @@ import copy
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -38,6 +39,15 @@ INGRESS_ENV = ("API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_PORT", "HERM
 ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 # Hermes' OFFER_VERSION for the shared-metrics offer (2 = after the type-ahead fix).
 SHARED_METRICS_OFFER_VERSION = 2
+# Entries of HOME lists that only the generated configuration adds: a start
+# whose generated configuration does not have them removes them from HOME.
+PLATFORM_LIST_ENTRIES = (
+    ("plugins", "enabled", ("cetirun-memory-context", "cetirun-session-log")),
+    ("skills", "external_dirs", ("/home/vibe/.agents/skills",)),
+)
+# The CetiRun session log plugin, which logger.enabled turns on, and its files.
+SESSION_LOG_PLUGIN = "cetirun-session-log"
+SESSION_LOG_DIR = Path(".hermes/cetirun-session-log")
 
 
 def read_yaml(path: Path) -> dict[str, Any]:
@@ -73,11 +83,8 @@ def merge(base: Any, override: Any) -> Any:
     return result
 
 
-def reconcile_memory_lists(existing: dict[str, Any], generated: dict[str, Any], merged: dict[str, Any], home: Path) -> None:
-    for section, key, owned in (
-        ("plugins", "enabled", "cetirun-memory-context"),
-        ("skills", "external_dirs", "/home/vibe/.agents/skills"),
-    ):
+def reconcile_platform_lists(existing: dict[str, Any], generated: dict[str, Any], merged: dict[str, Any], home: Path) -> None:
+    for section, key, owned in PLATFORM_LIST_ENTRIES:
         saved, desired = existing.get(section) or {}, generated.get(section) or {}
         if not isinstance(saved, dict) or not isinstance(desired, dict):
             raise ValueError("invalid plugin or skills configuration")
@@ -86,7 +93,7 @@ def reconcile_memory_lists(existing: dict[str, Any], generated: dict[str, Any], 
         before, after = saved.get(key) or [], desired.get(key) or []
         if not isinstance(before, list) or not isinstance(after, list) or not all(isinstance(item, str) for item in before + after):
             raise ValueError("plugin and skills paths must be lists of strings")
-        managed = {owned}
+        managed = set(owned)
         legacy = home / ".aks/skills"
         if (section == "skills" and "/opt/cetirun/cetiadmin/skills" in after
                 and not legacy.exists() and not legacy.is_symlink() and not legacy.parent.is_symlink()):
@@ -95,6 +102,21 @@ def reconcile_memory_lists(existing: dict[str, Any], generated: dict[str, Any], 
         if not isinstance(merged.get(section), dict):
             merged[section] = {}
         merged[section][key] = list(dict.fromkeys(values + after))
+
+
+def remove_session_log(home: Path, generated: dict[str, Any]) -> None:
+    """Delete the session log plugin's files when the generated configuration
+    does not enable it, so that nothing it wrote is copied after the logger is
+    turned on again."""
+    plugins = generated.get("plugins")
+    enabled = plugins.get("enabled") if isinstance(plugins, dict) else None
+    if isinstance(enabled, list) and SESSION_LOG_PLUGIN in enabled:
+        return
+    target = home / SESSION_LOG_DIR
+    if target.is_dir() and not target.is_symlink():
+        shutil.rmtree(target)
+    elif target.exists() or target.is_symlink():
+        target.unlink()
 
 
 def check_destination(root: Path, relative: Path) -> Path:
@@ -272,7 +294,7 @@ def main() -> int:
         if isinstance(platforms, dict) and "cetirun_teams" in platforms:
             # Detach YAML aliases before retiring the removed adapter reference.
             desired_config["platforms"] = {key: value for key, value in platforms.items() if key != "cetirun_teams"}
-        reconcile_memory_lists(existing_config, generated, desired_config, root)
+        reconcile_platform_lists(existing_config, generated, desired_config, root)
         desired_config = apply_gateway(desired_config, generated)
         answer_shared_metrics(existing_config, desired_config)
         for key, value in generated_env.items():
@@ -290,6 +312,7 @@ def main() -> int:
         replace_file(env_path, env_text)
         if legacy != existing_legacy:
             replace_file(legacy_path, json.dumps(legacy, indent=2) + "\n")
+        remove_session_log(root, generated)
         return 0
     except (OSError, ValueError, yaml.YAMLError):
         # Parser diagnostics can contain credential values. Do not echo them.

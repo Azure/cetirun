@@ -328,6 +328,8 @@ Hermes configmap data
 {{ .Files.Get "configs/init-skills.sh" | indent 4 }}
   session-logger.sh: |
 {{ .Files.Get "configs/session-logger.sh" | indent 4 }}
+  session-logger.mjs: |
+{{ .Files.Get "configs/session-logger.mjs" | indent 4 }}
 {{- end }}
 
 {{/*

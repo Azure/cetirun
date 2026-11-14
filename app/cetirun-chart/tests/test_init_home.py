@@ -381,6 +381,141 @@ def test_hermes_null_generated_sections_preserve_home_lists(agent):
     assert actual["skills"]["external_dirs"] == ["/fixture/home-skills"]
 
 
+SESSION_LOG = "cetirun-session-log"
+SESSION_LOG_PATH = "/usr/local/lib/cetirun/openclaw-plugins/cetirun-session-log"
+
+
+def session_log_files(agent):
+    return agent["target"] / f'.{agent["kind"]}/cetirun-session-log'
+
+
+def write_session_log_files(agent):
+    state = session_log_files(agent)
+    state.mkdir(parents=True, exist_ok=True)
+    (state / f'{agent["kind"]}.jsonl').write_text('{"v": 1, "id": "synthetic-record"}\n')
+    (state / f'{agent["kind"]}.jsonl.1').write_text('{"v": 1, "id": "synthetic-rotated-record"}\n')
+    if agent["kind"] == "openclaw":
+        (state / "cursors.json").write_text('{"version": 1, "since": "2026-01-01T00:00:00.000Z", "sessions": {}}')
+
+
+def test_disabling_the_session_log_removes_its_plugin_and_files(agent):
+    assert run(agent).returncode == 0
+    source = agent["config"] / ("openclaw.json" if agent["kind"] == "openclaw" else "hermes-config.yaml")
+    desired = yaml.safe_load(source.read_text())
+    saved = read_config(agent)
+    if agent["kind"] == "openclaw":
+        saved["plugins"] = {"allow": ["home-plugin"], "load": {"paths": ["/fixture/home-plugin"]},
+                            "entries": {"home-plugin": {"enabled": True}}}
+        desired["plugins"] = {"allow": ["home-plugin", "github", SESSION_LOG], "load": {"paths": [SESSION_LOG_PATH]},
+                              "entries": {"github": {"enabled": True}, SESSION_LOG: {"enabled": True}}}
+    else:
+        saved["plugins"] = {"enabled": ["home-plugin"]}
+        desired["plugins"] = {"enabled": [SESSION_LOG, "chart-plugin"]}
+    agent["config_file"].write_text(json.dumps(saved))
+    source.write_text(json.dumps(desired))
+    for start in range(2):
+        result = run(agent)
+        assert result.returncode == 0, result.stderr
+        enabled = read_config(agent)["plugins"]
+        if agent["kind"] == "openclaw":
+            assert enabled["allow"] == ["home-plugin", "github", SESSION_LOG]
+            assert enabled["load"]["paths"] == ["/fixture/home-plugin", SESSION_LOG_PATH]
+            assert enabled["entries"][SESSION_LOG] == {"enabled": True}
+        else:
+            assert enabled["enabled"] == ["home-plugin", SESSION_LOG, "chart-plugin"]
+        # The plugin's files stay while it is enabled.
+        assert session_log_files(agent).is_dir() == (start == 1)
+        write_session_log_files(agent)
+    # The logger is turned off: the generated configuration no longer has the plugin.
+    if agent["kind"] == "openclaw":
+        desired["plugins"] = {"allow": ["home-plugin", "github"], "entries": {"github": {"enabled": True}}}
+    else:
+        desired["plugins"] = {"enabled": ["chart-plugin"]}
+    source.write_text(json.dumps(desired))
+    for _ in range(2):
+        result = run(agent)
+        assert result.returncode == 0, result.stderr
+        disabled = read_config(agent)["plugins"]
+        if agent["kind"] == "openclaw":
+            assert disabled["allow"] == ["home-plugin", "github"]
+            assert disabled["load"]["paths"] == ["/fixture/home-plugin"]
+            assert disabled["entries"] == {"home-plugin": {"enabled": True}, "github": {"enabled": True}}
+        else:
+            assert disabled["enabled"] == ["home-plugin", "chart-plugin"]
+        assert not session_log_files(agent).exists()
+
+
+def test_hermes_reconciles_each_platform_plugin_on_its_own(agent):
+    if agent["kind"] != "hermes":
+        return
+    assert run(agent).returncode == 0
+    source = agent["config"] / "hermes-config.yaml"
+    desired = yaml.safe_load(source.read_text())
+    for generated, expected in (
+        (["cetirun-memory-context"], ["home-plugin", "cetirun-memory-context"]),
+        ([SESSION_LOG], ["home-plugin", SESSION_LOG]),
+    ):
+        saved = read_config(agent)
+        saved["plugins"] = {"enabled": ["home-plugin", "cetirun-memory-context", SESSION_LOG]}
+        agent["config_file"].write_text(json.dumps(saved))
+        desired["plugins"] = {"enabled": generated}
+        source.write_text(json.dumps(desired))
+        result = run(agent)
+        assert result.returncode == 0, result.stderr
+        assert read_config(agent)["plugins"]["enabled"] == expected
+
+
+def test_a_session_log_link_is_removed_without_following_it(agent, tmp_path):
+    assert run(agent).returncode == 0
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "sentinel").write_text("retained")
+    session_log_files(agent).symlink_to(outside)
+    # The fixture's generated configuration has no session log plugin.
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    assert not session_log_files(agent).is_symlink() and not session_log_files(agent).exists()
+    assert (outside / "sentinel").read_text() == "retained"
+
+
+@pytest.mark.parametrize("agent", ["openclaw", "hermes"], indirect=True)
+@pytest.mark.skipif(shutil.which("helm") is None, reason="requires Helm")
+def test_rendered_session_log_follows_the_logger_through_home_initialization(agent):
+    helpers = CHART.parents[1] / "scripts/tests/test_native_gateway_chart.py"
+    spec = importlib.util.spec_from_file_location("native_gateway_chart_fixture", helpers)
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    values = fixture.native_values()
+    values["agentType"] = agent["kind"]
+    values["sandboxWorkload"].update(reconciled=True, executionHeld=False)
+    values["memoryContext"] = {"enabled": False}
+    agent["env"].update(CETIRUN_AI_GATEWAY="true", CETIRUN_NATIVE_SANDBOX="true")
+    config_name = "openclaw.json" if agent["kind"] == "openclaw" else "hermes-config.yaml"
+    source = agent["config"] / config_name
+
+    def start(enabled):
+        values["logger"] = {"enabled": enabled}
+        source.write_text(fixture.object_of_kind(fixture.render(CHART, values), "ConfigMap")["data"][config_name])
+        result = run(agent)
+        assert result.returncode == 0, result.stderr
+        plugins = read_config(agent).get("plugins") or {}
+        if agent["kind"] == "openclaw":
+            assert plugins.get("allow", []).count(SESSION_LOG) == int(enabled)
+            assert (plugins.get("load") or {}).get("paths", []).count(SESSION_LOG_PATH) == int(enabled)
+            assert ((plugins.get("entries") or {}).get(SESSION_LOG) or {}).get("enabled") is (True if enabled else None)
+        else:
+            assert plugins.get("enabled", []).count(SESSION_LOG) == int(enabled)
+
+    start(True)
+    write_session_log_files(agent)
+    start(True)
+    assert session_log_files(agent).is_dir()
+    start(False)
+    assert not session_log_files(agent).exists()
+    start(True)
+    assert not session_log_files(agent).exists()
+
+
 @pytest.mark.parametrize("admin,explicit_alias", [(True, False), (True, True), (False, False)])
 @pytest.mark.parametrize("source_state", ["missing", "directory", "dangling-link", "parent-link"])
 def test_hermes_cetiadmin_retires_only_unconfigured_default_skill_alias(agent, admin, explicit_alias, source_state):

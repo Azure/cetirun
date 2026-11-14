@@ -152,6 +152,8 @@ RUN node /tmp/cetirun-openclaw-compat/apply-workload-mcp.mjs /usr/local/share/np
     rm -r /tmp/cetirun-openclaw-compat
 COPY --chown=vibe:vibe configs/apply-memory-skills.py /tmp/apply-memory-skills.py
 RUN python3 /tmp/apply-memory-skills.py --runtime openclaw --root /usr/local/share/npm-global/lib/node_modules/openclaw && rm /tmp/apply-memory-skills.py
+# The CetiRun session log plugin, owned by root: the Agent cannot change it.
+COPY agents/openclaw/plugins/cetirun-session-log/ /usr/local/lib/cetirun/openclaw-plugins/cetirun-session-log/
 
 EXPOSE 18789 7681
 

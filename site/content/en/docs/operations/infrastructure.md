@@ -401,8 +401,9 @@ create command fails. In this case, add the two settings from the file to the
 the ConfigMap. If you do, the file replaces those settings as a whole. This
 also replaces any namespaces that they exclude.
 
-The agent chart’s session logger is also enabled by default. Before you onboard
-users, see [Security](../../security/).
+The agent chart's session logger is also enabled by default. It copies the
+conversations of each Agent to the container log of the Agent. Before you
+onboard users, see [Security](../../security/).
 
 ## Azure Data Explorer
 

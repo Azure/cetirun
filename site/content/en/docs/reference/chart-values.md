@@ -241,14 +241,14 @@ Source: [app/cetirun-chart/values.yaml]({{< repo "app/cetirun-chart/values.yaml"
 | `tailscale` |  | Tailscale configuration Enabled automatically when secrets.tailscaleAuthKey is set. Each StatefulSet pod registers as \<hostname>-\<ordinal> on the Tailscale network. Uses kernel networking (NET_ADMIN added automatically). |
 | `tailscale.hostname` | `"cetirun"` | Hostname prefix on the Tailscale network. Each pod appends its StatefulSet ordinal: \<hostname>-0, \<hostname>-1, etc. |
 | `tailscale.serve` | `false` | Enable `tailscale serve` to proxy the gateway with Tailscale HTTPS. When true, the gateway port is automatically used as the serve target. |
-| `logger` |  | Session logger sidecar configuration. Tails session JSONL files to stdout, where the cluster's log collection captures them. With the ADX-Mon collection, query the Agent logs database: AgentLogs \| where Container == "logger" |
-| `logger.enabled` | `true` | Enable session logger sidecar |
+| `logger` |  | Session logger sidecar configuration. The runtime's CetiRun session log plugin writes each user input, assistant output, tool call, and tool result to HOME. The logger copies these records to stdout, where the cluster's log collection captures them. With the ADX-Mon collection, query the Agent logs database: AgentLogs \| where Container == "logger" |
+| `logger.enabled` | `true` | Enable the session logger sidecar and the runtime's session log plugin |
 | `logger.resources` |  | Resource requests and limits |
 | `logger.resources.limits.cpu` | `"100m"` |  |
 | `logger.resources.limits.memory` | `"128Mi"` |  |
 | `logger.resources.requests.cpu` | `"10m"` |  |
 | `logger.resources.requests.memory` | `"64Mi"` |  |
-| `logger.scanInterval` | `30` | Interval (seconds) between scans for new session files |
+| `logger.scanInterval` | `30` | Interval (seconds) between reads of the session log files |
 | `desktop` |  | Desktop sidecar configuration. A separate container runs Chrome and noVNC (Xvfb, Fluxbox, x11vnc, and websockify). The gateway connects to Chrome through CDP on `localhost:18800`. Disable it for headless instances that do not need a browser GUI. |
 | `desktop.enabled` | `true` | Enable desktop sidecar |
 | `desktop.image` |  | Desktop sidecar image configuration |
