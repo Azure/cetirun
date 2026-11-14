@@ -86,17 +86,22 @@ metrics:
     # ADX-Mon itself: backlog, drops and upload failures
     - ^adxmon_
   # -- Regular expressions of metric names that are dropped even when a keep
-  # expression matches them. By default, ADX-Mon's per-table backlog series,
-  # one set for every destination table, except the refused records and bytes
-  # and the age of the oldest unsent data, which CollectionHealth() reads.
+  # expression matches them. By default, ADX-Mon's series for each
+  # destination table of its table budgets, of its uploads and of its sample
+  # latency, which repeat every minute for every table, and the buckets of its
+  # histograms, whose sums and counts stay. No CetiRun query reads them.
+  # CollectionHealth() reads the refused records and bytes, and the failed
+  # uploads, from other series.
   drop:
-    - ^adxmon_table_backlog_(bytes|segments|would_reject|throttled|throttled_seconds|limit_bytes|limit_segments|enforced)$
+    - ^adxmon_table_backlog_
+    - ^adxmon_ingestor_(wal_segments_uploaded_total|sample_latency)$
+    - ^adxmon_.+_bucket$
 
 collector:
   image:
     repository: mcr.microsoft.com/aks/ai-runtime/adx-mon/collector
-    tag: v0.3.0
-    digest: sha256:dfb5424e5fe45d493b046f0e6a49dfa17874b864d04d1761d67d0fdfdd08e2e0
+    tag: v0.4.1
+    digest: sha256:a568d9b70403dc6b201f42fbd8947bb0988e74e1ba2b5e317f9144a64bbc8b1b
     pullPolicy: IfNotPresent
   # -- Host directory of the collector's write-ahead log and log file
   # cursors. It outlives the Pod, so a new Pod continues where the previous
@@ -123,8 +128,8 @@ collector:
 ingestor:
   image:
     repository: mcr.microsoft.com/aks/ai-runtime/adx-mon/ingestor
-    tag: v0.3.0
-    digest: sha256:6882ef6e63c6f98734a16ce7054a0a0c4b7dcc0861ea8b993e65a85df5933048
+    tag: v0.4.1
+    digest: sha256:68f5bf83453ad5598886d2fe82337e568001fbd6c57267523a40206693bcca68
     pullPolicy: IfNotPresent
   replicas: 1
   serviceAccount:
@@ -163,8 +168,8 @@ ingestor:
 alerter:
   image:
     repository: mcr.microsoft.com/aks/ai-runtime/adx-mon/alerter
-    tag: v0.3.0
-    digest: sha256:bde70dd68052184ed3d645b565e5dd2a9ac1a5b8978bac70ebafecee11ee435e
+    tag: v0.4.1
+    digest: sha256:e800d2f7992fe1b343f41ed6a0109a6f847fb645a976707334e49c3e5cfb62e6
     pullPolicy: IfNotPresent
   # -- Base URL of the service that receives the alerts. The alerter posts each
   # alert as JSON to <endpoint>/alerts and counts only 201 Created as
@@ -188,7 +193,8 @@ alerter:
       # sent again on each run while the check fails, with the same
       # CorrelationId.
       enabled: true
-      # -- How often the query runs, as a Go duration such as 5m.
+      # -- How often the query runs, as a Go duration such as 5m; at least
+      # 30s, the shortest interval of an ADX-Mon AlertRule.
       interval: 5m
   nodeSelector: {}
   tolerations: []

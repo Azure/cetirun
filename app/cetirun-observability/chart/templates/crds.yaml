@@ -1,6 +1,6 @@
 {{- /*
 The ADX-Mon custom resource definitions, unchanged from the ADX-Mon release
-that the images are built from, v0.3.0 (kustomize/bases, MIT License). The
+that the images are built from, v0.4.1 (kustomize/bases, MIT License). The
 ingestor reads the Function, ManagementCommand and SummaryRule resources of
 every namespace and runs their Kusto commands with its own identity; the
 alerter runs the queries of every AlertRule with its own identity. The chart

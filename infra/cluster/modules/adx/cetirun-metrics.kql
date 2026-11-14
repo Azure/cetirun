@@ -17,9 +17,10 @@
     AdxmonCollectorWalSegmentsMaxAgeSeconds (Timestamp:datetime, SeriesId:long, Labels:dynamic, Value:real, Container:string, Namespace:string, Pod:string, Cluster:string, Host:string),
     AdxmonIngestorHealthCheck (Timestamp:datetime, SeriesId:long, Labels:dynamic, Value:real, Container:string, Namespace:string, Pod:string, Cluster:string, Host:string),
     AdxmonIngestorHealthStatus (Timestamp:datetime, SeriesId:long, Labels:dynamic, Value:real, Container:string, Namespace:string, Pod:string, Cluster:string, Host:string),
+    AdxmonIngestorUploadFailuresTotal (Timestamp:datetime, SeriesId:long, Labels:dynamic, Value:real, Container:string, Namespace:string, Pod:string, Cluster:string, Host:string),
     AdxmonIngestorWalSegmentsMaxAgeSeconds (Timestamp:datetime, SeriesId:long, Labels:dynamic, Value:real, Container:string, Namespace:string, Pod:string, Cluster:string, Host:string),
-    AdxmonTableBacklogRejectedBytes (Timestamp:datetime, SeriesId:long, Labels:dynamic, Value:real, Container:string, Namespace:string, Pod:string, Cluster:string, Host:string),
-    AdxmonTableBacklogRejectedRecords (Timestamp:datetime, SeriesId:long, Labels:dynamic, Value:real, Container:string, Namespace:string, Pod:string, Cluster:string, Host:string),
+    AdxmonTableQuotaRejectedBytesTotal (Timestamp:datetime, SeriesId:long, Labels:dynamic, Value:real, Container:string, Namespace:string, Pod:string, Cluster:string, Host:string),
+    AdxmonTableQuotaRejectedRecordsTotal (Timestamp:datetime, SeriesId:long, Labels:dynamic, Value:real, Container:string, Namespace:string, Pod:string, Cluster:string, Host:string),
     KubePodContainerStatusRestartsTotal (Timestamp:datetime, SeriesId:long, Labels:dynamic, Value:real, Container:string, Namespace:string, Pod:string, Cluster:string, Host:string)
 
 .create-or-alter function with (folder = "ADX-Mon", docstring = "Distinct series of each metric table in the last hour, for the ingestor's cardinality metric.", skipvalidation = "true") CountCardinality() {

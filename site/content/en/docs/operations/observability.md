@@ -182,12 +182,17 @@ GatewayDailyUsage
 
 - Platform or AI Gateway logs still arrive, and the metrics of the collector
   still arrive.
-- The collector dropped no log lines, and no backlog was refused. ADX-Mon
-  v0.3.0 has no backlog limits, so it refuses no backlog.
+- The collector dropped no log lines, and no backlog was refused: no data was
+  refused because a write-ahead log was full. ADX-Mon also measures a budget
+  for each table, but the chart does not enforce these budgets, so they refuse
+  no data.
 - The oldest unsent data is not older than 10 minutes. Older data gives
   `Warning`, and data older than 30 minutes gives `Failed`.
-- The ingestor reports healthy. ADX-Mon v0.3.0 reports only that the ingestor
-  runs. Later versions also report the reason when it is not healthy.
+- The uploads of the ingestor to ADX succeed. A failed upload gives `Warning`:
+  the ingestor tries it again.
+- The ingestor reports healthy. When it does not, the check shows the reason,
+  for example `MaxDiskUsageExceeded` for a full write-ahead log. Before
+  ADX-Mon v0.4, the ingestor reports no reason.
 - No container in `cetirun-system`, `cetirun-credentials`, or `cetirun-istio`
   restarted more than three times in an hour.
 
@@ -268,10 +273,14 @@ resources of its hooks. Delete the rule with
 When a query fails, the alerter sends an alert with the title
 `Alert <namespace>/<rule> has query errors on <Kusto endpoint>`. The alerter
 uses its own managed identity, with the `Viewer` role on the logs and metrics
-databases only. To alert on more, create `AlertRule` objects with a
-`database`, an `interval`, and a `query`. The alerter reads the rules of all
-namespaces every minute. The query must project `Title` and `Severity`, and
-can project `Summary`, `Description`, and `CorrelationId`. The alerter puts
+databases only.
+
+To alert on more, create `AlertRule` objects with a
+`database`, an `interval` of at least `30s`, and a `query`. The alerter reads
+the rules of all namespaces every minute. It skips a rule with a shorter
+interval and logs `Skipping invalid AlertRule`; the status of that rule keeps
+its last result. The query must project `Title` and `Severity`, and can
+project `Summary`, `Description`, and `CorrelationId`. The alerter puts
 `<namespace>/<rule>://` in front of each correlation ID, and sends the other
 columns as custom fields.
 
@@ -400,6 +409,12 @@ set `ingestor.tls.secretName` to a Secret that you supply.
 - The collector keeps a write-ahead log of at most `collector.maxDiskUsage`
   bytes on the node. If the ingestor or ADX is unavailable for longer than
   that log holds, the collector drops new data. It never stops a workload.
+- The ingestor keeps at most 1 GiB of the data that it receives in memory.
+  Above that, it asks the collectors to send again later, and they keep the
+  data in their write-ahead logs. ADX-Mon also sets the memory limit of Go in
+  the ingestor to 90% of the memory limit of its container. The chart gives
+  the ingestor a memory limit of 2Gi (`ingestor.resources`), which leaves room
+  for both. A limit near 1 GiB can stop the ingestor for lack of memory.
 - Delivery is at least once: a row can appear twice.
 - ADX replaces a dynamic value larger than 1 MB with null. A very long log
   line can lose its body.
@@ -412,10 +427,6 @@ set `ingestor.tls.secretName` to a Secret that you supply.
   Pod continues from there.
 - In the same way, it reads the kubelet and containerd journal from the oldest
   entry that the node keeps. The first upload of each node can be large.
-- The ingestor of ADX-Mon v0.3.0 logs the error `Failed to run Runner shutdown`
-  once a minute: it looks for its Pod in the namespace `adx-mon`. This check
-  serves the ADX-Mon operator, which CetiRun does not run, so the error has no
-  effect.
 - ADX-Mon does not collect Kubernetes events itself. The telemetry program
   writes them; by default, warnings and events about CetiRun resources and
   namespaces.
@@ -466,11 +477,11 @@ describes.
 1. **Logs or metrics stop arriving.** Check that the ingestor Pod is ready,
    and read its log. A missing database or a missing role stops the ingestor
    when it starts.
-2. **The ingestor backlog grows.** ADX takes the data more slowly than it
-   arrives. Run `.show ingestion failures | where FailedOn > ago(1h)` in each
-   database. In the Azure portal, read the metric *Ingestion utilization* of the
-   Kusto cluster. A cluster that is too small needs a larger SKU or more
-   instances.
+2. **The ingestor backlog grows, or its uploads fail.** ADX takes the data more
+   slowly than it arrives, or refuses it. Run
+   `.show ingestion failures | where FailedOn > ago(1h)` in each database. In
+   the Azure portal, read the metric *Ingestion utilization* of the Kusto
+   cluster. A cluster that is too small needs a larger SKU or more instances.
 3. **Only the collector backlog grows.** The collectors lose their connection
    to the ingestor. Check its Service, its NetworkPolicy, and the
    `cetirun-adx-mon-ingestor-tls` Secret. The `Host` column of

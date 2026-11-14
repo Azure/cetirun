@@ -90,8 +90,8 @@ class PinnedImageTests(unittest.TestCase):
 
         scanned = []
 
-        def scan(image):
-            scanned.append(image)
+        def scan(image, remote=False):
+            scanned.append((image, remote))
             if image == KSM:
                 raise subprocess.CalledProcessError(1, "trivy")
 
@@ -100,7 +100,8 @@ class PinnedImageTests(unittest.TestCase):
                 patch.object(check, "scan", side_effect=scan), \
                 redirect_stderr(io.StringIO()) as errors, redirect_stdout(io.StringIO()):
             self.assertEqual(check.main(), 1)
-        self.assertEqual(scanned, [COLLECTOR, KSM])
+        # The scanner reads each pinned image from its registry.
+        self.assertEqual(scanned, [(COLLECTOR, True), (KSM, True)])
         pulled = [call.args[0][-1] for call in run.call_args_list if call.args[0][:2] == ["docker", "pull"]]
         self.assertEqual(pulled, [COLLECTOR, KSM])
         self.assertIn(f"{COLLECTOR} /collector does not accept --host-ip", errors.getvalue())

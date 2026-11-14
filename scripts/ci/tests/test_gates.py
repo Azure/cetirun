@@ -237,6 +237,20 @@ class GateTests(unittest.TestCase):
         self.assertIn("CRITICAL,HIGH", second)
         self.assertIn("--ignore-unfixed", second)
         self.assertIn(scan_image.TRIVY, second)
+        # A local image is read through the Docker daemon.
+        self.assertIn("/var/run/docker.sock:/var/run/docker.sock", second)
+        self.assertNotIn("--image-src", second)
+
+    def test_a_remote_scan_reads_the_registry_without_the_docker_daemon(self):
+        image = "mcr.example.com/example:v1@sha256:" + "1" * 64
+        with patch.object(scan_image, "run") as run:
+            scan_image.scan(image, remote=True)
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("image"):command.index("image") + 3], ["image", "--image-src", "remote"])
+        self.assertNotIn("/var/run/docker.sock:/var/run/docker.sock", command)
+        self.assertEqual(command[-1], image)
+        self.assertIn("CRITICAL,HIGH", command)
+        self.assertIn("--ignore-unfixed", command)
 
     def test_scan_failure_fails_gate(self):
         with patch.object(

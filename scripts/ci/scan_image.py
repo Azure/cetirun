@@ -25,17 +25,20 @@ IMAGES = (
 )
 
 
-def scan(image):
-    """Fail on a fixable high or critical CVE in a local image."""
+def scan(image, remote=False):
+    """Fail on a fixable high or critical CVE in a local image, or with remote, in an image that the scanner reads
+    from its registry."""
+    source = ["--image-src", "remote"] if remote else []
+    socket = [] if remote else ["-v", "/var/run/docker.sock:/var/run/docker.sock"]
     run(
         [
             "docker",
             "run",
             "--rm",
-            "-v",
-            "/var/run/docker.sock:/var/run/docker.sock",
+            *socket,
             TRIVY,
             "image",
+            *source,
             "--scanners",
             "vuln",
             "--format",

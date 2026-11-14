@@ -1018,7 +1018,7 @@ procedure, see [Monitoring and logs](../../operations/observability/).
 | `logs.ingressNamespace` | `aks-istio-ingress`. Empty leaves out the ingress gateway's access log. |
 | `logs.agents.enabled` | `true`. The output of every container of Agent Pods, Custom terminals and GitHub Copilot proxies, into the Agent logs database. |
 | `logs.node.enabled` | `true`. The journal of the kubelet and containerd on every node, into the `Kubelet` and `Containerd` tables of the logs database. |
-| `metrics.scrapeInterval`, `metrics.keep`, `metrics.drop` | `60` seconds; the regular expressions of the metric names that are kept, and of those that are dropped even when kept. Every other metric is dropped. |
+| `metrics.scrapeInterval`, `metrics.keep`, `metrics.drop` | `60` seconds; the regular expressions of the metric names that are kept, and of those that are dropped even when kept. Every other metric is dropped. By default, `metrics.drop` drops the series that ADX-Mon reports for each table, and the buckets of its histograms. |
 | `collector.maxDiskUsage`, `collector.hostPath` | `2147483648` bytes; `/var/lib/cetirun-adx-mon`. The write-ahead log and the log file positions on each node. |
 | `collector.tolerations` | Every taint, so that the collector runs on every node. |
 | `ingestor.storage.size`, `ingestor.maxDiskUsage` | `16Gi`; `12884901888` bytes. |
@@ -1026,7 +1026,7 @@ procedure, see [Monitoring and logs](../../operations/observability/).
 | `alerter.endpoint` | Empty: no alerter runs. The base URL of the alert receiver, without a trailing slash. The alerter posts each alert to `<endpoint>/alerts`. |
 | `alerter.clientId` | Necessary with an endpoint. The client ID of the alerter's managed identity, with the `Viewer` role on the logs and metrics databases. |
 | `alerter.destination` | Empty. The `Destination` field of every alert. |
-| `alerter.rules.collectionHealth.enabled`, `alerter.rules.collectionHealth.interval` | `true`; `5m`. The `AlertRule` that sends an alert for each failed check of `CollectionHealth()`. |
+| `alerter.rules.collectionHealth.enabled`, `alerter.rules.collectionHealth.interval` | `true`; `5m`. The `AlertRule` that sends an alert for each failed check of `CollectionHealth()`. The interval is at least `30s`, the shortest interval of an ADX-Mon `AlertRule`. |
 | `kubeStateMetrics.enabled`, `kubeStateMetrics.objects` | `true`; Pods, nodes, Deployments, StatefulSets, DaemonSets, Jobs, claims and namespaces. The chart refuses other kinds. |
 | `kubeStateMetrics.image` | `mcr.microsoft.com/oss/v2/kubernetes/kube-state-metrics`, pinned by tag and digest. |
 | `telemetry.enabled`, `telemetry.events`, `telemetry.snapshotInterval` | `true`; `warnings-and-cetirun`, also `all` or `none`; `1h`. |
