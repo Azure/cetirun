@@ -118,7 +118,7 @@ func TestEntryPointFailsWhenNoShellExists(t *testing.T) {
 		},
 		detect: func(context.Context) (string, error) { return "", terminalpolicy.ErrNoShell }}
 	var ready bool
-	err := watchShell(context.Background(), testConfig(), f, time.Millisecond, func(value bool) { ready = value })
+	err := watchShell(context.Background(), testConfig(), f, time.Millisecond, func(value bool) { ready = value }, func(startupObservation, bool) {})
 	if !errors.Is(err, terminalpolicy.ErrNoShell) || ready {
 		t.Fatalf("entrypoint did not reject a shell-less image: %v", err)
 	}

@@ -282,26 +282,48 @@ func superviseTTYD(ctx context.Context, socket, control string) {
 // watchShell is part of the container entrypoint. It waits through Pod
 // replacement, probes each new container, and fails explicitly if none of the
 // supported shells can run. It never starts an interactive session by itself.
-func watchShell(ctx context.Context, cfg Config, backend Backend, interval time.Duration, ready func(bool)) error {
+func watchShell(ctx context.Context, cfg Config, backend Backend, interval time.Duration, ready func(bool), observe func(startupObservation, bool)) error {
 	var checked Snapshot
 	for {
 		request, cancel := context.WithTimeout(ctx, 10*time.Second)
 		agent, err := backend.Agent(request)
+		observation := startupObservation{stage: "agent-read", category: startupFailureCategory(err)}
 		var target Snapshot
 		if err == nil {
 			identity := Identity{Value: agent.Spec.User.Alias}
 			target, err = backend.Resolve(request, identity)
+			observation = startupObservation{stage: "target-resolve", category: startupFailureCategory(err)}
 			if err == nil && target != checked {
 				_, err = backend.DetectShell(request)
+				observation = startupObservation{stage: "shell-probe", category: startupFailureCategory(err)}
 				current, checkErr := backend.Resolve(request, identity)
 				if checkErr != nil || current != target {
+					category := startupFailureCategory(checkErr)
+					if checkErr == nil {
+						category = "target-changed"
+					}
+					// Preserve both failures for diagnosis without changing the existing
+					// decision to wait when the target cannot be confirmed after a probe.
+					if err != nil {
+						observation.recheckCategory = category
+					} else {
+						observation = startupObservation{stage: "target-recheck", category: category}
+					}
 					err = ErrWaiting
 				}
 			}
 		}
 		cancel()
 		ready(err == nil)
-		if errors.Is(err, terminalpolicy.ErrNoShell) || denied(err) {
+		fatal := errors.Is(err, terminalpolicy.ErrNoShell) || denied(err)
+		if err == nil {
+			observation = startupObservation{stage: "ready", category: "none"}
+		}
+		// Normal shutdown is not a startup failure.
+		if ctx.Err() == nil {
+			observe(observation, fatal)
+		}
+		if fatal {
 			return err
 		}
 		if err == nil {
@@ -356,7 +378,10 @@ func Serve(parent context.Context, cfg Config, backend Backend) error {
 	}
 	results := make(chan error, 2)
 	go func() { results <- public.ListenAndServe() }()
-	go func() { results <- watchShell(ctx, cfg, backend, 3*time.Second, shellReady.Store) }()
+	diagnostics := &startupDiagnostics{logger: slog.Default(), now: time.Now}
+	go func() {
+		results <- watchShell(ctx, cfg, backend, 3*time.Second, shellReady.Store, diagnostics.withSocket(socketReady))
+	}()
 	select {
 	case <-ctx.Done():
 		err = ctx.Err()
