@@ -375,6 +375,7 @@ func (c *Client) ensureNamespace(ctx context.Context, ns, alias string) error {
 
 // createNamespace returns only a namespace created by this call, never an
 // existing namespace that a same-named Agent might otherwise adopt.
+// The Operator adds its protected managed-by label during reconciliation.
 func (c *Client) createNamespace(ctx context.Context, ns, alias string) (*corev1.Namespace, error) {
 	nsObj := &corev1.Namespace{}
 	err := c.client.Get(ctx, client.ObjectKey{Name: ns}, nsObj)
@@ -388,9 +389,8 @@ func (c *Client) createNamespace(ctx context.Context, ns, alias string) (*corev1
 		ObjectMeta: metav1.ObjectMeta{
 			Name: ns,
 			Labels: map[string]string{
-				"app.kubernetes.io/name":       "cetirun",
-				"app.kubernetes.io/instance":   alias,
-				"app.kubernetes.io/managed-by": "cetirun-operator",
+				"app.kubernetes.io/name":     "cetirun",
+				"app.kubernetes.io/instance": alias,
 			},
 		},
 	}

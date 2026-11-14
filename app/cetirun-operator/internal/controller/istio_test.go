@@ -89,4 +89,7 @@ func TestEnsureNamespace_AppliesIstioRevisionLabel(t *testing.T) {
 	if got := updated.Labels["app.kubernetes.io/instance"]; got != alias {
 		t.Fatalf("namespace app.kubernetes.io/instance label = %q, want %q", got, alias)
 	}
+	if got := updated.Labels["app.kubernetes.io/managed-by"]; got != "cetirun-operator" {
+		t.Fatalf("Operator did not enable managed namespace admission on the existing namespace: %q", got)
+	}
 }
