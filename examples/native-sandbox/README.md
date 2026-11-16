@@ -55,9 +55,11 @@ role names.
    they are `app.kubernetes.io/name: cetirun-portal` and
    `app.kubernetes.io/instance: cetirun-portal`.
 5. Follow the [Custom mTLS binding](../../site/content/en/docs/guides/agent-ingress-mtls.md#custom-agents)
-   procedure. Each `chatClients` entry must use this namespace and these
-   labels, its own approved client Secret and the URI for the actual Agent
-   UID. Never reuse an ingress Gateway client key.
+   procedure. Selector-bound ingress peers must use the exact
+   `Gateway.spec.selector`; the LoadBalancer Service can have extra selector
+   labels and is not a substitute. Each `chatClients` entry must use this
+   namespace and these labels, its own approved client Secret and the URI for
+   the actual Agent UID. Never reuse an ingress Gateway client key.
 
 Apply the reviewed manifests only to an explicitly authorized target. Keep
 certificates, keys, environment values and kubeconfig outside this repository.
