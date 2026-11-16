@@ -24,8 +24,8 @@ import (
 	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/util/httpstream"
 	clientexec "k8s.io/client-go/util/exec"
+	"k8s.io/streaming/pkg/httpstream"
 )
 
 func TestStartupFailureCategoriesAreSanitized(t *testing.T) {
