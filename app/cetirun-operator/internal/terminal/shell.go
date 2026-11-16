@@ -40,6 +40,12 @@ func shellMissing(err error, shell string) bool {
 	// CRI runtimes can report a missing executable as an API error instead of
 	// exit 127. Do not turn a generic API/transport failure into shell fallback.
 	message := strings.ToLower(err.Error())
+	// Kata's executable lookup fails before exec starts and names the missing
+	// file this way. Require exec context and the current candidate so another
+	// missing file does not hide an unrelated runtime failure.
+	if strings.Contains(message, "exec") && strings.Contains(message, "the file "+shell+" was not found") {
+		return true
+	}
 	return strings.Contains(message, shell) && strings.Contains(message, "exec") &&
 		(strings.Contains(message, "executable file not found") ||
 			strings.Contains(message, "executable not found") ||
