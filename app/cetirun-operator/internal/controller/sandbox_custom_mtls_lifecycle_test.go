@@ -5,8 +5,8 @@ package controller
 
 import (
 	"context"
-	"strings"
 	"testing"
+	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
@@ -71,8 +71,8 @@ func TestCommonCustomMTLSSuspensionAndResume(t *testing.T) {
 					if err := f.kube.Update(ctx, current); err != nil {
 						t.Fatal(err)
 					}
-					if _, err := f.reconcile(); err == nil || !strings.Contains(err.Error(), "waits for acknowledged controller shutdown") {
-						t.Fatal("suspension did not wait for current shutdown:", err)
+					if result, err := f.reconcile(); err != nil || result.RequeueAfter != 5*time.Second {
+						t.Fatalf("suspension did not poll for current shutdown: result=%#v err=%v", result, err)
 					}
 					main := f.workload(t)
 					if ptr.Deref(main.Spec.Replicas, -1) != 0 ||
