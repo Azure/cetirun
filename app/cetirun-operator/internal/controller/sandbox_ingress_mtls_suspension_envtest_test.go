@@ -8,6 +8,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/go-logr/logr"
@@ -96,8 +97,8 @@ func TestReconciledSandboxStaleIngressMTLSSuspensionAPIServer(t *testing.T) {
 	if err := h.member.Patch(h.ctx, current, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 		t.Fatal("request served suspension: ", err)
 	}
-	if _, err := h.reconcile(); err == nil {
-		t.Fatal("served suspension ignored the unacknowledged workload shutdown")
+	if result, err := h.reconcile(); err != nil || result.RequeueAfter != 5*time.Second {
+		t.Fatalf("served suspension did not retry unacknowledged shutdown: result=%+v, err=%v", result, err)
 	}
 	pending := h.current(t)
 	if pending.Status.Phase != api.PhasePending || pending.Status.ObservedGeneration == pending.Generation {

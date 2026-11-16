@@ -206,6 +206,12 @@ main and auxiliary workloads, and withdraws their route. If the AI Gateway, a
 component stop, or a status write fails, suspension still tries the other
 shutdown operations. A shutdown that is not acknowledged still keeps its source
 reservation. Normal Kubernetes stop requests are not physical fencing.
+For a coordinated suspension, ordinary waits for controller acknowledgement,
+Pod termination, or removed auxiliary ReplicaSets retry every five seconds,
+without retaining earlier provisioning-error backoff. Owned StatefulSet status
+changes also enqueue reconciliation. API, ownership, access-revocation, and
+status-write failures remain errors; pending shutdown does not acknowledge the
+current suspension generation or release its source reservation.
 
 The Portal may also accept a narrow pre-bootstrap pause for a Sandbox Agent
 when it can authoritatively prove that no execution lifetime
