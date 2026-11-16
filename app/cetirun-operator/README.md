@@ -238,6 +238,13 @@ administrator emergency block in place. The key, its spend, and its budget
 reset time remain. For a missing AI Gateway key record, refer to the
 site documentation on [virtual-key recovery](../../site/content/en/docs/operations/ai-gateway.md#recover-a-missing-key-record).
 
+While suspension is requested, policy holds use `Suspended` for an
+Operator-owned Gateway block, including when a Sandbox source is unavailable.
+Repeated checks still verify the external key but do not rewrite unchanged
+block receipts. Policy conditions retain the dependency or denial details.
+A policy hold after resume uses `PolicyReprojection`; the key stays blocked
+until the current grant is verified.
+
 Loss of bootstrap or runtime prerequisites also holds a reconciled Agent that
 already runs and is not suspended. The hold blocks its key, stops the owned
 components, and withdraws ingress, but it keeps HOME and spend. After a status

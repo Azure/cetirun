@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -1054,18 +1055,19 @@ func (r *AgentReconciler) beginAIGatewayPolicyHold(ctx context.Context, instance
 	// later receipt write fails after blocking, the next reconcile can safely
 	// resume because this durable intent distinguishes the block from an
 	// administrator emergency block.
-	if status.Reason != aiGatewayReasonPolicyReprojection {
-		status.Blocked = false
-		status.Routed = false
-		status.Reason = aiGatewayReasonPolicyReprojection
-		status.Phase = cetirunv1alpha1.AIGatewayPhaseReady
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady,
-			metav1.ConditionFalse, aiGatewayReasonPolicyReprojection, "The old AI Gateway grant will be blocked until the current policy projection is verified")
-		if err := r.updateStatus(ctx, instance); err != nil {
-			return fmt.Errorf("persist AI Gateway policy-reprojection intent: %w", err)
-		}
-		status = ensureAIGatewayStatus(instance)
+	// Suspension and policy holds run in the same reconciliation. They must
+	// agree on ownership while suspended, or each status write enqueues another
+	// reconcile that changes Suspended to PolicyReprojection and back forever.
+	reason := aiGatewayReasonPolicyReprojection
+	intentMessage := "The old AI Gateway grant will be blocked until the current policy projection is verified"
+	if instance.Spec.Suspended {
+		reason = aiGatewayReasonSuspended
+		intentMessage = "The AI Gateway key will remain blocked while the Agent is suspended"
 	}
+	if err := r.recordAIGatewayBlockIntent(ctx, instance, reason, intentMessage); err != nil {
+		return fmt.Errorf("persist AI Gateway policy-hold intent: %w", err)
+	}
+	status = ensureAIGatewayStatus(instance)
 	if !key.Blocked {
 		if err := client.SetKeyBlocked(ctx, token, true); err != nil {
 			return err
@@ -1084,10 +1086,22 @@ func (r *AgentReconciler) beginAIGatewayPolicyHold(ctx context.Context, instance
 	}
 	status.Blocked = true
 	status.Routed = false
-	status.Reason = aiGatewayReasonPolicyReprojection
+	status.Reason = reason
 	status.Phase = cetirunv1alpha1.AIGatewayPhaseReady
-	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady,
-		metav1.ConditionFalse, aiGatewayReasonPolicyReprojection, "The old AI Gateway grant is blocked until the current policy projection is verified")
+	if instance.Spec.Suspended {
+		// The suspension hold also reports workload shutdown on this condition.
+		// Preserve its current receipt rather than overwriting its message and
+		// observed generation on every pass. The key was still verified above.
+		condition := apimeta.FindStatusCondition(instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady)
+		if condition == nil || condition.Status != metav1.ConditionFalse ||
+			(condition.Reason != aiGatewayReasonSuspended && condition.Reason != "SuspensionPending") {
+			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady,
+				metav1.ConditionFalse, reason, intentMessage)
+		}
+	} else {
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady,
+			metav1.ConditionFalse, reason, "The old AI Gateway grant is blocked until the current policy projection is verified")
+	}
 	return r.updateStatus(ctx, instance)
 }
 
