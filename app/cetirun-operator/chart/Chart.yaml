@@ -2,8 +2,8 @@ apiVersion: v2
 name: cetirun-operator
 description: Helm chart for deploying the CetiRun Operator to cetirun-system
 type: application
-version: 0.1.2
-appVersion: "0.1.2"
+version: 0.1.3
+appVersion: "0.1.3"
 keywords:
   - cetirun
   - operator

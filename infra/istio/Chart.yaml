@@ -1,6 +1,6 @@
 apiVersion: v2
 name: cetirun-istio
 description: CetiRun Istio ingress authentication and egress audit
-version: 0.1.2
-appVersion: "0.1.2"
+version: 0.1.3
+appVersion: "0.1.3"
 type: application

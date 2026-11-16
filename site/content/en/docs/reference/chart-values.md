@@ -405,7 +405,7 @@ Source: [app/cetirun-operator/chart/values.yaml]({{< repo "app/cetirun-operator/
 | `cetirun` |  | CetiRun Helm chart configuration. |
 | `cetirun.defaultModel` | `"gpt-6-astra"` | The operator writes it to `secrets.model`, but the AI Gateway projection replaces that value. To select the default model of Agents, use `aiGateway.defaultModel`. |
 | `cetirun.chart.repoURL` | `"oci://mcr.microsoft.com/aks/ai-runtime/cetirun/helm/cetirun"` | OCI registry URL. |
-| `cetirun.chart.version` | `"0.1.2"` | Chart version to deploy. |
+| `cetirun.chart.version` | `"0.1.3"` | Chart version to deploy. |
 | `cetirun.helmValues` | `{}` | Operator-level Helm value overrides applied to every CetiRun instance. Merged on top of the operator's hardcoded defaults but beneath per-instance spec.helm.values, so instances can still override them. |
 | `cetiadmin` |  | One Operator-owned ordinary Hermes installation. The umbrella uses these same values under cetirun-operator.cetiadmin; this chart never renders an Agent. |
 | `cetiadmin.enabled` | `true` |  |
