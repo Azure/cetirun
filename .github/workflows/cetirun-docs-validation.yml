@@ -22,6 +22,7 @@ on:
       - "infra/**"
       - "scripts/**"
       - ".github/workflows/cetirun-docs-validation.yml"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 permissions:
