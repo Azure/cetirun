@@ -366,6 +366,9 @@ immutable Custom ownership receipt in the Operator namespace, the exact
 Agent/namespace UIDs, and the namespace UID annotation. The Broker receives a
 per-Agent `get` grant for that receipt only; it cannot list Operator
 ConfigMaps. Encrypted records bind the owner, immutable IDs, and revisions.
+When it creates these grants, the Operator uses the API response instead of
+waiting for its cache. A grant that already exists must pass the same
+ownership and permission checks after an API read.
 Labels and display snapshots support only inventory, and they cannot establish
 authority. Workload authentication uses namespace ownership and named Agent
 reads. It does not fall back to a cluster-wide Agent list.

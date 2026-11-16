@@ -28,6 +28,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
@@ -99,6 +100,79 @@ func TestEnsureConnectionsMCPBrokerRBACCreatesOwnedNarrowRoleIdempotently(t *tes
 	}
 	if resourceVersion != role.ResourceVersion+"/"+binding.ResourceVersion {
 		t.Fatalf("idempotent Broker RBAC reconciliation updated objects: %q -> %q", resourceVersion, role.ResourceVersion+"/"+binding.ResourceVersion)
+	}
+}
+
+func TestBrokerRBACReadbackIgnoresInformerLag(t *testing.T) {
+	for _, scope := range []string{"broker", "receipt"} {
+		for _, kind := range []string{"role", "binding"} {
+			for _, state := range []string{"new", "owned", "foreign"} {
+				t.Run(scope+"/"+kind+"/"+state, func(t *testing.T) {
+					ctx := context.Background()
+					instance := connectionsMCPTestAgent()
+					instance.Spec.Agent.Type = api.AgentTypeCustom
+					namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+						Name: instanceNamespace(instance.Name), UID: "custom-namespace-uid",
+						Annotations: map[string]string{customAgentUID: string(instance.UID)},
+					}}
+					receipt := customOwnership{
+						AgentName: instance.Name, AgentUID: instance.UID, Namespace: namespace.Name,
+						NamespaceUID: namespace.UID, Release: helmReleaseName(instance.Name), Home: "home",
+						HomeClaim: &runtimebindings.HomeClaim{StorageClass: "managed", StorageSize: "1Gi", AccessMode: "ReadWriteOnce"},
+					}
+					raw, err := json.Marshal(receipt)
+					if err != nil {
+						t.Fatal(err)
+					}
+					record := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+						Name: agenttools.CustomOwnershipRecordName(string(instance.UID)), Namespace: "cetirun-system",
+						OwnerReferences: connectionsMCPBrokerOwner(instance),
+					}, Immutable: ptr.To(true), Data: map[string]string{"ownership": string(raw)}}
+					r, kube := connectionsMCPTestReconciler(t, namespace, record)
+					r.ConnectionsMCPBrokerNamespace, r.ConnectionsMCPBrokerServiceAccount = "cetirun-credentials", "cetirun-agent-broker"
+					role, binding := r.desiredConnectionsMCPBrokerRBAC(instance)
+					if scope == "receipt" {
+						role, binding = r.desiredCustomOwnershipReceiptBrokerRBAC(instance)
+					}
+					var target client.Object = role
+					if kind == "binding" {
+						target = binding
+					}
+					key := client.ObjectKeyFromObject(target)
+					if state != "new" {
+						if state == "foreign" {
+							owners := target.GetOwnerReferences()
+							owners[0].UID = "other-agent-uid"
+							target.SetOwnerReferences(owners)
+						}
+						if err := kube.Create(ctx, target); err != nil {
+							t.Fatal(err)
+						}
+					}
+					r.APIReader = kube
+					r.Client = interceptor.NewClient(kube.(client.WithWatch), interceptor.Funcs{
+						Get: func(ctx context.Context, c client.WithWatch, requested client.ObjectKey, object client.Object, options ...client.GetOption) error {
+							if requested == key && reflect.TypeOf(object) == reflect.TypeOf(target) {
+								return apierrors.NewNotFound(rbacv1.Resource(kind), requested.Name)
+							}
+							return c.Get(ctx, requested, object, options...)
+						},
+					})
+					err = r.ensureConnectionsMCPBrokerRBAC(ctx, instance)
+					if state == "foreign" {
+						if err == nil {
+							t.Fatal("AlreadyExists admitted a foreign RBAC object")
+						}
+						current := target.DeepCopyObject().(client.Object)
+						if err := kube.Get(ctx, key, current); err != nil || !reflect.DeepEqual(current, target) {
+							t.Fatal("foreign RBAC object changed:", err)
+						}
+					} else if err != nil {
+						t.Fatal("RBAC creation/readback depended on informer freshness:", err)
+					}
+				})
+			}
+		}
 	}
 }
 

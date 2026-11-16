@@ -149,11 +149,12 @@ func (r *AgentReconciler) ensureCustomOwnershipReceiptBrokerRBAC(ctx context.Con
 	role := &rbacv1.Role{}
 	roleKey := client.ObjectKeyFromObject(desiredRole)
 	if err := r.Get(ctx, roleKey, role); apierrors.IsNotFound(err) {
-		if err := r.Create(ctx, desiredRole); err != nil && !apierrors.IsAlreadyExists(err) {
+		if err := r.Create(ctx, desiredRole); err == nil {
+			role = desiredRole
+		} else if !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("create Custom ownership receipt Broker Role: %w", err)
-		}
-		if err := r.Get(ctx, roleKey, role); err != nil {
-			return fmt.Errorf("read Custom ownership receipt Broker Role after create: %w", err)
+		} else if err := r.customReader().Get(ctx, roleKey, role); err != nil {
+			return fmt.Errorf("read existing Custom ownership receipt Broker Role: %w", err)
 		}
 	} else if err != nil {
 		return err
@@ -170,11 +171,12 @@ func (r *AgentReconciler) ensureCustomOwnershipReceiptBrokerRBAC(ctx context.Con
 	binding := &rbacv1.RoleBinding{}
 	bindingKey := client.ObjectKeyFromObject(desiredBinding)
 	if err := r.Get(ctx, bindingKey, binding); apierrors.IsNotFound(err) {
-		if err := r.Create(ctx, desiredBinding); err != nil && !apierrors.IsAlreadyExists(err) {
+		if err := r.Create(ctx, desiredBinding); err == nil {
+			binding = desiredBinding
+		} else if !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("create Custom ownership receipt Broker RoleBinding: %w", err)
-		}
-		if err := r.Get(ctx, bindingKey, binding); err != nil {
-			return fmt.Errorf("read Custom ownership receipt Broker RoleBinding after create: %w", err)
+		} else if err := r.customReader().Get(ctx, bindingKey, binding); err != nil {
+			return fmt.Errorf("read existing Custom ownership receipt Broker RoleBinding: %w", err)
 		}
 	} else if err != nil {
 		return err
@@ -227,11 +229,12 @@ func (r *AgentReconciler) ensureConnectionsMCPBrokerRBAC(ctx context.Context, in
 	role := &rbacv1.Role{}
 	roleKey := types.NamespacedName{Namespace: desiredRole.Namespace, Name: desiredRole.Name}
 	if err := r.Get(ctx, roleKey, role); apierrors.IsNotFound(err) {
-		if err := r.Create(ctx, desiredRole); err != nil && !apierrors.IsAlreadyExists(err) {
+		if err := r.Create(ctx, desiredRole); err == nil {
+			role = desiredRole
+		} else if !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("create Broker Role: %w", err)
-		}
-		if err := r.Get(ctx, roleKey, role); err != nil {
-			return fmt.Errorf("read Broker Role after create: %w", err)
+		} else if err := r.customReader().Get(ctx, roleKey, role); err != nil {
+			return fmt.Errorf("read existing Broker Role: %w", err)
 		}
 	} else if err != nil {
 		return fmt.Errorf("get Broker Role: %w", err)
@@ -249,11 +252,12 @@ func (r *AgentReconciler) ensureConnectionsMCPBrokerRBAC(ctx context.Context, in
 	binding := &rbacv1.RoleBinding{}
 	bindingKey := types.NamespacedName{Namespace: desiredBinding.Namespace, Name: desiredBinding.Name}
 	if err := r.Get(ctx, bindingKey, binding); apierrors.IsNotFound(err) {
-		if err := r.Create(ctx, desiredBinding); err != nil && !apierrors.IsAlreadyExists(err) {
+		if err := r.Create(ctx, desiredBinding); err == nil {
+			binding = desiredBinding
+		} else if !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("create Broker RoleBinding: %w", err)
-		}
-		if err := r.Get(ctx, bindingKey, binding); err != nil {
-			return fmt.Errorf("read Broker RoleBinding after create: %w", err)
+		} else if err := r.customReader().Get(ctx, bindingKey, binding); err != nil {
+			return fmt.Errorf("read existing Broker RoleBinding: %w", err)
 		}
 	} else if err != nil {
 		return fmt.Errorf("get Broker RoleBinding: %w", err)
