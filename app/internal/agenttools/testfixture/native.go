@@ -39,7 +39,7 @@ func NewNative(t testing.TB) *Native {
 	t.Helper()
 	f := &Native{Objects: map[string]any{}, Allowed: true, Identity: agenttools.NativePodIdentity{
 		AgentUID: "11111111-1111-1111-1111-111111111111", Namespace: "agents",
-		PodName: "openclaw-agent-cetirun-0", PodUID: "pod-uid", ServiceAccountName: "default", ServiceAccountUID: "service-account-uid",
+		PodName: "cetirun-agent-0", PodUID: "pod-uid", ServiceAccountName: "default", ServiceAccountUID: "service-account-uid",
 	}}
 	meta := func(name, namespace, uid string) map[string]any {
 		return map[string]any{"name": name, "namespace": namespace, "uid": uid, "resourceVersion": "1", "generation": int64(1)}

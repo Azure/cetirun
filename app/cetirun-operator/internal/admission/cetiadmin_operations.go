@@ -88,7 +88,7 @@ func targetPod(pod *corev1.Pod, agent *api.Agent) bool {
 		return false
 	}
 	for _, owner := range pod.OwnerReferences {
-		if owner.Kind == "StatefulSet" && owner.APIVersion == "apps/v1" && owner.Name == "openclaw-"+agent.Name+"-cetirun" && owner.UID != "" {
+		if owner.Kind == "StatefulSet" && owner.APIVersion == "apps/v1" && owner.Name == "cetirun-"+agent.Name && owner.UID != "" {
 			return true
 		}
 	}
@@ -100,7 +100,7 @@ func (h *CetiAdminHandler) confirmedTargetPod(ctx context.Context, pod *corev1.P
 		return false
 	}
 	workload := &appsv1.StatefulSet{}
-	if h.reader.Get(ctx, client.ObjectKey{Name: "openclaw-" + agent.Name + "-cetirun", Namespace: agent.Status.Namespace}, workload) != nil ||
+	if h.reader.Get(ctx, client.ObjectKey{Name: "cetirun-" + agent.Name, Namespace: agent.Status.Namespace}, workload) != nil ||
 		workload.DeletionTimestamp != nil || workload.Annotations["meta.helm.sh/release-name"] != agent.Status.HelmReleaseName ||
 		workload.Annotations["meta.helm.sh/release-namespace"] != agent.Status.Namespace {
 		return false

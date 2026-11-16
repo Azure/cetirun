@@ -222,7 +222,7 @@ func TestCustomTerminalFinalValidationRejectsTampering(t *testing.T) {
 			if !mutated {
 				t.Fatalf("fixture did not include %s", kind)
 			}
-			if err := p.ValidateCustom("cetirun-example", "openclaw-example"); err == nil {
+			if err := p.ValidateCustom("cetirun-example", "cetirun-example"); err == nil {
 				t.Fatal("tampered terminal object accepted")
 			}
 		})

@@ -55,21 +55,15 @@ func instanceNamespace(alias string) string {
 }
 
 // helmReleaseName returns the Helm release name for a given alias.
-// TODO: rename to "cetirun-<alias>" once existing instances are migrated.
-// Changing the release name requires migration logic (uninstall old release,
-// rebind PVC, install new release) since Helm tracks releases by name.
 func helmReleaseName(alias string) string {
-	return fmt.Sprintf("openclaw-%s", alias)
+	return fmt.Sprintf("cetirun-%s", alias)
 }
 
 // instanceServiceName returns the Kubernetes Service name created by the Helm chart.
-// The chart fullname template is: if release contains chart name → release name,
-// else → "<release>-<chart>". Release is "openclaw-<alias>", chart name is "cetirun"
-// (they have no contains relationship), so fullname = "openclaw-<alias>-cetirun".
-// TODO: will become "cetirun-<alias>" after helmReleaseName migration (since
-// "cetirun-<alias>" contains "cetirun", fullname collapses to release name).
+// The release contains the chart name, so the chart uses it directly, bounded
+// to a DNS label, without appending another "-cetirun" suffix.
 func instanceServiceName(alias string) string {
-	name := fmt.Sprintf("openclaw-%s-cetirun", alias)
+	name := helmReleaseName(alias)
 	if len(name) > 63 {
 		name = name[:63]
 	}

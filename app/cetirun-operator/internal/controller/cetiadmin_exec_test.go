@@ -30,8 +30,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
-const execUsername = "system:serviceaccount:cetirun-cetiadmin:openclaw-cetiadmin-cetirun"
-const execCondition = `request.userInfo.username != "system:serviceaccount:cetirun-cetiadmin:openclaw-cetiadmin-cetirun" || request.userInfo.uid != "admin-account-uid"`
+const execUsername = "system:serviceaccount:cetirun-cetiadmin:cetirun-cetiadmin"
+const execCondition = `request.userInfo.username != "system:serviceaccount:cetirun-cetiadmin:cetirun-cetiadmin" || request.userInfo.uid != "admin-account-uid"`
 
 type execFixture struct {
 	t           *testing.T
@@ -69,7 +69,7 @@ func newExecFixture(t *testing.T, kind api.AgentType) *execFixture {
 	team := &api.Team{ObjectMeta: metadata("cetiadmin", "", "admin-team-uid")}
 	namespace := &corev1.Namespace{ObjectMeta: metadata("cetirun-cetiadmin", "", "admin-namespace-uid")}
 	namespace.OwnerReferences = []metav1.OwnerReference{registryauth.Owner(admin)}
-	account := &corev1.ServiceAccount{ObjectMeta: metadata("openclaw-cetiadmin-cetirun", namespace.Name, "admin-account-uid"), AutomountServiceAccountToken: ptr.To(false)}
+	account := &corev1.ServiceAccount{ObjectMeta: metadata("cetirun-cetiadmin", namespace.Name, "admin-account-uid"), AutomountServiceAccountToken: ptr.To(false)}
 	account.OwnerReferences = []metav1.OwnerReference{registryauth.Owner(admin)}
 	rawConfig, _ := json.Marshal(config)
 	f.source = &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "operations", Namespace: "platform-test", UID: "source-uid"}, Data: map[string]string{cetiadmin.ConfigKey: string(rawConfig)}}
@@ -87,11 +87,11 @@ func newExecFixture(t *testing.T, kind api.AgentType) *execFixture {
 	if kind != api.AgentTypeCustom {
 		targetNS.OwnerReferences = []metav1.OwnerReference{registryauth.Owner(target)}
 	}
-	workload := "openclaw-example-cetirun"
+	workload := "cetirun-example"
 	policyName := workload + "-cetirun-example-deny-exec"
 	policyMeta := func(uid string) metav1.ObjectMeta {
 		meta := metav1.ObjectMeta{Name: policyName, UID: types.UID(uid), Labels: map[string]string{"app.kubernetes.io/managed-by": "Helm"}, Annotations: map[string]string{
-			"meta.helm.sh/release-name": "openclaw-example", "meta.helm.sh/release-namespace": "cetirun-example", "example.com/keep": "policy-data",
+			"meta.helm.sh/release-name": "cetirun-example", "meta.helm.sh/release-namespace": "cetirun-example", "example.com/keep": "policy-data",
 		}}
 		if kind == api.AgentTypeCustom {
 			meta.OwnerReferences = []metav1.OwnerReference{registryauth.Owner(target)}
@@ -111,7 +111,7 @@ func newExecFixture(t *testing.T, kind api.AgentType) *execFixture {
 		}, Validations: []admissionv1.Validation{{Expression: expression, Message: "kubectl exec is not allowed on openclaw pods"}},
 	}}
 	policyBinding := &admissionv1.ValidatingAdmissionPolicyBinding{ObjectMeta: policyMeta("policy-binding-uid"), Spec: admissionv1.ValidatingAdmissionPolicyBindingSpec{PolicyName: policy.Name, ValidationActions: []admissionv1.ValidationAction{admissionv1.Deny}}}
-	f.target = cetiadmin.TargetIdentity{Agent: identityOf(target), Namespace: identityOf(targetNS), Runtime: string(kind), Release: "openclaw-example", Resources: []cetiadmin.ManagedResource{
+	f.target = cetiadmin.TargetIdentity{Agent: identityOf(target), Namespace: identityOf(targetNS), Runtime: string(kind), Release: "cetirun-example", Resources: []cetiadmin.ManagedResource{
 		{APIVersion: admissionv1.SchemeGroupVersion.String(), Kind: "ValidatingAdmissionPolicy", ObjectIdentity: identityOf(policy)},
 		{APIVersion: admissionv1.SchemeGroupVersion.String(), Kind: "ValidatingAdmissionPolicyBinding", ObjectIdentity: identityOf(policyBinding)},
 	}}
@@ -123,7 +123,7 @@ func newExecFixture(t *testing.T, kind api.AgentType) *execFixture {
 	objects := []client.Object{f.source, admin, team, namespace, account, target, targetNS, policy, policyBinding, checkpoint}
 	runtimeController := &AgentReconciler{OperatorNamespace: f.source.Namespace, ConnectionsMCPAudience: "api://connections"}
 	if kind == api.AgentTypeCustom {
-		receipt, _ := json.Marshal(customOwnership{AgentName: target.Name, AgentUID: target.UID, Namespace: targetNS.Name, NamespaceUID: targetNS.UID, Release: "openclaw-example", Home: "home-example",
+		receipt, _ := json.Marshal(customOwnership{AgentName: target.Name, AgentUID: target.UID, Namespace: targetNS.Name, NamespaceUID: targetNS.UID, Release: "cetirun-example", Home: "home-example",
 			HomeClaim: &runtimebindings.HomeClaim{StorageClass: "test-storage", StorageSize: "10Gi", AccessMode: "ReadWriteOnce"}})
 		key := runtimeController.ownershipKey(target)
 		objects = append(objects, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace, UID: "receipt-uid", OwnerReferences: []metav1.OwnerReference{registryauth.Owner(target)}}, Immutable: ptr.To(true), Data: map[string]string{"ownership": string(receipt)}})
@@ -899,12 +899,12 @@ func TestCetiAdminExecCELPreservesOtherCallersTerminalRestrictions(t *testing.T)
 		{"recreated SA", execUsername, "replacement-uid", "cetirun", []string{"sh", "-i"}, false, false},
 		{"different SA", "system:serviceaccount:other:admin", "admin-account-uid", "cetirun", []string{"sh", "-i"}, false, false},
 		{"legacy admin", "system:serviceaccount:cetirun-admin:openclaw-admin-cetirun", "legacy-uid", "cetirun", []string{"sh", "-i"}, false, false},
-		{"terminal", "system:serviceaccount:cetirun-example:openclaw-example-cetirun-terminal", "terminal-uid", "cetirun", []string{"sh", "-i"}, false, true},
-		{"wrong container", "system:serviceaccount:cetirun-example:openclaw-example-cetirun-terminal", "terminal-uid", "istio-proxy", []string{"sh", "-i"}, false, false},
-		{"arbitrary command", "system:serviceaccount:cetirun-example:openclaw-example-cetirun-terminal", "terminal-uid", "cetirun", []string{"sh", "-c", "inspect"}, false, false},
+		{"terminal", "system:serviceaccount:cetirun-example:cetirun-example-terminal", "terminal-uid", "cetirun", []string{"sh", "-i"}, false, true},
+		{"wrong container", "system:serviceaccount:cetirun-example:cetirun-example-terminal", "terminal-uid", "istio-proxy", []string{"sh", "-i"}, false, false},
+		{"arbitrary command", "system:serviceaccount:cetirun-example:cetirun-example-terminal", "terminal-uid", "cetirun", []string{"sh", "-c", "inspect"}, false, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			input := map[string]any{"request": map[string]any{"userInfo": map[string]any{"username": test.username, "uid": test.uid}, "namespace": f.target.Namespace.Name, "name": "openclaw-example-cetirun-0"},
+			input := map[string]any{"request": map[string]any{"userInfo": map[string]any{"username": test.username, "uid": test.uid}, "namespace": f.target.Namespace.Name, "name": "cetirun-example-0"},
 				"object":          map[string]any{"container": test.container, "command": test.command, "stdin": true, "stdout": true, "tty": true},
 				"namespaceObject": map[string]any{"metadata": map[string]any{"annotations": map[string]any{customAgentUID: string(f.target.Agent.UID)}}}}
 			matched, _, err := condition.Eval(input)

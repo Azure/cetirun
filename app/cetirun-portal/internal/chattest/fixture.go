@@ -21,7 +21,7 @@ var Caller = chataccess.Caller{Namespace: "test-platform", PodLabels: map[string
 func Objects() (*api.Agent, []client.Object) {
 	agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "chat-example", UID: "11111111-1111-4111-8111-111111111111", Generation: 1}, Spec: api.AgentSpec{
 		Agent: api.HarnessSpec{Type: api.AgentTypeCustom, Image: ptr.To("registry.example.com/agent:test"), Port: ptr.To[int32](8080)}, Team: "example-team", User: api.UserSpec{Alias: "alice", Email: "alice@example.com"},
-	}, Status: api.AgentStatus{Phase: api.PhaseReady, ObservedGeneration: 1, ObservedOperatorHash: "synthetic-plan", Namespace: "cetirun-chat-example", HelmReleaseName: "openclaw-chat-example"}}
+	}, Status: api.AgentStatus{Phase: api.PhaseReady, ObservedGeneration: 1, ObservedOperatorHash: "synthetic-plan", Namespace: "cetirun-chat-example", HelmReleaseName: "cetirun-chat-example"}}
 	for _, name := range []string{api.ConditionReady, api.ConditionAgentConfigReady, chataccess.Condition} {
 		agent.Status.Conditions = append(agent.Status.Conditions, metav1.Condition{Type: name, Status: metav1.ConditionTrue, ObservedGeneration: 1, Reason: "SyntheticReady", LastTransitionTime: metav1.Now()})
 	}

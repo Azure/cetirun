@@ -197,7 +197,7 @@ change them:
 kubectl get agents.cetirun.microsoft.com alice
 kubectl get agents.cetirun.microsoft.com alice -o jsonpath='{.status.conditions}{"\n"}'
 kubectl get pods,pvc -n cetirun-alice
-kubectl get statefulset openclaw-alice-cetirun -n cetirun-alice
+kubectl get statefulset cetirun-alice -n cetirun-alice
 kubectl get virtualservice cetirun-alice -n cetirun-alice
 ```
 

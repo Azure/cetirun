@@ -90,8 +90,8 @@ Hermes Agents. For the naming rules, refer to
 | Resource | Name |
 | --- | --- |
 | Namespace | `cetirun-<name>` |
-| Helm release | `openclaw-<name>` |
-| StatefulSet and Service | `openclaw-<name>-cetirun` |
+| Helm release | `cetirun-<name>` |
+| StatefulSet and Service | `cetirun-<name>` |
 | Agent container | `cetirun` |
 | Gateway token Secret | The name in `spec.gatewayTokenSecretRef` |
 | VirtualService | `cetirun-<name>`, in the Agent namespace |
@@ -104,7 +104,7 @@ To read the Agent logs, run this command. Runtime logs can contain
 conversation text. Do not share them in an issue or a pull request:
 
 ```bash
-kubectl --context "$CONTEXT" logs -n "$NAMESPACE" "statefulset/openclaw-$NAME-cetirun" -c cetirun --tail=50
+kubectl --context "$CONTEXT" logs -n "$NAMESPACE" "statefulset/cetirun-$NAME" -c cetirun --tail=50
 ```
 
 ## Step 5: Check the route and the access

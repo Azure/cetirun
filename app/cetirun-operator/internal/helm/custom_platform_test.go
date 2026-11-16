@@ -340,7 +340,7 @@ func TestCustomExecPolicyHasNoAdminException(t *testing.T) {
 			}
 			want := "false"
 			if enabled {
-				want = terminalpolicy.AdmissionExpression("cetirun-example", "openclaw-example-cetirun-0", "cetirun", "openclaw-example-cetirun-terminal", "example-uid")
+				want = terminalpolicy.AdmissionExpression("cetirun-example", "cetirun-example-0", "cetirun", "cetirun-example-terminal", "example-uid")
 			}
 			if object(array(spec["validations"])[0])["expression"] != want {
 				t.Fatal("Custom terminal command/container restriction changed")

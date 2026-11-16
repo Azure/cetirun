@@ -288,7 +288,7 @@ func TestCommonChatMTLSCompilerOutput(t *testing.T) {
 	c := NewClient(newFakeClient(objects...))
 	for _, resolve := range []func(context.Context, *api.Agent, chataccess.Caller) (chatproxy.Target, error){c.ResolveChat, c.ObserveChat} {
 		target, err := resolve(context.Background(), agent, chattest.Caller)
-		if err != nil || !target.Available || target.BaseURL != "http://openclaw-chat-example-cetirun.cetirun-chat-example.svc.cluster.local:8080" {
+		if err != nil || !target.Available || target.BaseURL != "http://cetirun-chat-example.cetirun-chat-example.svc.cluster.local:8080" {
 			t.Fatalf("compiler-approved mTLS Chat unavailable: %+v %v", target, err)
 		}
 	}

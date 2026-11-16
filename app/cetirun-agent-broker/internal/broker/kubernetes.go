@@ -483,7 +483,7 @@ func firstExtra(extra map[string][]string, key string) string {
 }
 
 func workloadServiceAccount(instanceName string) string {
-	name := "openclaw-" + instanceName + "-cetirun"
+	name := "cetirun-" + instanceName
 	if len(name) > 63 {
 		name = name[:63]
 	}

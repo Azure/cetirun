@@ -43,7 +43,7 @@ func ResolveManagedAgent(ctx context.Context, reader client.Reader, config Confi
 	namespace := "cetirun-" + agent.Name
 	if namespace == self.Namespace.Name || namespace == self.Source.Namespace ||
 		(agent.Status.Namespace != "" && agent.Status.Namespace != namespace) ||
-		(agent.Status.HelmReleaseName != "" && agent.Status.HelmReleaseName != "openclaw-"+agent.Name) {
+		(agent.Status.HelmReleaseName != "" && agent.Status.HelmReleaseName != "cetirun-"+agent.Name) {
 		return nil, ErrConflict
 	}
 	return agent, nil
@@ -88,7 +88,7 @@ func ResolveRuntimeTarget(ctx context.Context, reader client.Reader, config Conf
 	}
 	target = TargetIdentity{
 		Agent: ObjectIdentity{Name: agent.Name, UID: agent.UID}, Namespace: ObjectIdentity{Name: ns.Name, UID: ns.UID},
-		Runtime: string(agent.Spec.Agent.Type), Release: "openclaw-" + agent.Name, Team: agent.Spec.Team, AuthSecret: agent.Spec.GatewayTokenSecretRef,
+		Runtime: string(agent.Spec.Agent.Type), Release: "cetirun-" + agent.Name, Team: agent.Spec.Team, AuthSecret: agent.Spec.GatewayTokenSecretRef,
 		Protected: agent.Spec.SandboxRef != "" || agent.Status.Sandbox != nil || agent.Status.Policy != nil ||
 			slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) || ns.Labels["cetirun.microsoft.com/sandbox-protected"] == "true",
 	}

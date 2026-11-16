@@ -84,7 +84,7 @@ func (c *Client) resolveChat(ctx context.Context, agent *api.Agent, caller chata
 	}
 	target.Reason = "runtime_not_ready"
 	namespace, name := "cetirun-"+agent.Name, chataccess.ServiceName(agent.Name)
-	if agent.Status.Namespace != namespace || agent.Status.HelmReleaseName != "openclaw-"+agent.Name || agent.Status.ObservedOperatorHash == "" {
+	if agent.Status.Namespace != namespace || agent.Status.HelmReleaseName != "cetirun-"+agent.Name || agent.Status.ObservedOperatorHash == "" {
 		return target, nil
 	}
 	ns := &corev1.Namespace{}

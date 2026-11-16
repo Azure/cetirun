@@ -18,7 +18,7 @@ import (
 func ingressMTLSFixture(t *testing.T, harness string) CompileInput {
 	t.Helper()
 	input := rolloutIngressFixture(t)
-	input.ServiceName = "openclaw-example-cetirun"
+	input.ServiceName = "cetirun-example"
 	input.Resolution.Capabilities.MutualTLS = true
 	input.Resolution.AgentPolicy.Network.Ingress.RequireMTLS = true
 	port := int32(18789)

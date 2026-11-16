@@ -268,7 +268,7 @@ func TestSandboxBootstrapCorruptReceiptStillStopsWorkload(t *testing.T) {
 	}
 	workload := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "openclaw-example-cetirun", Namespace: f.fixture.Namespace.Name,
+			Name: "cetirun-example", Namespace: f.fixture.Namespace.Name,
 			OwnerReferences: []metav1.OwnerReference{sandboxworkload.AgentOwner(f.fixture.Agent.Name, f.fixture.Agent.UID)},
 		},
 		Spec: appsv1.StatefulSetSpec{Replicas: ptr.To(int32(1))},
@@ -402,7 +402,7 @@ func TestSandboxBootstrapHeldPreparationStillRequiresFence(t *testing.T) {
 	f := preparedBootstrapFixture(t, "hermes")
 	prerequisites := f.reconciler.SandboxPreparation.Prerequisites.(*controller.KubernetesSandboxPrerequisites)
 	workload := &appsv1.StatefulSet{}
-	if err := f.client.Get(ctx, client.ObjectKey{Namespace: f.fixture.Namespace.Name, Name: "openclaw-example-cetirun"}, workload); err != nil {
+	if err := f.client.Get(ctx, client.ObjectKey{Namespace: f.fixture.Namespace.Name, Name: "cetirun-example"}, workload); err != nil {
 		t.Fatal(err)
 	}
 	if ptr.Deref(workload.Spec.Replicas, -1) != 0 || f.current(t).Status.Sandbox != nil ||

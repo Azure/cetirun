@@ -31,7 +31,7 @@ func (h *CetiAdminHandler) cetiAdminPVCGrowth(ctx context.Context, request admis
 		return response
 	}
 	workload := &appsv1.StatefulSet{}
-	key := client.ObjectKey{Namespace: target.Namespace.Name, Name: "openclaw-" + agent.Name + "-cetirun"}
+	key := client.ObjectKey{Namespace: target.Namespace.Name, Name: "cetirun-" + agent.Name}
 	if h.reader.Get(ctx, key, workload) != nil || workload.UID == "" || workload.DeletionTimestamp != nil {
 		return admission.Denied("PVC expansion cannot confirm the current runtime workload")
 	}

@@ -317,7 +317,7 @@ func (h *preparationHarness) newCaseWithPrerequisites(t *testing.T, agentType st
 	}
 	fixture.Input.Namespace = w.ObjectIdentity{Name: fixture.Namespace.Name, UID: fixture.Namespace.UID}
 	fixture.Input.AgentName, fixture.Input.AgentGeneration = fixture.Agent.Name, fixture.Agent.Generation
-	fixture.Input.WorkloadName, fixture.Input.ReleaseName = f.workloadName(), "openclaw-"+fixture.Agent.Name
+	fixture.Input.WorkloadName, fixture.Input.ReleaseName = f.workloadName(), "cetirun-"+fixture.Agent.Name
 	fixture.ServiceAccount.ObjectMeta = metav1.ObjectMeta{Name: "default", Namespace: fixture.Namespace.Name}
 	if provision {
 		h.create(t, fixture.ServiceAccount)
@@ -546,7 +546,7 @@ func (f *preparationCase) restart() {
 }
 
 func (f *preparationCase) workloadName() string {
-	return "openclaw-" + f.fixture.Agent.Name + "-cetirun"
+	return "cetirun-" + f.fixture.Agent.Name
 }
 
 func (f *preparationCase) request() ctrl.Request {

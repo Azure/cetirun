@@ -47,7 +47,7 @@ def fixture(runtime="hermes"):
                          "finalizers": ["cetirun.microsoft.com/finalizer"]},
             "spec": {"agent": {"type": runtime}, "user": {"alias": "example-agent"},
                      "team": "example-team", "gatewayTokenSecretRef": "native-auth"},
-            "status": {"namespace": "cetirun-example-agent", "helmReleaseName": "openclaw-example-agent",
+            "status": {"namespace": "cetirun-example-agent", "helmReleaseName": "cetirun-example-agent",
                        "phase": "Ready", "observedGeneration": 1,
                        "conditions": [{"type": "Ready", "status": "True", "observedGeneration": 1}]},
         },

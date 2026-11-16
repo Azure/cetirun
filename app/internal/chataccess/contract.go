@@ -83,7 +83,7 @@ func StorageScope(realm, subject string) string {
 }
 
 func ServiceName(name string) string {
-	value := "openclaw-" + name + "-cetirun"
+	value := "cetirun-" + name
 	if len(value) > 63 {
 		value = value[:63]
 	}

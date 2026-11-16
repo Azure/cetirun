@@ -34,15 +34,10 @@ import (
 // lowercase letters, digits, and hyphens in between.
 var validInstanceNameSuffix = regexp.MustCompile(`^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$`)
 
-// maxInstanceNameLength is the longest instance name whose agent can start.
-// The operator names the agent StatefulSet "openclaw-<instance>-cetirun", 17
-// characters longer than the instance name, and Kubernetes labels each of its
-// pods with controller-revision-hash=<StatefulSet name>-<hash of up to 10
-// characters>. A label value holds at most 63 characters, so the StatefulSet
-// name has to fit in 52 and the instance name in 35. Longer names produce an
-// agent whose pod is never created, and from 45 characters Helm rejects the
-// release name. The limit also keeps the namespace "cetirun-<instance>" within
-// the 63 characters of a DNS label.
+// maxInstanceNameLength preserves the Portal's existing name limit. The
+// "cetirun-<instance>" StatefulSet name plus a controller-revision-hash suffix
+// (a dash and up to 10 characters) must fit in a 63-character label. This
+// limit leaves room for both that suffix and the platform's auxiliary names.
 const maxInstanceNameLength = 35
 
 // reservedInstanceNames are names that collide with one of the gateway-level

@@ -25,9 +25,9 @@ func TestAuthenticationDependencyFailures(t *testing.T) {
 	steps := []struct {
 		name, method, path, response string
 	}{
-		{"TokenReview", http.MethodPost, "/apis/authentication.k8s.io/v1/tokenreviews", `{"status":{"authenticated":true,"audiences":["cetirun-connections-mcp"],"user":{"username":"system:serviceaccount:cetirun-agent-a:openclaw-agent-a-cetirun","uid":"account-uid","extra":{"authentication.kubernetes.io/pod-name":["agent-pod"],"authentication.kubernetes.io/pod-uid":["pod-uid"]}}}}`},
-		{"Pod", http.MethodGet, "/api/v1/namespaces/cetirun-agent-a/pods/agent-pod", `{"metadata":{"uid":"pod-uid","namespace":"cetirun-agent-a"},"spec":{"serviceAccountName":"openclaw-agent-a-cetirun"}}`},
-		{"ServiceAccount", http.MethodGet, "/api/v1/namespaces/cetirun-agent-a/serviceaccounts/openclaw-agent-a-cetirun", `{"metadata":{"uid":"account-uid"}}`},
+		{"TokenReview", http.MethodPost, "/apis/authentication.k8s.io/v1/tokenreviews", `{"status":{"authenticated":true,"audiences":["cetirun-connections-mcp"],"user":{"username":"system:serviceaccount:cetirun-agent-a:cetirun-agent-a","uid":"account-uid","extra":{"authentication.kubernetes.io/pod-name":["agent-pod"],"authentication.kubernetes.io/pod-uid":["pod-uid"]}}}}`},
+		{"Pod", http.MethodGet, "/api/v1/namespaces/cetirun-agent-a/pods/agent-pod", `{"metadata":{"uid":"pod-uid","namespace":"cetirun-agent-a"},"spec":{"serviceAccountName":"cetirun-agent-a"}}`},
+		{"ServiceAccount", http.MethodGet, "/api/v1/namespaces/cetirun-agent-a/serviceaccounts/cetirun-agent-a", `{"metadata":{"uid":"account-uid"}}`},
 		{"Namespace", http.MethodGet, "/api/v1/namespaces/cetirun-agent-a", `{"metadata":{"name":"cetirun-agent-a","ownerReferences":[{"apiVersion":"cetirun.microsoft.com/v1alpha1","kind":"Agent","name":"agent-a","uid":"instance-uid"}]}}`},
 		{"Agent", http.MethodGet, "/apis/cetirun.microsoft.com/v1alpha1/agents/agent-a", `{"metadata":{"uid":"instance-uid","name":"agent-a"},"status":{"phase":"Ready","namespace":"cetirun-agent-a"}}`},
 	}

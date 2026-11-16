@@ -38,7 +38,7 @@ func TestCustomRetainedRestartChangesOnlyTheRequestedWorkload(t *testing.T) {
 	if before.WorkloadHash == after.WorkloadHash || after.WorkloadHash != retry.WorkloadHash || after.PlanHash != retry.PlanHash {
 		t.Fatal("restart did not produce a new, deterministic workload")
 	}
-	if err := after.ValidateCustom(bindings.Namespace.Name, "openclaw-example"); err != nil {
+	if err := after.ValidateCustom(bindings.Namespace.Name, "cetirun-example"); err != nil {
 		t.Fatal(err)
 	}
 	bindings.RestartRequestID = ""

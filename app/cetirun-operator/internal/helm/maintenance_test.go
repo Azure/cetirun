@@ -31,7 +31,7 @@ import (
 )
 
 const maintenanceNamespace = "cetirun-example"
-const maintenanceReleaseName = "openclaw-example"
+const maintenanceReleaseName = "cetirun-example"
 
 const maintenanceTemplate = `apiVersion: apps/v1
 kind: StatefulSet

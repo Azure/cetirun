@@ -22,7 +22,7 @@ func terminalExecBound(ctx context.Context, c client.Client, agent *api.Agent) b
 		return false
 	}
 	namespace := "cetirun-" + agent.Name
-	workload := "openclaw-" + agent.Name + "-cetirun"
+	workload := "cetirun-" + agent.Name
 	name := terminalpolicy.WorkloadName(workload)
 	owned := func(obj client.Object) bool {
 		owners := obj.GetOwnerReferences()

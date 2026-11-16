@@ -264,7 +264,7 @@ class CetiAdminOperatorChartTests(unittest.TestCase):
         config = json.loads(self.env(objects, ADMISSION)["CETIRUN_SANDBOX_ADMISSION"])
         self.assertEqual(config["cetiadmin"], {
             "namespace": NAMESPACE, "configMapName": SOURCE,
-            "runtimeUsername": "system:serviceaccount:cetirun-cetiadmin:openclaw-cetiadmin-cetirun",
+            "runtimeUsername": "system:serviceaccount:cetirun-cetiadmin:cetirun-cetiadmin",
             "stopUsername": f"system:serviceaccount:{NAMESPACE}:cetirun-cetiadmin-stop",
             "adminUsers": ["admin@example.com"], "adminGroups": ["platform-admins"],
         })
@@ -317,13 +317,13 @@ class CetiAdminOperatorChartTests(unittest.TestCase):
             self.assertEqual(hook["name"], "cetiadmin-agent.cetirun.microsoft.com")
             self.assertEqual(hook["matchConditions"], [{
                 "name": "cetiadmin-caller",
-                "expression": 'request.userInfo.username == "system:serviceaccount:cetirun-cetiadmin:openclaw-cetiadmin-cetirun"',
+                "expression": 'request.userInfo.username == "system:serviceaccount:cetirun-cetiadmin:cetirun-cetiadmin"',
             }])
             if enforce:
                 global_hook = objects[("MutatingWebhookConfiguration", ADMISSION)]["webhooks"][0]
                 self.assertEqual(global_hook["matchConditions"][-1], {
                     "name": "exclude-cetiadmin-caller",
-                    "expression": 'request.userInfo.username != "system:serviceaccount:cetirun-cetiadmin:openclaw-cetiadmin-cetirun"',
+                    "expression": 'request.userInfo.username != "system:serviceaccount:cetirun-cetiadmin:cetirun-cetiadmin"',
                 })
                 self.assertEqual(global_hook["matchConditions"][0]["name"], "controller-cleanup-only")
                 without = copy.deepcopy(inputs)
@@ -348,7 +348,7 @@ class CetiAdminOperatorChartTests(unittest.TestCase):
 
     def test_machine_and_stop_hook_cannot_be_promoted_to_administrators(self):
         for username in (
-            "system:serviceaccount:cetirun-cetiadmin:openclaw-cetiadmin-cetirun",
+            "system:serviceaccount:cetirun-cetiadmin:cetirun-cetiadmin",
             f"system:serviceaccount:{NAMESPACE}:cetirun-cetiadmin-stop",
         ):
             inputs = self.values()
@@ -362,7 +362,7 @@ class CetiAdminOperatorChartTests(unittest.TestCase):
         name = "a" * 39 + "----z"
         inputs["cetiadmin"]["instanceName"] = name
         objects = self.render(inputs)
-        account = ("openclaw-" + name + "-cetirun")[:63].rstrip("-")
+        account = ("cetirun-" + name)[:63].rstrip("-")
         caller = f"system:serviceaccount:cetirun-{name}:{account}"
         condition = objects[("MutatingWebhookConfiguration", WEBHOOK)]["webhooks"][0]["matchConditions"][0]
         self.assertEqual(condition["expression"], "request.userInfo.username == " + json.dumps(caller))

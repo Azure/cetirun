@@ -185,7 +185,7 @@ func hookTestFixture(t *testing.T, enabled bool) (*hookTestClient, HookOptions, 
 		Source: ObjectIdentity{Name: source.Name, Namespace: source.Namespace, UID: source.UID}, ConfigHash: hash,
 		Agent: ObjectIdentity{Name: config.InstanceName, UID: "agent-uid"}, Team: ObjectIdentity{Name: config.InstanceName, UID: "team-uid"},
 		Namespace:      ObjectIdentity{Name: "cetirun-cetiadmin", UID: "namespace-uid"},
-		ServiceAccount: ObjectIdentity{Name: "openclaw-cetiadmin-cetirun", Namespace: "cetirun-cetiadmin", UID: "sa-uid"}},
+		ServiceAccount: ObjectIdentity{Name: "cetirun-cetiadmin", Namespace: "cetirun-cetiadmin", UID: "sa-uid"}},
 		Configuration: config, Phase: PhaseReady, Bootstrapped: true, OperatorImage: hookTestImage, RuntimeVersion: "1.2.3"}
 	agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: state.Agent.Name, UID: state.Agent.UID, Generation: 4,
 		Annotations: map[string]string{AnnotationSourceUID: string(source.UID), api.AnnotationOwnerTenantID: config.Owner.TenantID, api.AnnotationOwnerObjectID: config.Owner.ObjectID}},
@@ -232,7 +232,7 @@ func hookTestFixture(t *testing.T, enabled bool) (*hookTestClient, HookOptions, 
 			Name: "cetiadmin-agent.cetirun.microsoft.com", FailurePolicy: ptr.To(admissionv1.Fail),
 			ClientConfig: admissionv1.WebhookClientConfig{CABundle: webhooks.Webhooks[0].ClientConfig.CABundle, Service: &admissionv1.ServiceReference{
 				Namespace: hookTestNamespace, Name: "cetirun-sandbox-admission", Path: ptr.To("/mutate-sandbox-agent"), Port: ptr.To(int32(443))}},
-			MatchConditions: []admissionv1.MatchCondition{{Name: "cetiadmin-caller", Expression: `request.userInfo.username == "system:serviceaccount:cetirun-cetiadmin:openclaw-cetiadmin-cetirun"`}},
+			MatchConditions: []admissionv1.MatchCondition{{Name: "cetiadmin-caller", Expression: `request.userInfo.username == "system:serviceaccount:cetirun-cetiadmin:cetirun-cetiadmin"`}},
 		}},
 	}, hookTestStateObject(t, state))
 	scheme := runtime.NewScheme()

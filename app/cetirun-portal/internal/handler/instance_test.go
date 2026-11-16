@@ -1543,7 +1543,7 @@ func TestGetInstanceStatus_Success(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "cetirun-alice",
-			Name:      "openclaw-alice-0",
+			Name:      "cetirun-alice-0",
 		},
 		Status: corev1.PodStatus{
 			Phase: corev1.PodRunning,
@@ -1596,8 +1596,8 @@ func TestGetInstanceStatus_Success(t *testing.T) {
 	if len(resp.Pods) != 1 {
 		t.Fatalf("Pods length = %d, want 1", len(resp.Pods))
 	}
-	if resp.Pods[0].Name != "openclaw-alice-0" {
-		t.Errorf("Pods[0].Name = %q, want %q", resp.Pods[0].Name, "openclaw-alice-0")
+	if resp.Pods[0].Name != "cetirun-alice-0" {
+		t.Errorf("Pods[0].Name = %q, want %q", resp.Pods[0].Name, "cetirun-alice-0")
 	}
 	if resp.Pods[0].Phase != "Running" {
 		t.Errorf("Pods[0].Phase = %q, want %q", resp.Pods[0].Phase, "Running")

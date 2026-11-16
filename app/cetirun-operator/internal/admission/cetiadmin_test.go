@@ -90,7 +90,7 @@ func newCetiAdminFixture(t *testing.T) cetiAdminFixture {
 	owner := metav1.OwnerReference{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: admin.Name, UID: admin.UID, Controller: ptr.To(true)}
 	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "cetiadmin", UID: "admin-team-uid", Annotations: mark}}
 	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-cetiadmin", UID: "admin-ns-uid", OwnerReferences: []metav1.OwnerReference{owner}}}
-	account := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "openclaw-cetiadmin-cetirun", Namespace: namespace.Name, UID: "admin-sa-uid", OwnerReferences: []metav1.OwnerReference{owner}, Annotations: mark}, AutomountServiceAccountToken: ptr.To(false)}
+	account := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-cetiadmin", Namespace: namespace.Name, UID: "admin-sa-uid", OwnerReferences: []metav1.OwnerReference{owner}, Annotations: mark}, AutomountServiceAccountToken: ptr.To(false)}
 	identity := func(object metav1.Object) cetiadmin.ObjectIdentity {
 		return cetiadmin.ObjectIdentity{Name: object.GetName(), Namespace: object.GetNamespace(), UID: object.GetUID()}
 	}
@@ -100,7 +100,7 @@ func newCetiAdminFixture(t *testing.T) cetiAdminFixture {
 		Configuration: config, Phase: cetiadmin.PhaseReady, RecordUID: "binding-uid", Bootstrapped: true}
 	target := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "example", UID: "target-uid", ResourceVersion: "1", Generation: 4},
 		Spec:   api.AgentSpec{Agent: api.HarnessSpec{Type: api.AgentTypeHermes, Image: ptr.To("registry.example.com/hermes:old"), Username: ptr.To("vibe")}, User: api.UserSpec{Alias: "owner", Email: "owner@example.com"}, Team: "engineering", GatewayTokenSecretRef: "native-auth"},
-		Status: api.AgentStatus{Namespace: "cetirun-example", HelmReleaseName: "openclaw-example", Phase: api.PhaseReady, ObservedGeneration: 4}}
+		Status: api.AgentStatus{Namespace: "cetirun-example", HelmReleaseName: "cetirun-example", Phase: api.PhaseReady, ObservedGeneration: 4}}
 	targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: target.Status.Namespace, UID: "target-ns-uid", OwnerReferences: []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: target.Name, UID: target.UID}}}}
 	targetIdentity := cetiadmin.TargetIdentity{Agent: identity(target), Namespace: identity(targetNS), Runtime: "hermes", Release: target.Status.HelmReleaseName, Team: "engineering", AuthSecret: target.Spec.GatewayTokenSecretRef}
 	checkpoint := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: cetiadmin.InstallationName(source.Namespace, source.Name), Namespace: source.Namespace, UID: state.RecordUID, Annotations: mark}, Data: map[string]string{cetiadmin.BindingKey: string(adminJSON(t, state))}}
@@ -192,7 +192,7 @@ func TestCetiAdminRollbackRestoresIntentWithoutStartingPods(t *testing.T) {
 		a.Spec.Helm.Maintenance = &api.HelmMaintenanceRequest{RequestID: "maintenance-123456", ExpectedRevision: 10}
 		a.Status.HelmMaintenance = &api.HelmMaintenanceStatus{RequestID: "maintenance-123456", Revision: 10, ObservedGeneration: a.Generation, Phase: api.HelmMaintenancePhaseHeld}
 	})
-	old := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "openclaw-example-cetirun", Namespace: f.target.Status.Namespace, UID: "workload-uid",
+	old := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-example", Namespace: f.target.Status.Namespace, UID: "workload-uid",
 		Annotations: map[string]string{"meta.helm.sh/release-name": f.target.Status.HelmReleaseName, "meta.helm.sh/release-namespace": f.target.Status.Namespace}},
 		Spec: appsv1.StatefulSetSpec{Replicas: ptr.To(int32(0)), Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{ServiceAccountName: "runtime-sa", Containers: []corev1.Container{{Name: "cetirun", Image: "registry.example.com/hermes:new"}}}}}}
 	if err := f.kube.Create(context.Background(), old); err != nil {
@@ -258,7 +258,7 @@ func (f cetiAdminFixture) heldMaintenance(t *testing.T, resources []cetiadmin.Ma
 
 func (f cetiAdminFixture) runtimePod(t *testing.T) *corev1.Pod {
 	t.Helper()
-	workload := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "openclaw-" + f.target.Name + "-cetirun", Namespace: f.target.Status.Namespace, UID: "runtime-workload-uid",
+	workload := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-" + f.target.Name, Namespace: f.target.Status.Namespace, UID: "runtime-workload-uid",
 		Labels:      map[string]string{"app.kubernetes.io/managed-by": "Helm"},
 		Annotations: map[string]string{"meta.helm.sh/release-name": f.target.Status.HelmReleaseName, "meta.helm.sh/release-namespace": f.target.Status.Namespace}}}
 	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "runtime-node", UID: "runtime-node-uid"}, Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}}}

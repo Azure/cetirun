@@ -15,7 +15,7 @@ import yaml
 
 CHART = Path(__file__).resolve().parents[1]
 HELM = os.environ.get("HELM_BINARY", "helm")
-RELEASE = "openclaw-cetiadmin"
+RELEASE = "cetirun-cetiadmin"
 NAMESPACE = "cetirun-cetiadmin"
 ASSETS = "/opt/cetirun/cetiadmin"
 API_MOUNT = "/var/run/cetirun/kubernetes"

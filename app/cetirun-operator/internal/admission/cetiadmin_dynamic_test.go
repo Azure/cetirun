@@ -42,7 +42,7 @@ func TestCetiAdminDynamicAgentManagement(t *testing.T) {
 				agent.Spec.Agent.Type = runtimeType
 				agent.Status = api.AgentStatus{}
 				if withNamespace {
-					agent.Status.Namespace, agent.Status.HelmReleaseName = "cetirun-new-runtime", "openclaw-new-runtime"
+					agent.Status.Namespace, agent.Status.HelmReleaseName = "cetirun-new-runtime", "cetirun-new-runtime"
 					namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: agent.Status.Namespace, UID: "new-namespace-uid",
 						OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(agent, api.GroupVersion.WithKind("Agent"))}}}
 					if err := f.kube.Create(ctx, namespace); err != nil {

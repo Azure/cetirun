@@ -89,7 +89,7 @@ func newConnectionFixture(t *testing.T) *connectionFixture {
 			}
 			return securityJSONResponse(t, http.StatusOK, map[string]any{"status": map[string]any{
 				"authenticated": true, "audiences": []string{"cetirun-connections-mcp"},
-				"user": map[string]any{"username": "system:serviceaccount:agents:openclaw-agent-cetirun", "uid": "service-account-uid", "extra": map[string][]string{
+				"user": map[string]any{"username": "system:serviceaccount:agents:cetirun-agent", "uid": "service-account-uid", "extra": map[string][]string{
 					"authentication.kubernetes.io/pod-name": {"agent-pod"}, "authentication.kubernetes.io/pod-uid": {"pod-uid"},
 				}},
 			}}), nil
@@ -97,10 +97,10 @@ func newConnectionFixture(t *testing.T) *connectionFixture {
 		switch path {
 		case "/api/v1/namespaces/agents":
 			return securityJSONResponse(t, http.StatusOK, map[string]any{"metadata": secretMetadata{Name: "agents", OwnerReferences: []ownerReference{{APIVersion: "cetirun.microsoft.com/v1alpha1", Kind: "Agent", Name: "agent", UID: "11111111-1111-1111-1111-111111111111"}}}}), nil
-		case "/api/v1/namespaces/agents/serviceaccounts/openclaw-agent-cetirun":
+		case "/api/v1/namespaces/agents/serviceaccounts/cetirun-agent":
 			return securityJSONResponse(t, http.StatusOK, map[string]any{"metadata": map[string]string{"uid": "service-account-uid"}}), nil
 		case "/api/v1/namespaces/agents/pods/agent-pod":
-			return securityJSONResponse(t, http.StatusOK, map[string]any{"metadata": map[string]string{"uid": "pod-uid"}, "spec": map[string]string{"serviceAccountName": "openclaw-agent-cetirun"}}), nil
+			return securityJSONResponse(t, http.StatusOK, map[string]any{"metadata": map[string]string{"uid": "pod-uid"}, "spec": map[string]string{"serviceAccountName": "cetirun-agent"}}), nil
 		case "/apis/cetirun.microsoft.com/v1alpha1/agents":
 			return securityJSONResponse(t, http.StatusOK, agentList{Items: []agentDocument{fixture.agent}}), nil
 		case "/apis/cetirun.microsoft.com/v1alpha1/agents/agent":
@@ -226,7 +226,7 @@ func TestAzureWorkloadProofRejectsTerminatingBindings(t *testing.T) {
 				if resource == "pod" && strings.Contains(request.URL.Path, "/pods/") {
 					return securityJSONResponse(t, http.StatusOK, map[string]any{
 						"metadata": map[string]any{"uid": "pod-uid", "deletionTimestamp": time.Now().UTC()},
-						"spec":     map[string]string{"serviceAccountName": "openclaw-agent-cetirun"},
+						"spec":     map[string]string{"serviceAccountName": "cetirun-agent"},
 					}), nil
 				}
 				return transport.RoundTrip(request)
@@ -501,7 +501,7 @@ func TestServiceProofRequiresCurrentAudiencePodAndServiceAccount(t *testing.T) {
 					}
 					return securityJSONResponse(t, 200, map[string]any{"status": map[string]any{"authenticated": true, "audiences": audience}}), nil
 				case test == "old pod" && strings.Contains(r.URL.Path, "/pods/"):
-					return securityJSONResponse(t, 200, map[string]any{"metadata": map[string]string{"uid": "replacement-pod"}, "spec": map[string]string{"serviceAccountName": "openclaw-agent-cetirun"}}), nil
+					return securityJSONResponse(t, 200, map[string]any{"metadata": map[string]string{"uid": "replacement-pod"}, "spec": map[string]string{"serviceAccountName": "cetirun-agent"}}), nil
 				case test == "old service account" && strings.Contains(r.URL.Path, "/serviceaccounts/"):
 					return securityJSONResponse(t, 200, map[string]any{"metadata": map[string]string{"uid": "replacement-sa"}}), nil
 				case test == "dependency failure" && strings.HasSuffix(r.URL.Path, "/tokenreviews"):
@@ -563,7 +563,7 @@ func TestConnectionManagementRejectsForeignCaller(t *testing.T) {
 		request.Header.Set("X-CetiRun-Instance-UID", f.agent.Metadata.UID)
 		switch changed {
 		case "principal":
-			request.Header.Set("X-Forwarded-Client-Cert", "URI=spiffe://cluster.local/ns/agents/sa/openclaw-agent-cetirun")
+			request.Header.Set("X-Forwarded-Client-Cert", "URI=spiffe://cluster.local/ns/agents/sa/cetirun-agent")
 		case "owner":
 			request.Header.Set("X-CetiRun-Owner-Object-ID", testSecondAgentID)
 		case "agent UID":

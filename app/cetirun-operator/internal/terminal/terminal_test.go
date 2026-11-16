@@ -26,7 +26,7 @@ import (
 
 func testConfig() Config {
 	return Config{AgentName: "example", AgentUID: "example-uid", Namespace: "cetirun-example",
-		StatefulSet: "openclaw-example-cetirun", Container: "cetirun", Port: 7681, SessionTTL: time.Minute}
+		StatefulSet: "cetirun-example", Container: "cetirun", Port: 7681, SessionTTL: time.Minute}
 }
 
 func testAgent() *api.Agent {

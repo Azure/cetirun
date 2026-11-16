@@ -1,4 +1,9 @@
-# Pre-proxy native upgrade fixture
+# Archived pre-proxy native upgrade fixture
+
+This snapshot retains the former `openclaw-` resource names. It is an archive,
+not an input to current lifecycle tests: those construct `cetirun-` resources
+with the pinned pre-proxy chart contract. There is no automatic migration from
+the archived resource names.
 
 The controller and runtime renderer at commit
 `6414494154151b2daf74d39d1e989ebeb7ea5020` produced
@@ -21,9 +26,8 @@ run.
 
 Random bytes are fixed to `0x42`. In the file, named markers replace only the
 dummy Secret data that results and the checksum of an empty template render.
-The test reconstructs those values. Then it verifies the original object-set
-SHA-256 before it loads the object set. No live credentials or deployment data
-are used.
+The recorded object-set SHA-256 covers those reconstructed values, not the
+placeholder text. No live credentials or deployment data are used.
 
 ## Regeneration
 

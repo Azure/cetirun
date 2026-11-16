@@ -180,7 +180,7 @@ func TestRegistryBuiltinBindingsAndRolloutClassification(t *testing.T) {
 
 func registryRenderedTemplate(t *testing.T, prepared *PreparedRelease) corev1.PodTemplateSpec {
 	t.Helper()
-	values, err := chartutil.ToRenderValues(prepared.chart, prepared.Values, chartutil.ReleaseOptions{Name: "openclaw-example", Namespace: "cetirun-example", IsUpgrade: true}, chartutil.DefaultCapabilities)
+	values, err := chartutil.ToRenderValues(prepared.chart, prepared.Values, chartutil.ReleaseOptions{Name: "cetirun-example", Namespace: "cetirun-example", IsUpgrade: true}, chartutil.DefaultCapabilities)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestRegistryCustomBindingChangesPlanNotWriter(t *testing.T) {
 	if first.WorkloadHash != second.WorkloadHash || first.PlanHash == second.PlanHash {
 		t.Fatal("Custom registry reference did not stay out of the writer hash")
 	}
-	if err := second.ValidateCustom("cetirun-example", "openclaw-example"); err != nil {
+	if err := second.ValidateCustom("cetirun-example", "cetirun-example"); err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(second.Values)

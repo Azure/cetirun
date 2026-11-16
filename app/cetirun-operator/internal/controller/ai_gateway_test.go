@@ -1084,7 +1084,7 @@ func (d declaredValues) SupportsValuePath(path ...string) bool {
 
 func readyProxy(ready int32) *appsv1.Deployment {
 	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "openclaw-alice-copilot-proxy", Namespace: instanceNamespace("alice")},
+		ObjectMeta: metav1.ObjectMeta{Name: "cetirun-alice-copilot-proxy", Namespace: instanceNamespace("alice")},
 		Status:     appsv1.DeploymentStatus{ReadyReplicas: ready},
 	}
 }
@@ -1160,7 +1160,7 @@ func TestReconcileAIGatewayCopilotSignInRegistersPricedModels(t *testing.T) {
 	}
 	for id, model := range gateway.models {
 		if !strings.HasPrefix(id, copilotGroup()+"-") || !slices.Equal(model.AccessGroups, []string{copilotGroup()}) ||
-			model.APIBase != "http://openclaw-alice-copilot-proxy.cetirun-alice.svc.cluster.local:4000" || model.APIKey != proxyKey ||
+			model.APIBase != "http://cetirun-alice-copilot-proxy.cetirun-alice.svc.cluster.local:4000" || model.APIKey != proxyKey ||
 			model.Model != "litellm_proxy/"+strings.TrimPrefix(model.ModelName, "copilot/") {
 			t.Fatalf("unexpected route %s: %+v", id, model)
 		}

@@ -49,7 +49,7 @@ func (h *CetiAdminHandler) readCetiAdminMaintenance(ctx context.Context, agent *
 		len(checkpoint.Data) != 1 || len(checkpoint.BinaryData) != 0 || len(checkpoint.Data["maintenance.json"]) > 2<<20 ||
 		decodeJSON([]byte(checkpoint.Data["maintenance.json"]), &record, false) != nil || record.Version != 1 ||
 		record.Target.Agent != (cetiadmin.ObjectIdentity{Name: agent.Name, UID: agent.UID}) || record.Target.Namespace.UID == "" ||
-		record.Target.Release != "openclaw-"+agent.Name || record.Request.RequestID == "" || record.Request.ExpectedRevision < 1 ||
+		record.Target.Release != "cetirun-"+agent.Name || record.Request.RequestID == "" || record.Request.ExpectedRevision < 1 ||
 		record.RequestGeneration < 1 || record.IntentHash == "" {
 		return record, fmt.Errorf("Helm maintenance checkpoint is unbound or invalid")
 	}

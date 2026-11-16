@@ -34,7 +34,7 @@ func enableTerminal(t *testing.T, s *completionScenario, desktop bool) {
 		t.Fatal(err)
 	}
 	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
-		Name: terminalpolicy.WorkloadName("openclaw-" + s.agent.Name + "-cetirun"), Namespace: "cetirun-" + s.agent.Name,
+		Name: terminalpolicy.WorkloadName("cetirun-" + s.agent.Name), Namespace: "cetirun-" + s.agent.Name,
 		Generation:      1,
 		Annotations:     map[string]string{"cetirun.microsoft.com/agent-uid": string(s.agent.UID)},
 		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(s.agent, api.GroupVersion.WithKind("Agent"))},
@@ -71,7 +71,7 @@ func TestCustomTerminalUsesSeparateServiceAndStopsOnSuspension(t *testing.T) {
 					switch destination.Destination.Port.Number {
 					case 7681:
 						foundTerminal = true
-						want := terminalpolicy.WorkloadName("openclaw-completion-cetirun") + ".cetirun-completion.svc.cluster.local"
+						want := terminalpolicy.WorkloadName("cetirun-completion") + ".cetirun-completion.svc.cluster.local"
 						if destination.Destination.Host != want || rule.Match[0].Uri.GetPrefix() != "/completion/term/" || rule.Retries != nil {
 							t.Fatal("terminal route target, prefix or retry policy changed")
 						}
@@ -86,7 +86,7 @@ func TestCustomTerminalUsesSeparateServiceAndStopsOnSuspension(t *testing.T) {
 				t.Fatal("routes do not match platform services")
 			}
 			deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
-				Name: terminalpolicy.WorkloadName("openclaw-completion-cetirun"), Namespace: key.Namespace,
+				Name: terminalpolicy.WorkloadName("cetirun-completion"), Namespace: key.Namespace,
 				Annotations:     map[string]string{"cetirun.microsoft.com/agent-uid": string(s.agent.UID)},
 				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(s.agent, api.GroupVersion.WithKind("Agent"))},
 			}, Spec: appsv1.DeploymentSpec{Replicas: ptr.To[int32](1)}}
@@ -154,7 +154,7 @@ func TestCustomTerminalStopsOnSandboxHold(t *testing.T) {
 			if err := s.step(); err != nil {
 				t.Fatal(err)
 			}
-			key := types.NamespacedName{Namespace: "cetirun-completion", Name: terminalpolicy.WorkloadName("openclaw-completion-cetirun")}
+			key := types.NamespacedName{Namespace: "cetirun-completion", Name: terminalpolicy.WorkloadName("cetirun-completion")}
 			deployment := &appsv1.Deployment{}
 			if err := s.client.Get(context.Background(), key, deployment); err != nil {
 				t.Fatal(err)
