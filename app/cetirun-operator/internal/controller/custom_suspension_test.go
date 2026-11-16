@@ -11,17 +11,70 @@ import (
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/internal/chataccess"
 	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
+
+func TestOrdinaryCustomSuspensionRetainsPrivateChatRoute(t *testing.T) {
+	requireLegacyCustomRuntime(t)
+	ctx := context.Background()
+	s := newCompletionScenario(t)
+	agent := s.current()
+	agent.Spec.Agent.Port = ptr.To[int32](8080)
+	if err := s.client.Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.step(); err != nil {
+		t.Fatal(err)
+	}
+	s.observeApplied()
+	s.reconciler.ChatAccess = chataccess.Config{Enabled: true,
+		Callers: []chataccess.Caller{{Namespace: "portal", PodLabels: map[string]string{"app": "portal"}}}}
+	if err := s.step(); err != nil {
+		t.Fatal(err)
+	}
+	agent = s.current()
+	route := &unstructured.Unstructured{}
+	route.SetGroupVersionKind(chataccess.RouteGVK)
+	if err := s.client.Get(ctx, client.ObjectKey{Namespace: agent.Status.Namespace, Name: chataccess.RouteName(agent.Name)}, route); err != nil {
+		t.Fatal(err)
+	}
+	agent.Spec.Suspended = true
+	agent.Generation++
+	if err := s.client.Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.step(); err != nil {
+		t.Fatal(err)
+	}
+	workload := s.workload()
+	workload.Status = appsv1.StatefulSetStatus{ObservedGeneration: workload.Generation}
+	if err := s.client.Status().Update(ctx, workload); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.step(); err != nil {
+		t.Fatal(err)
+	}
+	if s.current().Status.Phase != api.PhaseSuspended {
+		t.Fatal("ordinary Custom shutdown was not confirmed")
+	}
+	retained := &unstructured.Unstructured{}
+	retained.SetGroupVersionKind(chataccess.RouteGVK)
+	if err := s.client.Get(ctx, client.ObjectKeyFromObject(route), retained); err != nil ||
+		retained.GetUID() != route.GetUID() || !reflect.DeepEqual(retained.Object["spec"], route.Object["spec"]) {
+		t.Fatal("ordinary suspension changed the private Chat route:", err)
+	}
+}
 
 func TestCustomSuspensionAcknowledgesStoppedGeneration(t *testing.T) {
 	requireLegacyCustomRuntime(t)

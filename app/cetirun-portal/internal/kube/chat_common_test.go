@@ -161,6 +161,51 @@ func TestCommonChatRequiresCurrentOwnedExecution(t *testing.T) {
 	}
 }
 
+func TestRetainedPrivateRouteDoesNotAuthorizeSuspendedChat(t *testing.T) {
+	for _, mode := range []string{"ordinary", "common", "common-mtls"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			agent, objects := chattest.Objects()
+			switch mode {
+			case "common":
+				agent, objects, _, _ = commonChatObjects(t)
+			case "common-mtls":
+				agent, objects = chattest.MTLSObjects(t)
+			}
+			kube := newFakeClient(objects...)
+			c := NewClient(kube)
+			initial, err := c.ResolveChat(ctx, agent, chattest.Caller)
+			if err != nil || !initial.Available {
+				t.Fatalf("active Chat control failed: %+v %v", initial, err)
+			}
+			route := &unstructured.Unstructured{}
+			route.SetGroupVersionKind(chataccess.RouteGVK)
+			key := client.ObjectKey{Namespace: agent.Status.Namespace, Name: chataccess.RouteName(agent.Name)}
+			if err := kube.Get(ctx, key, route); err != nil {
+				t.Fatal(err)
+			}
+			agent.Spec.Suspended = true
+			agent.Generation++
+			if err := kube.Update(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			for _, resolve := range []func(context.Context, *api.Agent, chataccess.Caller) (chatproxy.Target, error){
+				c.ResolveChat, c.ObserveChat,
+			} {
+				target, err := resolve(ctx, agent, chattest.Caller)
+				if err != nil || target.Available || target.BaseURL != "" || target.Reason != "suspended" {
+					t.Fatalf("retained route or stale Ready status authorized suspended Chat: %+v %v", target, err)
+				}
+			}
+			retained := route.DeepCopy()
+			if err := kube.Get(ctx, key, retained); err != nil ||
+				retained.GetUID() != route.GetUID() || !chataccess.RouteSpecsEqual(retained.Object["spec"], route.Object["spec"]) {
+				t.Fatal("suspension validation modified the private route:", err)
+			}
+		})
+	}
+}
+
 func commonChatTLSObjects(t *testing.T) (*api.Agent, []client.Object, *corev1.ConfigMap, commonChatExpectation) {
 	t.Helper()
 	agent, objects, state, expected := commonChatObjects(t)
