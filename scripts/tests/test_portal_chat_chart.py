@@ -18,14 +18,14 @@ OFFLINE = {**os.environ, "KUBECONFIG": os.devnull, "HELM_REGISTRY_CONFIG": os.de
 
 @unittest.skipUnless(shutil.which("helm"), "requires Helm")
 class PortalChatChartTests(unittest.TestCase):
-    def render(self, chart, values, *, success=True):
+    def render(self, chart, values, *, success=True, namespace="test-platform", release="chat-test"):
         portal = values if chart.name == "chart" else values.setdefault("cetirun-portal", {})
         portal.setdefault("agentIdentity", {
             "tenantId": "11111111-1111-1111-1111-111111111111",
             "portalClientId": "22222222-2222-2222-2222-222222222222",
         })
         result = subprocess.run(
-            ["helm", "template", "chat-test", str(chart), "--namespace", "test-platform", "--kube-version", "1.37.0", "--values", "-"],
+            ["helm", "template", release, str(chart), "--namespace", namespace, "--kube-version", "1.37.0", "--values", "-"],
             input=json.dumps(values), text=True, capture_output=True, env=OFFLINE, timeout=30, check=False,
         )
         if not success:
@@ -112,6 +112,33 @@ class PortalChatChartTests(unittest.TestCase):
     def test_enabled_portal_requires_identity_realm(self):
         error = self.render(ROOT / "app/cetirun-portal/chart", {"istio": {"host": "portal.example.com"}, "chat": {"enabled": True}}, success=False)
         self.assertIn("identityRealm", error)
+
+    def test_isolated_sds_profile_matches_the_standalone_portal(self):
+        directory = ROOT / "examples/native-sandbox"
+        values = yaml.safe_load((directory / "portal-chat-values.yaml").read_text())
+        profile = list(yaml.safe_load_all((directory / "portal-chat-sds.yaml").read_text()))
+        namespace = next(value["metadata"]["name"] for value in profile if value["kind"] == "Namespace")
+        objects = self.render(ROOT / "app/cetirun-portal/chart", values, namespace=namespace, release="cetirun-portal")
+        deployment = next(value for value in objects if value["kind"] == "Deployment")
+        env = self.deployment_env(objects, deployment["metadata"]["name"])
+        self.assertEqual(env["FEATURE_CUSTOM_CHAT_ENABLED"], "true")
+        self.assertNotEqual(namespace, env["SANDBOX_STATE_NAMESPACE"])
+        role = next(value for value in profile if value["kind"] == "Role")
+        binding = next(value for value in profile if value["kind"] == "RoleBinding")
+        self.assertEqual(role["metadata"]["namespace"], namespace)
+        self.assertEqual(role["rules"], [{"apiGroups": [""], "resources": ["secrets"], "verbs": ["list"]}])
+        self.assertEqual(binding["metadata"]["namespace"], namespace)
+        self.assertEqual(binding["roleRef"], {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": role["metadata"]["name"]})
+        self.assertEqual(binding["subjects"], [{"kind": "ServiceAccount", "namespace": namespace,
+                                               "name": deployment["spec"]["template"]["spec"]["serviceAccountName"]}])
+        for value in objects + profile:
+            if value["kind"] == "ClusterRole":
+                self.assertFalse(any(
+                    {"secrets", "*"}.intersection(rule["resources"]) and {"list", "*"}.intersection(rule["verbs"])
+                    for rule in value["rules"]))
+        tls_role = next(value for value in objects if value["kind"] == "Role" and value["metadata"]["name"].endswith("-chat-mtls"))
+        self.assertEqual(tls_role["metadata"]["namespace"], namespace)
+        self.assertEqual(json.loads(env["CHAT_CALLER_LABELS"]), deployment["spec"]["template"]["metadata"]["labels"])
 
     def test_umbrella_generates_the_same_caller_as_the_portal(self):
         with tempfile.TemporaryDirectory(prefix="cetirun-chat-charts-") as scratch:
