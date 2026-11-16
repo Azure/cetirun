@@ -5,6 +5,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -38,6 +39,14 @@ class PortalChatChartTests(unittest.TestCase):
     def deployment_env(objects, name):
         deployment = next(value for value in objects if value["kind"] == "Deployment" and value["metadata"]["name"] == name)
         return {item["name"]: item.get("value", item.get("valueFrom")) for item in deployment["spec"]["template"]["spec"]["containers"][0]["env"]}
+
+    def render_platform(self, values):
+        with tempfile.TemporaryDirectory(prefix="cetirun-chat-charts-") as scratch:
+            base = Path(scratch)
+            for relative in ("cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart", "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart", "cetirun-agent-broker/chart", "cetirun-observability/chart"):
+                shutil.copytree(ROOT / "app" / relative, base / relative, ignore=shutil.ignore_patterns("charts", ".bin", "node_modules"))
+            subprocess.run(["helm", "dependency", "build", str(base / "cetirun-platform"), "--skip-refresh"], env=OFFLINE, capture_output=True, text=True, check=True, timeout=30)
+            return self.render(base / "cetirun-platform", values)
 
     def test_portal_defaults_do_not_enable_chat_or_add_storage(self):
         objects = self.render(ROOT / "app/cetirun-portal/chart", {"istio": {"host": "portal.example.com"}})
@@ -140,24 +149,47 @@ class PortalChatChartTests(unittest.TestCase):
         self.assertEqual(tls_role["metadata"]["namespace"], namespace)
         self.assertEqual(json.loads(env["CHAT_CALLER_LABELS"]), deployment["spec"]["template"]["metadata"]["labels"])
 
+    def test_documented_isolated_sds_operator_targets_the_standalone_portal(self):
+        directory = ROOT / "examples/native-sandbox"
+        section = (directory / "README.md").read_text().split("## Isolated Portal Chat mTLS\n", 1)[1].split("\n## ", 1)[0]
+        blocks = re.findall(r"^   ```yaml\n(.*?)^   ```", section, re.MULTILINE | re.DOTALL)
+        self.assertEqual(len(blocks), 1, "the isolated profile must provide its Operator values")
+        values = yaml.safe_load(blocks[0])
+        values["global"] = {"portalChat": {
+            "enabled": True, "identityRealm": "synthetic",
+            **values.get("global", {}).get("portalChat", {}),
+        }}
+        values["istio"] = {"enabled": True}
+        values["cetirun-operator"] = {
+            "domainSuffix": "agents.example.com", "namespace": "test-platform", "cetiadmin": {"enabled": False},
+            **values["cetirun-operator"],
+        }
+        objects = self.render_platform(values)
+        self.assertFalse(any(value["kind"] == "Deployment" and value["metadata"]["name"] == "cetirun-portal" for value in objects))
+        operator = self.deployment_env(objects, "cetirun-operator")
+        access = json.loads(operator["CETIRUN_CHAT_ACCESS"])
+        self.assertTrue(access["enabled"])
+        profile = list(yaml.safe_load_all((directory / "portal-chat-sds.yaml").read_text()))
+        namespace = next(value["metadata"]["name"] for value in profile if value["kind"] == "Namespace")
+        portal_objects = self.render(ROOT / "app/cetirun-portal/chart",
+                                     yaml.safe_load((directory / "portal-chat-values.yaml").read_text()),
+                                     namespace=namespace, release="cetirun-portal")
+        portal = self.deployment_env(portal_objects, "cetirun-portal")
+        self.assertEqual(access["callers"], [{"namespace": namespace, "podLabels": json.loads(portal["CHAT_CALLER_LABELS"])}])
+
     def test_umbrella_generates_the_same_caller_as_the_portal(self):
-        with tempfile.TemporaryDirectory(prefix="cetirun-chat-charts-") as scratch:
-            base = Path(scratch)
-            for relative in ("cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart", "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart", "cetirun-agent-broker/chart", "cetirun-observability/chart"):
-                shutil.copytree(ROOT / "app" / relative, base / relative, ignore=shutil.ignore_patterns("charts", ".bin", "node_modules"))
-            subprocess.run(["helm", "dependency", "build", str(base / "cetirun-platform"), "--skip-refresh"], env=OFFLINE, capture_output=True, text=True, check=True, timeout=30)
-            objects = self.render(base / "cetirun-platform", {
-                "istio": {"enabled": True},
-                "global": {"portalChat": {"enabled": True, "identityRealm": "synthetic"}},
-                "cetirun-operator": {"domainSuffix": "agents.example.com", "namespace": "test-platform", "cetiadmin": {"enabled": False}},
-                "cetirun-portal": {"istio": {"host": "portal.example.com"}, "aiGateway": {"catalogNamespace": "test-platform"}},
-            })
-            portal = self.deployment_env(objects, "cetirun-portal")
-            self.assertEqual(portal["SANDBOX_STATE_NAMESPACE"], "test-platform")
-            operator = self.deployment_env(objects, "cetirun-operator")
-            access = json.loads(operator["CETIRUN_CHAT_ACCESS"])
-            self.assertTrue(access["enabled"])
-            self.assertEqual(access["callers"], [{"namespace": "test-platform", "podLabels": json.loads(portal["CHAT_CALLER_LABELS"])}])
+        objects = self.render_platform({
+            "istio": {"enabled": True},
+            "global": {"portalChat": {"enabled": True, "identityRealm": "synthetic"}},
+            "cetirun-operator": {"domainSuffix": "agents.example.com", "namespace": "test-platform", "cetiadmin": {"enabled": False}},
+            "cetirun-portal": {"istio": {"host": "portal.example.com"}, "aiGateway": {"catalogNamespace": "test-platform"}},
+        })
+        portal = self.deployment_env(objects, "cetirun-portal")
+        self.assertEqual(portal["SANDBOX_STATE_NAMESPACE"], "test-platform")
+        operator = self.deployment_env(objects, "cetirun-operator")
+        access = json.loads(operator["CETIRUN_CHAT_ACCESS"])
+        self.assertTrue(access["enabled"])
+        self.assertEqual(access["callers"], [{"namespace": "test-platform", "podLabels": json.loads(portal["CHAT_CALLER_LABELS"])}])
 
 
 if __name__ == "__main__":

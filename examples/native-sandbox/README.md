@@ -50,10 +50,32 @@ role names.
    SPIFFE URI. For the default trust domain, it is
    `spiffe://cluster.local/ns/cetirun-portal-chat/sa/cetirun-portal`.
    Update both releases together.
-4. Configure the Operator's `chatAccess.callers` with namespace
-   `cetirun-portal-chat` and the actual Portal Pod labels. For this release,
-   they are `app.kubernetes.io/name: cetirun-portal` and
-   `app.kubernetes.io/instance: cetirun-portal`.
+4. Set the Operator's `chatAccess.enabled: true` explicitly and configure
+   `chatAccess.callers` with the isolated Portal namespace and its actual Pod
+   labels. Setting callers alone leaves Chat disabled. For an Operator
+   installed through the umbrella, merge these overrides into its values:
+
+   ```yaml
+   global:
+     portalChat:
+       enabled: false
+   cetirun-portal:
+     enabled: false
+   cetirun-operator:
+     chatAccess:
+       enabled: true
+       callers:
+         - namespace: cetirun-portal-chat
+           podLabels:
+             app.kubernetes.io/name: cetirun-portal
+             app.kubernetes.io/instance: cetirun-portal
+   ```
+
+   Keep `global.portalChat.enabled: false` for this profile. Enabling that
+   shortcut replaces the explicit callers with the umbrella release's
+   namespace and labels, which do not identify the isolated Portal. For a
+   standalone Operator chart, place the same `chatAccess` mapping at the top
+   level of its values instead of under `cetirun-operator`.
 5. Follow the [Custom mTLS binding](../../site/content/en/docs/guides/agent-ingress-mtls.md#custom-agents)
    procedure. Selector-bound ingress peers must use the exact
    `Gateway.spec.selector`; the LoadBalancer Service can have extra selector
