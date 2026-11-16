@@ -1049,6 +1049,12 @@ func (r *AgentReconciler) beginAIGatewayPolicyHold(ctx context.Context, instance
 		aiGatewayDegraded(instance, "KeyBlocked", fmt.Errorf("the AI Gateway key is blocked outside a CetiRun policy transition"))
 		return r.updateStatus(ctx, instance)
 	}
+	// An observed suspension block already fences this grant. Keep its owner
+	// instead of alternating durable suspension and policy-reprojection receipts.
+	if instance.Spec.Suspended && key.Blocked && status.Reason == aiGatewayReasonSuspended {
+		status.Blocked, status.Routed = true, false
+		return r.updateStatus(ctx, instance)
+	}
 	// Persist ownership before the external side effect. If this write fails,
 	// compute is still held by the caller but the key is left untouched. If a
 	// later receipt write fails after blocking, the next reconcile can safely

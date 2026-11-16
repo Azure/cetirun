@@ -207,6 +207,11 @@ component stop, or a status write fails, suspension still tries the other
 shutdown operations. A shutdown that is not acknowledged still keeps its source
 reservation. Normal Kubernetes stop requests are not physical fencing.
 
+A suspended Agent keeps its suspension block while policy or Sandbox sources
+are unavailable. The Operator verifies the existing key before it reuses that
+block, without alternating suspension and policy-reprojection receipts. Resume
+still requires the current policy and source approvals.
+
 The Portal may also accept a narrow pre-bootstrap pause for a Sandbox Agent
 when it can authoritatively prove that no execution lifetime
 exists: there is no Agent namespace, bootstrap/preparation/grant receipt,

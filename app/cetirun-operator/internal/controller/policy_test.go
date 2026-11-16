@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -785,6 +786,71 @@ func TestPolicyReprojectionBlockClearsOnlyAfterGrantReadback(t *testing.T) {
 	}
 	if gateway.keys[token].Blocked || agent.Status.AIGateway.Reason != "" {
 		t.Fatalf("verified current grant did not clear the temporary reprojection block: %+v", agent.Status.AIGateway)
+	}
+}
+
+func TestReconciledSuspendedPolicyHoldDoesNotChurnReceipts(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes", "custom"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			var setup []func(*AgentReconciler, client.Client)
+			if kind == "custom" {
+				setup = append(setup, withCommonCustom(t, "chat"))
+			}
+			f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false, setup...)
+			agent := f.current(t)
+			keyID := agent.Status.AIGateway.KeyID
+			agent.Spec.Suspended = true
+			agent.Generation++
+			if err := f.kube.Update(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			for range 3 {
+				f.reconcileOK(t)
+			}
+			source := f.r.SandboxPreparation.Configuration
+			outage := errors.New("synthetic Sandbox source outage")
+			f.r.SandboxPreparation.Configuration = SandboxConfigurationSourceFunc(func(context.Context) (SandboxConfigurationSnapshot, error) {
+				return SandboxConfigurationSnapshot{}, outage
+			})
+			for range 2 {
+				if _, err := f.reconcile(); err != nil && !errors.Is(err, outage) {
+					t.Fatal("unexpected held reconciliation failure:", err)
+				}
+			}
+			before := f.current(t)
+			for range 6 {
+				if _, err := f.reconcile(); err != nil && !errors.Is(err, outage) {
+					t.Fatal("unexpected held reconciliation failure:", err)
+				}
+			}
+			current := f.current(t)
+			if current.ResourceVersion != before.ResourceVersion || !reflect.DeepEqual(current.Status, before.Status) ||
+				current.Status.AIGateway.Reason != aiGatewayReasonSuspended || current.Status.AIGateway.KeyID != keyID {
+				t.Fatal("unchanged suspended policy hold rewrote its block receipt")
+			}
+			for _, key := range f.gateway.keys {
+				if !key.Blocked {
+					t.Fatal("suspended source hold left a Gateway key unblocked")
+				}
+			}
+			f.r.SandboxPreparation.Configuration = source
+			for range 3 {
+				f.reconcileOK(t)
+			}
+			current = f.current(t)
+			current.Spec.Suspended = false
+			current.Generation++
+			if err := f.kube.Update(ctx, current); err != nil {
+				t.Fatal(err)
+			}
+			for range 3 {
+				f.reconcileOK(t)
+			}
+			if f.current(t).Status.AIGateway.KeyID != keyID || f.current(t).Status.AIGateway.Blocked {
+				t.Fatal("authorized resume did not recover the original key")
+			}
+		})
 	}
 }
 
