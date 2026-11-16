@@ -88,7 +88,7 @@ func newAuthorizationFixture(t *testing.T, provider, service string) *authorizat
 			}
 			return securityJSONResponse(t, http.StatusOK, map[string]any{"status": map[string]any{
 				"authenticated": true, "audiences": []string{"cetirun-connections-mcp"},
-				"user": map[string]any{"username": "system:serviceaccount:agents:openclaw-agent-cetirun", "uid": "service-account-uid", "extra": map[string][]string{
+				"user": map[string]any{"username": "system:serviceaccount:agents:cetirun-agent", "uid": "service-account-uid", "extra": map[string][]string{
 					"authentication.kubernetes.io/pod-name": {"agent-pod"}, "authentication.kubernetes.io/pod-uid": {"pod-uid"},
 				}},
 			}}), nil
@@ -96,10 +96,10 @@ func newAuthorizationFixture(t *testing.T, provider, service string) *authorizat
 		switch path {
 		case "/api/v1/namespaces/agents":
 			return securityJSONResponse(t, http.StatusOK, map[string]any{"metadata": secretMetadata{Name: "agents", OwnerReferences: []ownerReference{{APIVersion: "cetirun.microsoft.com/v1alpha1", Kind: "Agent", Name: "agent", UID: "11111111-1111-1111-1111-111111111111"}}}}), nil
-		case "/api/v1/namespaces/agents/serviceaccounts/openclaw-agent-cetirun":
+		case "/api/v1/namespaces/agents/serviceaccounts/cetirun-agent":
 			return securityJSONResponse(t, http.StatusOK, map[string]any{"metadata": map[string]string{"uid": "service-account-uid"}}), nil
 		case "/api/v1/namespaces/agents/pods/agent-pod":
-			return securityJSONResponse(t, http.StatusOK, map[string]any{"metadata": map[string]string{"uid": "pod-uid"}, "spec": map[string]string{"serviceAccountName": "openclaw-agent-cetirun"}}), nil
+			return securityJSONResponse(t, http.StatusOK, map[string]any{"metadata": map[string]string{"uid": "pod-uid"}, "spec": map[string]string{"serviceAccountName": "cetirun-agent"}}), nil
 		case "/apis/cetirun.microsoft.com/v1alpha1/agents":
 			return securityJSONResponse(t, http.StatusOK, agentList{Items: []agentDocument{fixture.agent}}), nil
 		case "/apis/cetirun.microsoft.com/v1alpha1/agents/agent":
@@ -223,7 +223,7 @@ func TestWorkloadProofRejectsTerminatingBindings(t *testing.T) {
 				if resource == "pod" && strings.Contains(request.URL.Path, "/pods/") {
 					return securityJSONResponse(t, http.StatusOK, map[string]any{
 						"metadata": map[string]any{"uid": "pod-uid", "deletionTimestamp": time.Now().UTC()},
-						"spec":     map[string]string{"serviceAccountName": "openclaw-agent-cetirun"},
+						"spec":     map[string]string{"serviceAccountName": "cetirun-agent"},
 					}), nil
 				}
 				return transport.RoundTrip(request)

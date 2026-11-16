@@ -48,7 +48,7 @@ func (c *Client) CheckSuspensionHome(ctx context.Context, instance *api.Agent) e
 			owner.Name != instance.Name || owner.UID != instance.UID {
 			return ErrSuspensionHomeUnverified
 		}
-	} else if instance.Status.Namespace != key.Namespace || instance.Status.HelmReleaseName != "openclaw-"+instance.Name ||
+	} else if instance.Status.Namespace != key.Namespace || instance.Status.HelmReleaseName != "cetirun-"+instance.Name ||
 		!chatReleaseOwned(workload, instance) {
 		return ErrSuspensionHomeUnverified
 	}

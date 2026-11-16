@@ -13,7 +13,7 @@ Licensed under the MIT License.
 {{- end -}}
 
 {{- define "cetirun-operator.cetiadminServiceAccountName" -}}
-{{- printf "openclaw-%s-cetirun" .Values.cetiadmin.instanceName | trunc 63 | trimAll "-" -}}
+{{- printf "cetirun-%s" .Values.cetiadmin.instanceName | trunc 63 | trimAll "-" -}}
 {{- end -}}
 
 {{- define "cetirun-operator.cetiadminConfig" -}}
@@ -28,7 +28,7 @@ Licensed under the MIT License.
 {{- if not (kindIs "bool" $c.legacyDisabledSource) -}}{{- fail "cetiadmin.legacyDisabledSource must be a boolean" -}}{{- end -}}
 {{- if and $c.legacyDisabledSource $c.enabled -}}{{- fail "cetiadmin.legacyDisabledSource requires cetiadmin.enabled=false" -}}{{- end -}}
 {{- if or (not (kindIs "string" $c.instanceName)) (gt (len $c.instanceName) 44) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $c.instanceName)) -}}
-{{- fail "cetiadmin.instanceName must be a DNS label of at most 44 characters for the openclaw- Helm release" -}}
+{{- fail "cetiadmin.instanceName must be a DNS label of at most 44 characters for the cetirun- workload name" -}}
 {{- end -}}
 {{- if or (not (regexMatch "^[0-9]+$" (toString $c.hookTimeoutSeconds))) (lt (int64 $c.hookTimeoutSeconds) 1) (gt (int64 $c.hookTimeoutSeconds) 3600) -}}
 {{- fail "cetiadmin.hookTimeoutSeconds must be an integer between 1 and 3600" -}}

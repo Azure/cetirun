@@ -2,8 +2,8 @@
 
 `Agent` is a cluster-scoped, long-lived runtime resource in
 `cetirun.microsoft.com/v1alpha1`. The Operator creates its namespace, normal
-runtime release, authentication, routing, and storage bindings. Names that
-start with `openclaw-` are also used by Hermes and do not identify the runtime.
+runtime release, authentication, routing, and storage bindings. The `cetirun-`
+resource prefix is shared by all runtime types and does not identify the runtime.
 
 These fields follow the current `api/v1alpha1/agent_types.go` and
 `harness_types.go` contracts. The installed CRD, bound target, and resolved
@@ -107,9 +107,11 @@ potentially destructive lifecycle; it is not suspension or guaranteed retention.
 
 ## Runtime resources, ports, and credentials
 
-Ordinary names often include namespace `cetirun-<alias>`, release
-`openclaw-<alias>`, and Service or StatefulSet
-`openclaw-<alias>-cetirun`. Keep these names even when the runtime is Hermes.
+The namespace, Helm release, Service, and StatefulSet are named
+`cetirun-<instance>`, derived from the Agent's `metadata.name`. A dedicated
+workload ServiceAccount, when enabled, uses that name too.
+The main Pod is `cetirun-<instance>-0`, regardless of runtime type. Ordinary
+Agents use the HOME PVC `data-cetirun-<instance>-0`; Sandbox Agents use `home`.
 The Operator also manages the namespace role/binding, native authentication
 Secret, configuration, NetworkPolicy, PVC, and standard routes. Read the
 actual bound resources, selectors, owner references, and UIDs before acting.

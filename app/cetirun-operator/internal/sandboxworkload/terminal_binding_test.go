@@ -18,7 +18,7 @@ import (
 func TestTerminalBindingsAreNotAgentKubernetesGrants(t *testing.T) {
 	for _, change := range []string{"current", "subject", "role", "owner", "namespace", "workload", "missing-label"} {
 		t.Run(change, func(t *testing.T) {
-			const namespace, workload = "cetirun-example", "openclaw-example-cetirun"
+			const namespace, workload = "cetirun-example", "cetirun-example"
 			account := terminalpolicy.WorkloadName(workload)
 			expected := ReconcileExpectation{
 				Agent: ObjectIdentity{Name: "example", UID: "agent-uid"}, Namespace: ObjectIdentity{Name: namespace, UID: "namespace-uid"},

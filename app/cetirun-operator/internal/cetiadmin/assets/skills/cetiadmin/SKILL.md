@@ -28,7 +28,7 @@ selecting instances. CetiAdmin manages all Agent instances without a separate
 registration list or Team filter. For each operation, read the current Agent
 UID, namespace UID, ownership, runtime, release, and affected resource identities.
 Use the installation's own bound ServiceAccount and the allowed operation types.
-Neither a `cetirun-` prefix, an `openclaw-` release name, a label, nor membership
+Neither a `cetirun-` resource name, a label, nor membership
 in CetiAdmin's Team grants operations access. Exclude CetiAdmin itself, its
 retained migration sources, the platform control plane, and credential stores
 from write targets.

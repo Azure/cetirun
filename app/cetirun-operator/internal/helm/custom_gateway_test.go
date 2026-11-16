@@ -75,7 +75,7 @@ func TestCustomCopilotRequiresCompatibleChartAndExactManifest(t *testing.T) {
 	}
 	resources := object(p.Values["runtime"])["copilotResources"].([]map[string]any)
 	object(resources[0])["automountServiceAccountToken"] = true
-	if err := p.ValidateCustom("cetirun-example", "openclaw-example"); err == nil {
+	if err := p.ValidateCustom("cetirun-example", "cetirun-example"); err == nil {
 		t.Fatal("modified proxy permission was accepted")
 	}
 }

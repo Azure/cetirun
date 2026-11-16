@@ -182,8 +182,8 @@ func newWriterFixture(t *testing.T) *writerFixture {
 
 func syntheticWriter(index int) Writer {
 	return Writer{
-		Workload: sandboxworkload.ObjectIdentity{Name: "openclaw-demo-cetirun", UID: "workload-uid"},
-		Pod:      sandboxworkload.ObjectIdentity{Name: "openclaw-demo-cetirun-0", UID: types.UID(fmt.Sprintf("pod-%d", index))},
+		Workload: sandboxworkload.ObjectIdentity{Name: "cetirun-demo", UID: "workload-uid"},
+		Pod:      sandboxworkload.ObjectIdentity{Name: "cetirun-demo-0", UID: types.UID(fmt.Sprintf("pod-%d", index))},
 		Node: sandboxworkload.PlacementNode{
 			Name: fmt.Sprintf("worker-%03d", index), UID: types.UID(fmt.Sprintf("node-%d", index)),
 			ProviderID: fmt.Sprintf("example://worker-resource-%d", index),

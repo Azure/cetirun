@@ -159,14 +159,14 @@ from `metadata.name`, not from the owner's alias.
 | Object | Name |
 | --- | --- |
 | Namespace | `cetirun-alice` |
-| Helm release of the agent chart | `openclaw-alice`, for every agent type |
-| StatefulSet and Service | `openclaw-alice-cetirun`, with zero or one replica |
-| HOME volume claim | `data-openclaw-alice-cetirun-0`. A Sandbox Agent that runs uses the claim `home` |
+| Helm release of the agent chart | `cetirun-alice`, for every agent type |
+| StatefulSet and Service | `cetirun-alice`, with zero or one replica |
+| HOME volume claim | `data-cetirun-alice-0`. A Sandbox Agent that runs uses the claim `home` |
 | VirtualService | `cetirun-alice` |
 | Secrets | `gateway-token` for OpenClaw and Hermes, and `ai-gateway-virtual-key`. When GitHub Copilot is on, also `ai-gateway-copilot-proxy` and `github-copilot-token`. For what each one holds, read [Credentials](../../security/#credentials) |
-| GitHub Copilot proxy | `openclaw-alice-copilot-proxy` |
-| Custom terminal | `openclaw-alice-cetirun-terminal`, for a Custom Agent |
-| Exec policy | The cluster-scoped ValidatingAdmissionPolicy and binding `openclaw-alice-cetirun-cetirun-alice-deny-exec` |
+| GitHub Copilot proxy | `cetirun-alice-copilot-proxy` |
+| Custom terminal | `cetirun-alice-terminal`, for a Custom Agent |
+| Exec policy | The cluster-scoped ValidatingAdmissionPolicy and binding `cetirun-alice-cetirun-alice-deny-exec` |
 
 Do not override the resource names of the chart. The operator expects the
 Service and StatefulSet names that it calculates.

@@ -353,7 +353,7 @@ func TestCustomMemoryPreparedManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := prepared.ValidateCustom("cetirun-example", "openclaw-example"); err != nil {
+	if err := prepared.ValidateCustom("cetirun-example", "cetirun-example"); err != nil {
 		t.Fatal(err)
 	}
 	if object(prepared.Values["memoryContext"])["enabled"] != true {

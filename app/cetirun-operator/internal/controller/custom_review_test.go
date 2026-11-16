@@ -57,7 +57,7 @@ func runningCustomReview(t *testing.T) *completionScenario {
 func (s *completionScenario) workload() *appsv1.StatefulSet {
 	s.t.Helper()
 	workload := &appsv1.StatefulSet{}
-	key := types.NamespacedName{Namespace: s.provider.bindings.Namespace.Name, Name: "openclaw-" + s.agent.Name + "-cetirun"}
+	key := types.NamespacedName{Namespace: s.provider.bindings.Namespace.Name, Name: "cetirun-" + s.agent.Name}
 	if err := s.client.Get(context.Background(), key, workload); err != nil {
 		s.t.Fatal(err)
 	}
@@ -663,7 +663,7 @@ func TestControllerPlatformConfigurationParity(t *testing.T) {
 		}
 		caps := chartutil.DefaultCapabilities.Copy()
 		caps.APIVersions = append(caps.APIVersions, "networking.istio.io/v1/Sidecar")
-		values, err := chartutil.ToRenderValues(ch, h.lastValues, chartutil.ReleaseOptions{Name: "openclaw-example", Namespace: "cetirun-example", IsInstall: true}, caps)
+		values, err := chartutil.ToRenderValues(ch, h.lastValues, chartutil.ReleaseOptions{Name: "cetirun-example", Namespace: "cetirun-example", IsInstall: true}, caps)
 		if err != nil {
 			t.Fatal(err)
 		}

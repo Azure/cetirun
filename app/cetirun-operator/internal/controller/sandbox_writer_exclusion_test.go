@@ -161,8 +161,8 @@ func newJournalExclusionFixture(t *testing.T) *journalExclusionFixture {
 
 func (f *journalExclusionFixture) writer(index int) sandboxwriter.Writer {
 	return sandboxwriter.Writer{
-		Workload: w.ObjectIdentity{Name: "openclaw-demo-cetirun", UID: "workload-uid"},
-		Pod:      w.ObjectIdentity{Name: "openclaw-demo-cetirun-0", UID: types.UID(fmt.Sprintf("pod-%d", index))},
+		Workload: w.ObjectIdentity{Name: "cetirun-demo", UID: "workload-uid"},
+		Pod:      w.ObjectIdentity{Name: "cetirun-demo-0", UID: types.UID(fmt.Sprintf("pod-%d", index))},
 		Node: w.PlacementNode{
 			Name: fmt.Sprintf("worker-%02d", index), UID: types.UID(fmt.Sprintf("node-%d", index)),
 			ProviderID: fmt.Sprintf("example://worker-resource-%d", index),

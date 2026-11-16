@@ -12,7 +12,7 @@ Licensed under the MIT License.
 {{- if or (ne $runtime.contractVersion "v1") (ne $runtime.agent.type "hermes") (not $runtime.agent.image) (ne $runtime.agent.username "vibe") (ne $runtime.agent.home "/home/vibe") -}}
 {{- fail "CetiAdmin requires the prepared native Hermes runtime contract" -}}
 {{- end -}}
-{{- if or (ne .Release.Name (printf "openclaw-%s" $admin.agentName)) (ne .Release.Namespace (printf "cetirun-%s" $admin.agentName)) -}}
+{{- if or (ne .Release.Name (printf "cetirun-%s" $admin.agentName)) (ne .Release.Namespace (printf "cetirun-%s" $admin.agentName)) -}}
 {{- fail "CetiAdmin release and namespace must match the bound Agent name" -}}
 {{- end -}}
 {{- $sa := .Values.serviceAccount -}}

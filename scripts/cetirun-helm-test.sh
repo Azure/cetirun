@@ -149,8 +149,8 @@ for agent_type in openclaw hermes; do
 done
 
 echo "==> helm template ${release_name} ${chart_dir} (long BYO ServiceAccount without Agent Identity)"
-long_instance_name="$(printf 'a%.0s' {1..47})"
-long_service_account="openclaw-${long_instance_name}-cetirun"
+long_instance_name="$(printf 'a%.0s' {1..56})"
+long_service_account="cetirun-${long_instance_name}"
 service_account_output=$(helm_template "${release_name}" "${chart_dir}" \
   --show-only templates/statefulset.yaml \
   --set serviceAccount.create=false \

@@ -50,13 +50,11 @@ if [[ -z "${DOMAIN_SUFFIX:-}" ]]; then
 fi
 TEAM="${TEAM:-cetirun}"
 
-# Maximum alias length to ensure derived Kubernetes resource names stay within
-# the 63-character DNS-label limit. For example:
+# Preserve this helper's existing alias limit. Derived names include:
 #   - Namespace: cetirun-${ALIAS}
-#   - Pod:       openclaw-${ALIAS}-cetirun-0
-# The strictest constraint is from the pod name:
-#   len("openclaw-") + len(ALIAS) + len("-cetirun-0") <= 63
-#   9 + len(ALIAS) + 11 <= 63  => len(ALIAS) <= 43
+#   - Pod:       cetirun-${ALIAS}-0
+# The StatefulSet's controller-revision-hash label adds a dash and up to 10
+# characters to cetirun-${ALIAS}, which must fit in a 63-character label.
 MAX_ALIAS_LEN=43
 
 # Validate alias format
@@ -68,7 +66,7 @@ fi
 # Validate alias length against Kubernetes DNS-label constraints for derived names
 alias_len=${#ALIAS}
 if (( alias_len > MAX_ALIAS_LEN )); then
-  echo "ERROR: Alias is too long (${alias_len} characters). With derived names such as 'cetirun-\${ALIAS}' and 'openclaw-\${ALIAS}-cetirun-0', the alias must be at most ${MAX_ALIAS_LEN} characters to satisfy Kubernetes 63-character DNS-label limits."
+  echo "ERROR: Alias is too long (${alias_len} characters). With derived names such as 'cetirun-\${ALIAS}' and 'cetirun-\${ALIAS}-0', the alias must be at most ${MAX_ALIAS_LEN} characters to satisfy Kubernetes 63-character DNS-label limits."
   exit 1
 fi
 echo ""
@@ -184,7 +182,7 @@ echo "the WebSocket connection can be established."
 echo ""
 echo "Waiting for a pairing request..."
 
-POD_NAME="openclaw-${ALIAS}-cetirun-0"
+POD_NAME="cetirun-${ALIAS}-0"
 PAIR_TIMEOUT=120
 PAIR_INTERVAL=5
 PAIR_ELAPSED=0

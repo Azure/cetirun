@@ -57,7 +57,7 @@ func renderChartValues(t *testing.T, chrt *chart.Chart, input map[string]any) (m
 	caps := chartutil.DefaultCapabilities.Copy()
 	caps.APIVersions = append(caps.APIVersions, "networking.istio.io/v1/Sidecar")
 	values, err := chartutil.ToRenderValues(chrt, input, chartutil.ReleaseOptions{
-		Name: "openclaw-example", Namespace: "cetirun-example", IsInstall: true, Revision: 1,
+		Name: "cetirun-example", Namespace: "cetirun-example", IsInstall: true, Revision: 1,
 	}, caps)
 	if err != nil {
 		t.Fatal(err)

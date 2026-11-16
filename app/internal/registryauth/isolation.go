@@ -63,9 +63,9 @@ func CheckIsolation(ctx context.Context, c client.Client, sourceNS, targetNS, de
 			}
 		}
 		runtimeSubjects[add(ns, "default")] = true
-		runtimeSubjects[add(ns, "openclaw-"+agent.Name+"-cetirun")] = true
+		runtimeSubjects[add(ns, "cetirun-"+agent.Name)] = true
 		if agent.Spec.Agent.Type == api.AgentTypeCustom {
-			terminalAgents[subject{ns, terminalpolicy.WorkloadName("openclaw-" + agent.Name + "-cetirun")}] = &agent
+			terminalAgents[subject{ns, terminalpolicy.WorkloadName("cetirun-" + agent.Name)}] = &agent
 		}
 	}
 	pods := &corev1.PodList{}

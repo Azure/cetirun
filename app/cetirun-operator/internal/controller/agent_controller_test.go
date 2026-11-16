@@ -281,7 +281,7 @@ func statefulSetFull(alias string, readyReplicas, updatedReplicas int32, generat
 	replicas := int32(1)
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:       "openclaw-" + alias + "-cetirun",
+			Name:       "cetirun-" + alias,
 			Namespace:  "cetirun-" + alias,
 			Generation: generation,
 			OwnerReferences: []metav1.OwnerReference{{
@@ -311,7 +311,7 @@ func statefulSetSuspended(alias string) *appsv1.StatefulSet {
 	replicas := int32(0)
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:       "openclaw-" + alias + "-cetirun",
+			Name:       "cetirun-" + alias,
 			Namespace:  "cetirun-" + alias,
 			Generation: 1,
 		},

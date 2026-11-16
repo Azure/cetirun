@@ -136,7 +136,7 @@ func TestSandboxSourcesHeldControllerWiring(t *testing.T) {
 			}
 			workload := &appsv1.StatefulSet{}
 			if err := f.client.Get(ctx, client.ObjectKey{Namespace: f.fixture.Namespace.Name,
-				Name: "openclaw-example-cetirun"}, workload); !apierrors.IsNotFound(err) {
+				Name: "cetirun-example"}, workload); !apierrors.IsNotFound(err) {
 				t.Fatal("unavailable fencing allowed workload staging:", err)
 			}
 

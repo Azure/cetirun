@@ -115,11 +115,11 @@ func TestCetiAdminServedAPI(t *testing.T) {
 	}
 	namespace, targetNS := makeNamespace(self), makeNamespace(target)
 	create(&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: targetNS.Name}})
-	target.Status = api.AgentStatus{Namespace: targetNS.Name, HelmReleaseName: "openclaw-example", Phase: api.PhaseReady, ObservedGeneration: target.Generation}
+	target.Status = api.AgentStatus{Namespace: targetNS.Name, HelmReleaseName: "cetirun-example", Phase: api.PhaseReady, ObservedGeneration: target.Generation}
 	if err := admin.Status().Update(ctx, target); err != nil {
 		t.Fatal(err)
 	}
-	account := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "openclaw-cetiadmin-cetirun", Namespace: namespace.Name, Annotations: mark, OwnerReferences: namespace.OwnerReferences}, AutomountServiceAccountToken: ptr.To(false)}
+	account := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-cetiadmin", Namespace: namespace.Name, Annotations: mark, OwnerReferences: namespace.OwnerReferences}, AutomountServiceAccountToken: ptr.To(false)}
 	create(account)
 	identity := func(o metav1.Object) cetiadmin.ObjectIdentity {
 		return cetiadmin.ObjectIdentity{Name: o.GetName(), Namespace: o.GetNamespace(), UID: o.GetUID()}

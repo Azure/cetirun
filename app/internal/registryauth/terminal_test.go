@@ -32,7 +32,7 @@ func TestIsolationAcceptsOnlyUIDBoundTerminalExec(t *testing.T) {
 		"admin-extra-condition", "admin-protected-spec", "admin-protected-status", "admin-protected-team", "admin-missing-team"} {
 		t.Run(test, func(t *testing.T) {
 			agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "example", UID: "agent-uid"}, Spec: api.AgentSpec{Agent: api.HarnessSpec{Type: api.AgentTypeCustom}}}
-			namespace, workload := "cetirun-example", "openclaw-example-cetirun"
+			namespace, workload := "cetirun-example", "cetirun-example"
 			name := terminalpolicy.WorkloadName(workload)
 			metadata := func(name, ns string) metav1.ObjectMeta {
 				return metav1.ObjectMeta{Name: name, Namespace: ns, OwnerReferences: []metav1.OwnerReference{Owner(agent)}}

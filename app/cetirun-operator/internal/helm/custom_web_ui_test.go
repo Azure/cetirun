@@ -22,7 +22,7 @@ func TestCustomWebUIRendering(t *testing.T) {
 		if prepared.Agent.Port == nil || *prepared.Agent.Port != 8088 || !prepared.Agent.WebUI {
 			t.Fatal("browser became chat")
 		}
-		if err := prepared.ValidateCustom("cetirun-example", "openclaw-example"); err != nil {
+		if err := prepared.ValidateCustom("cetirun-example", "cetirun-example"); err != nil {
 			t.Fatal(err)
 		}
 		ports := prepared.customServicePorts()

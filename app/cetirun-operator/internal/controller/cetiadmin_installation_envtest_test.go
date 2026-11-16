@@ -390,7 +390,7 @@ func TestCetiAdminInstallationAPIServer(t *testing.T) {
 					case "Namespace":
 						foreign = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-cetiadmin"}}
 					case "ServiceAccount":
-						foreign = &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "openclaw-cetiadmin-cetirun", Namespace: "cetirun-cetiadmin"}, AutomountServiceAccountToken: ptr.To(false)}
+						foreign = &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-cetiadmin", Namespace: "cetirun-cetiadmin"}, AutomountServiceAccountToken: ptr.To(false)}
 					}
 					foreign.SetAnnotations(map[string]string{"example.com/preserved": "foreign"})
 					// The dedicated operator may create this name, but this object

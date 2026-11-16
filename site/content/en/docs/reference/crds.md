@@ -143,7 +143,7 @@ For a Sandbox Agent with a Team and a Sandbox, see
 
 The namespace and the Helm release get their names from `metadata.name`. For
 example, the Agent `alice` uses the namespace `cetirun-alice` and the release
-`openclaw-alice`. An owner can have an Agent with a different name. Use the
+`cetirun-alice`. An owner can have an Agent with a different name. Use the
 names in the status, not names that you derive from the alias.
 
 Use short DNS-label Agent names. Portal creation reserves `oauth2`, `api`,

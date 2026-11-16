@@ -34,7 +34,7 @@ func bindingFixture(t *testing.T) (Config, Record, ObservedInstallation) {
 	owners := []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: agent.Name, UID: agent.UID, Controller: ptr.To(true)}}
 	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-" + agent.Name, UID: "namespace-uid", OwnerReferences: owners}}
 	account := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
-		Name: "openclaw-cetiadmin-cetirun", Namespace: namespace.Name, UID: "account-uid", OwnerReferences: owners,
+		Name: "cetirun-cetiadmin", Namespace: namespace.Name, UID: "account-uid", OwnerReferences: owners,
 		Annotations: map[string]string{AnnotationSourceUID: string(source.UID)},
 	}, AutomountServiceAccountToken: ptr.To(false)}
 	hash, err := ConfigHash(config)
@@ -56,7 +56,7 @@ func TestResolveBindingUsesRecordedIdentities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if binding.ServiceAccountUsername() != "system:serviceaccount:cetirun-cetiadmin:openclaw-cetiadmin-cetirun" || binding.Record().Agent.UID != types.UID("agent-uid") {
+	if binding.ServiceAccountUsername() != "system:serviceaccount:cetirun-cetiadmin:cetirun-cetiadmin" || binding.Record().Agent.UID != types.UID("agent-uid") {
 		t.Fatalf("wrong binding: %#v", binding.Record())
 	}
 	observed.Source.ResourceVersion = "2"

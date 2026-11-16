@@ -43,7 +43,7 @@ func TestChartOnlyUpgradeRepinsDefaultBeforeDeployment(t *testing.T) {
 				agent.Spec.Agent.Port = ptr.To[int32](8642)
 			}
 			agent.Spec.Agent.Image = ptr.To("registry.example.com/" + string(kind) + "-gateway:1.0.0")
-			agent.Status.HelmReleaseName = "openclaw-upgrade"
+			agent.Status.HelmReleaseName = "cetirun-upgrade"
 			scheme := testScheme()
 			kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(agent).
 				WithStatusSubresource(&api.Agent{}).Build()

@@ -67,10 +67,10 @@ func TestAuthenticateValidatesCurrentWorkloadBinding(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			review := map[string]any{"authenticated": true, "audiences": []string{"cetirun-connections-mcp"}, "user": map[string]any{
-				"username": "system:serviceaccount:cetirun-agent-a:openclaw-agent-a-cetirun", "uid": "account-uid",
+				"username": "system:serviceaccount:cetirun-agent-a:cetirun-agent-a", "uid": "account-uid",
 				"extra": map[string]any{"authentication.kubernetes.io/pod-name": []string{"agent-pod"}, "authentication.kubernetes.io/pod-uid": []string{"pod-uid"}},
 			}}
-			pod := map[string]any{"metadata": map[string]any{"uid": "pod-uid", "namespace": "cetirun-agent-a"}, "spec": map[string]any{"serviceAccountName": "openclaw-agent-a-cetirun"}}
+			pod := map[string]any{"metadata": map[string]any{"uid": "pod-uid", "namespace": "cetirun-agent-a"}, "spec": map[string]any{"serviceAccountName": "cetirun-agent-a"}}
 			account := map[string]any{"metadata": map[string]any{"uid": "account-uid"}}
 			agent := map[string]any{"metadata": map[string]any{"uid": "instance-uid", "name": "agent-a"}, "status": map[string]any{"phase": "Ready", "namespace": "cetirun-agent-a"}}
 			if test.mutate != nil {
@@ -88,7 +88,7 @@ func TestAuthenticateValidatesCurrentWorkloadBinding(t *testing.T) {
 					result = map[string]any{"status": review}
 				case "/api/v1/namespaces/cetirun-agent-a/pods/agent-pod":
 					result = pod
-				case "/api/v1/namespaces/cetirun-agent-a/serviceaccounts/openclaw-agent-a-cetirun":
+				case "/api/v1/namespaces/cetirun-agent-a/serviceaccounts/cetirun-agent-a":
 					result = account
 				case "/api/v1/namespaces/cetirun-agent-a":
 					owner := map[string]string{"apiVersion": "cetirun.microsoft.com/v1alpha1", "kind": "Agent", "name": "agent-a", "uid": "instance-uid"}

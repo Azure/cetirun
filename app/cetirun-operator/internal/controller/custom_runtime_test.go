@@ -88,7 +88,7 @@ func TestCustomReconcileCreatesHomeInOneChartCall(t *testing.T) {
 	}
 	oldWriter := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "old-writer", Namespace: "cetirun-disk-agent"},
 		Spec: corev1.PodSpec{Volumes: []corev1.Volume{{Name: "data", VolumeSource: corev1.VolumeSource{
-			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "data-openclaw-disk-agent-cetirun-0"},
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "data-cetirun-disk-agent-0"},
 		}}}}}
 	if err := c.Create(ctx, oldWriter); err != nil {
 		t.Fatal(err)
@@ -105,7 +105,7 @@ func TestCustomReconcileCreatesHomeInOneChartCall(t *testing.T) {
 		t.Fatalf("pending HOME did not reach consumer creation: applied=%v status=%+v", hc.installCalled, cr.Status)
 	}
 	home := &corev1.PersistentVolumeClaim{}
-	homeKey := types.NamespacedName{Namespace: "cetirun-disk-agent", Name: "data-openclaw-disk-agent-cetirun-0"}
+	homeKey := types.NamespacedName{Namespace: "cetirun-disk-agent", Name: "data-cetirun-disk-agent-0"}
 	if err := c.Get(ctx, homeKey, home); !apierrors.IsNotFound(err) {
 		t.Fatalf("operator created a PVC before the StatefulSet controller: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestCustomReconcileCreatesHomeInOneChartCall(t *testing.T) {
 	renderWorkload := func() *appsv1.StatefulSet {
 		t.Helper()
 		values, err := chartutil.ToRenderValues(chart, hc.lastValues, chartutil.ReleaseOptions{
-			Name: "openclaw-disk-agent", Namespace: homeKey.Namespace, IsInstall: true,
+			Name: "cetirun-disk-agent", Namespace: homeKey.Namespace, IsInstall: true,
 		}, chartutil.DefaultCapabilities)
 		if err != nil {
 			t.Fatal(err)
@@ -323,7 +323,7 @@ func customFixture(name string, port *int32) (*api.Agent, runtimebindings.Custom
 		AgentName: name, AgentUID: string(cr.UID), Generation: 1, Namespace: ref("cetirun-" + name),
 		ApprovedType: "custom", ApprovedImage: image, PolicyRevision: "policy-1",
 		Model: runtimebindings.ModelAccess{ObjectReference: ref(name + "-model"), Key: "api-key", BaseURL: "http://gateway.models.svc/v1"},
-		Home: runtimebindings.Home{Name: "data-openclaw-" + name + "-cetirun-0", FSGroup: 2000,
+		Home: runtimebindings.Home{Name: "data-cetirun-" + name + "-0", FSGroup: 2000,
 			Claim: &runtimebindings.HomeClaim{StorageClass: "default", StorageSize: "100Gi", AccessMode: "ReadWriteOnce"}},
 		Context: runtimebindings.Context{ObjectReference: ref(name + "-context"), Files: map[string]string{
 			"canonical": "AGENTS.md", "memory": "skills/cetirun-memory/SKILL.md",

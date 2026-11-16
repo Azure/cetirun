@@ -141,8 +141,8 @@ kubectl get events -n cetirun-alice-example --sort-by=.lastTimestamp
 
 Resource names use `metadata.name`, not `spec.user.alias`. With the controller
 and chart defaults, the namespace of this example is `cetirun-alice-example`.
-Its Helm release is `openclaw-alice-example`, and its StatefulSet and Service
-are both `openclaw-alice-example-cetirun`. You cannot use one of these API
+Its Helm release is `cetirun-alice-example`, and its StatefulSet and Service
+are both `cetirun-alice-example`. You cannot use one of these API
 names in place of another. Use the status and the actual resource lists, not
 guesses.
 

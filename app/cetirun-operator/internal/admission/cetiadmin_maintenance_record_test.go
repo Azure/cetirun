@@ -25,7 +25,7 @@ func heldWorkloadFixture(t *testing.T) (cetiAdminFixture, *appsv1.StatefulSet, *
 		agent.Spec.Helm.Maintenance = &api.HelmMaintenanceRequest{RequestID: "maintenance-snapshot-one", ExpectedRevision: 10}
 		agent.Status.HelmMaintenance = &api.HelmMaintenanceStatus{RequestID: agent.Spec.Helm.Maintenance.RequestID, Revision: 10, ObservedGeneration: agent.Generation, Phase: api.HelmMaintenancePhaseHeld}
 	})
-	workload := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "openclaw-example-cetirun", Namespace: f.target.Status.Namespace, UID: "workload-uid",
+	workload := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-example", Namespace: f.target.Status.Namespace, UID: "workload-uid",
 		Annotations: map[string]string{"meta.helm.sh/release-name": f.target.Status.HelmReleaseName, "meta.helm.sh/release-namespace": f.target.Status.Namespace}},
 		Spec: appsv1.StatefulSetSpec{Replicas: ptr.To(int32(0)), Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "cetirun", Image: "registry.example.com/hermes:old"}}}}}}
 	if err := f.kube.Create(context.Background(), workload); err != nil {

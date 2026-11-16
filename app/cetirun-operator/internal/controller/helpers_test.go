@@ -192,12 +192,75 @@ func TestBuildHelmValuesWithConnectionsMCPUsesControllerOwnedWorkloadIdentity(t 
 
 func TestInstanceServiceNameMatchesChartAndBrokerBoundary(t *testing.T) {
 	for length, want := range map[int]string{
-		46: "openclaw-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-cetirun",
-		47: "openclaw-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-cetiru",
+		55: "cetirun-" + strings.Repeat("a", 55),
+		56: "cetirun-" + strings.Repeat("a", 55),
 	} {
 		got := instanceServiceName(strings.Repeat("a", length))
 		if got != want || len(got) > 63 || strings.HasSuffix(got, "-") {
 			t.Fatalf("instanceServiceName(%d chars) = %q", length, got)
+		}
+	}
+}
+
+func TestRuntimeResourceNames(t *testing.T) {
+	for _, kind := range []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes} {
+		for _, name := range []string{"example", "my-cetirun-agent", strings.Repeat("a", 44)} {
+			t.Run(string(kind)+"/"+name, func(t *testing.T) {
+				instance := newTestInstance(name, "Example", "", "gateway-token")
+				instance.Spec.Agent.Type = kind
+				instance.Spec.Model = "synthetic-model"
+				want := "cetirun-" + name
+				if helmReleaseName(name) != want || instanceNamespace(name) != want || instanceServiceName(name) != want {
+					t.Fatal("runtime names must use the Agent name with the platform prefix")
+				}
+				values, err := buildHelmValuesWithAgentIdentity(instance, nil, "example.com", "", nil, "", "",
+					AgentIdentityHelmConfig{
+						ConnectionsMCPURL:          "https://cetirun-connections-mcp.cetirun-tools.svc.cluster.local/mcp",
+						ConnectionsMCPCASecretName: "connections-ca",
+					})
+				if err != nil {
+					t.Fatal(err)
+				}
+				applyGatewayValuesForRender(t, instance, values)
+				chrt, err := loader.Load("../../../cetirun-chart")
+				if err != nil {
+					t.Fatal(err)
+				}
+				prepared, err := helm.PrepareChart(chrt, values)
+				if err != nil {
+					t.Fatal(err)
+				}
+				renderValues, err := chartutil.ToRenderValues(chrt, prepared.Values, chartutil.ReleaseOptions{
+					Name: helmReleaseName(name), Namespace: instanceNamespace(name), IsInstall: true,
+				}, chartutil.DefaultCapabilities)
+				if err != nil {
+					t.Fatal(err)
+				}
+				rendered, err := engine.Render(chrt, renderValues)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var workload appsv1.StatefulSet
+				var service corev1.Service
+				var account corev1.ServiceAccount
+				for file, target := range map[string]any{"statefulset.yaml": &workload, "service.yaml": &service, "serviceaccount.yaml": &account} {
+					if err := yaml.Unmarshal([]byte(rendered[chrt.Name()+"/templates/"+file]), target); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if workload.Name != want || service.Name != want || account.Name != want ||
+					workload.Spec.ServiceName != want || workload.Spec.Template.Spec.ServiceAccountName != want {
+					t.Fatalf("rendered names differ: StatefulSet=%s Service=%s ServiceAccount=%s", workload.Name, service.Name, account.Name)
+				}
+				if service.Spec.Selector["app.kubernetes.io/instance"] != want ||
+					workload.Spec.Template.Labels["app.kubernetes.io/instance"] != want {
+					t.Fatal("Service selector and Pod release label must match")
+				}
+				if len(workload.Spec.VolumeClaimTemplates) != 1 ||
+					workload.Spec.VolumeClaimTemplates[0].Name+"-"+workload.Name+"-0" != "data-"+want+"-0" {
+					t.Fatal("HOME claim does not use the platform workload name")
+				}
+			})
 		}
 	}
 }
@@ -393,7 +456,7 @@ func TestBuildHelmValues_HermesWebappPublicURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	renderValues, err := chartutil.ToRenderValues(chrt, prepared.Values, chartutil.ReleaseOptions{
-		Name: instance.Name, Namespace: instanceNamespace(instance.Name), IsInstall: true,
+		Name: helmReleaseName(instance.Name), Namespace: instanceNamespace(instance.Name), IsInstall: true,
 	}, chartutil.DefaultCapabilities)
 	if err != nil {
 		t.Fatal(err)
@@ -1191,7 +1254,7 @@ func TestBuildHelmValues_SuspendedHomeRetention(t *testing.T) {
 						caps := chartutil.DefaultCapabilities.Copy()
 						caps.KubeVersion = chartutil.KubeVersion{Version: "v1.37.0", Major: "1", Minor: "37"}
 						renderValues, err := chartutil.ToRenderValues(chrt, prepared.Values, chartutil.ReleaseOptions{
-							Name: instance.Name, Namespace: instanceNamespace(instance.Name), IsUpgrade: true, Revision: 2,
+							Name: helmReleaseName(instance.Name), Namespace: instanceNamespace(instance.Name), IsUpgrade: true, Revision: 2,
 						}, caps)
 						if err != nil {
 							t.Fatal(err)

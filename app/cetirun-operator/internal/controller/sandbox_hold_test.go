@@ -474,7 +474,7 @@ func TestSandboxHoldRecoversCustomCompletionWithoutReapplying(t *testing.T) {
 				t.Fatalf("completion recovery bypassed the Sandbox hold: %+v", condition)
 			}
 			sts := &appsv1.StatefulSet{}
-			key := types.NamespacedName{Name: "openclaw-" + current.Name + "-cetirun", Namespace: "cetirun-" + current.Name}
+			key := types.NamespacedName{Name: "cetirun-" + current.Name, Namespace: "cetirun-" + current.Name}
 			if err := scenario.client.Get(context.Background(), key, sts); err != nil || *sts.Spec.Replicas != 0 || scenario.pending() == nil {
 				t.Fatalf("pending completion prevented the stop or was discarded: %v", err)
 			}

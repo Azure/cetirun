@@ -905,7 +905,7 @@ the log:
 
 ```bash
 kubectl get pods -n cetirun-alice-example
-kubectl logs -n cetirun-alice-example openclaw-alice-example-cetirun-0 -c init-home-data
+kubectl logs -n cetirun-alice-example cetirun-alice-example-0 -c init-home-data
 ```
 
 Add `--previous` to read the attempt before the current one.

@@ -407,7 +407,7 @@ func extraValue(extra map[string][]string, key string) string {
 
 // instanceServiceName mirrors the Agent chart fullname convention used by the Broker.
 func instanceServiceName(instanceName string) string {
-	name := "openclaw-" + instanceName + "-cetirun"
+	name := "cetirun-" + instanceName
 	if len(name) > 63 {
 		name = name[:63]
 	}

@@ -20,13 +20,13 @@ func TestCustomScalarLikeBindingNames(t *testing.T) {
 			bindings := input["customBindings"].(runtimebindings.Custom)
 			bindings.AgentName = name
 			bindings.Model.Name, bindings.Model.Key = name, name
-			bindings.Home.Name = "data-openclaw-" + name + "-cetirun-0"
+			bindings.Home.Name = "data-cetirun-" + name + "-0"
 			bindings.Home.Claim.StorageClass = name
 			bindings.Context.Name = name
 			bindings.Namespace.Name = "cetirun-" + name
 			input["customBindings"] = bindings
-			input["fullnameOverride"] = "openclaw-" + name + "-cetirun"
-			input["agentRequest"].(map[string]any)["releaseName"] = "openclaw-" + name
+			input["fullnameOverride"] = "cetirun-" + name
+			input["agentRequest"].(map[string]any)["releaseName"] = "cetirun-" + name
 			p, err := prepareChart(testChart(t), input, false)
 			if err != nil {
 				t.Fatal(err)

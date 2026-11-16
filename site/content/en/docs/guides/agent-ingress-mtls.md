@@ -135,14 +135,14 @@ operator.
    Agent waits for its certificate approval. During this wait, the bootstrap
    can create the namespace and the HOME of the Agent.
 4. Read the UID of the Agent, and calculate the DNS name of its server
-   certificate. The Service of an Agent is `openclaw-<agent>-cetirun` for
+   certificate. The Service of an Agent is `cetirun-<agent>` for
    every agent type, at most 63 characters. Its namespace is
    `cetirun-<agent>`:
 
    ```bash
    AGENT=<agent>
    AGENT_UID=$(kubectl get agent "$AGENT" -o jsonpath='{.metadata.uid}')
-   SERVICE=$(printf 'openclaw-%s-cetirun' "$AGENT" | cut -c1-63 | sed 's/-*$//')
+   SERVICE=$(printf 'cetirun-%s' "$AGENT" | cut -c1-63 | sed 's/-*$//')
    HASH=$(printf '%s' "$AGENT_UID" | sha256sum | cut -c1-32)
    echo "agent-${HASH}.${SERVICE}.cetirun-${AGENT}.svc.cluster.local"
    ```
@@ -205,7 +205,7 @@ agent-<first 32 lowercase hex characters of SHA256(Agent UID)>.<Agent Service FQ
 ```
 
 For example, for the Agent `example`, the Service FQDN is
-`openclaw-example-cetirun.cetirun-example.svc.cluster.local`.
+`cetirun-example.cetirun-example.svc.cluster.local`.
 
 The client certificate must have client-auth usage and the exact configured
 SPIFFE URI SAN. Its path must end in `/<Agent UID>`. As a result, a recreated
