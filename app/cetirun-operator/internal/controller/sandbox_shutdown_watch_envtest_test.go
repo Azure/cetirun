@@ -25,6 +25,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	controllerconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
@@ -55,7 +56,9 @@ func TestSandboxStatefulSetShutdownWatchAPIServer(t *testing.T) {
 		}
 	}
 	mgr, err := ctrl.NewManager(config, ctrl.Options{Scheme: scheme,
-		Metrics: metricsserver.Options{BindAddress: "0"}, HealthProbeBindAddress: "0"})
+		// Isolated test managers share the process-wide controller-name registry.
+		Controller: controllerconfig.Controller{SkipNameValidation: ptr.To(true)},
+		Metrics:    metricsserver.Options{BindAddress: "0"}, HealthProbeBindAddress: "0"})
 	if err != nil {
 		t.Fatal(err)
 	}
