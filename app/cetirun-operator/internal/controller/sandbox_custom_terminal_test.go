@@ -165,8 +165,8 @@ func TestCommonCustomTerminalReadinessAndSuspension(t *testing.T) {
 			if err := f.kube.Update(context.Background(), agent); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.reconcile(); err == nil || !strings.Contains(err.Error(), "waits for acknowledged controller shutdown") {
-				t.Fatal("suspension did not wait for controller acknowledgement:", err)
+			if result, err := f.reconcile(); err != nil || result.RequeueAfter != cleanupWaitRequeue {
+				t.Fatal("suspension did not wait for controller acknowledgement with bounded retry:", result, err)
 			}
 			if ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 ||
 				ptr.Deref(customTerminalDeployment(t, f).Spec.Replicas, -1) != 0 ||
