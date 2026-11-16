@@ -96,8 +96,8 @@ func TestReconciledSandboxStaleIngressMTLSSuspensionAPIServer(t *testing.T) {
 	if err := h.member.Patch(h.ctx, current, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 		t.Fatal("request served suspension: ", err)
 	}
-	if _, err := h.reconcile(); err == nil {
-		t.Fatal("served suspension ignored the unacknowledged workload shutdown")
+	if result, err := h.reconcile(); err != nil || result.RequeueAfter != cleanupWaitRequeue {
+		t.Fatal("served suspension did not wait for workload shutdown with bounded retry:", result, err)
 	}
 	pending := h.current(t)
 	if pending.Status.Phase != api.PhasePending || pending.Status.ObservedGeneration == pending.Generation {

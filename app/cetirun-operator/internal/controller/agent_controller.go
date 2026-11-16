@@ -185,6 +185,7 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&cetirunv1alpha1.Agent{}).
 		Owns(&appsv1.Deployment{}).
+		Owns(&appsv1.StatefulSet{}).
 		Owns(&istiov1beta1.VirtualService{}).
 		Owns(&istiov1beta1.DestinationRule{}).
 		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.enqueueAgentSecret)).
@@ -347,7 +348,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 	if reconciledSandbox && instance.Spec.Suspended {
 		if err := r.stopReconciledSandboxForSuspension(ctx, instance); err != nil {
-			return ctrl.Result{}, err
+			return reconciledSuspensionResult(err)
 		}
 	}
 
@@ -1186,7 +1187,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		logger.Info("Instance is suspended, removing ingress and marking Suspended", "alias", alias)
 		if reconciledSandbox {
 			if err := r.stopNativeSandboxReservation(ctx, instance); err != nil {
-				return ctrl.Result{}, err
+				return reconciledSuspensionResult(err)
 			}
 		}
 		// Delete VirtualService so users see connection refused instead of 503.

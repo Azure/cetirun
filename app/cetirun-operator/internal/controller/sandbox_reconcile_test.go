@@ -1012,8 +1012,14 @@ func TestReconciledSandboxSuspensionStopsBeforePrerequisites(t *testing.T) {
 					if err != nil || policyReprojectionMustHold(agent, resolution) {
 						t.Fatal("fixture must reach suspension without a policy-reprojection hold:", err)
 					}
-					if _, err := f.reconcile(); err == nil {
-						t.Fatal("the unavailable prerequisite or unacknowledged stop must remain visible")
+					result, err := f.reconcile()
+					if coordinated {
+						if err != nil || result.RequeueAfter != cleanupWaitRequeue ||
+							f.current(t).Status.Phase != api.PhasePending {
+							t.Fatal("unacknowledged stop did not remain pending with bounded retry:", result, err)
+						}
+					} else if err == nil {
+						t.Fatal("the unavailable prerequisite must remain visible")
 					}
 					for _, workload := range expected.Workloads {
 						object := &unstructured.Unstructured{}

@@ -24,6 +24,34 @@ import (
 // platform prerequisite or an administrator action.
 const prerequisiteRequeue = 30 * time.Second
 
+var errSandboxShutdownPending = errors.New("Sandbox shutdown is pending")
+
+func onlySandboxShutdownProgress(err error) bool {
+	if err == nil {
+		return false
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		causes := joined.Unwrap()
+		for _, cause := range causes {
+			if !onlySandboxShutdownProgress(cause) {
+				return false
+			}
+		}
+		return len(causes) != 0
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return onlySandboxShutdownProgress(wrapped.Unwrap())
+	}
+	return err == errSandboxShutdownPending
+}
+
+func reconciledSuspensionResult(cause error) (ctrl.Result, error) {
+	if onlySandboxShutdownProgress(cause) {
+		return ctrl.Result{RequeueAfter: cleanupWaitRequeue}, nil
+	}
+	return ctrl.Result{}, cause
+}
+
 // prerequisiteWait reports whether err only waits for an administrator or
 // another controller. Every cause must be such a wait; a bare class sentinel
 // such as sandboxpolicy.ErrUnavailable that labels a wait is allowed beside
