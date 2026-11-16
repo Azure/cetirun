@@ -51,7 +51,9 @@ jobs:
           python3 -m pip install --disable-pip-version-check \
             --index-url "${PYPI_INDEX_URL}" \
             --requirement infra/istio/requirements.txt
-          python3 -m unittest discover -s scripts/tests -v
+          # The full scripts/tests suite runs in CetiRun validation's ci-test.
+          python3 -B -m unittest scripts.tests.test_cetirun_image_dependencies \
+            scripts.tests.test_pip_vendor_inventory -v
 
       - name: Build base image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -60,11 +62,16 @@ jobs:
           file: app/cetirun-chart/Dockerfile.base
           push: false
           tags: cetirun-base:validation
+          cache-from: type=gha,scope=runtime-base
+          cache-to: type=gha,mode=max,scope=runtime-base
+          # Refresh mutable package downloads on scheduled and manual scans.
+          no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
           build-args: |
             NPM_REGISTRY=${{ env.NPM_REGISTRY }}
             PYPI_INDEX_URL=${{ env.PYPI_INDEX_URL }}
 
       - name: Build OpenClaw image
+        id: build-openclaw
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: app/cetirun-chart
@@ -74,6 +81,9 @@ jobs:
             BASE_IMAGE=cetirun-base:validation
             NPM_REGISTRY=${{ env.OPENCLAW_NPM_REGISTRY }}
           tags: openclaw-gateway:validation
+          cache-from: type=gha,scope=runtime-openclaw
+          cache-to: type=gha,mode=max,scope=runtime-openclaw
+          no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
 
       - name: Build Pi agent image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -86,6 +96,9 @@ jobs:
           build-args: |
             BASE_IMAGE=cetirun-base:validation
           tags: cetirun-pi-agent:validation
+          cache-from: type=gha,scope=runtime-pi-agent
+          cache-to: type=gha,mode=max,scope=runtime-pi-agent
+          no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
 
       - name: Smoke test updated runtime dependencies
         run: |
@@ -108,6 +121,9 @@ jobs:
             NPM_REGISTRY=${{ env.NPM_REGISTRY }}
             PYPI_INDEX_URL=${{ env.PYPI_INDEX_URL }}
           tags: hermes-gateway:validation
+          cache-from: type=gha,scope=runtime-hermes
+          cache-to: type=gha,mode=max,scope=runtime-hermes
+          no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
 
       - name: Build desktop sidecar image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -116,27 +132,46 @@ jobs:
           file: app/cetirun-chart/Dockerfile.desktop
           push: false
           tags: cetirun-desktop:validation
+          cache-from: type=gha,scope=runtime-desktop
+          cache-to: type=gha,mode=max,scope=runtime-desktop
+          no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
 
       - name: Pull Trivy from MCR
+        if: always() && !cancelled()
         run: docker pull mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3
 
       - name: Scan image for vulnerabilities (Trivy)
+        # Keep the OpenClaw report available if a later image build failed.
+        if: always() && !cancelled() && steps.build-openclaw.outcome == 'success'
         run: |
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$RUNNER_TEMP/trivy-cache:/root/.cache/trivy" \
+            -v "$GITHUB_WORKSPACE:/workspace" \
             mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3 \
             image \
             --timeout 10m \
-            --format table \
+            --format json \
+            --output /workspace/trivy-results.json \
             --exit-code 1 \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
             openclaw-gateway:validation
 
+      - name: Show Trivy table from scan result
+        if: always() && !cancelled() && hashFiles('trivy-results.json') != ''
+        continue-on-error: true
+        run: |
+          docker run --rm --network none \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3 \
+            convert --format table --scanners vuln,secret /workspace/trivy-results.json
+
       - name: Scan Hermes image for vulnerabilities (Trivy)
         run: |
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$RUNNER_TEMP/trivy-cache:/root/.cache/trivy" \
             mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3 \
             image \
             --timeout 10m \
@@ -151,6 +186,7 @@ jobs:
           for image in cetirun-base:validation cetirun-pi-agent:validation; do
             docker run --rm \
               -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "$RUNNER_TEMP/trivy-cache:/root/.cache/trivy" \
               mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3 \
               image \
               --timeout 10m \
@@ -165,6 +201,7 @@ jobs:
         run: |
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$RUNNER_TEMP/trivy-cache:/root/.cache/trivy" \
             mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3 \
             image \
             --timeout 10m \
@@ -174,21 +211,17 @@ jobs:
             --ignore-unfixed \
             cetirun-desktop:validation
 
-      - name: Scan image for SARIF report (Trivy)
-        if: always() && !cancelled()
+      - name: Convert Trivy scan result to SARIF
+        if: always() && !cancelled() && hashFiles('trivy-results.json') != ''
         continue-on-error: true
         run: |
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "${{ github.workspace }}:/workspace" \
+          docker run --rm --network none \
+            -v "$GITHUB_WORKSPACE:/workspace" \
             mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3 \
-            image \
-            --timeout 10m \
+            convert \
             --format sarif \
             --output /workspace/trivy-results.sarif \
-            --severity CRITICAL,HIGH \
-            --ignore-unfixed \
-            openclaw-gateway:validation
+            /workspace/trivy-results.json
 
       - name: Save Trivy SARIF for isolated reporting
         if: always() && !cancelled() && hashFiles('trivy-results.sarif') != ''
@@ -198,22 +231,6 @@ jobs:
           name: runtime-trivy-sarif
           path: trivy-results.sarif
           retention-days: 7
-
-      - name: Scan image for JSON report (Trivy)
-        if: always() && !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-        continue-on-error: true
-        run: |
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "${{ github.workspace }}:/workspace" \
-            mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3 \
-            image \
-            --timeout 10m \
-            --format json \
-            --output /workspace/trivy-results.json \
-            --severity CRITICAL,HIGH \
-            --ignore-unfixed \
-            openclaw-gateway:validation
 
       - name: Save Trivy JSON for isolated reporting
         if: always() && !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && hashFiles('trivy-results.json') != ''
