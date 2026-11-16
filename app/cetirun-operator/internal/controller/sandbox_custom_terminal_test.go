@@ -6,13 +6,16 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	sandboxadmission "github.com/Azure/CetiRun/app/cetirun-operator/internal/admission"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
+	"github.com/Azure/CetiRun/app/internal/chataccess"
 	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
+	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	admissionv1 "k8s.io/api/admission/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -146,6 +149,11 @@ func TestCommonCustomTerminalReadinessAndSuspension(t *testing.T) {
 			if f.current(t).Status.Phase != api.PhaseReady || !isConditionTrue(f.current(t).Status.Conditions, api.ConditionTerminalConfigured) {
 				t.Fatal("current terminal did not become available")
 			}
+			privateRoute := &istiov1beta1.VirtualService{}
+			routeKey := client.ObjectKey{Namespace: instanceNamespace(f.agent.Name), Name: chataccess.RouteName(f.agent.Name)}
+			if err := f.kube.Get(context.Background(), routeKey, privateRoute); err != nil {
+				t.Fatal("active Custom Chat has no private route:", err)
+			}
 			expected := reconciledExpectationForTest(t, f)
 			if expected.Terminal == nil || len(expected.Workloads) != 2 {
 				t.Fatal("terminal was not included in common execution authority")
@@ -186,6 +194,11 @@ func TestCommonCustomTerminalReadinessAndSuspension(t *testing.T) {
 			f.reconcileOK(t)
 			if f.current(t).Status.Phase != api.PhaseSuspended {
 				t.Fatal("acknowledged shutdown did not finish retained suspension")
+			}
+			retained := &istiov1beta1.VirtualService{}
+			if err := f.kube.Get(context.Background(), routeKey, retained); err != nil ||
+				retained.UID != privateRoute.UID || !reflect.DeepEqual(retained.Spec, privateRoute.Spec) {
+				t.Fatal("suspension changed the separate private Chat route:", err)
 			}
 		})
 	}
