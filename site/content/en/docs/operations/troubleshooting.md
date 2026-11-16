@@ -227,6 +227,11 @@ If the main workload is ready but the Custom terminal keeps returning HTTP
 not establish readiness: the terminal must also read and authorize its target
 and successfully probe a supported shell through Kubernetes exec.
 
+The terminal tries `zsh`, then `bash`, then `sh`. A missing executable,
+including the Kata runtime's missing-file response for that exact shell,
+advances to the next candidate. Authorization and transport failures do not
+select another shell.
+
 The terminal reports fixed startup stages and error categories:
 
 | Stage | What to investigate |

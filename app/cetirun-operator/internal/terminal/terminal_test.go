@@ -111,6 +111,35 @@ func TestShellDetectionOrderAndFailures(t *testing.T) {
 	}
 }
 
+func TestKataShellDetectionSkipsOnlyMissingExecutables(t *testing.T) {
+	for _, want := range []string{"bash", "sh", ""} {
+		t.Run("available="+want, func(t *testing.T) {
+			got, err := DetectShell(context.Background(), func(_ context.Context, command []string) error {
+				if command[0] == want {
+					return nil
+				}
+				return apierrors.NewInternalError(fmt.Errorf(
+					"failed to exec in container: rpc error: code = Internal desc = the file %s was not found", command[0]))
+			})
+			if want == "" {
+				if !errors.Is(err, terminalpolicy.ErrNoShell) {
+					t.Fatal("missing Kata shells did not exhaust the allowed candidates:", err)
+				}
+			} else if err != nil || got != want {
+				t.Fatalf("Kata missing executable prevented fallback: got %q, %v; want %q", got, err, want)
+			}
+		})
+	}
+	failure := apierrors.NewInternalError(errors.New("failed to exec in container: the file zshrc was not found"))
+	calls := 0
+	if _, err := DetectShell(context.Background(), func(context.Context, []string) error {
+		calls++
+		return failure
+	}); err != failure || calls != 1 {
+		t.Fatal("a different missing file was treated as a missing shell")
+	}
+}
+
 func TestEntryPointFailsWhenNoShellExists(t *testing.T) {
 	f := &fakeBackend{agent: testAgent(),
 		resolve: func(context.Context, Identity) (Snapshot, error) {

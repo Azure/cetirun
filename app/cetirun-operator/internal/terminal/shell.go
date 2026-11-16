@@ -43,5 +43,6 @@ func shellMissing(err error, shell string) bool {
 	return strings.Contains(message, shell) && strings.Contains(message, "exec") &&
 		(strings.Contains(message, "executable file not found") ||
 			strings.Contains(message, "executable not found") ||
-			strings.Contains(message, "no such file or directory"))
+			strings.Contains(message, "no such file or directory") ||
+			strings.Contains(message, "the file "+shell+" was not found"))
 }
