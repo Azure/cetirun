@@ -6,7 +6,6 @@ package controller
 import (
 	"context"
 	"encoding/json"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	"github.com/Azure/CetiRun/app/internal/chataccess"
 	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
+	"google.golang.org/protobuf/proto"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	admissionv1 "k8s.io/api/admission/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -197,7 +197,7 @@ func TestCommonCustomTerminalReadinessAndSuspension(t *testing.T) {
 			}
 			retained := &istiov1beta1.VirtualService{}
 			if err := f.kube.Get(context.Background(), routeKey, retained); err != nil ||
-				retained.UID != privateRoute.UID || !reflect.DeepEqual(retained.Spec, privateRoute.Spec) {
+				retained.UID != privateRoute.UID || !proto.Equal(&retained.Spec, &privateRoute.Spec) {
 				t.Fatal("suspension changed the separate private Chat route:", err)
 			}
 		})
