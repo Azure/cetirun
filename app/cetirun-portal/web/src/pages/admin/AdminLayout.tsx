@@ -7,7 +7,6 @@ import {
   Box20Regular,
   PeopleTeam20Regular,
   PuzzlePiece20Regular,
-  Settings20Regular,
   ShieldTask20Regular,
 } from "@fluentui/react-icons";
 import { useFeatures } from "../../hooks/useFeatures";
@@ -41,10 +40,6 @@ export function AdminLayout() {
             <Bot20Regular />
             Agents
           </NavLink>
-          <span className="portal-side-link is-disabled">
-            <Settings20Regular />
-            Settings
-          </span>
         </div>
       </aside>
       <main className="portal-split-main">
