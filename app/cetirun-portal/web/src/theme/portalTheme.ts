@@ -10,9 +10,11 @@ import {
 } from "@fluentui/react-components";
 
 /**
- * The Portal theme: paper and ink. Surfaces and text are neutral, primary
- * actions are ink, and one blue marks links and keyboard focus. Green, amber
- * and red are kept for the state of an Agent or of a request.
+ * The Portal theme. Surfaces and text are neutral: white, gray and near black
+ * in the light theme, black and gray in the dark theme. Primary actions, links
+ * and keyboard focus take the text color. Green, amber and red are kept for
+ * the state of an Agent or of a request. The documentation site uses the same
+ * colors (site/assets/scss/_styles_project.scss); change the two together.
  */
 
 /** Tokens the Portal adds to the Fluent theme. FluentProvider publishes every theme key as a CSS variable. */
@@ -40,25 +42,25 @@ const fontDisplay = `"Segoe UI Variable Display", ${systemSans}`;
 const fontMonospace =
   '"Cascadia Code", "Cascadia Mono", Consolas, "SF Mono", Menlo, "Noto Sans Mono", "DejaVu Sans Mono", "Liberation Mono", ui-monospace, monospace';
 
-// Fluent derives the less common brand tokens from this ramp. It runs from
-// ink to paper, so those tokens stay neutral too.
-const inkRamp: BrandVariants = {
-  10: "#080706",
-  20: "#0f0e0c",
-  30: "#171614",
-  40: "#1d1c19",
-  50: "#23211f",
-  60: "#2b2a28",
-  70: "#343330",
-  80: "#3a3937",
-  90: "#545250",
-  100: "#747370",
-  110: "#a09e9b",
-  120: "#b9b7b4",
-  130: "#cccac7",
-  140: "#dad9d6",
-  150: "#e8e6e3",
-  160: "#f2f0ed",
+// Fluent derives the less common brand tokens from this ramp. It runs through
+// pure grays, so those tokens stay neutral too.
+const grayRamp: BrandVariants = {
+  10: "#080808",
+  20: "#0f0f0f",
+  30: "#161616",
+  40: "#1c1c1c",
+  50: "#222222",
+  60: "#2a2a2a",
+  70: "#333333",
+  80: "#3a3a3a",
+  90: "#525252",
+  100: "#737373",
+  110: "#9e9e9e",
+  120: "#b8b8b8",
+  130: "#cacaca",
+  140: "#d9d9d9",
+  150: "#e6e6e6",
+  160: "#f0f0f0",
 };
 
 type Lightness = (l: number) => number;
@@ -86,38 +88,23 @@ const linearToChannel = (value: number) => {
     .padStart(2, "0");
 };
 
-/** The OKLCH color as sRGB hex. */
-function oklch(lightness: number, chroma: number, hue: number): string {
-  const a = chroma * Math.cos((hue * Math.PI) / 180);
-  const b = chroma * Math.sin((hue * Math.PI) / 180);
-  const l = (lightness + 0.3963377774 * a + 0.2158037573 * b) ** 3;
-  const m = (lightness - 0.1055613458 * a - 0.0638541728 * b) ** 3;
-  const s = (lightness - 0.0894841775 * a - 1.291485548 * b) ** 3;
-  return `#${linearToChannel(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s)}${linearToChannel(
-    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
-  )}${linearToChannel(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s)}`;
-}
-
 const PURE_GRAY = /^#([0-9a-f]{2})\1\1$/i;
 
+/** OKLab lightness of a pure gray: the cube root of its linear luminance. */
+const lightnessOf = (gray: string) => Math.cbrt(channelToLinear(parseInt(gray.slice(1, 3), 16)));
+
 /**
- * Fluent's neutrals are pure grays. Give each the same faint warmth, and
- * move it along the lightness curve, so that every neutral token stays in
- * step with the few that are set by hand. A gray that the curve leaves at
- * full lightness stays white.
+ * Moves each of Fluent's grays along the lightness curve, so that every
+ * neutral token stays in step with the few that are set by hand.
  */
-function retone(theme: Theme, lightness: Lightness, chroma: number, hue: number): Theme {
-  const toned: Record<string, unknown> = { ...theme };
+function relight(theme: Theme, lightness: Lightness): Theme {
+  const relit: Record<string, unknown> = { ...theme };
   for (const [token, value] of Object.entries(theme)) {
-    if (typeof value !== "string") continue;
-    const gray = PURE_GRAY.exec(value);
-    if (!gray) continue;
-    // For a gray, OKLab lightness is the cube root of its linear luminance.
-    const source = Math.cbrt(channelToLinear(parseInt(gray[1], 16)));
-    const target = lightness(source);
-    toned[token] = target >= 0.999 ? "#ffffff" : oklch(target, chroma, hue);
+    if (typeof value !== "string" || !PURE_GRAY.test(value)) continue;
+    const channel = linearToChannel(lightness(lightnessOf(value)) ** 3);
+    relit[token] = `#${channel}${channel}${channel}`;
   }
-  return toned as Theme;
+  return relit as Theme;
 }
 
 /** Primary actions and checked controls: one color at rest, one under the pointer, one when pressed. */
@@ -179,46 +166,39 @@ const shape: Partial<Theme> = {
   borderRadiusXLarge: "12px",
 };
 
+const lightText = "#1a1a1a";
+const darkText = "#e8e8e8";
+
 const light: PortalTheme = {
-  ...retone(createLightTheme(inkRamp), (l) => l, 0.0045, 82),
+  ...createLightTheme(grayRamp),
   ...shape,
 
-  // Paper.
-  colorNeutralBackground2: "#f7f5f2",
-  colorNeutralBackground3: "#f2f0ed",
-  colorNeutralBackground4: "#eceae7",
-  colorNeutralBackground5: "#e6e4e1",
-  colorNeutralBackground6: "#dfdedb",
-  colorNeutralStroke1: "#d2d1ce",
-  colorNeutralStroke2: "#e3e2df",
-  colorNeutralStroke3: "#edebe8",
-  colorNeutralStrokeAccessible: "#848380",
-  colorNeutralStrokeAccessibleHover: "#666462",
-  colorNeutralStrokeAccessiblePressed: "#545250",
+  // The page is white, like a surface. A hairline separates the two.
+  colorNeutralBackground2: "#ffffff",
+  colorNeutralStrokeAccessible: "#858585",
+  colorNeutralStrokeAccessibleHover: "#666666",
+  colorNeutralStrokeAccessiblePressed: "#525252",
 
-  // Ink.
-  colorNeutralForeground1: "#171614",
-  colorNeutralForeground1Hover: "#171614",
-  colorNeutralForeground1Pressed: "#171614",
-  colorNeutralForeground1Selected: "#171614",
-  colorNeutralForeground2: "#3a3937",
-  colorNeutralForeground3: "#666462",
-  colorNeutralForeground4: "#747370",
-  colorNeutralForegroundDisabled: "#afaeab",
+  // Text.
+  colorNeutralForeground1: lightText,
+  colorNeutralForeground1Hover: lightText,
+  colorNeutralForeground1Pressed: lightText,
+  colorNeutralForeground1Selected: lightText,
+  colorNeutralForeground2: "#3d3d3d",
+  colorNeutralForeground3: "#5d5d5d",
+  colorNeutralForeground4: "#737373",
+  colorNeutralForegroundDisabled: "#b0b0b0",
 
-  // Primary actions and checked controls are ink.
-  ...primaryColors("#171614", "#343330", "#080706"),
-  colorBrandBackgroundSelected: "#23211f",
-  colorBrandForeground2: "#3a3937",
-  colorBrandForeground2Pressed: "#080706",
-  colorBrandBackground2Pressed: "#dad9d6",
-
-  // The accent.
-  colorBrandForegroundLink: "#1b45c4",
-  colorBrandForegroundLinkHover: "#14359c",
-  colorBrandForegroundLinkPressed: "#0e2876",
-  colorBrandForegroundLinkSelected: "#1b45c4",
-  colorStrokeFocus2: "#1b45c4",
+  // Primary actions, checked controls and links take the text color.
+  ...primaryColors(lightText, "#333333", "#000000"),
+  colorBrandBackgroundSelected: "#222222",
+  colorBrandForeground2: "#3d3d3d",
+  colorBrandForeground2Pressed: "#000000",
+  colorBrandBackground2Pressed: "#d9d9d9",
+  colorBrandForegroundLink: lightText,
+  colorBrandForegroundLinkHover: "#000000",
+  colorBrandForegroundLinkPressed: "#000000",
+  colorBrandForegroundLinkSelected: lightText,
 
   // State.
   ...stateColors("Green", "Success", {
@@ -248,91 +228,74 @@ const light: PortalTheme = {
   colorStatusDangerBackground3Hover: "#a82b22",
   colorStatusDangerBackground3Pressed: "#8c231c",
 
-  // Elevation is for overlays only; the shadow is ink, not black.
-  shadow2: "0 1px 2px rgba(23, 22, 20, 0.06)",
-  shadow4: "0 1px 2px rgba(23, 22, 20, 0.05), 0 2px 6px rgba(23, 22, 20, 0.05)",
-  shadow8: "0 2px 4px rgba(23, 22, 20, 0.05), 0 6px 16px rgba(23, 22, 20, 0.08)",
-  shadow16: "0 2px 6px rgba(23, 22, 20, 0.06), 0 12px 28px rgba(23, 22, 20, 0.12)",
-  shadow28: "0 4px 10px rgba(23, 22, 20, 0.06), 0 20px 44px rgba(23, 22, 20, 0.16)",
-  shadow64: "0 6px 14px rgba(23, 22, 20, 0.08), 0 32px 72px rgba(23, 22, 20, 0.22)",
-  colorBackgroundOverlay: "rgba(23, 22, 20, 0.36)",
+  // Elevation is for overlays only.
+  shadow2: "0 1px 2px rgba(0, 0, 0, 0.06)",
+  shadow4: "0 1px 2px rgba(0, 0, 0, 0.05), 0 2px 6px rgba(0, 0, 0, 0.05)",
+  shadow8: "0 2px 4px rgba(0, 0, 0, 0.05), 0 6px 16px rgba(0, 0, 0, 0.08)",
+  shadow16: "0 2px 6px rgba(0, 0, 0, 0.06), 0 12px 28px rgba(0, 0, 0, 0.12)",
+  shadow28: "0 4px 10px rgba(0, 0, 0, 0.06), 0 20px 44px rgba(0, 0, 0, 0.16)",
+  shadow64: "0 6px 14px rgba(0, 0, 0, 0.08), 0 32px 72px rgba(0, 0, 0, 0.22)",
+  colorBackgroundOverlay: "rgba(0, 0, 0, 0.36)",
 
-  portalSelection: "#e3e9fb",
-  portalWell: "#f2f0ed",
-  portalHover: "#eceae7",
+  portalSelection: "#dcdcdc",
+  portalWell: "#f3f3f3",
+  portalHover: "#e9e9e9",
   portalLampReady: "#1f9d57",
   portalLampBusy: "#c57d00",
   portalLampFault: "#d93a2e",
-  portalLampIdle: "#8f8d8a",
+  portalLampIdle: "#8f8f8f",
   portalFontDisplay: fontDisplay,
 };
 
-// Fluent's dark neutrals sit higher than the Portal's; the curve lowers them
-// together so that hover, pressed and selected steps keep their order.
-const darkLightness = curve([
-  [0, 0.09],
-  [0.145, 0.13],
-  [0.19, 0.155],
-  [0.24, 0.186],
-  [0.283, 0.225],
-  [0.32, 0.262],
-  [0.36, 0.3],
-  [0.44, 0.37],
-  [0.51, 0.43],
-  [0.75, 0.72],
-  [0.87, 0.86],
-  [1, 0.955],
-]);
+// Fluent's dark grays sit higher than the Portal's. Each row gives a gray of
+// Fluent and the gray that takes its place. A gray between two rows keeps its
+// place between them, so hover, pressed and selected steps keep their order.
+const darkLightness = curve(
+  [
+    ["#000000", "#000000"],
+    ["#0a0a0a", "#050505"],
+    ["#141414", "#0a0a0a"],
+    ["#1f1f1f", "#0d0d0d"],
+    ["#292929", "#141414"],
+    ["#333333", "#1c1c1c"],
+    ["#3d3d3d", "#262626"],
+    ["#525252", "#2e2e2e"],
+    ["#666666", "#3a3a3a"],
+    ["#adadad", "#a8a8a8"],
+    ["#d6d6d6", "#c8c8c8"],
+    ["#ffffff", darkText],
+  ].map(([fluent, portal]): [number, number] => [lightnessOf(fluent), lightnessOf(portal)]),
+);
 
 const dark: PortalTheme = {
-  ...retone(createDarkTheme(inkRamp), darkLightness, 0.005, 82),
+  ...relight(createDarkTheme(grayRamp), darkLightness),
   ...shape,
 
-  // Paper.
-  colorNeutralBackground1: "#1d1c19",
-  colorNeutralBackground2: "#141310",
-  colorNeutralBackground3: "#0d0c0a",
-  colorNeutralBackground6: "#262523",
-  colorNeutralStroke1: "#4c4a47",
-  colorNeutralStroke2: "#353431",
-  colorNeutralStroke3: "#2b2a27",
-  colorNeutralStrokeAccessible: "#8e8c89",
-  colorNeutralStrokeAccessibleHover: "#a6a4a1",
-  colorNeutralStrokeAccessiblePressed: "#bcbab7",
+  // The page is black. The grays above put a surface one step higher.
+  colorNeutralBackground2: "#000000",
+  colorNeutralStroke2: "#262626",
+  colorNeutralStroke3: "#1f1f1f",
+  colorNeutralStrokeAccessible: "#8c8c8c",
+  colorNeutralStrokeAccessibleHover: "#a6a6a6",
+  colorNeutralStrokeAccessiblePressed: "#bababa",
+  colorNeutralForegroundDisabled: "#5c5c5c",
+  colorNeutralForegroundOnBrand: "#0d0d0d",
 
-  // Ink.
-  colorNeutralForeground1: "#f2f0ec",
-  colorNeutralForeground1Hover: "#f2f0ec",
-  colorNeutralForeground1Pressed: "#f2f0ec",
-  colorNeutralForeground1Selected: "#f2f0ec",
-  colorNeutralForeground2: "#d2d1cd",
-  colorNeutralForeground3: "#a6a4a1",
-  colorNeutralForeground4: "#8e8c89",
-  colorNeutralForegroundDisabled: "#5f5d5a",
-  colorNeutralForegroundOnBrand: "#141310",
-  colorNeutralForegroundInverted: "#141310",
-  colorNeutralForegroundInvertedHover: "#141310",
-  colorNeutralForegroundInvertedPressed: "#141310",
-  colorNeutralForegroundInvertedSelected: "#141310",
-
-  // Primary actions invert: paper on ink.
-  ...primaryColors("#f2f0ec", "#ffffff", "#c9c7c4"),
-  colorBrandBackgroundSelected: "#e0deda",
-  colorBrandForeground2: "#d2d1cd",
+  // Primary actions invert: dark text on a light fill.
+  ...primaryColors("#f3f3f3", "#ffffff", "#c9c9c9"),
+  colorBrandBackgroundSelected: "#e0e0e0",
+  colorBrandForeground2: "#c8c8c8",
   colorBrandForeground2Pressed: "#ffffff",
-  colorBrandStroke2: "#4c4a47",
-  colorBrandStroke2Hover: "#666461",
-  colorBrandStroke2Contrast: "#4c4a47",
-  colorBrandBackground2: "#262523",
-  colorBrandBackground2Hover: "#302f2c",
-  colorBrandBackground2Pressed: "#1d1c19",
-
-  colorBrandForegroundLink: "#9db4ff",
-  colorBrandForegroundLinkHover: "#bccbff",
-  colorBrandForegroundLinkPressed: "#8098ee",
-  colorBrandForegroundLinkSelected: "#9db4ff",
-  colorStrokeFocus1: "#141310",
-  colorStrokeFocus2: "#9db4ff",
+  colorBrandStroke2: "#3a3a3a",
+  colorBrandStroke2Hover: "#666666",
+  colorBrandStroke2Contrast: "#3a3a3a",
+  colorBrandBackground2: "#1c1c1c",
+  colorBrandBackground2Hover: "#2a2a2a",
+  colorBrandBackground2Pressed: "#141414",
+  colorBrandForegroundLink: darkText,
+  colorBrandForegroundLinkHover: "#ffffff",
+  colorBrandForegroundLinkPressed: "#c8c8c8",
+  colorBrandForegroundLinkSelected: darkText,
 
   ...stateColors("Green", "Success", {
     Background1: "#14241b", Background2: "#1b3b2a", Background3: "#3fc27e",
@@ -371,13 +334,13 @@ const dark: PortalTheme = {
   shadow64: "0 6px 14px rgba(0, 0, 0, 0.36), 0 32px 72px rgba(0, 0, 0, 0.56)",
   colorBackgroundOverlay: "rgba(0, 0, 0, 0.56)",
 
-  portalSelection: "#27304f",
-  portalWell: "#262523",
-  portalHover: "#2b2a27",
+  portalSelection: "#404040",
+  portalWell: "#1c1c1c",
+  portalHover: "#2a2a2a",
   portalLampReady: "#3fc27e",
   portalLampBusy: "#f0aa2e",
   portalLampFault: "#ef5f52",
-  portalLampIdle: "#7d7b78",
+  portalLampIdle: "#7a7a7a",
   portalFontDisplay: fontDisplay,
 };
 

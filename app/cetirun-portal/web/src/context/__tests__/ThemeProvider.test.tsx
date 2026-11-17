@@ -13,7 +13,7 @@ describe("ThemeProvider", () => {
   it.each([
     ["dark", webDarkTheme],
     ["light", webLightTheme],
-  ] as const)("gives the document the Portal's %s paper and color scheme", (mode, base) => {
+  ] as const)("gives the document the Portal's %s page color and color scheme", (mode, base) => {
     localStorage.setItem("cetirun-theme", mode);
     const { unmount } = render(<ThemeProvider><span>content</span></ThemeProvider>);
     expect(document.documentElement.style.colorScheme).toBe(mode);

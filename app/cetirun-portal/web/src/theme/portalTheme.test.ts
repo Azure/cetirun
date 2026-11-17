@@ -15,6 +15,13 @@ function luminance(hex: string): number {
   return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
 }
 
+/** The red, green and blue channels of each color in a token value, in hex or rgb() notation. */
+function channels(value: string): number[][] {
+  const hex = [...value.matchAll(/#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/gi)].map((color) => color.slice(1).map((c) => parseInt(c, 16)));
+  const rgb = [...value.matchAll(/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/g)].map((color) => color.slice(1).map(Number));
+  return [...hex, ...rgb];
+}
+
 /** The WCAG contrast ratio of two opaque colors. */
 function contrast(a: string, b: string): number {
   const [lighter, darker] = [luminance(a), luminance(b)].sort((x, y) => y - x);
@@ -41,12 +48,26 @@ const TEXT_PAIRS: Array<[Token, Token]> = [
 ];
 
 const LAMPS: Token[] = ["portalLampReady", "portalLampBusy", "portalLampFault", "portalLampIdle"];
+// Fluent's palette and status colors, and the lamps, show a state.
+const STATE = /^(colorPalette|colorStatus|portalLamp)/;
 const DANGER: Token[] = ["colorStatusDangerBackground3", "colorStatusDangerBackground3Hover", "colorStatusDangerBackground3Pressed"];
 
 describe("portalTheme", () => {
-  it("draws dark paper for Fluent's dark theme and light paper otherwise", () => {
+  it("draws a dark page for Fluent's dark theme and a light page otherwise", () => {
     expect(luminance(portalTheme(webDarkTheme).colorNeutralBackground2)).toBeLessThan(0.05);
     expect(luminance(portalTheme(webLightTheme).colorNeutralBackground2)).toBeGreaterThan(0.8);
+  });
+
+  // Fluent's dark surfaces are lighter than the Portal's until the theme lowers them.
+  it("keeps every surface of the dark theme no lighter than its hover fill", () => {
+    const theme = portalTheme(webDarkTheme);
+    const lighter = Object.entries(theme).filter(
+      ([token, value]) =>
+        /^color(NeutralBackground[1-6]|SubtleBackground(Hover|Pressed|Selected)$|NeutralCardBackground)/.test(token) &&
+        /^#[0-9a-f]{6}$/i.test(value as string) &&
+        luminance(value as string) > luminance(theme.portalHover),
+    );
+    expect(lighter).toEqual([]);
   });
 
   describe.each([
@@ -77,11 +98,11 @@ describe("portalTheme", () => {
       }
     });
 
-    it("tones every opaque gray", () => {
-      const untoned = Object.entries(theme).filter(
-        ([, value]) => typeof value === "string" && /^#([0-9a-f]{2})\1\1$/i.test(value) && !["#ffffff", "#000000"].includes(value),
+    it("uses grays only, outside the state colors", () => {
+      const tinted = Object.entries(theme).filter(
+        ([token, value]) => typeof value === "string" && !STATE.test(token) && channels(value).some(([r, g, b]) => r !== g || g !== b),
       );
-      expect(untoned).toEqual([]);
+      expect(tinted).toEqual([]);
     });
   });
 });
