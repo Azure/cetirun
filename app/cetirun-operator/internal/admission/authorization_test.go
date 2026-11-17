@@ -417,6 +417,59 @@ func TestAdminRebindingAndLegacyAdoptionNeverImplicitlyDefault(t *testing.T) {
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "never re-defaulted")
 }
 
+func TestNativeControllerImageUpgradeKeepsAuthorizationBoundaries(t *testing.T) {
+	for _, scenario := range []string{"hermes", "openclaw", "other caller", "native disabled", "current generation", "unmanaged release", "custom", "other spec", "chart version", "authorization record"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newFixture(t)
+			f.handler.config.NativeExecution = true
+			kind := api.AgentTypeHermes
+			if scenario == "openclaw" {
+				kind = api.AgentTypeOpenClaw
+			} else if scenario == "custom" {
+				kind = api.AgentTypeCustom
+			}
+			f.policy.Spec.Harnesses.Allowed = []api.AgentType{kind}
+			if err := f.client.Update(context.Background(), f.policy); err != nil {
+				t.Fatal(err)
+			}
+			f.agent.Spec.Agent.Type = kind
+			f.agent.Spec.Agent.Image = ptr.To("registry.example.com/" + string(kind) + "-gateway:1.0.0")
+			f.agent.Spec.Helm.Version = "2.0.0"
+			f.agent.Generation, f.agent.Status.ObservedGeneration = 2, 1
+			f.agent.Status.HelmReleaseName = "cetirun-" + f.agent.Name
+			if scenario == "current generation" {
+				f.agent.Status.ObservedGeneration = f.agent.Generation
+			} else if scenario == "unmanaged release" {
+				f.agent.Status.HelmReleaseName = ""
+			}
+			stampFixtureAuthorization(t, f)
+			next := f.agent.DeepCopy()
+			next.Spec.Agent.Image = ptr.To("registry.example.com/" + string(kind) + "-gateway:2.0.0")
+			switch scenario {
+			case "native disabled":
+				f.handler.config.NativeExecution = false
+			case "other spec":
+				next.Spec.User.DisplayName = "Changed"
+			case "chart version":
+				next.Spec.Helm.Version = "3.0.0"
+			case "authorization record":
+				next.Annotations[sandboxbinding.AuthorizationAnnotation] = "untrusted"
+			}
+			caller := testController
+			if scenario == "other caller" {
+				caller = "system:serviceaccount:operator-test:another-controller"
+			}
+			request := requestFor(t, admissionv1.Update, next, f.agent, caller)
+			response := f.handler.Validate(context.Background(), request)
+			allowed := scenario == "hermes" || scenario == "openclaw"
+			requireResponse(t, response, allowed, "")
+			if response.Allowed && next.Annotations[sandboxbinding.AuthorizationAnnotation] != f.agent.Annotations[sandboxbinding.AuthorizationAnnotation] {
+				t.Fatal("image migration changed durable policy authorization")
+			}
+		})
+	}
+}
+
 func TestCreationAuthorizationDryRunAndFailuresHaveNoSideEffects(t *testing.T) {
 	f := assignedFixture(t)
 	req := requestFor(t, admissionv1.Create, f.agent, nil, "member")

@@ -264,9 +264,9 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 		}
 		return admission.Allowed("legacy Agent")
 	}
-	controllerDefaults := h.config.NativeExecution && request.UserInfo.Username == h.config.ControllerUsername &&
-		authenticated(request.UserInfo) && controllerRuntimeDefaults(agent, old)
-	if !h.config.administrator(request.UserInfo) && !controllerDefaults {
+	controllerRuntimeUpdate := h.config.NativeExecution && request.UserInfo.Username == h.config.ControllerUsername &&
+		authenticated(request.UserInfo) && (controllerRuntimeDefaults(agent, old) || controllerImageUpgrade(agent, old))
+	if !h.config.administrator(request.UserInfo) && !controllerRuntimeUpdate {
 		if err := h.memberAuthority(ctx, request, agent); err != nil {
 			return admission.Denied(err.Error())
 		}

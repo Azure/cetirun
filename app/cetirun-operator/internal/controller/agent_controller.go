@@ -527,6 +527,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		// must not create a namespace that protected bootstrap cannot adopt.
 		if reconciledSandbox {
 			if err := r.bootstrapReconciledSandbox(ctx, instance); err != nil {
+				if stderrors.Is(err, errSandboxIntentChanged) {
+					return ctrl.Result{Requeue: true}, nil
+				}
 				return r.holdReconciledBootstrap(ctx, instance, err)
 			}
 		}
@@ -804,6 +807,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 	if namespaceErr != nil {
 		if reconciledSandbox {
+			if stderrors.Is(namespaceErr, errSandboxIntentChanged) {
+				prerequisitesComplete = true
+				return ctrl.Result{Requeue: true}, nil
+			}
 			return r.holdReconciledBootstrap(ctx, instance, namespaceErr)
 		}
 		return r.failWith(ctx, instance, "ProvisioningFailed", fmt.Sprintf("ensure namespace: %v", namespaceErr))

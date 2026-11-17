@@ -166,9 +166,20 @@ func (r *AgentReconciler) bootstrapReconciledSandbox(ctx context.Context, agent 
 	if err := r.bootstrapSandboxOwned(ctx, attempt); err != nil {
 		return err
 	}
-	if err := r.customReader().Get(ctx, client.ObjectKeyFromObject(agent), agent); err != nil {
+	expected, err := w.AgentSourceReference(attempt.agent)
+	if err != nil {
 		return err
 	}
+	current := &api.Agent{}
+	if err := r.customReader().Get(ctx, client.ObjectKeyFromObject(agent), current); err != nil {
+		return err
+	}
+	// Bootstrap refreshes its receipts, not the inputs of an already prepared chart.
+	observed, err := w.AgentSourceReference(current)
+	if err != nil || observed != expected || !current.DeletionTimestamp.IsZero() {
+		return fmt.Errorf("%w after Sandbox bootstrap", errSandboxIntentChanged)
+	}
+	*agent = *current
 	recorded, err := r.recordedReconciledSandbox(ctx, agent)
 	if err != nil {
 		return err
