@@ -56,6 +56,8 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"sigs.k8s.io/yaml"
@@ -1381,16 +1383,52 @@ func (c *cetiAdminLostCreateClient) Create(ctx context.Context, object client.Ob
 	return c.Client.Create(ctx, object, options...)
 }
 
+func TestCetiAdminPermissionWaitsForRBACPropagation(t *testing.T) {
+	for _, allowed := range []bool{true, false} {
+		t.Run(fmt.Sprintf("allowed=%t", allowed), func(t *testing.T) {
+			h := &cetiAdminInstallationAPI{ctx: context.Background()}
+			calls := 0
+			caller := interceptor.NewClient(fake.NewClientBuilder().Build(), interceptor.Funcs{
+				Create: func(_ context.Context, _ client.WithWatch, object client.Object, _ ...client.CreateOption) error {
+					review, ok := object.(*authorizationv1.SelfSubjectAccessReview)
+					if !ok {
+						t.Fatalf("unexpected authorization request: %T", object)
+					}
+					calls++
+					review.Status.Allowed = !allowed
+					if calls == 3 {
+						review.Status.Allowed = allowed
+					}
+					return nil
+				},
+			})
+			h.assertPermission(t, caller, "delete", api.GroupVersion.Group, "agents", "", "", "retained", allowed)
+			if calls != 3 {
+				t.Fatalf("authorization did not wait for the observed RBAC change: calls=%d", calls)
+			}
+		})
+	}
+}
+
 func (h *cetiAdminInstallationAPI) assertPermission(t *testing.T, caller client.Client, verb, group, resource, subresource, namespace, name string, allowed bool) {
 	t.Helper()
-	review := &authorizationv1.SelfSubjectAccessReview{Spec: authorizationv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authorizationv1.ResourceAttributes{
+	attributes := authorizationv1.ResourceAttributes{
 		Verb: verb, Group: group, Resource: resource, Subresource: subresource, Namespace: namespace, Name: name,
-	}}}
-	if err := caller.Create(h.ctx, review); err != nil {
-		t.Fatal(err)
 	}
-	if review.Status.Allowed != allowed {
-		t.Fatalf("RBAC %s %s/%s/%s namespace=%s name=%s: allowed=%v want=%v reason=%s", verb, group, resource, subresource, namespace, name, review.Status.Allowed, allowed, review.Status.Reason)
+	var last authorizationv1.SubjectAccessReviewStatus
+	// Persisted RBAC changes reach the API server's authorizer caches asynchronously.
+	if err := wait.PollUntilContextTimeout(h.ctx, 50*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
+		review := &authorizationv1.SelfSubjectAccessReview{Spec: authorizationv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &attributes}}
+		if err := caller.Create(ctx, review); err != nil {
+			return false, err
+		}
+		last = review.Status
+		if last.EvaluationError != "" {
+			return false, errors.New(last.EvaluationError)
+		}
+		return last.Allowed == allowed, nil
+	}); err != nil {
+		t.Fatalf("RBAC for %+v: wanted allowed=%v, got %+v: %v", attributes, allowed, last, err)
 	}
 }
 

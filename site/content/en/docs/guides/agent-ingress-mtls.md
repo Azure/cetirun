@@ -428,6 +428,8 @@ authorization. Istio 1.30 examines if the Portal ServiceAccount has the
 namespace-wide `list` permission on Secrets. Permission to `get` one Secret is
 not sufficient. Give that permission explicitly, in a Portal credential
 namespace that is correctly isolated. The CetiRun chart does not grant it.
+The [standalone Portal profile]({{< repo "examples/native-sandbox/README.md" >}}#isolated-portal-chat-mtls)
+provides namespace-local SDS RBAC and the matching Portal values.
 
 A DestinationRule for each Agent in the Portal namespace selects the Portal
 workload and originates mTLS for the private Chat route. It is exported only

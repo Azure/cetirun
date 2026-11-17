@@ -26,6 +26,104 @@ order:
 | [Create, connect and use](#create-connect-and-use) | Agent owner and admission administrator | Each run |
 | [Delete and verify cleanup](#delete-and-verify-cleanup) | Agent owner and admission administrator | Each run |
 
+## Isolated Portal Chat mTLS
+
+The standalone Portal can use a separate namespace for its per-Agent Chat
+client credentials. This opt-in profile does not change the umbrella defaults
+or move an installed Portal. Use a fresh installation or an approved
+maintenance plan. Do not install a second Portal with the same cluster-scoped
+role names.
+
+1. Review [portal-chat-sds.yaml](portal-chat-sds.yaml). Its namespace is
+   `cetirun-portal-chat`; replace the Istio revision with the verified revision
+   of the target. Keep AI Gateway, Broker, registry and ingress credentials
+   outside this namespace. The Role adds only the namespace-local Secret
+   `list` permission that Istio 1.30 requires for SDS authorization.
+2. Prepare [portal-chat-values.yaml](portal-chat-values.yaml) with the actual
+   host, identity realm, application IDs and platform namespace. Install the
+   standalone Portal chart as release `cetirun-portal` in
+   `cetirun-portal-chat`. Disable the umbrella Portal before this deployment;
+   this is not an automatic migration.
+3. Point the Istio chart's `portalAuth.clusterHost` to
+   `cetirun-portal.cetirun-portal-chat.svc.cluster.local`. Set
+   `portalAuth.mtls.serverIdentity` to the Portal ServiceAccount's verified
+   SPIFFE URI. For the default trust domain, it is
+   `spiffe://cluster.local/ns/cetirun-portal-chat/sa/cetirun-portal`.
+   Update both releases together.
+4. Set the Operator's `chatAccess.enabled: true` explicitly and configure
+   `chatAccess.callers` with the isolated Portal namespace and its actual Pod
+   labels. Setting callers alone leaves Chat disabled. For an Operator
+   installed through the umbrella, merge these overrides into its values.
+   Preserve all existing `sandboxAdmission.adminUsers` entries and append the
+   isolated Portal identity shown below; Helm replaces lists rather than
+   appending to them. Keep the existing `adminGroups` and TLS settings.
+
+   ```yaml
+   global:
+     portalChat:
+       enabled: false
+   cetirun-portal:
+     enabled: false
+   cetirun-operator:
+     sandboxAdmission:
+       portalServiceAccount: ""
+       adminUsers:
+         # Keep existing administrator entries, then add this Portal identity.
+         - system:serviceaccount:cetirun-portal-chat:cetirun-portal
+     chatAccess:
+       enabled: true
+       callers:
+         - namespace: cetirun-portal-chat
+           podLabels:
+             app.kubernetes.io/name: cetirun-portal
+             app.kubernetes.io/instance: cetirun-portal
+   ```
+
+   Keep `global.portalChat.enabled: false` for this profile. Enabling that
+   shortcut replaces the explicit callers with the umbrella release's
+   namespace and labels, which do not identify the isolated Portal. Clearing
+   `sandboxAdmission.portalServiceAccount` removes the bundled Portal
+   shortcut; adding the isolated Portal's exact ServiceAccount username to
+   `adminUsers` authorizes its policy-bound writes. Both are required when
+   Sandbox admission is enabled. For a standalone Operator chart, place the
+   same `chatAccess` and `sandboxAdmission` mappings at the top level of its
+   values instead of under `cetirun-operator`.
+5. Follow the [Custom mTLS binding](../../site/content/en/docs/guides/agent-ingress-mtls.md#custom-agents)
+   procedure. Selector-bound ingress peers must use the exact
+   `Gateway.spec.selector`; the LoadBalancer Service can have extra selector
+   labels and is not a substitute. Each `chatClients` entry must use this
+   namespace and these labels, its own approved client Secret and the URI for
+   the actual Agent UID. Never reuse an ingress Gateway client key.
+
+Apply the reviewed manifests only to an explicitly authorized target. Keep
+certificates, keys, environment values and kubeconfig outside this repository.
+The Portal chart's existing general permissions are unchanged; this profile
+isolates the additional SDS Secret-list grant, not all Portal permissions.
+Namespace admission and operational ownership must keep unrelated credentials
+out of the SDS namespace.
+
+Before enabling a Custom Agent, verify that its Portal ServiceAccount can
+list Secrets in `cetirun-portal-chat` but not in the platform, Broker or
+ingress namespaces. Use authorization checks, not a Secret-content listing.
+Verify the actual Portal sidecar, the locally exported workload-selected
+DestinationRule, the exact client certificate identity and the Agent server
+identity. A Role, a Ready Agent or a successful HTTP response alone does not
+qualify mTLS.
+
+Use a synthetic Custom Chat application that returns a fixed marker without
+calling a model for the first transport test. Send one owner-authorized request
+through the real Portal and verify the marker and the approved TLS identity
+at the receiver. Test missing and stale approval, normal suspension and
+restoration, and client-leaf rotation independently. No plaintext fallback is
+permitted. Count real model completion tests separately.
+
+Suspend and acknowledge all affected Agents before changing their shared
+source or caller registration. Use the configuration coordination procedure;
+do not edit its reservations or journals. Before removing the profile, retire
+its Agent bindings and client leaves, confirm that no caller still needs them,
+and remove only the named SDS RoleBinding and Role. Do not delete an existing
+Portal namespace or its HOME-independent configuration as a shortcut.
+
 ## Ordinary-container backend
 
 For a deliberately non-VM backend, [container.yaml](container.yaml) contains an
