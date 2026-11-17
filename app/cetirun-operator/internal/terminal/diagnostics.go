@@ -14,8 +14,8 @@ import (
 
 	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/util/httpstream"
 	clientexec "k8s.io/client-go/util/exec"
+	"k8s.io/streaming/pkg/httpstream"
 )
 
 // Only fixed stages and categories enter diagnostics. Never retain or log an
