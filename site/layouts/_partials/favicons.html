@@ -2,4 +2,5 @@
 Copyright (c) Microsoft Corporation.
 Licensed under the MIT License.
 -->
-<link rel="icon" type="image/jpeg" href="{{ "images/logo.jpg" | relURL }}">
+{{- /* The same small copy of the logo as the top bar. */ -}}
+<link rel="icon" type="image/jpeg" href="{{ ((resources.Get "images/logo.jpg").Fit "96x96 q85").RelPermalink }}">
