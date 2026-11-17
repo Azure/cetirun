@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 """Offline checks for the optional Portal Chat installation contract."""
 
+import base64
 import json
 import os
 from pathlib import Path
@@ -160,9 +161,23 @@ class PortalChatChartTests(unittest.TestCase):
             **values.get("global", {}).get("portalChat", {}),
         }}
         values["istio"] = {"enabled": True}
+        admission = {
+            "enabled": True, "enforce": True, "podsEnabled": True, "validationMode": "strict",
+            "tlsSecretName": "synthetic-admission-tls",
+            # Render-only PEM framing, not a certificate.
+            "caBundle": base64.b64encode(b"-----BEGIN CERTIFICATE-----\nQQ==\n-----END CERTIFICATE-----").decode(),
+            "adminGroups": ["platform-admins"],
+            **values["cetirun-operator"].get("sandboxAdmission", {}),
+        }
+        admission["adminUsers"] = ["admin@example.com", *admission.get("adminUsers", [])]
         values["cetirun-operator"] = {
             "domainSuffix": "agents.example.com", "namespace": "test-platform", "cetiadmin": {"enabled": False},
             **values["cetirun-operator"],
+            "sandboxAdmission": admission,
+            "sandboxSources": {
+                "enabled": True, "nativeExecution": True, "bootstrapOwnedPrerequisites": True,
+                "platformConfigMapName": "sandbox-platform",
+            },
         }
         objects = self.render_platform(values)
         self.assertFalse(any(value["kind"] == "Deployment" and value["metadata"]["name"] == "cetirun-portal" for value in objects))
@@ -176,6 +191,13 @@ class PortalChatChartTests(unittest.TestCase):
                                      namespace=namespace, release="cetirun-portal")
         portal = self.deployment_env(portal_objects, "cetirun-portal")
         self.assertEqual(access["callers"], [{"namespace": namespace, "podLabels": json.loads(portal["CHAT_CALLER_LABELS"])}])
+        portal_deployment = next(value for value in portal_objects if value["kind"] == "Deployment")
+        portal_account = portal_deployment["spec"]["template"]["spec"]["serviceAccountName"]
+        admission_env = self.deployment_env(objects, "cetirun-sandbox-admission")
+        config = json.loads(admission_env["CETIRUN_SANDBOX_ADMISSION"])
+        self.assertTrue(config["nativeExecution"])
+        self.assertEqual(config["adminUsers"], ["admin@example.com", f"system:serviceaccount:{namespace}:{portal_account}"])
+        self.assertEqual(config["adminGroups"], ["platform-admins"])
 
     def test_umbrella_generates_the_same_caller_as_the_portal(self):
         objects = self.render_platform({

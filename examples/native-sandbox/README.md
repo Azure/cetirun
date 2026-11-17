@@ -53,7 +53,10 @@ role names.
 4. Set the Operator's `chatAccess.enabled: true` explicitly and configure
    `chatAccess.callers` with the isolated Portal namespace and its actual Pod
    labels. Setting callers alone leaves Chat disabled. For an Operator
-   installed through the umbrella, merge these overrides into its values:
+   installed through the umbrella, merge these overrides into its values.
+   Preserve all existing `sandboxAdmission.adminUsers` entries and append the
+   isolated Portal identity shown below; Helm replaces lists rather than
+   appending to them. Keep the existing `adminGroups` and TLS settings.
 
    ```yaml
    global:
@@ -62,6 +65,11 @@ role names.
    cetirun-portal:
      enabled: false
    cetirun-operator:
+     sandboxAdmission:
+       portalServiceAccount: ""
+       adminUsers:
+         # Keep existing administrator entries, then add this Portal identity.
+         - system:serviceaccount:cetirun-portal-chat:cetirun-portal
      chatAccess:
        enabled: true
        callers:
@@ -73,9 +81,13 @@ role names.
 
    Keep `global.portalChat.enabled: false` for this profile. Enabling that
    shortcut replaces the explicit callers with the umbrella release's
-   namespace and labels, which do not identify the isolated Portal. For a
-   standalone Operator chart, place the same `chatAccess` mapping at the top
-   level of its values instead of under `cetirun-operator`.
+   namespace and labels, which do not identify the isolated Portal. Clearing
+   `sandboxAdmission.portalServiceAccount` removes the bundled Portal
+   shortcut; adding the isolated Portal's exact ServiceAccount username to
+   `adminUsers` authorizes its policy-bound writes. Both are required when
+   Sandbox admission is enabled. For a standalone Operator chart, place the
+   same `chatAccess` and `sandboxAdmission` mappings at the top level of its
+   values instead of under `cetirun-operator`.
 5. Follow the [Custom mTLS binding](../../site/content/en/docs/guides/agent-ingress-mtls.md#custom-agents)
    procedure. Selector-bound ingress peers must use the exact
    `Gateway.spec.selector`; the LoadBalancer Service can have extra selector
