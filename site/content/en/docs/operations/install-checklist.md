@@ -17,6 +17,7 @@ Replace the example names with the names of your environment.
 
 | Do this | Page |
 | --- | --- |
+| Select a published release and clone its tag | [Choose a release](../../getting-started/platform/#choose-a-release) |
 | Read the cluster requirements, the user names, the tools, and the permissions that each step needs | [Prepare the environment](../../getting-started/platform/#prepare-the-environment) |
 | Compare the default node pools with the vCPU quota of the region | [Check the vCPU quota](../capacity/#check-the-vcpu-quota) |
 | Select one cluster, domain, and environment file for each environment | [Environments and namespaces](../../getting-started/platform/#environments-and-namespaces) |
@@ -33,7 +34,7 @@ Replace the example names with the names of your environment.
 | 6 | Create the encryption identity, the Key Vault key, the Agent Identity Broker and MCP certificates, and the provider registrations | [Prepare Agent connections](../agent-identity/) | `identity.encryptionClientId`, `identity.keyVaultKeyUrl`, and the TLS Secrets of the Broker and MCP | The checks in steps 1 to 4 of that page |
 | 7 | Create the Agent Identity Blueprint and the Authorization application, and federate the workloads | [Prepare Microsoft Entra Agent Identity](../entra-agent-identity/) | `identity.blueprintClientId`, `identity.authorizationClientId`, and `platform.values.cetirun-operator.azure.clientId` | `az ad app federated-credential list --id <blueprint-client-id>` |
 | 8 | Issue the Sandbox admission certificate, and select the admission administrators | [Policy-bound Teams](../policy-teams/#the-admission-certificate), step 3 | The `sandboxAdmission` values | `kubectl get secret cetirun-sandbox-admission-tls -n cetirun-system` |
-| 9 | Publish the images and charts, and give the nodes and the Operator access to the registry | [Publish images and charts](../artifacts/) | The `release` section and the digests of `customRuntime.approvedImages` | `make publish` ends without an error. For an ACR token of the Operator, step 3 of [Example: Azure Container Registry](../artifacts/#example-azure-container-registry) |
+| 9 | Check access to the release. Publish only for a custom build or private registry | [Use official MCR artifacts](../artifacts/#use-official-mcr-artifacts) | The `release` section and the digests of `customRuntime.approvedImages` | The inspection commands on that page succeed |
 | 10 | Create the AI Gateway Secrets and, for `modelRouting.mode: auto`, the Decision-1 deployment | [Create the AI Gateway Secrets](../../getting-started/platform/#5-create-the-ai-gateway-secrets) | The Secret names and the `models` of the AI Gateway | `kubectl get secret gateway-provider-keys cetirun-ai-gateway-auth gateway-valkey-auth -n cetirun-system` |
 | 11 | Write the environment file, and decide on the inputs that are difficult to change later | [Write the environment file](../../getting-started/platform/#6-write-the-environment-file) | The environment file, outside the repository | `make deploy-plan DEPLOY_CONFIG=/absolute/path/environment.yaml`, an offline command |
 

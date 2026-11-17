@@ -37,6 +37,24 @@ covers smart routing of models and the first call from a client.
 
 ## Prepare the environment
 
+### Choose a release
+
+Official images and charts are on Microsoft Container Registry (MCR). You do
+not need to build or publish them. Clone a
+[release tag](https://github.com/Azure/cetirun/tags) whose artifacts are published
+to MCR. For `v0.1.3`:
+
+```bash
+git clone --branch v0.1.3 --single-branch https://github.com/Azure/cetirun.git
+cd cetirun
+git rev-parse HEAD
+git status --short
+```
+
+Use the commit ID as `release.gitSHA`. `git status --short` must print nothing.
+Run the remaining commands from this clone. `make deploy` installs local charts;
+it does not find newer releases or track `latest`.
+
 ### Cluster requirements
 
 | Requirement | Why it matters |
@@ -150,7 +168,7 @@ different permissions.
 | Cluster helper | Write to `kube-system`, for example with **Azure Kubernetes Service RBAC Cluster Admin**. Assign this role before the helper runs | Cluster resource group, because the cluster does not exist yet. Refer to [Helper side effects](../../operations/infrastructure/#helper-side-effects) |
 | Storage helper | Update the service endpoints of the node subnet. Deploy the storage account | The node subnet, and the storage resource group |
 | kubectl, Helm, and `make deploy` | Create cluster-scoped objects, namespaces, and Secrets, for example with **Azure Kubernetes Service RBAC Cluster Admin** | Cluster |
-| Registry | Push images and charts. Assign pull roles to the cluster and the Operator | Registry. Refer to [Publish images and charts](../../operations/artifacts/) |
+| Registry | Pull access; public MCR needs no credentials. Push access only when publishing | The selected registry. Refer to [Registry access](../../operations/artifacts/#registry-access) |
 | Portal sign-in | Register an application, assign groups, add a federated credential, and grant admin consent, for example as Cloud Application Administrator | Entra tenant. Refer to [Istio authentication](../../operations/istio/#prepare-identity-dns-and-tls) |
 | Agent Identity | Create the Blueprint, the Authorization application, and their federated credentials | Entra tenant. Refer to [Prepare Microsoft Entra Agent Identity](../../operations/entra-agent-identity/) |
 | Encryption key | Create the Key Vault key and assign its roles | Key Vault. Refer to [Prepare Agent connections](../../operations/agent-identity/) |
@@ -282,17 +300,23 @@ Also prepare these items:
 `make deploy` reads the Secrets in the cluster before it writes. It does not
 examine the Entra applications or the Key Vault key.
 
-## 4. Publish the images and charts {#publish-the-images-and-charts}
+## 4. Select the release artifacts {#publish-the-images-and-charts}
 
-Build the images and charts from the revision that you install, and push them
-to a registry that the cluster can read. [Publish images and charts](../../operations/artifacts/)
-gives the commands, the registry access for the nodes and the Operator, and an
-Azure Container Registry example. It also lists the images of other projects
-that a private registry must hold.
+In the environment file (step 6), set `release` to match the selected tag.
+For `v0.1.3`:
 
-Run `make deploy` from the same commit that built the artifacts, and set the
-`release` section and the approved Custom image digests from that build. Refer
-to [Use the artifacts with make deploy](../../operations/artifacts/#use-the-artifacts-with-make-deploy).
+```yaml
+release:
+  registry: mcr.microsoft.com/aks/ai-runtime/cetirun
+  version: 0.1.3
+  gitSHA: 28c38f851bb082a2e8150f4dcdb0cec45ac7ec17
+```
+
+For another release, set `version` and `gitSHA` from its tag. Check
+[MCR access](../../operations/artifacts/#use-official-mcr-artifacts) and set the
+[approved Custom image digests](../../operations/artifacts/#use-the-artifacts-with-make-deploy).
+For a custom build or private registry, follow the optional
+[publication procedure](../../operations/artifacts/#publish-the-images-and-charts).
 
 ## 5. Create the AI Gateway Secrets
 
@@ -390,6 +414,10 @@ and of the pages that the steps above link to. If you use other names, change
 them in the file. The
 [platform chart README]({{< repo "app/cetirun-platform/README.md" >}}#deploy-the-platform)
 describes each input of the environment file.
+
+The example's registry, version, Git SHA, and digests are test data. Replace
+them as [step 4](#publish-the-images-and-charts) shows; keeping them overrides
+the defaults.
 
 Put the Helm values of each release under its `values` field, for
 example `platform.values.cetirun-ai-gateway.models`. `make deploy` sets some
@@ -752,8 +780,12 @@ Run these commands from the root of your clone:
 
 For one run, `REGISTRY` and `VERSION` override `release.registry` and
 `release.version`. Set them as environment variables or on the `make` command
-line. They do not change the environment file. Use the same values for the plan
-and the deployment. Refer to the
+line. Precedence: Make arguments, then environment variables, then the
+environment file, then defaults (MCR and the version in
+`app/cetirun-chart/Chart.yaml`). Overrides do not change the file.
+
+Use the same values for the plan and the deployment. `make deploy-plan` is
+offline; check `release` and `releaseOrigins` in its output. Refer to the
 [platform chart README]({{< repo "app/cetirun-platform/README.md" >}}#override-release-coordinates-for-a-test-build).
 
 ## Values that make deploy sets

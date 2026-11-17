@@ -45,8 +45,15 @@ credentials or to bypass provider restrictions.
 
 ### Prepare and apply the full deployment
 
+For an official installation, first
+[choose a release](../../site/content/en/docs/getting-started/platform.md#choose-a-release).
+You do not need to build or publish anything.
+
 Prepare an environment file outside the repository. The
 [synthetic example](ci/deployment-example.yaml) shows the platform input shape.
+Replace its test registry, version, Git SHA, and digests as
+[Select the release artifacts](../../site/content/en/docs/getting-started/platform.md#publish-the-images-and-charts)
+shows.
 The example enables CetiAdmin with a synthetic owner, budget, and API access.
 Replace them as [Configure CetiAdmin](#configure-cetiadmin) describes, or set
 `cetiadmin.enabled: false`. The certificate placeholder, image digests,
