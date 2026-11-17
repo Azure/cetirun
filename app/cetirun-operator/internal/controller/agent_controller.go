@@ -45,6 +45,7 @@ import (
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents/builtin"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
@@ -384,6 +385,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		if err == nil && bootstrapErr != nil {
 			// The policy status is recorded; a bootstrap wait retries periodically.
 			return r.holdReconciledBootstrap(ctx, instance, bootstrapErr)
+		}
+		if reconciledSandbox && policy.ingressMTLSPending && err == nil && bootstrapErr == nil {
+			return r.holdReconciledIngressMTLS(ctx, instance, ingressmtls.ErrApprovalPending)
 		}
 		result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
 		return result, stderrors.Join(err, bootstrapErr, holdErr)

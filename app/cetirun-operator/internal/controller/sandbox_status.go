@@ -134,6 +134,8 @@ func appliedMatches(agent *api.Agent, expected sandbox.ExecutionIdentity) bool {
 func sandboxStatusFailure(err error) (metav1.ConditionStatus, string, string) {
 	var stale *ingressmtls.StaleError
 	switch {
+	case errors.Is(err, ingressmtls.ErrApprovalPending):
+		return metav1.ConditionFalse, "IngressMTLSApprovalPending", "Managed mTLS waits for the first approved certificate binding; execution remains held."
 	case errors.As(err, &stale):
 		return metav1.ConditionFalse, "IngressMTLSApprovalStale", fmt.Sprintf(
 			"The mTLS approval for %s %s/%s is stale (%s); register its current identity in the Sandbox platform configuration.",
