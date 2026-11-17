@@ -6,8 +6,8 @@
 /*
  * Portal styles. Colors and fonts come from the Portal theme
  * (src/theme/portalTheme.ts), which FluentProvider publishes as CSS variables.
- * Paper is --colorNeutralBackground2, a surface is --colorNeutralBackground1,
- * a hairline is --colorNeutralStroke2 and ink is --colorNeutralForeground1.
+ * The page is --colorNeutralBackground2, a surface is --colorNeutralBackground1,
+ * a hairline is --colorNeutralStroke2 and text is --colorNeutralForeground1.
  *
  * Fluent injects its own rules after this sheet, so a rule that restyles a
  * Fluent component is written with more than one class to take precedence.
@@ -32,11 +32,11 @@ body {
   background: var(--portalSelection);
 }
 
-/* Links that carry no component styling of their own. */
+/* Links that carry no component styling of their own. The underline marks a link. */
 a:not([class]) {
   color: var(--colorBrandForegroundLink);
   text-decoration: underline;
-  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
   text-decoration-thickness: 1px;
   text-underline-offset: 0.2em;
   border-radius: 3px;
@@ -951,13 +951,6 @@ details > summary::marker {
 }
 .fui-Table .portal-col-actions .fui-TableHeaderCell__button {
   justify-content: flex-end;
-}
-/* In a table the color marks a link; the underline waits for the pointer. */
-.fui-Table a:not([class]) {
-  text-decoration-color: transparent;
-}
-.fui-Table a:not([class]):hover {
-  text-decoration-color: currentColor;
 }
 .fui-Table .fui-TableHeader .fui-TableRow {
   border-bottom-color: var(--colorNeutralStroke1);
