@@ -56,6 +56,8 @@ function argumentsText(value) {
 // the records name the tool that ran, and `via` names tool_call.
 const TOOL_CALL = "tool_call";
 const TOOL_SELECTORS = ["id", "toolId", "name"];
+// A catalog id is <source>:<owner>:<tool name>, and a tool name has no colon.
+const CATALOG_ID = /^(?:openclaw|mcp|client):[^:]+:([^:]+)$/;
 
 function argumentsObject(value) {
   if (isRecord(value)) return value;
@@ -68,18 +70,42 @@ function argumentsObject(value) {
   }
 }
 
-// The tool that tool_call arguments select, read as OpenClaw reads them: id,
-// toolId or name, or one of them inside args or input when none is at the top.
-// A catalog id is <source>:<owner>:<tool name>, and a tool name has no colon.
+function selectorOf(params) {
+  const value = params.id ?? params.toolId ?? params.name;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function toolNameOf(selector) {
+  const match = CATALOG_ID.exec(selector);
+  return match ? match[1] : selector;
+}
+
+// The tool that tool_call arguments select, read as OpenClaw 2026.9.6 reads
+// them. A selector only inside args or input moves to the top. With a
+// non-empty args or input, the selector is id, toolId, or name, in this order.
+// Without them, OpenClaw takes the first of these whose value is in the tool
+// catalog of the run, which the transcript does not keep. So one selector, or
+// one catalog id among them, names the tool; otherwise only the result does.
 function toolCallTarget(value) {
-  const params = argumentsObject(value);
+  let params = argumentsObject(value);
   if (!params) return undefined;
-  const nested = params.args ?? params.input;
-  const holder = TOOL_SELECTORS.some((key) => Object.hasOwn(params, key)) || !isRecord(nested) ? params : nested;
-  const selector = holder.id ?? holder.toolId ?? holder.name;
-  if (typeof selector !== "string" || !selector.trim()) return undefined;
-  const match = /^(?:openclaw|mcp|client):[^:]+:([^:]+)$/.exec(selector.trim());
-  return match ? match[1] : selector.trim();
+  if (!TOOL_SELECTORS.some((key) => Object.hasOwn(params, key))) {
+    const nested = params.args ?? params.input;
+    const hoisted = isRecord(nested) ? selectorOf(nested) : undefined;
+    if (hoisted === undefined) return undefined;
+    const { args: _args, input: _input, ...rest } = params;
+    params = { ...rest, ...nested, id: hoisted };
+  }
+  const input = params.args ?? params.input;
+  if (input != null && !(isRecord(input) && Object.keys(input).length === 0)) {
+    const selector = selectorOf(params);
+    return selector === undefined ? undefined : toolNameOf(selector);
+  }
+  const values = TOOL_SELECTORS.map((key) => params[key]).filter((item) => item != null);
+  const names = values.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim());
+  if (values.length === 1) return names.length === 1 ? toolNameOf(names[0]) : undefined;
+  const catalogIds = names.filter((item) => CATALOG_ID.test(item));
+  return catalogIds.length === 1 ? toolNameOf(catalogIds[0]) : undefined;
 }
 
 // The tool that a tool_call result came from: OpenClaw keeps it in the

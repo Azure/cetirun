@@ -145,6 +145,29 @@ test("a tool that runs through tool_call is named in its call record", () => {
   assert.deepEqual(JSON.parse(records[1].content), { id: "openclaw:cetirun-memory-context:cetirun_memory", args: { command: "query" } });
 });
 
+test("a flattened tool_call is named only when its tool does not depend on OpenClaw's catalog", () => {
+  // The shapes of OpenClaw's own tests for flattened arguments. Without args or
+  // input, OpenClaw takes the selector whose value is in the catalog of the run.
+  const records = recordsFor(message("e-flat", {
+    role: "assistant", model: "gpt-test",
+    content: [
+      throughToolCall(0, { id: "inspect_resource", command: "list", timeout_ms: 5000 }),
+      throughToolCall(1, { toolId: "inspect_resource", id: "record-7" }),
+      throughToolCall(2, { id: "inspect_resource", name: "record-name" }),
+      throughToolCall(3, { name: "inspect_resource", id: "record-7" }),
+      throughToolCall(4, { args: {}, toolId: "inspect_resource", id: "record-7" }),
+      throughToolCall(5, { toolId: "openclaw:core:inspect_resource", id: "record-7" }),
+      throughToolCall(6, { id: "inspect_resource", args: { id: "record-7" } }),
+      throughToolCall(7, { args: { name: "inspect_resource", id: "record-7" } }),
+    ],
+  }), target, redact);
+  assert.deepEqual(records.map((record) => [record.tool, record.via]), [
+    ["inspect_resource", "tool_call"],
+    ["tool_call", undefined], ["tool_call", undefined], ["tool_call", undefined], ["tool_call", undefined],
+    ["inspect_resource", "tool_call"], ["inspect_resource", "tool_call"], ["tool_call", undefined],
+  ]);
+});
+
 test("a tool_call result names the tool that ran, unless the call failed before it found one", () => {
   const [ran] = recordsFor(message("e-ran", {
     role: "toolResult", toolCallId: "call-0", toolName: "tool_call", isError: false,
