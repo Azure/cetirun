@@ -1024,7 +1024,7 @@ func (r *AgentReconciler) observeReconciledSandboxShutdown(ctx context.Context, 
 					return owner.Kind == "Deployment" && (owner.Name == desired.Identity.Name ||
 						(desired.Identity.UID != "" && owner.UID == desired.Identity.UID))
 				}) {
-					return fmt.Errorf("common Sandbox source reservation waits for removed auxiliary ReplicaSets")
+					return shutdownPendingError("common Sandbox source reservation waits for removed auxiliary ReplicaSets")
 				}
 			}
 			continue
@@ -1032,9 +1032,12 @@ func (r *AgentReconciler) observeReconciledSandboxShutdown(ctx context.Context, 
 		if err != nil {
 			return fmt.Errorf("observe common controller shutdown: %w", err)
 		}
-		if !stopped || !sandboxBuiltinOwned(current, agent) ||
+		if !sandboxBuiltinOwned(current, agent) ||
 			(desired.Identity.UID != "" && desired.Identity.UID != current.GetUID()) {
-			return fmt.Errorf("common Sandbox source reservation waits for acknowledged controller shutdown")
+			return fmt.Errorf("common Sandbox controller ownership differs from its recorded workload")
+		}
+		if !stopped {
+			return shutdownPendingError("common Sandbox source reservation waits for acknowledged controller shutdown")
 		}
 	}
 	quiescence := &KubernetesNativeQuiescence{APIReader: r.customReader(), Reconciled: true}

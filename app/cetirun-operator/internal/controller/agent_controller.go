@@ -185,6 +185,7 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&cetirunv1alpha1.Agent{}).
 		Owns(&appsv1.Deployment{}).
+		Owns(&appsv1.StatefulSet{}).
 		Owns(&istiov1beta1.VirtualService{}).
 		Owns(&istiov1beta1.DestinationRule{}).
 		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.enqueueAgentSecret)).
@@ -347,6 +348,11 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 	if reconciledSandbox && instance.Spec.Suspended {
 		if err := r.stopReconciledSandboxForSuspension(ctx, instance); err != nil {
+			if onlyShutdownPending(err) {
+				// A successful timed retry also forgets prior provisioning
+				// failures in controller-runtime's per-item rate limiter.
+				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			}
 			return ctrl.Result{}, err
 		}
 	}

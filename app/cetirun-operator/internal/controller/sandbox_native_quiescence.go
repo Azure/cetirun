@@ -70,7 +70,7 @@ func (s *KubernetesNativeQuiescence) CheckQuiesced(ctx context.Context, agent *a
 		return fmt.Errorf("inspect native Sandbox Pods: %w", err)
 	}
 	if len(pods.Items) != 0 {
-		return fmt.Errorf("native Sandbox waits for ordinary Pod termination; force deletion is not supported")
+		return shutdownPendingError("native Sandbox waits for ordinary Pod termination; force deletion is not supported")
 	}
 	return ctx.Err()
 }
