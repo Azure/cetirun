@@ -6,6 +6,9 @@ target:
   server: https://kubernetes.example.invalid:6443
   clusterUID: 11111111-1111-1111-1111-111111111111
 release:
+  # Test values. For an official release, use registry
+  # mcr.microsoft.com/aks/ai-runtime/cetirun, the release version, and
+  # the full commit ID of its source tag.
   registry: registry.example.com
   version: 0.1.1
   gitSHA: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -96,6 +99,7 @@ platform:
         caSecretName: connections-mcp-ca
       customRuntime:
         # Replace with the digests whose UID, HOME and model access you qualified.
+        # Use full references: <registry>/<image>@sha256:<digest>.
         # The Operator configures AI Gateway access for these images.
         approvedImages:
           - registry.example.com/cetirun-pi-agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

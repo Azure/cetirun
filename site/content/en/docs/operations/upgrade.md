@@ -52,13 +52,17 @@ admission server, the Portal, the AI Gateway, the Broker, and Connections MCP.
 
 ## Upgrade the platform
 
-1. Publish the new version, as
-   [Publish images and charts](../artifacts/) shows.
-2. In your clone, select the commit that built the new artifacts, for example
-   with `git checkout`.
-   `make deploy` installs the charts of the clone.
+1. Choose a published release, as
+   [Use official MCR artifacts](../artifacts/#use-official-mcr-artifacts) shows.
+   For a custom build, follow the optional
+   [publication procedure](../artifacts/#publish-the-images-and-charts).
+2. Clone its tag, as
+   [Choose a release](../../getting-started/platform/#choose-a-release) shows,
+   or use the source commit of your custom build. `make deploy` installs the
+   charts of the clone.
 3. In the environment file, set `release.version` and `release.gitSHA` to the
-   new version and commit.
+   new version and commit. A move from another registry to MCR also needs an
+   [Agent registry migration]({{< repo "DEVELOPMENT.md" >}}#migrating-an-existing-agent-registry).
 4. Read the digests of the new Custom images, and add them to
    `platform.values.cetirun-operator.customRuntime.approvedImages`. Keep the
    digests that existing Custom Agents use until each of these Agents moves to

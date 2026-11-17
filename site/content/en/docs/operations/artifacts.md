@@ -1,20 +1,40 @@
 ---
 title: "Publish images and charts"
-description: "Build and push the CetiRun images and charts, give the cluster access to them, and prepare a private registry or a restricted network."
+description: "Use official MCR releases, or build and publish CetiRun images and charts for a custom installation."
 weight: 12
 ---
 
-`make deploy` installs the images and charts of one release version from one
-registry. Build them from the revision that you install, and push them to your
-registry before you run `make deploy`. This page is a step of
-[Install CetiRun](../../getting-started/platform/).
+Official CetiRun images and charts are on Microsoft Container Registry (MCR).
+For a custom build or private registry, see
+[Publish the images and charts](#publish-the-images-and-charts).
 
-Supply your own accessible registry and tested artifact versions. Registry
-defaults in source are deployment configuration, not a public artifact catalog.
-Examine each independent artifact path:
+## Use official MCR artifacts
+
+[Choose a release](../../getting-started/platform/#choose-a-release) and use
+one version for all CetiRun images and charts:
+
+- Images: `mcr.microsoft.com/aks/ai-runtime/cetirun/<image>:<version>`
+- Charts: `oci://mcr.microsoft.com/aks/ai-runtime/cetirun/helm/<chart>`, with
+  `--version <version>`
+
+Pulls need no login, but the workstation, the Operator, and the nodes need
+network access. These commands check two artifacts of `0.1.3`:
+
+```bash
+helm show chart oci://mcr.microsoft.com/aks/ai-runtime/cetirun/helm/cetirun-platform --version 0.1.3
+docker buildx imagetools inspect mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-operator:0.1.3
+```
+
+[`scripts/release-artifacts.json`]({{< repo "scripts/release-artifacts.json" >}})
+lists all artifacts. `make deploy` checks the selected inventory before it
+writes. `make deploy-plan` does not check registry availability.
+
+## Registry access
+
+Check each artifact path, for MCR or a custom registry:
 
 - The Helm client of the workstation must be able to read all charts of the
-  release in the registry. `make deploy` examines them before it writes, but it
+  release in the registry. `make deploy` checks them before it writes, but it
   installs the charts of your clone. The standalone helpers can use their
   local charts instead, with `LOCAL_CHART=1`.
 - The operator must have access to the agent chart in the registry when it
@@ -35,6 +55,10 @@ Examine each independent artifact path:
   image, use a node pull path that works.
 
 ## Publish the images and charts
+
+Use this optional procedure for a custom build or private registry. MCR is not
+a push destination. Use a writable registry and an unused version; `0.1.1`
+below is an example.
 
 Use a machine with Docker Buildx, Helm, Python 3, and Bash. On this machine,
 sign in to the registry with `docker login` and `helm registry login`. Then
@@ -88,9 +112,10 @@ own license check.
 
 ### Select the version
 
-For an official version, first run `make set-version VERSION=<version>`. This
-command changes the version in the charts and in the other source files.
-Commit the change, so that `GIT_SHA` names the source of the build.
+For a new official release, maintainers first run
+`make set-version VERSION=<version>`. This command changes the version in the
+charts and in the other source files. Commit the change, so that `GIT_SHA`
+names the source of the build.
 
 For a test build, for example of a branch, set another `VERSION` without a
 change to the source. The release CLI copies the working tree to a temporary
@@ -109,8 +134,10 @@ block the syscall, including Azure Container Registry Tasks, are unsupported.
 
 ## Use the artifacts with make deploy
 
-Use the same registry, version, Git SHA, and optional image selection in the
-`release` section of the environment file for `make deploy`. Before it writes,
+For an official release, set `release` as the
+[installation example](../../getting-started/platform/#publish-the-images-and-charts)
+shows. For a custom build, use its registry, version, commit, and image selection.
+Before it writes,
 `make deploy` makes sure that every selected image and every chart of this
 version is in the registry. It sets the registry and the version of the
 platform images and of the agent chart. As a result, image tags are not
@@ -131,17 +158,20 @@ git status --short
 The first command must print `release.gitSHA`. The second command must print
 nothing.
 
-Also read the digests of the Custom images that you approve, for example the Pi
-and VS Code Server images that `make publish` pushed:
+Read the digests of the Custom images that you approve, for example Pi and
+VS Code Server:
 
 ```bash
-docker buildx imagetools inspect registry.example.com/cetirun-pi-agent:0.1.1
+docker buildx imagetools inspect mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-pi-agent:0.1.3
+docker buildx imagetools inspect mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-vscode:0.1.3
 ```
 
-Put the digests in `platform.values.cetirun-operator.customRuntime.approvedImages`.
-After each `make publish` of a new version, read the digests again. `make deploy`
-makes sure only that each digest is in the registry, so an old digest also
-passes.
+For a custom build, use your registry and version. Put the full references,
+`<registry>/<image>@sha256:<digest>`, in
+`platform.values.cetirun-operator.customRuntime.approvedImages`. Read the
+digests again after each release change. `make deploy` checks only that each
+digest exists, so an old digest also passes. Publication does not qualify an
+image's UID, HOME, or model access.
 
 ## Example: Azure Container Registry
 
