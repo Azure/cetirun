@@ -74,6 +74,22 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+func TestLoadAzureCloud(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"", "AzureCloud"},
+		{"AzureCloud", "AzureCloud"},
+		{"AzureChinaCloud", "AzureChinaCloud"},
+		{"unknown", "unknown"},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			t.Setenv("AZURE_CLOUD", tc.input)
+			if got := Load().AzureCloud; got != tc.want {
+				t.Fatalf("AzureCloud = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSandboxStorageConfiguration(t *testing.T) {
 	t.Setenv("SANDBOX_STORAGE_PLATFORM_NAMESPACE", "operator-system")
 	t.Setenv("SANDBOX_STORAGE_PLATFORM_CONFIG_MAP_NAME", "sandbox-platform")

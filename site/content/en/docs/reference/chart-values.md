@@ -582,6 +582,7 @@ Source: [app/cetirun-portal/chart/values.yaml]({{< repo "app/cetirun-portal/char
 
 | Value | Default | Description |
 | --- | --- | --- |
+| `cloud` | `"AzureCloud"` | Entra cloud for Portal ID-token verification. Match the separate Istio chart. |
 | `global` |  | Shared release coordinates. An umbrella chart can set these once for all CetiRun subcharts. |
 | `global.registry` | `""` | Optional registry hostname override for the Portal image. Empty preserves image.repository below. |
 | `global.version` | `""` | Optional shared image and component version override. Empty preserves image.tag and Chart.appVersion defaults. |

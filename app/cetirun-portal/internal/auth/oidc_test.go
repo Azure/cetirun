@@ -35,11 +35,67 @@ func signedToken(t *testing.T, key *rsa.PrivateKey, claims map[string]any) strin
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
 }
 
+func TestOIDCVerifierClouds(t *testing.T) {
+	const tenant = "11111111-1111-1111-1111-111111111111"
+	const client = "22222222-2222-2222-2222-222222222222"
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ cloud, host, otherHost string }{
+		{"AzureCloud", "login.microsoftonline.com", "login.partner.microsoftonline.cn"},
+		{"AzureChinaCloud", "login.partner.microsoftonline.cn", "login.microsoftonline.com"},
+	} {
+		t.Run(tc.cloud, func(t *testing.T) {
+			verifier, err := NewOIDCVerifier(tenant, client, tc.cloud)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if verifier.jwksURL != "https://"+tc.host+"/"+tenant+"/discovery/v2.0/keys" {
+				t.Fatalf("wrong signing-key authority: %s", verifier.jwksURL)
+			}
+			verifier.keys["test-key"] = &key.PublicKey
+			verifier.fetched = time.Now()
+			claims := map[string]any{
+				"iss": "https://" + tc.host + "/" + tenant + "/v2.0",
+				"aud": client, "tid": tenant, "oid": "33333333-3333-3333-3333-333333333333",
+				"nbf": time.Now().Add(-time.Minute).Unix(), "exp": time.Now().Add(time.Minute).Unix(),
+			}
+			if _, err := verifier.Verify(context.Background(), signedToken(t, key, claims)); err != nil {
+				t.Fatalf("configured cloud rejected: %v", err)
+			}
+			for _, invalid := range []struct {
+				name, claim string
+				value       any
+			}{
+				{"other cloud", "iss", "https://" + tc.otherHost + "/" + tenant + "/v2.0"},
+				{"other tenant", "tid", "44444444-4444-4444-4444-444444444444"},
+				{"other audience", "aud", "55555555-5555-5555-5555-555555555555"},
+				{"expired", "exp", time.Now().Add(-time.Minute).Unix()},
+			} {
+				t.Run(invalid.name, func(t *testing.T) {
+					original := claims[invalid.claim]
+					claims[invalid.claim] = invalid.value
+					defer func() { claims[invalid.claim] = original }()
+					if _, err := verifier.Verify(context.Background(), signedToken(t, key, claims)); err == nil {
+						t.Fatal("invalid identity accepted")
+					}
+				})
+			}
+		})
+	}
+	for _, cloud := range []string{"", "unknown", "https://issuer.example.com"} {
+		if _, err := NewOIDCVerifier(tenant, client, cloud); err == nil {
+			t.Fatalf("unsupported cloud accepted: %q", cloud)
+		}
+	}
+}
+
 func TestOIDCVerifierBindsTenantAudienceAndObject(t *testing.T) {
 	tenant := "11111111-1111-1111-1111-111111111111"
 	client := "22222222-2222-2222-2222-222222222222"
 	object := "33333333-3333-3333-3333-333333333333"
-	verifier, err := NewOIDCVerifier(tenant, client)
+	verifier, err := NewOIDCVerifier(tenant, client, "AzureCloud")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +124,7 @@ func TestOIDCVerifierBindsTenantAudienceAndObject(t *testing.T) {
 func TestOIDCVerifierRejectsUnsafeOptionalLoginHintWithoutRejectingIdentity(t *testing.T) {
 	tenant := "11111111-1111-1111-1111-111111111111"
 	client := "22222222-2222-2222-2222-222222222222"
-	verifier, err := NewOIDCVerifier(tenant, client)
+	verifier, err := NewOIDCVerifier(tenant, client, "AzureCloud")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +152,7 @@ func TestOIDCVerifierReportsSafeClaimFailureCategory(t *testing.T) {
 	tenant := "11111111-1111-1111-1111-111111111111"
 	client := "22222222-2222-2222-2222-222222222222"
 	object := "33333333-3333-3333-3333-333333333333"
-	verifier, err := NewOIDCVerifier(tenant, client)
+	verifier, err := NewOIDCVerifier(tenant, client, "AzureCloud")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +202,7 @@ func TestOIDCVerifierReportsSafeClaimFailureCategory(t *testing.T) {
 func TestOIDCVerifierRejectsWrongSignature(t *testing.T) {
 	const tenant = "11111111-1111-1111-1111-111111111111"
 	const client = "22222222-2222-2222-2222-222222222222"
-	verifier, err := NewOIDCVerifier(tenant, client)
+	verifier, err := NewOIDCVerifier(tenant, client, "AzureCloud")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +231,7 @@ func TestOIDCVerifierRejectsWrongSignature(t *testing.T) {
 }
 
 func TestOIDCVerifierRejectsOversizedToken(t *testing.T) {
-	verifier, err := NewOIDCVerifier("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222")
+	verifier, err := NewOIDCVerifier("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "AzureCloud")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +241,7 @@ func TestOIDCVerifierRejectsOversizedToken(t *testing.T) {
 }
 
 func TestOIDCVerifierRefreshesUnknownKeyOnlyOnce(t *testing.T) {
-	verifier, err := NewOIDCVerifier("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222")
+	verifier, err := NewOIDCVerifier("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "AzureCloud")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +307,7 @@ func TestOIDCVerifierCoalescesConcurrentRefreshes(t *testing.T) {
 		}},
 	} {
 		t.Run(setup.name, func(t *testing.T) {
-			verifier, err := NewOIDCVerifier("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222")
+			verifier, err := NewOIDCVerifier("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "AzureCloud")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -302,7 +358,7 @@ func TestOIDCVerifierCoalescesConcurrentRefreshes(t *testing.T) {
 }
 
 func TestOIDCVerifierRefreshWaiterHonorsContextDeadline(t *testing.T) {
-	verifier, err := NewOIDCVerifier("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222")
+	verifier, err := NewOIDCVerifier("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "AzureCloud")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +405,7 @@ func TestOIDCVerifierRefreshSurvivesLeaderCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	verifier, err := NewOIDCVerifier("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222")
+	verifier, err := NewOIDCVerifier("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "AzureCloud")
 	if err != nil {
 		t.Fatal(err)
 	}

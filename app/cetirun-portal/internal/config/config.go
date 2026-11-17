@@ -52,6 +52,7 @@ type Config struct {
 	// ID token passed by oauth2-proxy to the Portal backend.
 	EntraTenantID  string
 	PortalClientID string
+	AzureCloud     string
 	// AgentToolsBrokerURL is an internal cluster URL, never browser-visible.
 	AgentToolsBrokerURL         string
 	PortalOrigin                string
@@ -111,6 +112,7 @@ func Load() Config {
 		AgentToolsEnabled:                  os.Getenv("FEATURE_AGENT_TOOLS_ENABLED") == "true",
 		EntraTenantID:                      envOrDefault("ENTRA_TENANT_ID", ""),
 		PortalClientID:                     envOrDefault("PORTAL_OIDC_CLIENT_ID", ""),
+		AzureCloud:                         envOrDefault("AZURE_CLOUD", "AzureCloud"),
 		AgentToolsBrokerURL:                envOrDefault("AGENT_TOOLS_BROKER_URL", "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"),
 		PortalOrigin:                       envOrDefault("PORTAL_ORIGIN", ""),
 		RegistryCredentialNamespace:        envOrDefault("REGISTRY_CREDENTIAL_NAMESPACE", "cetirun-registry-credentials"),

@@ -1,3 +1,7 @@
+{{- $cloud := default "AzureCloud" .Values.cloud -}}
+{{- if not (has $cloud (list "AzureCloud" "AzureChinaCloud")) -}}
+{{- fail "cloud must be AzureCloud or AzureChinaCloud" -}}
+{{- end -}}
 {{- if default false ((.Values.features).agentToolsEnabled) }}
 {{- if empty .Values.agentTools.runtimeTypes }}{{ fail "agentTools.runtimeTypes must not be empty when Agent Tools is enabled" }}{{ end }}
 {{- range .Values.agentTools.runtimeTypes }}
@@ -79,6 +83,8 @@ spec:
               containerPort: 8081
               protocol: TCP
           env:
+            - name: AZURE_CLOUD
+              value: {{ $cloud | quote }}
             - name: FEATURE_CUSTOM_CHAT_ENABLED
               value: {{ $chatEnabled | quote }}
             - name: CHAT_IDENTITY_REALM

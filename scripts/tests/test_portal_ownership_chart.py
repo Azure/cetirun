@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @unittest.skipUnless(shutil.which("helm"), "requires Helm")
 class PortalOwnershipChartTests(unittest.TestCase):
-    def render(self, enabled=None, identity=None):
+    def render(self, enabled=None, identity=None, cloud="AzureCloud"):
         istio = {"host": "portal.example.com", "gatewayNamespace": "test-ingress", "gatewayServiceAccount": "test-gateway"}
         if enabled is not None:
             istio["internalAuthMTLS"] = enabled
@@ -25,6 +25,7 @@ class PortalOwnershipChartTests(unittest.TestCase):
             ["helm", "template", "owner-test", str(ROOT / "app/cetirun-portal/chart"),
              "--namespace", "test-platform", "--values", "-"],
             input=json.dumps({
+                "cloud": cloud,
                 "istio": istio,
                 "features": {"agentIdentityEnabled": False, "agentToolsEnabled": False},
                 "agentIdentity": identity if identity is not None else {
@@ -35,6 +36,24 @@ class PortalOwnershipChartTests(unittest.TestCase):
             text=True, capture_output=True, timeout=30,
             env={**os.environ, "KUBECONFIG": os.devnull, "HELM_REGISTRY_CONFIG": os.devnull},
         )
+
+    def test_cloud_reaches_portal_verifier(self):
+        for cloud in ("AzureCloud", "AzureChinaCloud"):
+            with self.subTest(cloud=cloud):
+                result = self.render(cloud=cloud)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                objects = [x for x in yaml.safe_load_all(result.stdout) if x]
+                deployment = next(x for x in objects if x["kind"] == "Deployment")
+                env = {item["name"]: item.get("value") for item in
+                       deployment["spec"]["template"]["spec"]["containers"][0]["env"]}
+                self.assertEqual(env["AZURE_CLOUD"], cloud)
+                self.assertIn("ENTRA_TENANT_ID", env)
+                self.assertIn("PORTAL_OIDC_CLIENT_ID", env)
+
+    def test_unsupported_cloud_is_rejected(self):
+        result = self.render(cloud="unknown")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cloud must be AzureCloud or AzureChinaCloud", result.stderr)
 
     def test_mtls_requires_gateway_principal_on_internal_port(self):
         result = self.render()
