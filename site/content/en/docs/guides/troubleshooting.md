@@ -38,7 +38,7 @@ send it to your platform administrator.
 
 ## The Agent does not become ready
 
-First, read the phase badge. For the meaning of each phase, refer to
+First, read the phase. For the meaning of each phase, refer to
 [Wait until the Agent is ready](../../getting-started/first-instance/#wait-until-the-agent-is-ready).
 
 If the platform holds the Agent, a message box shows above the tabs. The list
@@ -130,12 +130,12 @@ missing. The section does not show while the Agent is suspended.
 
 | What you see | What to do |
 | --- | --- |
-| The **GitHub Copilot** badge stays at **Starting**. | Wait some minutes. Do not sign in again. If the badge does not change, send the Agent name to your platform administrator. |
+| The **GitHub Copilot** state stays at **Starting**. | Wait some minutes. Do not sign in again. If the state does not change, send the Agent name to your platform administrator. |
 | **Degraded** with "Signing in again may help." | Select **Sign in again**. |
 | "GitHub Copilot models are unavailable: the Agent Policy no longer allows one of them ..." | Wait. The models are available again when the platform removes the model that is not allowed. Shared models continue to work. |
 | "GitHub Copilot models are unavailable until the operator can check them against the Agent Policy." | Wait. Shared models continue to work. |
 | **Sign-in required** after you resume the Agent. | Suspension removes the sign-in. Select **Sign in with GitHub**. |
-| Copilot models stop working, but the badge shows **Ready**. | GitHub keeps a maximum of ten Copilot tokens for each GitHub account. A sign-in on another Agent or with another tool can revoke the oldest token. Select **Sign in again**. |
+| Copilot models stop working, but the state shows **Ready**. | GitHub keeps a maximum of ten Copilot tokens for each GitHub account. A sign-in on another Agent or with another tool can revoke the oldest token. Select **Sign in again**. |
 
 ## The Agent reports a billing or credits error
 

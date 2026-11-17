@@ -6,7 +6,6 @@ import {
   useContext,
   useState,
   useEffect,
-  useMemo,
   type ReactNode,
 } from "react";
 import {
@@ -15,6 +14,7 @@ import {
   webDarkTheme,
   type Theme,
 } from "@fluentui/react-components";
+import { portalTheme } from "../theme/portalTheme";
 
 export type ThemeMode = "system" | "light" | "dark";
 
@@ -86,21 +86,23 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const theme = useMemo(
-    () => resolveTheme(themeMode, prefersDark),
-    [themeMode, prefersDark],
-  );
+  const base = resolveTheme(themeMode, prefersDark);
+  const theme = portalTheme(base);
 
-  // Keep document.body in sync so the page background outside the React root
-  // also reflects the active theme (avoids a white flash / white margin area).
+  // Keep the document in sync so the page outside the React root, native
+  // controls and scrollbars also follow the active theme (avoids a white
+  // flash / white margin area).
   useEffect(() => {
-    document.body.style.backgroundColor = theme.colorNeutralBackground1;
+    const root = document.documentElement;
+    root.style.colorScheme = base === webDarkTheme ? "dark" : "light";
+    document.body.style.backgroundColor = theme.colorNeutralBackground2;
     document.body.style.color = theme.colorNeutralForeground1;
     return () => {
+      root.style.colorScheme = "";
       document.body.style.backgroundColor = "";
       document.body.style.color = "";
     };
-  }, [theme]);
+  }, [base, theme]);
 
   return (
     <ThemeContext.Provider value={{ themeMode, setThemeMode }}>

@@ -61,9 +61,9 @@ export function GovernanceNotice({ instance, compact = false }: { instance: Gove
   if (!status) return null;
   const { title, action } = presentation(status);
   if (compact) return (
-    <div aria-label="Governance status" style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8, overflowWrap: "anywhere" }}>
-      <Text weight="semibold">{title}</Text>
-      <Text size={200}>{status.reason}{status.message ? `: ${status.message}` : ""}</Text>
+    <div aria-label="Governance status" className="governance-compact">
+      <span className="governance-compact-title">{title}</span>
+      <span className="governance-compact-reason">{status.reason}{status.message ? `: ${status.message}` : ""}</span>
     </div>
   );
   return (

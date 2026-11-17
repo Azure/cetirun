@@ -10,7 +10,7 @@ export function AdminGuard() {
   const { me, isLoading } = useMe();
   if (isLoading) {
     return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", flex: 1 }}>
+      <div className="portal-centered">
         <Spinner label="Loading..." />
       </div>
     );

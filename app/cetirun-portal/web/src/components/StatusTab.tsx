@@ -1,23 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import {
-  Badge,
-  Text,
-  Spinner,
-  tokens,
-} from "@fluentui/react-components";
+import { Text, Spinner, tokens } from "@fluentui/react-components";
 import type { StatusResponse } from "../types/instance";
 import { ChartUnavailableNotice } from "./ChartUnavailableNotice";
-import { thStyle, tdStyle } from "./tableStyles";
+import { StatusLabel, type StatusTone } from "./StatusLabel";
 
-function conditionBadgeColor(status: string): "success" | "danger" | "informative" {
+function conditionTone(status: string): StatusTone {
   if (status === "True") return "success";
   if (status === "False") return "danger";
   return "informative";
 }
 
-function phaseBadgeColor(phase: string): "success" | "warning" | "danger" | "informative" {
+function podPhaseTone(phase: string): StatusTone {
   if (phase === "Running") return "success";
   if (phase === "Pending") return "warning";
   if (phase === "Failed" || phase === "Unknown") return "danger";
@@ -35,52 +30,38 @@ export function StatusTab({
   showChartNotice?: boolean;
 }) {
   if (isLoading) {
-    return <Spinner size="small" label="Loading status..." />;
+    return <Spinner size="small" label="Loading status..." style={{ justifyContent: "flex-start" }} />;
   }
   if (!data) {
     return <Text>No status data available.</Text>;
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24, paddingTop: 12 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
       {showChartNotice && <ChartUnavailableNotice conditions={data.conditions} />}
       {/* Conditions */}
       <section>
-        <Text weight="semibold" size={400} as="h3" style={{ marginBottom: 8, display: "block" }}>
-          Conditions
-        </Text>
+        <h3 className="portal-section-title" style={{ marginBottom: 8 }}>Conditions</h3>
         {data.conditions.length === 0 ? (
-          <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
-            No conditions reported yet.
-          </Text>
+          <span className="portal-note">No conditions reported yet.</span>
         ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <div className="portal-table-scroll">
+            <table className="portal-table">
               <thead>
-                <tr style={{ borderBottom: `1px solid ${tokens.colorNeutralStroke1}` }}>
-                  <th style={thStyle}>Type</th>
-                  <th style={thStyle}>Status</th>
-                  <th style={thStyle}>Reason</th>
-                  <th style={thStyle}>Message</th>
+                <tr>
+                  <th>Type</th>
+                  <th>Status</th>
+                  <th>Reason</th>
+                  <th>Message</th>
                 </tr>
               </thead>
               <tbody>
                 {data.conditions.map((c) => (
-                  <tr key={c.type} style={{ borderBottom: `1px solid ${tokens.colorNeutralStroke2}` }}>
-                    <td style={tdStyle}>
-                      <Text weight="semibold" size={200}>{c.type}</Text>
-                    </td>
-                    <td style={tdStyle}>
-                      <Badge appearance="filled" color={conditionBadgeColor(c.status)}>
-                        {c.status}
-                      </Badge>
-                    </td>
-                    <td style={tdStyle}>
-                      <Text size={200}>{c.reason}</Text>
-                    </td>
-                    <td style={tdStyle}>
-                      <Text size={200}>{c.message}</Text>
-                    </td>
+                  <tr key={c.type}>
+                    <td><Text weight="semibold" size={200}>{c.type}</Text></td>
+                    <td><StatusLabel tone={conditionTone(c.status)} size="small">{c.status}</StatusLabel></td>
+                    <td><Text size={200}>{c.reason}</Text></td>
+                    <td><Text size={200}>{c.message}</Text></td>
                   </tr>
                 ))}
               </tbody>
@@ -91,34 +72,16 @@ export function StatusTab({
 
       {/* Pods */}
       <section>
-        <Text weight="semibold" size={400} as="h3" style={{ marginBottom: 8, display: "block" }}>
-          Pods
-        </Text>
+        <h3 className="portal-section-title" style={{ marginBottom: 8 }}>Pods</h3>
         {data.pods.length === 0 ? (
-          <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
-            No pods found.
-          </Text>
+          <span className="portal-note">No pods found.</span>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {data.pods.map((pod) => (
-              <div
-                key={pod.name}
-                style={{
-                  border: `1px solid ${tokens.colorNeutralStroke1}`,
-                  borderRadius: tokens.borderRadiusMedium,
-                  padding: 12,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                }}
-              >
-                <Text weight="semibold" size={300}>{pod.name}</Text>
-                <Badge appearance="filled" color={phaseBadgeColor(pod.phase)}>
-                  {pod.phase}
-                </Badge>
-                <Badge appearance="filled" color={pod.ready ? "success" : "danger"}>
-                  {pod.ready ? "Ready" : "Not Ready"}
-                </Badge>
+              <div key={pod.name} className="portal-tile portal-tile-head" style={{ columnGap: 20 }}>
+                <span className="portal-mono">{pod.name}</span>
+                <StatusLabel tone={podPhaseTone(pod.phase)} size="small">{pod.phase}</StatusLabel>
+                <StatusLabel tone={pod.ready ? "success" : "danger"} size="small">{pod.ready ? "Ready" : "Not Ready"}</StatusLabel>
                 {pod.restartCount > 0 && (
                   <Text size={200} style={{ color: tokens.colorStatusWarningForeground1 }}>
                     Restarts: {pod.restartCount}

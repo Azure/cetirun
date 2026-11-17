@@ -2,27 +2,17 @@
 // Licensed under the MIT License.
 
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
-import {
-  Title1,
-  Button,
-  Spinner,
-  MessageBar,
-  Card,
-  CardHeader,
-  Text,
-  Badge,
-  Tooltip,
-} from "@fluentui/react-components";
-import { Add20Regular } from "@fluentui/react-icons";
+import { Link } from "react-router-dom";
+import { Button, Spinner, MessageBar, Tooltip } from "@fluentui/react-components";
+import { Add20Regular, ChevronRight16Regular } from "@fluentui/react-icons";
 import { useInstancesQuery } from "../hooks/useInstance";
 import { useFeatures } from "../hooks/useFeatures";
 import { CreateForm } from "../components/CreateForm";
 import { GovernanceNotice } from "../components/GovernanceNotice";
+import { LifecycleGlyph, lifecycleState } from "../components/Lifecycle";
 import { agentTypeLabel } from "../utils/instance";
 
 export function InstanceListPage() {
-  const navigate = useNavigate();
   const { data: instances, isLoading, error } = useInstancesQuery();
   const { data: features } = useFeatures();
   const [showCreate, setShowCreate] = useState(false);
@@ -31,83 +21,79 @@ export function InstanceListPage() {
   const atLimit = maxInstances > 0 && (instances?.length ?? 0) >= maxInstances;
 
   return (
-    <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 24 }}>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 24,
-        }}
-      >
-        <Title1>My Agents</Title1>
-        <Tooltip
-          content={`Limit of ${maxInstances} agent${maxInstances > 1 ? "s" : ""} reached`}
-          relationship="description"
-          visible={atLimit ? undefined : false}
-        >
-          <Button
-            icon={<Add20Regular />}
-            appearance="primary"
-            disabled={atLimit}
-            onClick={() => setShowCreate(true)}
+    <div className="portal-page">
+      <div className="portal-page-inner">
+        <div className="portal-page-head">
+          <div>
+            <h1 className="portal-page-title">My Agents</h1>
+            {instances && features && (
+              <p className="portal-page-count">
+                {maxInstances > 0
+                  ? `${instances.length} of ${maxInstances} agents`
+                  : `${instances.length} agent${instances.length === 1 ? "" : "s"}`}
+              </p>
+            )}
+          </div>
+          <Tooltip
+            content={`Limit of ${maxInstances} agent${maxInstances > 1 ? "s" : ""} reached`}
+            relationship="description"
+            visible={atLimit ? undefined : false}
           >
-            New Agent
-          </Button>
-        </Tooltip>
-      </div>
-
-      {isLoading && <Spinner label="Loading agents..." />}
-
-      {error && (
-        <MessageBar intent="error">
-          Failed to load agents: {(error as Error).message}
-        </MessageBar>
-      )}
-
-      {showCreate && (
-        <div style={{ marginBottom: 24 }}>
-          <CreateForm onCreated={() => setShowCreate(false)} />
-          <Button
-            style={{ marginTop: 8 }}
-            onClick={() => setShowCreate(false)}
-          >
-            Cancel
-          </Button>
+            <Button
+              icon={<Add20Regular />}
+              appearance="primary"
+              disabled={atLimit}
+              onClick={() => setShowCreate(true)}
+            >
+              New Agent
+            </Button>
+          </Tooltip>
         </div>
-      )}
 
-      {instances && instances.length === 0 && !showCreate && (
-        <MessageBar intent="info">
-          You don&apos;t have any agents yet. Create one to get started.
-        </MessageBar>
-      )}
+        <div className="portal-stack">
+          {isLoading && <Spinner label="Loading agents..." />}
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        {instances?.map((inst) => (
-          <Card
-            key={inst.instanceName}
-            onClick={() => navigate(`/instances/${inst.instanceName}/overview`)}
-            style={{ cursor: "pointer", padding: "20px 24px" }}
-          >
-            <CardHeader
-              header={<Text size={500} weight="semibold">{inst.instanceName}</Text>}
-              description={<Text size={300}>{inst.displayName}</Text>}
-              action={
-                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  <Badge appearance="outline">{agentTypeLabel(inst.agent.type)}</Badge>
-                  <Badge
-                    appearance="filled"
-                    color={inst.phase === "Ready" ? "success" : "warning"}
-                  >
-                    {inst.phase}
-                  </Badge>
+          {error && (
+            <MessageBar intent="error">
+              Failed to load agents: {(error as Error).message}
+            </MessageBar>
+          )}
+
+          {showCreate && (
+            <section className="portal-panel portal-panel-body" aria-labelledby="new-agent-title">
+              <h2 id="new-agent-title" className="portal-panel-title">New agent</h2>
+              <CreateForm onCreated={() => setShowCreate(false)} onCancel={() => setShowCreate(false)} />
+            </section>
+          )}
+
+          {instances && instances.length === 0 && !showCreate && (
+            <div className="portal-empty">
+              You don&apos;t have any agents yet. Create one to get started.
+            </div>
+          )}
+
+          {!!instances?.length && (
+            <div className="portal-panel agent-list">
+              {instances.map((inst) => (
+                <div key={inst.instanceName} role="group" aria-label={inst.instanceName} className="agent-row">
+                  <LifecycleGlyph state={lifecycleState(inst.phase)} size={18} />
+                  <div>
+                    <Link to={`/instances/${inst.instanceName}/overview`} className="agent-row-name">
+                      {inst.instanceName}
+                    </Link>
+                    <span className="agent-row-display">{inst.displayName}</span>
+                    <GovernanceNotice instance={inst} compact />
+                  </div>
+                  <div className="agent-row-facts">
+                    <span className="agent-row-type">{agentTypeLabel(inst.agent.type)}</span>
+                    <span className="agent-row-phase">{inst.phase}</span>
+                  </div>
+                  <ChevronRight16Regular className="agent-row-chevron" />
                 </div>
-              }
-            />
-            <GovernanceNotice instance={inst} compact />
-          </Card>
-        ))}
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

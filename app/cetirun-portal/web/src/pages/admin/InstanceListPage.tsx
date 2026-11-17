@@ -5,7 +5,6 @@ import { useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Title2,
   Spinner,
   MessageBar,
   Table,
@@ -14,7 +13,6 @@ import {
   TableRow,
   TableBody,
   TableCell,
-  Badge,
   Text,
   Input,
   Field,
@@ -23,6 +21,14 @@ import {
 import { listAllInstances, type AdminInstanceSummary } from "../../api/adminInstance";
 import { agentTypeLabel } from "../../utils/instance";
 import { GovernanceNotice } from "../../components/GovernanceNotice";
+import { AgentPhase, lifecycleState, type LifecycleState } from "../../components/Lifecycle";
+
+/** The glyph is green only when the Agent is ready, whatever its phase says. */
+function listedState(instance: AdminInstanceSummary): LifecycleState {
+  if (instance.ready) return "ready";
+  const state = lifecycleState(instance.phase);
+  return state === "ready" ? "waiting" : state;
+}
 
 function formatAge(createdAt?: string): string {
   if (!createdAt) return "—";
@@ -65,31 +71,33 @@ export function InstanceListPage() {
 
   return (
     <div>
-      <Title2 style={{ marginBottom: 16 }}>All agents</Title2>
+      <div className="portal-page-head">
+        <h1 className="portal-page-title portal-page-title--section">All agents</h1>
+      </div>
       {location.state?.deletedAgent && <MessageBar intent="success">Agent {location.state.deletedAgent} has been deleted.</MessageBar>}
       {location.state?.missingAgent && <MessageBar intent="info">Agent {location.state.missingAgent} no longer exists.</MessageBar>}
       {isLoading && <Spinner label="Loading agents..." />}
       {error && <MessageBar intent="error">Failed to load: {error.message}</MessageBar>}
       {data && (
         <>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 16 }}>
+        <div className="portal-filters">
           <Field label="Name"><Input value={nameFilter} onChange={(_, value) => setNameFilter(value.value)} /></Field>
           <Field label="Owner"><Input value={ownerFilter} onChange={(_, value) => setOwnerFilter(value.value)} /></Field>
           <Field label="Team"><Input value={teamFilter} onChange={(_, value) => setTeamFilter(value.value)} /></Field>
           <Field label="Type"><Select aria-label="Type" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="">All types</option>{types.map((type) => <option key={type} value={type}>{agentTypeLabel(type)}</option>)}</Select></Field>
           <Field label="Phase"><Select aria-label="Phase" value={phaseFilter} onChange={(event) => setPhaseFilter(event.target.value)}><option value="">All phases</option>{phases.map((phase) => <option key={phase} value={phase}>{phase}</option>)}</Select></Field>
         </div>
-        <Table aria-label="All agents">
+        <div className="portal-table-scroll"><Table aria-label="All agents" style={{ minWidth: 940 }}>
           <TableHeader>
             <TableRow>
               <TableHeaderCell>Name</TableHeaderCell>
-              <TableHeaderCell>Alias</TableHeaderCell>
+              <TableHeaderCell style={{ width: 100 }}>Alias</TableHeaderCell>
               <TableHeaderCell>Display name</TableHeaderCell>
-              <TableHeaderCell>Team</TableHeaderCell>
-              <TableHeaderCell>Agent</TableHeaderCell>
-              <TableHeaderCell>Status</TableHeaderCell>
-              <TableHeaderCell>Age</TableHeaderCell>
-              <TableHeaderCell>Actions</TableHeaderCell>
+              <TableHeaderCell style={{ width: 120 }}>Team</TableHeaderCell>
+              <TableHeaderCell style={{ width: 96 }}>Agent</TableHeaderCell>
+              <TableHeaderCell style={{ width: 190 }}>Status</TableHeaderCell>
+              <TableHeaderCell style={{ width: 56 }}>Age</TableHeaderCell>
+              <TableHeaderCell style={{ width: 104 }}>Actions</TableHeaderCell>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -106,15 +114,9 @@ export function InstanceListPage() {
                 <TableCell>{ins.alias}</TableCell>
                 <TableCell>{ins.displayName || "—"}</TableCell>
                 <TableCell>{ins.team || "—"}</TableCell>
+                <TableCell>{agentTypeLabel(ins.agent.type)}</TableCell>
                 <TableCell>
-                  <Badge appearance="outline">
-                    {agentTypeLabel(ins.agent.type)}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <Badge appearance="filled" color={ins.ready ? "success" : "warning"}>
-                    {ins.phase || "Unknown"}
-                  </Badge>
+                  <AgentPhase phase={ins.phase || "Unknown"} state={listedState(ins)} />
                   <GovernanceNotice instance={ins} compact />
                 </TableCell>
                 <TableCell>{formatAge(ins.createdAt)}</TableCell>
@@ -122,7 +124,7 @@ export function InstanceListPage() {
               </TableRow>
             ))}
           </TableBody>
-        </Table>
+        </Table></div>
         </>
       )}
     </div>

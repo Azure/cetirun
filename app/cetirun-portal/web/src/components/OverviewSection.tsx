@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 import {
-  Badge,
   Button,
   Text,
   Spinner,
@@ -22,7 +21,6 @@ import {
   MessageBarBody,
   MessageBarTitle,
   type SelectTabData,
-  tokens,
 } from "@fluentui/react-components";
 import {
   Eye20Regular,
@@ -40,7 +38,8 @@ import { useDeleteInstanceByName, useUpdateInstanceByName, useUpgradeInstanceByN
 import { useFeatures } from "../hooks/useFeatures";
 import { useAIGatewayCatalog } from "../hooks/useAIGateway";
 import type { Instance, InstanceVersion, UpdateInstanceRequest } from "../types/instance";
-import { agentTypeLabel, phaseBadgeColor } from "../utils/instance";
+import { agentTypeLabel } from "../utils/instance";
+import { AgentPhase } from "./Lifecycle";
 import { StatusTab } from "./StatusTab";
 import { currentGovernance, GovernanceNotice } from "./GovernanceNotice";
 import { ToolAuthorizationBlock } from "./ToolAuthorizationBlock";
@@ -57,6 +56,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
   const upgradeMutation = useUpgradeInstanceByName(instance.instanceName);
   const { data: features } = useFeatures();
   const [selectedTab, setSelectedTab] = useState<string>("overview");
+  const overview = selectedTab === "overview";
   const statusQuery = useInstanceStatusByNameQuery(instance.instanceName, selectedTab === "status", instance.uid);
   const [showAgentCredential, setShowAgentCredential] = useState(false);
   const [showTailscaleKey, setShowTailscaleKey] = useState(false);
@@ -183,118 +183,131 @@ export function OverviewSection({ instance }: { instance: Instance }) {
   };
 
   return (
-    <div style={{ padding: 24, overflowY: "auto", flex: 1, minWidth: 0 }}>
-      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, marginBottom: 16 }}>
-        <Text as="h1" size={600} weight="semibold" style={{ minWidth: 0, margin: 0, overflowWrap: "anywhere" }}>{instance.displayName.trim() || instance.instanceName}</Text>
-        <Badge appearance="filled" color={phaseBadgeColor[instance.phase] ?? "informative"}>{instance.phase}</Badge>
-      </div>
-      <GovernanceNotice instance={instance} />
-      <TabList
-        size="medium"
-        selectedValue={selectedTab}
-        onTabSelect={(_, data: SelectTabData) => setSelectedTab(data.value as string)}
-        style={{ marginBottom: 16 }}
-      >
-        <Tab value="overview">Overview</Tab>
-        <Tab value="status">Status</Tab>
-      </TabList>
-
-      {selectedTab === "status" && (
-        <StatusTab data={statusQuery.data} isLoading={statusQuery.isLoading} />
-      )}
-
-      {selectedTab === "overview" && (<>
-      <Text size={300} style={{ color: tokens.colorNeutralForeground3, marginBottom: 16, display: "block" }}>
-        Agent: {instance.instanceName} | Owner: {instance.alias}{instance.team ? ` | Team: ${instance.team}` : ""}
-      </Text>
-      <div aria-label="Requested Agent configuration" style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16, overflowWrap: "anywhere" }}>
-        <Text>Type: {agentTypeLabel(instance.agent.type)}</Text>
-        <Text>Image: {instance.agent.image ?? "Platform default (not yet pinned)"}</Text>
-        <Text>Username: {instance.agent.username ?? "vibe"}</Text>
-        <Text>{portLabel}: {portValue}</Text>
-      </div>
-      {instance.phase === "Suspended" && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: 12, borderRadius: tokens.borderRadiusMedium, backgroundColor: tokens.colorPaletteYellowBackground2, marginBottom: 8 }}>
-          <Warning20Regular style={{ color: tokens.colorPaletteYellowForeground2, flexShrink: 0 }} />
-          <Text size={200}>The controller reports Suspended. This is not proof of Pod termination or removal of every access path.</Text>
+    <div className="portal-detail">
+      <div className="portal-detail-inner">
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, marginBottom: 16 }}>
+          <h1 className="portal-detail-title">{instance.displayName.trim() || instance.instanceName}</h1>
+          <AgentPhase phase={instance.phase} />
         </div>
-      )}
+        <GovernanceNotice instance={instance} />
+        <TabList
+          size="medium"
+          selectedValue={selectedTab}
+          onTabSelect={(_, data: SelectTabData) => setSelectedTab(data.value as string)}
+          style={{ marginBottom: 20, marginInline: -10 }}
+        >
+          <Tab value="overview">Overview</Tab>
+          <Tab value="status">Status</Tab>
+        </TabList>
 
-      {readiness ? (
-        <MessageBar intent="warning" style={{ marginBottom: 16, overflowWrap: "anywhere" }}>
-          <MessageBarBody>
-            <MessageBarTitle>Agent is not ready</MessageBarTitle>
-            <Text block>Reported reason: {readiness.reason}{readiness.message ? `: ${readiness.message}` : ""}</Text>
-            {canRetryWorkload && <Text block>
-              If the workload stays unready, you can select Suspend Agent below. This interrupts active sessions and retains HOME.
-              Wait for the controller to report Suspended, then select Resume Agent to retry with the current configuration.
-              An accepted resume does not mean the Agent is Ready. If it stays unready, ask your administrator to check the reported cause.
-            </Text>}
-            <Button appearance="subtle" onClick={() => setSelectedTab("status")}>View Status</Button>
-          </MessageBarBody>
-        </MessageBar>
-      ) : instance.phase === "Provisioning" && !governance ? <Spinner size="small" label="Provisioning your agent..." /> : null}
-
-      {agentCredential && (
-        <div style={{ marginTop: 8, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
-          <Text weight="semibold">{agentCredentialLabel}: </Text>
-          <Text style={{ fontFamily: "monospace", fontSize: 12, flex: 1 }}>
-            {showAgentCredential ? agentCredential : "•".repeat(32)}
-          </Text>
-          <Button appearance="subtle" size="small" icon={showAgentCredential ? <EyeOff20Regular /> : <Eye20Regular />} onClick={() => setShowAgentCredential(!showAgentCredential)} aria-label={showAgentCredential ? "Hide credential" : "Show credential"} />
-          <Button appearance="subtle" size="small" icon={copiedAgentCredential ? <Checkmark20Regular /> : <Copy20Regular />} onClick={handleCopyAgentCredential} aria-label="Copy credential" />
-        </div>
-      )}
-
-      {instance.tailscaleAuthKey && features?.tailscaleEnabled && (
-        <div style={{ marginTop: 8, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
-          <Text weight="semibold">Tailscale Auth Key: </Text>
-          <Text style={{ fontFamily: "monospace", fontSize: 12, flex: 1 }}>
-            {showTailscaleKey ? instance.tailscaleAuthKey : "•".repeat(32)}
-          </Text>
-          <Button appearance="subtle" size="small" icon={showTailscaleKey ? <EyeOff20Regular /> : <Eye20Regular />} onClick={() => setShowTailscaleKey(!showTailscaleKey)} aria-label={showTailscaleKey ? "Hide Tailscale auth key" : "Show Tailscale auth key"} />
-          <Button appearance="subtle" size="small" icon={copiedTailscaleKey ? <Checkmark20Regular /> : <Copy20Regular />} onClick={handleCopyTailscaleKey} aria-label="Copy Tailscale auth key" />
-        </div>
-      )}
-
-      {gatewayRouted && !instance.suspended && instance.phase !== "Suspended" && <AIGatewayBlock instance={instance} />}
-
-      <TeamSkillsBlock instance={instance} />
-
-      {features?.agentToolsEnabled && <ToolAuthorizationBlock instance={instance} />}
-
-      {instance.agent.registrySecretRef && <RegistryAuthBlock key={instance.uid || instance.instanceName} instance={instance} />}
-
-      </>)}
-
-      {/* Keep lifecycle requests mounted while the owner checks the Status tab. */}
-      <div style={{ display: selectedTab === "overview" && instance.phase !== "Deleting" ? "flex" : "none",
-        flexWrap: "wrap", gap: 8, marginTop: 8 }}>
-        {instance.upgradeAvailable && (
-          <Button appearance="primary" icon={<ArrowSync20Regular />} onClick={() => upgradeMutation.mutate(instance)} disabled={upgradeMutation.isPending}>
-            {upgradeMutation.isPending ? "Upgrading..." : "Upgrade to Latest"}
-          </Button>
+        {selectedTab === "status" && (
+          <StatusTab data={statusQuery.data} isLoading={statusQuery.isLoading} />
         )}
-        <Button appearance="secondary" icon={<Edit20Regular />} onClick={openEditDialog} disabled={updateMutation.isPending}>Edit Agent</Button>
-        {(instance.restartAvailable || instance.restartRequestId) && <RestartAgentButton key={instance.uid} instance={instance} />}
-        {instance.suspended !== undefined && <SuspendAgentButton instance={instance} />}
-        <Button appearance="secondary" onClick={() => { setDeleteVersion({ uid: instance.uid, resourceVersion: instance.resourceVersion }); setConfirmOpen(true); }} disabled={deleteMutation.isPending}>
-          {deleteMutation.isPending ? "Deleting..." : "Delete Agent"}
-        </Button>
+
+        <div className="overview-grid">
+          <div className="overview-lead">
+            {overview && (<>
+              {instance.phase === "Suspended" && (
+                <div className="portal-callout portal-callout--warning">
+                  <Warning20Regular />
+                  <span>The controller reports Suspended. This is not proof of Pod termination or removal of every access path.</span>
+                </div>
+              )}
+
+              {readiness ? (
+                <MessageBar intent="warning" style={{ marginBottom: 16, overflowWrap: "anywhere" }}>
+                  <MessageBarBody>
+                    <MessageBarTitle>Agent is not ready</MessageBarTitle>
+                    <Text block>Reported reason: {readiness.reason}{readiness.message ? `: ${readiness.message}` : ""}</Text>
+                    {canRetryWorkload && <Text block>
+                      If the workload stays unready, you can select Suspend Agent below. This interrupts active sessions and retains HOME.
+                      Wait for the controller to report Suspended, then select Resume Agent to retry with the current configuration.
+                      An accepted resume does not mean the Agent is Ready. If it stays unready, ask your administrator to check the reported cause.
+                    </Text>}
+                    <Button appearance="subtle" onClick={() => setSelectedTab("status")}>View Status</Button>
+                  </MessageBarBody>
+                </MessageBar>
+              ) : instance.phase === "Provisioning" && !governance ? <Spinner size="small" label="Provisioning your agent..." style={{ justifyContent: "flex-start", marginBottom: 16 }} /> : null}
+            </>)}
+
+            {/* Keep lifecycle requests mounted while the owner checks the Status tab. */}
+            <div className="portal-actions" style={{ display: overview && instance.phase !== "Deleting" ? "flex" : "none",
+              flexWrap: "wrap", gap: 8 }}>
+              {instance.upgradeAvailable && (
+                <Button appearance="primary" icon={<ArrowSync20Regular />} onClick={() => upgradeMutation.mutate(instance)} disabled={upgradeMutation.isPending}>
+                  {upgradeMutation.isPending ? "Upgrading..." : "Upgrade to Latest"}
+                </Button>
+              )}
+              <Button appearance="secondary" icon={<Edit20Regular />} onClick={openEditDialog} disabled={updateMutation.isPending}>Edit Agent</Button>
+              {(instance.restartAvailable || instance.restartRequestId) && <RestartAgentButton key={instance.uid} instance={instance} />}
+              {instance.suspended !== undefined && <SuspendAgentButton instance={instance} />}
+              <Button className="portal-danger-quiet" appearance="secondary" onClick={() => { setDeleteVersion({ uid: instance.uid, resourceVersion: instance.resourceVersion }); setConfirmOpen(true); }} disabled={deleteMutation.isPending}>
+                {deleteMutation.isPending ? "Deleting..." : "Delete Agent"}
+              </Button>
+            </div>
+            {overview && upgradeMutation.isError && (
+              <span className="portal-error-text">
+                {upgradeMutation.error?.message || "Failed to upgrade agent"}
+              </span>
+            )}
+            {overview && deleteMutation.isError && (
+              <span className="portal-error-text">
+                {deleteMutation.error?.message || "Failed to delete agent"}
+              </span>
+            )}
+          </div>
+
+          {overview && (
+            <div className="overview-aside">
+              <span className="portal-byline">
+                Agent: {instance.instanceName} | Owner: {instance.alias}{instance.team ? ` | Team: ${instance.team}` : ""}
+              </span>
+              <div aria-label="Requested Agent configuration" className="portal-spec">
+                <span>Type: {agentTypeLabel(instance.agent.type)}</span>
+                <span>Image: {instance.agent.image ?? "Platform default (not yet pinned)"}</span>
+                <span>Username: {instance.agent.username ?? "vibe"}</span>
+                <span>{portLabel}: {portValue}</span>
+              </div>
+
+              {agentCredential && (
+                <div className="portal-secret">
+                  <Text weight="semibold">{agentCredentialLabel}: </Text>
+                  <span className="portal-secret-value">
+                    {showAgentCredential ? agentCredential : "•".repeat(32)}
+                  </span>
+                  <Button appearance="subtle" size="small" icon={showAgentCredential ? <EyeOff20Regular /> : <Eye20Regular />} onClick={() => setShowAgentCredential(!showAgentCredential)} aria-label={showAgentCredential ? "Hide credential" : "Show credential"} />
+                  <Button appearance="subtle" size="small" icon={copiedAgentCredential ? <Checkmark20Regular /> : <Copy20Regular />} onClick={handleCopyAgentCredential} aria-label="Copy credential" />
+                </div>
+              )}
+
+              {instance.tailscaleAuthKey && features?.tailscaleEnabled && (
+                <div className="portal-secret">
+                  <Text weight="semibold">Tailscale Auth Key: </Text>
+                  <span className="portal-secret-value">
+                    {showTailscaleKey ? instance.tailscaleAuthKey : "•".repeat(32)}
+                  </span>
+                  <Button appearance="subtle" size="small" icon={showTailscaleKey ? <EyeOff20Regular /> : <Eye20Regular />} onClick={() => setShowTailscaleKey(!showTailscaleKey)} aria-label={showTailscaleKey ? "Hide Tailscale auth key" : "Show Tailscale auth key"} />
+                  <Button appearance="subtle" size="small" icon={copiedTailscaleKey ? <Checkmark20Regular /> : <Copy20Regular />} onClick={handleCopyTailscaleKey} aria-label="Copy Tailscale auth key" />
+                </div>
+              )}
+            </div>
+          )}
+
+          {overview && (
+            <div className="overview-sections">
+              {gatewayRouted && !instance.suspended && instance.phase !== "Suspended" && <AIGatewayBlock instance={instance} />}
+
+              <TeamSkillsBlock instance={instance} />
+
+              {features?.agentToolsEnabled && <ToolAuthorizationBlock instance={instance} />}
+
+              {instance.agent.registrySecretRef && <RegistryAuthBlock key={instance.uid || instance.instanceName} instance={instance} />}
+            </div>
+          )}
+        </div>
       </div>
 
-      {selectedTab === "overview" && (<>
-      {upgradeMutation.isError && (
-        <Text size={200} style={{ color: tokens.colorStatusDangerForeground1 }}>
-          {upgradeMutation.error?.message || "Failed to upgrade agent"}
-        </Text>
-      )}
-      {deleteMutation.isError && (
-        <Text size={200} style={{ color: tokens.colorStatusDangerForeground1 }}>
-          {deleteMutation.error?.message || "Failed to delete agent"}
-        </Text>
-      )}
-
+      {overview && (<>
       {/* Delete Dialog */}
       <Dialog open={confirmOpen} onOpenChange={(_, data) => setConfirmOpen(data.open)}>
         <DialogSurface>
@@ -302,11 +315,11 @@ export function OverviewSection({ instance }: { instance: Instance }) {
             <DialogTitle>Delete Agent</DialogTitle>
             <DialogContent>
               Are you sure you want to delete this agent? This action cannot be undone.
-              {deleteMutation.isError && <Text block style={{ color: tokens.colorStatusDangerForeground1 }}>{deleteMutation.error?.message || "Failed to delete agent"}</Text>}
+              {deleteMutation.isError && <span className="portal-error-text">{deleteMutation.error?.message || "Failed to delete agent"}</span>}
             </DialogContent>
             <DialogActions>
               <Button appearance="secondary" onClick={() => setConfirmOpen(false)} disabled={deleteMutation.isPending}>Cancel</Button>
-              <Button appearance="primary" style={{ backgroundColor: tokens.colorStatusDangerBackground3 }} disabled={deleteMutation.isPending} onClick={() => deleteMutation.mutate(deleteVersion, { onSuccess: () => navigate("/") })}>Delete</Button>
+              <Button className="portal-danger" appearance="primary" disabled={deleteMutation.isPending} onClick={() => deleteMutation.mutate(deleteVersion, { onSuccess: () => navigate("/") })}>Delete</Button>
             </DialogActions>
           </DialogBody>
         </DialogSurface>
@@ -353,17 +366,17 @@ export function OverviewSection({ instance }: { instance: Instance }) {
                     )}
                   </>
                 )}
-                {nativeIntegrations && <div style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "10px 12px", borderRadius: tokens.borderRadiusMedium, backgroundColor: tokens.colorNeutralBackground1Hover }}>
-                  <Info20Regular style={{ color: tokens.colorBrandForeground1, flexShrink: 0, marginTop: 2 }} />
-                  <Text size={200}>
+                {nativeIntegrations && <div className="portal-callout portal-callout--info" style={{ marginBottom: 0 }}>
+                  <Info20Regular />
+                  <span>
                     Updating the model, Gateway Token{features?.tailscaleEnabled ? " or Tailscale Auth Key" : ""} will restart the gateway. The access link may be temporarily unavailable during this process.
-                  </Text>
+                  </span>
                 </div>}
-                {editValidationError && <Text style={{ color: tokens.colorStatusDangerForeground1 }}>{editValidationError}</Text>}
+                {editValidationError && <span className="portal-error-text">{editValidationError}</span>}
                 {updateMutation.isError && (
-                  <Text style={{ color: tokens.colorStatusDangerForeground1 }}>
+                  <span className="portal-error-text">
                     {updateMutation.error?.message || "Failed to update agent"}
-                  </Text>
+                  </span>
                 )}
               </div>
             </DialogContent>

@@ -5,7 +5,7 @@ weight: 40
 ---
 
 You manage your Agent on its **Overview** tab in the portal. To open the tab,
-select the Agent in **My Agents**. The buttons under the Agent details start
+select the Agent in **My Agents**. The buttons at the top of the tab start
 these actions:
 
 | Button | What it does |
@@ -79,7 +79,7 @@ To suspend the Agent, do these steps:
 2. In the **Suspend Agent** dialog, select **Suspend**.
 
 The page shows "Suspension requested" while the platform stops the Agent. The
-phase badge changes to **Suspended** when the controller reports the stop.
+phase changes to **Suspended** when the controller reports the stop.
 
 To resume the Agent, do these steps:
 

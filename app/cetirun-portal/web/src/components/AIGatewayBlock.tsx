@@ -22,6 +22,7 @@ import { useCopilotGatewayLogin } from "../hooks/useAIGateway";
 import { useUpdateInstanceByName } from "../hooks/useInstance";
 import type { CopilotProxyPhase, Instance } from "../types/instance";
 import { RateLimitsSummary } from "./RateLimitsSummary";
+import { StatusLabel } from "./StatusLabel";
 
 const COPILOT_PHASES: Record<CopilotProxyPhase, { label: string; color: "warning" | "informative" | "success" | "danger" }> = {
   SignInRequired: { label: "Sign-in required", color: "warning" },
@@ -129,25 +130,14 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
   }
 
   return (
-    <div
-      style={{
-        marginTop: 8,
-        marginBottom: 8,
-        padding: 12,
-        borderRadius: tokens.borderRadiusMedium,
-        border: `1px solid ${tokens.colorNeutralStroke1}`,
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <Text weight="semibold">Models</Text>
-        <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
+    <div className="portal-section">
+      <div className="portal-inline" style={{ alignItems: "baseline" }}>
+        <h2 className="portal-section-title">Models</h2>
+        <span className="portal-note">
           through the AI Gateway
           {gateway.sharedModels ? " · shared models" : ""}
           {gateway.githubCopilot ? " · GitHub Copilot" : ""}
-        </Text>
+        </span>
       </div>
 
       {gateway.phase === "Degraded" && (
@@ -160,13 +150,16 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
       )}
 
       {gateway.models.length > 0 ? (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }} aria-label="Agent models">
-          {gateway.models.map((model) => (
-            <Badge key={model} appearance={!custom && model === gateway.defaultModel ? "filled" : "outline"} color="brand">
-              {model}
-              {!custom && model === gateway.defaultModel ? " (default)" : ""}
-            </Badge>
-          ))}
+        <div className="portal-chips" aria-label="Agent models">
+          {gateway.models.map((model) => {
+            const isDefault = !custom && model === gateway.defaultModel;
+            return (
+              <Badge key={model} size="large" appearance={isDefault ? "filled" : "tint"} color={isDefault ? "brand" : "informative"}>
+                {model}
+                {isDefault ? " (default)" : ""}
+              </Badge>
+            );
+          })}
         </div>
       ) : (
         <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{emptyHint}</Text>
@@ -220,10 +213,10 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
       )}
 
       {copilot && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <Text weight="semibold">GitHub Copilot</Text>
-            {phase && <Badge appearance="filled" color={phase.color}>{phase.label}</Badge>}
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+          <div className="portal-inline">
+            <h3 className="portal-subsection-title">GitHub Copilot</h3>
+            {phase && <StatusLabel tone={phase.color}>{phase.label}</StatusLabel>}
           </div>
           {copilotPhase === "Starting" && (
             <Spinner size="tiny" label={proxyStarting
@@ -280,7 +273,7 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
                 <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingTop: 8 }}>
                   <Text>Open GitHub, enter this code and authorize the sign-in:</Text>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <Text style={{ fontFamily: "monospace", fontSize: 18, letterSpacing: 2 }}>{login.login.userCode}</Text>
+                    <Text style={{ fontFamily: tokens.fontFamilyMonospace, fontSize: 20, fontWeight: 600, letterSpacing: 2 }}>{login.login.userCode}</Text>
                     <Button
                       appearance="subtle"
                       size="small"

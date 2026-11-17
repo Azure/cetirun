@@ -4,7 +4,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Button, Divider, Field, Input, MessageBar, Select, Spinner, Text, Title2 } from "@fluentui/react-components";
+import { Button, Divider, Field, Input, MessageBar, Select, Spinner, Text } from "@fluentui/react-components";
 import { createSandbox, getSandbox, getSandboxStorageOptions, updateSandbox, type SandboxHomeAccessMode, type SandboxSpec, type SandboxUpsertRequest } from "../../api/adminSandbox";
 import { AdminConfigurationErrorMessage } from "../../components/AdminConfigurationErrorMessage";
 
@@ -87,9 +87,9 @@ export function SandboxEditPage() {
   if (!isCreate && isLoading) return <Spinner label="Loading Sandbox..." />;
   if (!isCreate && error) return <MessageBar intent="error">Failed to load: {error.message}</MessageBar>;
   return (
-    <form onSubmit={submit} style={{ maxWidth: 720, display: "flex", flexDirection: "column", gap: 16 }}>
-      <Title2>{isCreate ? "New Sandbox" : `Sandbox: ${name}`}</Title2>
-      <Text>A Sandbox defines reusable runtime, resource and storage settings. The selected runtime requires an explicitly registered RuntimeClass and verified handler; the StorageClass must also be approved.</Text>
+    <form onSubmit={submit} className="portal-form">
+      <h1 className="portal-page-title portal-page-title--section">{isCreate ? "New Sandbox" : `Sandbox: ${name}`}</h1>
+      <p className="portal-page-lede">A Sandbox defines reusable runtime, resource and storage settings. The selected runtime requires an explicitly registered RuntimeClass and verified handler; the StorageClass must also be approved.</p>
       <Field label="Name" required><Input value={form.name || ""} disabled={!isCreate} onChange={(_, data) => setForm(current => ({ ...current, name: data.value }))} placeholder="e.g. standard" required /></Field>
       <Field label="Runtime" required hint="Only runtimes that the platform registered are listed."><Select value={form.type} disabled={!runtimeOptionsReady} onChange={event => {
         const type = event.target.value as SandboxSpec["type"];
@@ -105,8 +105,8 @@ export function SandboxEditPage() {
       {!isCreate && <Text size={300}>Changing this configuration does not convert a running Agent to another runtime. Use a separate Sandbox and a new Agent for a different backend.</Text>}
       {(["agent", "helpers"] as const).map(container => <div key={container} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <Divider />
-        <Text weight="semibold">{container === "agent" ? "Agent resources" : "Resources per helper container"}</Text>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <h2 className="portal-section-title">{container === "agent" ? "Agent resources" : "Resources per helper container"}</h2>
+        <div className="portal-form-grid">
           {(["cpu", "memory", "ephemeral-storage"] as const).flatMap(resource => (["requests", "limits"] as const).map(bound => <Field key={`${resource}-${bound}`}
             label={`${container === "agent" ? "Agent" : "Helper"} ${resource} ${bound === "requests" ? "request" : "limit"}`} required>
             <Input value={form.resources[container][bound][resource]} required onChange={(_, data) => setForm(current => ({ ...current, resources: { ...current.resources, [container]: { ...current.resources[container], [bound]: { ...current.resources[container][bound], [resource]: data.value } } } }))} />
@@ -116,7 +116,7 @@ export function SandboxEditPage() {
         {container === "helpers" && <Text size={300}>OpenClaw initialization can exceed 512Mi; 2Gi is the recommended starting memory limit per helper container.</Text>}
       </div>)}
       <Divider />
-      <Text weight="semibold">Agent HOME</Text>
+      <h2 className="portal-section-title">Agent HOME</h2>
       <Field label="HOME StorageClass" required hint="Choose an approved StorageClass for Agent HOME.">
         <Select value={form.storage.home.storageClassName} required disabled={storageOptions.isFetching || storageOptions.isError || classes.length === 0}
           onChange={event => {
@@ -144,7 +144,7 @@ export function SandboxEditPage() {
       {!storageOptions.isPending && !storageOptions.isError && !selectedAccessModeIsSupported && <MessageBar intent="warning">The selected HOME access mode is not supported by the {form.type} runtime. Choose a supported mode before saving.</MessageBar>}
       <Field label="Scratch size limit" required><Input value={form.storage.scratch.sizeLimit} required onChange={(_, data) => setForm(current => ({ ...current, storage: { ...current.storage, scratch: { sizeLimit: data.value } } }))} /></Field>
       {submitError && <AdminConfigurationErrorMessage error={submitError} />}
-      <div style={{ display: "flex", gap: 8 }}>
+      <div className="portal-form-actions">
         <Button appearance="primary" type="submit" disabled={mutation.isPending || !!existing?.deleting || storageOptions.isFetching || storageOptions.isError || !selectedStorageClassIsApproved || !selectedAccessModeIsSupported}>{mutation.isPending ? "Saving..." : isCreate ? "Create" : "Save"}</Button>
         <Button type="button" onClick={() => navigate("/admin/sandboxes")}>Cancel</Button>
       </div>

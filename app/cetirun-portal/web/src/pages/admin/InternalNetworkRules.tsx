@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { useState, type FormEvent } from "react";
-import { Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, Input, MessageBar, Text, tokens } from "@fluentui/react-components";
+import { Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, Input, MessageBar, Text } from "@fluentui/react-components";
 import type { AgentPolicyCIDRRule, AgentPolicyProtocol } from "../../api/adminPolicy";
 
 export interface InternalNetworkRule {
@@ -126,13 +126,10 @@ export function InternalNetworkRules({ rules, onChange, onEditingChange }: {
   };
 
   return <section aria-label="Internal network access" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-    <Text weight="semibold">Internal network access</Text>
+    <h3 className="portal-subsection-title">Internal network access</h3>
     <Text>Each rule allows access to one destination network on all the ports listed with it.</Text>
-    {rules.length === 0 && <Text style={{ color: tokens.colorNeutralForeground3 }}>No additional internal access configured.</Text>}
-    {rules.map((rule, index) => <div key={index} role="group" aria-label={`Internal network rule ${index + 1}`} style={{
-      display: "flex", flexDirection: "column", gap: 12, minWidth: 0,
-      padding: 16, border: `1px solid ${tokens.colorNeutralStroke2}`, borderRadius: tokens.borderRadiusMedium,
-    }}>
+    {rules.length === 0 && <span className="portal-note">No additional internal access configured.</span>}
+    {rules.map((rule, index) => <div key={index} role="group" aria-label={`Internal network rule ${index + 1}`} className="portal-form-well portal-stack" style={{ minWidth: 0 }}>
       <Text weight="semibold">Rule {index + 1}</Text>
       <Text style={{ overflowWrap: "anywhere" }}>Allow access to <strong>{rule.cidr}</strong> on <strong>{rule.ports}</strong>.</Text>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>

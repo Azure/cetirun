@@ -13,16 +13,6 @@ export function agentTypeLabel(type?: string): string {
   }
 }
 
-/** Badge color for an instance phase. */
-export const phaseBadgeColor: Record<Instance["phase"], "success" | "warning" | "danger" | "informative"> = {
-  Ready: "success",
-  Provisioning: "warning",
-  Pending: "informative",
-  Failed: "danger",
-  Deleting: "warning",
-  Suspended: "warning",
-};
-
 /** Derive the base URL (origin + pathname, no query params) from an instance accessUrl. */
 export function parseBaseUrl(accessUrl: string | undefined): string | undefined {
   if (!accessUrl) return undefined;

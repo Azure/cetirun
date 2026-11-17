@@ -1,10 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { Badge, MessageBar, MessageBarBody, Text, tokens } from "@fluentui/react-components";
+import { MessageBar, MessageBarBody, Text, tokens } from "@fluentui/react-components";
 import type { Instance, TeamSkillState } from "../types/instance";
 import { shortSkillVersion } from "../utils/skillMarketplace";
 import { RestartAgentButton } from "./RestartAgentButton";
+import { StatusLabel } from "./StatusLabel";
 
 const STATES: Record<TeamSkillState, { label: string; color: "success" | "informative" | "warning" | "danger"; hint?: string }> = {
   published: { label: "Published", color: "success" },
@@ -23,23 +24,11 @@ export function TeamSkillsBlock({ instance }: { instance: Instance }) {
   const skills = instance.teamSkills;
   if (!skills?.length) return null;
   return (
-    <section
-      aria-label="Team skills"
-      style={{
-        marginTop: 8,
-        marginBottom: 8,
-        padding: 12,
-        borderRadius: tokens.borderRadiusMedium,
-        border: `1px solid ${tokens.colorNeutralStroke1}`,
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
-      }}
-    >
-      <Text weight="semibold">Team skills</Text>
-      <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
+    <section aria-label="Team skills" className="portal-section">
+      <h2 className="portal-section-title">Team skills</h2>
+      <span className="portal-note">
         Chosen by your Team's administrator from the Skill Marketplace. Changes take effect when the Agent next starts.
-      </Text>
+      </span>
       {instance.teamSkillsPublicationFailed && (
         <MessageBar intent="warning">
           <MessageBarBody>
@@ -61,14 +50,14 @@ export function TeamSkillsBlock({ instance }: { instance: Instance }) {
           )}
         </>
       )}
-      <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 8 }}>
+      <ul style={{ listStyle: "none", margin: "4px 0 0", padding: 0, display: "flex", flexDirection: "column", gap: 12 }}>
         {skills.map((skill) => {
           const state = STATES[skill.state] ?? { label: skill.state, color: "informative" as const };
           return (
             <li key={skill.name} style={{ display: "flex", flexDirection: "column", gap: 2, overflowWrap: "anywhere" }}>
-              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+              <div className="portal-inline">
                 <Text weight="semibold">{skill.name}</Text>
-                <Badge appearance="tint" color={state.color}>{state.label}</Badge>
+                <StatusLabel tone={state.color} size="small">{state.label}</StatusLabel>
                 {skill.version && (
                   <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>Version {shortSkillVersion(skill.version)}</Text>
                 )}

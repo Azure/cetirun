@@ -5,7 +5,6 @@ import { useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  Title2,
   Button,
   Spinner,
   MessageBar,
@@ -291,8 +290,8 @@ export function TeamEditPage() {
   const pending = createMut.isPending || updateMut.isPending;
 
   return (
-    <form onSubmit={onSubmit} style={{ maxWidth: 720, display: "flex", flexDirection: "column", gap: 16 }}>
-      <Title2>{isCreate ? "New team" : `Team: ${name}`}</Title2>
+    <form onSubmit={onSubmit} className="portal-form">
+      <h1 className="portal-page-title portal-page-title--section">{isCreate ? "New team" : `Team: ${name}`}</h1>
 
       <Field label="Name" required>
         <Input
@@ -304,7 +303,7 @@ export function TeamEditPage() {
       </Field>
 
       <Divider />
-      <Text weight="semibold">Agent policy and Sandbox</Text>
+      <h2 className="portal-section-title">Agent policy and Sandbox</h2>
       {loadingConfiguration && <Spinner label="Loading policies and Sandboxes..." />}
       {configurationError && <MessageBar intent="error">
         <MessageBarBody>{configurationError.message}</MessageBarBody>
@@ -412,8 +411,8 @@ export function TeamEditPage() {
       />
 
       <Divider />
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <Text size={400} weight="semibold">Skill storage</Text>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "4px 16px" }}>
+        <h2 className="portal-section-title">Skill storage</h2>
         <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <input
             type="checkbox"
@@ -425,16 +424,7 @@ export function TeamEditPage() {
       </div>
 
       {form.storageEnabled && (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr",
-            gap: 12,
-            padding: 12,
-            border: `1px solid ${tokens.colorNeutralStroke2}`,
-            borderRadius: 4,
-          }}
-        >
+        <div className="portal-form-grid portal-form-well">
           <Field label="Resource group" required>
             <Input
               value={form.storage.resourceGroup}
@@ -490,7 +480,7 @@ export function TeamEditPage() {
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
         {submitError && <AdminConfigurationErrorMessage error={submitError} />}
-        <div style={{ display: "flex", gap: 8 }}>
+        <div className="portal-form-actions">
           {needsReload && <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <MessageBar intent="warning">{missing ? "This Team no longer exists. Your unsaved edits have been kept." : "This Team configuration changed since you opened it. Your unsaved edits have been kept."} Reloading will discard them and load the latest Team.</MessageBar>
             <Button type="button" style={{ alignSelf: "flex-start" }} disabled={pending} onClick={reload}>Discard edits and reload</Button>
