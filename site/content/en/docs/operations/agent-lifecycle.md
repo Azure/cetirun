@@ -342,11 +342,11 @@ Make sure that the Agent shows `Suspended` and that the actual replica count of
 the StatefulSet is zero. Also make sure that no workload pods are left and that
 the platform VirtualService was removed.
 
-A Sandbox Agent stays `Pending` until the workload controllers acknowledge
-shutdown and its Pods terminate. The Operator requests another reconciliation
-after five seconds while it waits for this progress, without the error backoff
-of an earlier provisioning failure. API, ownership, and access-revocation
-failures remain errors; they do not confirm suspension.
+A coordinated Sandbox Agent stays `Pending` until the workload controllers
+acknowledge shutdown and its Pods terminate. The Operator requests another
+reconciliation after five seconds while it waits for this progress, without
+the error backoff of an earlier provisioning failure. API, ownership, and
+access-revocation failures remain errors; they do not confirm suspension.
 
 For standard OpenClaw and Hermes Agents, the controller enforces zero replicas
 and `persistence.retainPolicy: Retain` after all Helm overrides. As a result,

@@ -62,20 +62,15 @@ func (s *KubernetesNativeQuiescence) CheckQuiesced(ctx context.Context, agent *a
 	if err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("inspect native Sandbox workload: %w", err)
 	}
-	if err == nil {
-		if !sandboxBuiltinOwned(workload, agent) {
-			return fmt.Errorf("native Sandbox workload ownership changed")
-		}
-		if ptr.Deref(workload.Spec.Replicas, -1) != 0 {
-			return fmt.Errorf("%w: native Sandbox workload has not stopped", errSandboxShutdownPending)
-		}
+	if err == nil && (!sandboxBuiltinOwned(workload, agent) || ptr.Deref(workload.Spec.Replicas, -1) != 0) {
+		return fmt.Errorf("native Sandbox workload has not stopped")
 	}
 	pods := &corev1.PodList{}
 	if err := s.APIReader.List(ctx, pods, client.InNamespace(name), client.Limit(1)); err != nil {
 		return fmt.Errorf("inspect native Sandbox Pods: %w", err)
 	}
 	if len(pods.Items) != 0 {
-		return fmt.Errorf("%w: native Sandbox waits for ordinary Pod termination; force deletion is not supported", errSandboxShutdownPending)
+		return shutdownPendingError("native Sandbox waits for ordinary Pod termination; force deletion is not supported")
 	}
 	return ctx.Err()
 }

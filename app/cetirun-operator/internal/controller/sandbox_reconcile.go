@@ -166,9 +166,20 @@ func (r *AgentReconciler) bootstrapReconciledSandbox(ctx context.Context, agent 
 	if err := r.bootstrapSandboxOwned(ctx, attempt); err != nil {
 		return err
 	}
-	if err := r.customReader().Get(ctx, client.ObjectKeyFromObject(agent), agent); err != nil {
+	expected, err := w.AgentSourceReference(attempt.agent)
+	if err != nil {
 		return err
 	}
+	current := &api.Agent{}
+	if err := r.customReader().Get(ctx, client.ObjectKeyFromObject(agent), current); err != nil {
+		return err
+	}
+	// Bootstrap refreshes its receipts, not the inputs of an already prepared chart.
+	observed, err := w.AgentSourceReference(current)
+	if err != nil || observed != expected || !current.DeletionTimestamp.IsZero() {
+		return fmt.Errorf("%w after Sandbox bootstrap", errSandboxIntentChanged)
+	}
+	*agent = *current
 	recorded, err := r.recordedReconciledSandbox(ctx, agent)
 	if err != nil {
 		return err
@@ -1013,7 +1024,7 @@ func (r *AgentReconciler) observeReconciledSandboxShutdown(ctx context.Context, 
 					return owner.Kind == "Deployment" && (owner.Name == desired.Identity.Name ||
 						(desired.Identity.UID != "" && owner.UID == desired.Identity.UID))
 				}) {
-					return fmt.Errorf("%w: common Sandbox source reservation waits for removed auxiliary ReplicaSets", errSandboxShutdownPending)
+					return shutdownPendingError("common Sandbox source reservation waits for removed auxiliary ReplicaSets")
 				}
 			}
 			continue
@@ -1023,10 +1034,10 @@ func (r *AgentReconciler) observeReconciledSandboxShutdown(ctx context.Context, 
 		}
 		if !sandboxBuiltinOwned(current, agent) ||
 			(desired.Identity.UID != "" && desired.Identity.UID != current.GetUID()) {
-			return fmt.Errorf("common Sandbox controller ownership changed during shutdown")
+			return fmt.Errorf("common Sandbox controller ownership differs from its recorded workload")
 		}
 		if !stopped {
-			return fmt.Errorf("%w: common Sandbox source reservation waits for acknowledged controller shutdown", errSandboxShutdownPending)
+			return shutdownPendingError("common Sandbox source reservation waits for acknowledged controller shutdown")
 		}
 	}
 	quiescence := &KubernetesNativeQuiescence{APIReader: r.customReader(), Reconciled: true}
@@ -1220,9 +1231,6 @@ func (r *AgentReconciler) holdReconciledSandboxWithStatus(ctx context.Context, a
 	failures = append(failures, r.updateStatus(ctx, agent))
 	// controller-runtime ignores RequeueAfter with an error.
 	if err := errors.Join(failures...); err != nil {
-		if agent.Spec.Suspended {
-			return reconciledSuspensionResult(err)
-		}
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: 15 * time.Second}, nil

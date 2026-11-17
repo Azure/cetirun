@@ -10,15 +10,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
-	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	"github.com/go-logr/logr/funcr"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -28,98 +25,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
-
-func TestReconciledSandboxSuspensionProgressDoesNotBackoff(t *testing.T) {
-	for _, backend := range []string{"kata", "container"} {
-		t.Run(backend, func(t *testing.T) {
-			ctx := context.Background()
-			f := customTerminalFixture(t, backend)
-			readyCustomWorkload(t, f)
-			for range 3 {
-				if _, err := f.reconcile(); err == nil {
-					t.Fatal("fixture must retain its terminal provisioning failure")
-				}
-			}
-			agent := f.current(t)
-			keyID := agent.Status.AIGateway.KeyID
-			agent.Spec.Suspended = true
-			agent.Generation++
-			if err := f.kube.Update(ctx, agent); err != nil {
-				t.Fatal(err)
-			}
-			for range 2 {
-				result, err := f.reconcile()
-				if err != nil || result.RequeueAfter != 5*time.Second {
-					t.Fatalf("ordinary shutdown progress used error backoff: result=%+v err=%v", result, err)
-				}
-				ticket, found, err := f.r.SandboxNativeCoordination.ReadNative(ctx, agent.UID)
-				if err != nil || !found || ticket.Reservation.Phase != sandboxcoordination.Stopping {
-					t.Fatal("unacknowledged shutdown released its reservation:", err)
-				}
-			}
-			main := f.workload(t)
-			main.Status.ObservedGeneration, main.Status.Replicas = main.Generation, 0
-			if err := f.kube.Status().Update(ctx, main); err != nil {
-				t.Fatal(err)
-			}
-			terminal := customTerminalDeployment(t, f)
-			terminal.Status = appsv1.DeploymentStatus{ObservedGeneration: terminal.Generation}
-			if err := f.kube.Status().Update(ctx, terminal); err != nil {
-				t.Fatal(err)
-			}
-			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pending-termination", Namespace: main.Namespace}}
-			if err := f.kube.Create(ctx, pod); err != nil {
-				t.Fatal(err)
-			}
-			result, err := f.reconcile()
-			if err != nil || result.RequeueAfter != 5*time.Second || f.current(t).Status.Phase == api.PhaseSuspended {
-				t.Fatalf("Pod termination was not a bounded pending stop: result=%+v err=%v", result, err)
-			}
-			if err := f.kube.Delete(ctx, pod); err != nil {
-				t.Fatal(err)
-			}
-			for range 2 {
-				f.reconcileOK(t)
-			}
-			current := f.current(t)
-			if current.Status.Phase != api.PhaseSuspended || current.Status.ObservedGeneration != current.Generation ||
-				current.Status.AIGateway.KeyID != keyID || !current.Status.AIGateway.Blocked {
-				t.Fatal("confirmed shutdown did not acknowledge the retained Agent")
-			}
-			if _, found, err := f.r.SandboxNativeCoordination.ReadNative(ctx, agent.UID); err != nil || found {
-				t.Fatal("confirmed shutdown retained its stopping reservation:", err)
-			}
-		})
-	}
-}
-
-func TestSuspensionProgressDoesNotHideJoinedFailures(t *testing.T) {
-	progress := fmt.Errorf("observe shutdown: %w", errSandboxShutdownPending)
-	failure := apierrors.NewServiceUnavailable("synthetic API failure")
-	for _, test := range []struct {
-		name string
-		err  error
-		wait bool
-	}{
-		{"progress", progress, true},
-		{"joined progress", errors.Join(progress, progress), true},
-		{"wrapped progress", fmt.Errorf("suspend: %w", errors.Join(progress, progress)), true},
-		{"API failure", errors.Join(progress, failure), false},
-		{"wrapped API failure", fmt.Errorf("suspend: %w", errors.Join(progress, failure)), false},
-		{"ownership failure", errors.Join(progress, errors.New("synthetic ownership mismatch")), false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			result, err := reconciledSuspensionResult(test.err)
-			if test.wait {
-				if err != nil || result.RequeueAfter != 5*time.Second {
-					t.Fatalf("expected bounded progress: result=%+v err=%v", result, err)
-				}
-			} else if err == nil || result.RequeueAfter != 0 || !errors.Is(err, test.err) {
-				t.Fatalf("real failure was hidden by progress: result=%+v err=%v", result, err)
-			}
-		})
-	}
-}
 
 func TestPrerequisiteWaitClassification(t *testing.T) {
 	unpublished := fmt.Errorf("%w: %w", sandboxpolicy.ErrUnavailable, errSkillsPublicationNotApproved)

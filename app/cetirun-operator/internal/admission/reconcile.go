@@ -322,6 +322,24 @@ func controllerRuntimeDefaults(agent, old *api.Agent) bool {
 	return changed && equality.Semantic.DeepEqual(a, b)
 }
 
+// The trusted controller checks default-image provenance against the installed
+// Helm release. Admission permits only its image-only pending built-in update.
+func controllerImageUpgrade(agent, old *api.Agent) bool {
+	if old == nil || old.UID == "" || agent.UID != old.UID || !old.DeletionTimestamp.IsZero() ||
+		(old.Spec.Agent.Type != api.AgentTypeOpenClaw && old.Spec.Agent.Type != api.AgentTypeHermes) ||
+		old.Spec.Helm.Version == "" || old.Status.HelmReleaseName != "cetirun-"+old.Name ||
+		old.Status.ObservedGeneration >= old.Generation ||
+		old.Spec.Agent.Image == nil || agent.Spec.Agent.Image == nil ||
+		*agent.Spec.Agent.Image == "" || *old.Spec.Agent.Image == *agent.Spec.Agent.Image {
+		return false
+	}
+	a, b := agent.DeepCopy(), old.DeepCopy()
+	b.Spec.Agent.Image = a.Spec.Agent.Image
+	b.Generation = a.Generation
+	a.ManagedFields, b.ManagedFields = nil, nil
+	return equality.Semantic.DeepEqual(a, b)
+}
+
 func (h *Handler) reconciledHoldRelease(ctx context.Context, request admission.Request, agent, old *api.Agent) (admission.Response, bool) {
 	if old == nil || !h.config.NativeExecution || request.UserInfo.Username != h.config.ControllerUsername ||
 		!authenticated(request.UserInfo) || !rawMetadataOnly(request) ||

@@ -691,24 +691,59 @@ class WorkflowContractTests(unittest.TestCase):
             for step in text.split("\n      - name: ")[1:]
             if "            image \\\n" in step
         }
-        self.assertEqual(len(scans), 6)
         for name, step in scans.items():
             with self.subTest(step=name):
                 self.assertEqual(step.count("--timeout 10m"), 1)
                 self.assertIn("--ignore-unfixed", step)
                 self.assertNotRegex(step, r"--(?:scanners|skip-dirs|skip-files)\b")
+                self.assertIn('$RUNNER_TEMP/trivy-cache:/root/.cache/trivy', step)
+                self.assertNotIn("--skip-db-update", step)
         gates = {
             "Scan image for vulnerabilities (Trivy)": "CRITICAL,HIGH",
             "Scan Hermes image for vulnerabilities (Trivy)": "CRITICAL",
             "Scan desktop image for vulnerabilities (Trivy)": "CRITICAL",
             "Scan base and Pi agent images for vulnerabilities (Trivy)": "CRITICAL,HIGH",
         }
+        self.assertEqual(scans.keys(), gates.keys())
         for name, severity in gates.items():
             with self.subTest(gate=name):
                 self.assertIn("--exit-code 1", scans[name])
                 self.assertIn(f"--severity {severity} \\", scans[name])
                 self.assertNotIn("continue-on-error:", scans[name])
-                self.assertNotIn("\n        if:", scans[name])
+                if name == "Scan image for vulnerabilities (Trivy)":
+                    self.assertIn("if: always() && !cancelled() && steps.build-openclaw.outcome == 'success'", scans[name])
+                else:
+                    self.assertNotIn("\n        if:", scans[name])
+
+    def test_runtime_scan_failure_survives_report_reuse(self):
+        text = (validate.ROOT / ".github/workflows/docker-build-validate.yml").read_text()
+        steps = {
+            step.splitlines()[0]: step
+            for step in text.split("\n      - name: ")[1:]
+        }
+        scan = steps["Scan image for vulnerabilities (Trivy)"]
+        self.assertIn("--format json", scan)
+        self.assertIn("--output /workspace/trivy-results.json", scan)
+        command = textwrap.dedent(scan.split("        run: |\n", 1)[1])
+        # Findings, scanner errors and timeouts must still fail the scan step.
+        for status in (0, 1, 2, 124):
+            with self.subTest(status=status):
+                result = subprocess.run(
+                    ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c",
+                     'docker() { return "$SCAN_EXIT"; }\n' + command],
+                    env={**os.environ, "SCAN_EXIT": str(status),
+                         "RUNNER_TEMP": "/synthetic/temp", "GITHUB_WORKSPACE": "/synthetic/workspace"},
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(result.returncode, status, result.stderr)
+        for name in ("Show Trivy table from scan result", "Convert Trivy scan result to SARIF"):
+            report = steps[name]
+            self.assertIn("if: always() && !cancelled() && hashFiles('trivy-results.json') != ''", report)
+            self.assertIn("convert", report)
+            self.assertIn("/workspace/trivy-results.json", report)
+            self.assertIn("--network none", report)
+            self.assertNotIn("/var/run/docker.sock", report)
+            self.assertNotIn("openclaw-gateway:validation", report)
 
     def test_owned_actions_are_sha_pinned_and_default_to_read_only(self):
         for name in validate.WORKFLOWS:

@@ -96,6 +96,15 @@ an existing Agent, use the **Upgrade to Latest** action of the Portal, as
 [Pin and update a chart](../agent-lifecycle/#pin-and-update-a-chart)
 shows. Upgrade each Agent after the platform upgrade.
 
+For a Sandbox Agent, the Operator checks the chart and Agent inputs together.
+If those inputs change during bootstrap, it prepares them again in a new
+reconciliation pass. A concurrent upgrade does not make the new image invalid
+because an earlier pass loaded the old chart.
+
+Native admission permits the trusted Operator to update only the default image
+of a pending built-in upgrade. This does not give it administrator authority or
+permission to change the Agent's Team or policy binding.
+
 ## Settings that make deploy keeps
 
 Each run of `make deploy` replaces the stored Helm values of each release with

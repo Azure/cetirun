@@ -206,6 +206,12 @@ main and auxiliary workloads, and withdraws their route. If the AI Gateway, a
 component stop, or a status write fails, suspension still tries the other
 shutdown operations. A shutdown that is not acknowledged still keeps its source
 reservation. Normal Kubernetes stop requests are not physical fencing.
+For a coordinated suspension, ordinary waits for controller acknowledgement,
+Pod termination, or removed auxiliary ReplicaSets retry every five seconds,
+without retaining earlier provisioning-error backoff. Owned StatefulSet status
+changes also enqueue reconciliation. API, ownership, access-revocation, and
+status-write failures remain errors; pending shutdown does not acknowledge the
+current suspension generation or release its source reservation.
 
 The Portal may also accept a narrow pre-bootstrap pause for a Sandbox Agent
 when it can authoritatively prove that no execution lifetime
@@ -237,6 +243,13 @@ is verified, the Operator unblocks only its own temporary block; it keeps an
 administrator emergency block in place. The key, its spend, and its budget
 reset time remain. For a missing AI Gateway key record, refer to the
 site documentation on [virtual-key recovery](../../site/content/en/docs/operations/ai-gateway.md#recover-a-missing-key-record).
+
+While suspension is requested, policy holds use `Suspended` for an
+Operator-owned Gateway block, including when a Sandbox source is unavailable.
+Repeated checks still verify the external key but do not rewrite unchanged
+block receipts. Policy conditions retain the dependency or denial details.
+A policy hold after resume uses `PolicyReprojection`; the key stays blocked
+until the current grant is verified.
 
 Loss of bootstrap or runtime prerequisites also holds a reconciled Agent that
 already runs and is not suspended. The hold blocks its key, stops the owned

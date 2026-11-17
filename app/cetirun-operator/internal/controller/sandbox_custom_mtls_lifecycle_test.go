@@ -72,7 +72,7 @@ func TestCommonCustomMTLSSuspensionAndResume(t *testing.T) {
 						t.Fatal(err)
 					}
 					if result, err := f.reconcile(); err != nil || result.RequeueAfter != 5*time.Second {
-						t.Fatalf("suspension did not poll for current shutdown: result=%#v err=%v", result, err)
+						t.Fatalf("suspension did not retry current shutdown: result=%+v, err=%v", result, err)
 					}
 					main := f.workload(t)
 					if ptr.Deref(main.Spec.Replicas, -1) != 0 ||

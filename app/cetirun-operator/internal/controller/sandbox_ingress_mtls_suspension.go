@@ -55,7 +55,7 @@ func (r *AgentReconciler) holdSuspendedIngressMTLS(ctx context.Context, agent *a
 		}
 	}
 	if err := errors.Join(stopErr, r.updateStatus(ctx, agent)); err != nil {
-		return reconciledSuspensionResult(err)
+		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
+	"helm.sh/helm/v3/pkg/chart/loader"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -39,6 +40,99 @@ import (
 type sharedSandboxInstaller struct {
 	*nativeSandboxInstaller
 	beforeApply func(*helm.PreparedRelease) error
+}
+
+func TestReconciledSandboxUpgradeAfterBootstrapKeepsSnapshot(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false)
+			before := f.current(t)
+			stages := f.installer.stages
+			nextChart, err := loader.Load("../../../cetirun-chart")
+			if err != nil {
+				t.Fatal(err)
+			}
+			nextChart.Metadata.Version, nextChart.Metadata.AppVersion = "2.0.0", "2.0.0"
+			lastResourceRead, changed := false, false
+			f.r.APIReader = interceptor.NewClient(f.kube, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+					if err := c.Get(ctx, key, object, opts...); err != nil {
+						return err
+					}
+					if key == (client.ObjectKey{Namespace: instanceNamespace(before.Name), Name: sandboxRuntimeSecretName(before)}) {
+						lastResourceRead = true
+					}
+					if _, isAgent := object.(*api.Agent); !isAgent || !lastResourceRead || changed {
+						return nil
+					}
+					// Complete the old bootstrap guard's read before the concurrent upgrade.
+					current := &api.Agent{}
+					if err := c.Get(ctx, client.ObjectKeyFromObject(before), current); err != nil {
+						return err
+					}
+					current.Generation++
+					current.Spec.Helm.Version = nextChart.Metadata.Version
+					current.Spec.Agent.Image = ptr.To("registry.example.com/" + kind + "-gateway:2.0.0")
+					if err := c.Update(ctx, current); err != nil {
+						return err
+					}
+					f.installer.chart, changed = nextChart, true
+					return nil
+				},
+			})
+			result, err := f.reconcile()
+			if !changed || err != nil || !result.Requeue {
+				t.Fatalf("superseded bootstrap did not request a clean pass: changed=%t result=%+v err=%v", changed, result, err)
+			}
+			current := f.current(t)
+			if f.installer.stages != stages || current.Status.Phase == api.PhaseFailed ||
+				!reflect.DeepEqual(current.Status, before.Status) {
+				t.Fatal("superseded pass installed mixed inputs or changed the newer Agent's status")
+			}
+			f.r.APIReader = f.kube
+			for range 3 {
+				f.reconcileOK(t)
+			}
+			current = f.current(t)
+			if f.installer.stages <= stages || current.Spec.Helm.Version != "2.0.0" ||
+				!meta.IsStatusConditionTrue(current.Status.Conditions, api.ConditionAgentConfigReady) {
+				t.Fatal("the current chart and image did not reconcile after the superseded pass")
+			}
+		})
+	}
+}
+
+func TestReconciledSandboxBootstrapRefreshesStatusOnly(t *testing.T) {
+	ctx := context.Background()
+	f := newSandboxRuntimeFixture(t, true, nil, true)
+	agent := f.current(t)
+	changed := false
+	f.r.APIReader = interceptor.NewClient(f.kube, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+			if err := c.Get(ctx, key, object, opts...); err != nil {
+				return err
+			}
+			current, isAgent := object.(*api.Agent)
+			if !isAgent || changed {
+				return nil
+			}
+			next := current.DeepCopy()
+			next.Status.AccessURL = "https://portal.example.com/ui/snapshot"
+			if err := c.Status().Update(ctx, next); err != nil {
+				return err
+			}
+			changed = true
+			return nil
+		},
+	})
+	if err := f.r.bootstrapReconciledSandbox(ctx, agent); err != nil {
+		t.Fatal("status-only refresh invalidated the prepared inputs:", err)
+	}
+	current := f.current(t)
+	if !changed || agent.ResourceVersion != current.ResourceVersion ||
+		!reflect.DeepEqual(agent.Spec, current.Spec) || !reflect.DeepEqual(agent.Status, current.Status) {
+		t.Fatal("bootstrap did not refresh the current receipt and status")
+	}
 }
 
 func TestReconciledSandboxSuspendsBeforeBootstrap(t *testing.T) {
@@ -1012,11 +1106,9 @@ func TestReconciledSandboxSuspensionStopsBeforePrerequisites(t *testing.T) {
 					if err != nil || policyReprojectionMustHold(agent, resolution) {
 						t.Fatal("fixture must reach suspension without a policy-reprojection hold:", err)
 					}
-					result, err := f.reconcile()
-					if coordinated {
-						if err != nil || result.RequeueAfter != cleanupWaitRequeue ||
-							f.current(t).Status.Phase != api.PhasePending {
-							t.Fatal("unacknowledged stop did not remain pending with bounded retry:", result, err)
+					if result, err := f.reconcile(); coordinated {
+						if err != nil || result.RequeueAfter != 5*time.Second {
+							t.Fatalf("unacknowledged stop must retry before prerequisite checks: result=%+v, err=%v", result, err)
 						}
 					} else if err == nil {
 						t.Fatal("the unavailable prerequisite must remain visible")

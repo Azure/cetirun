@@ -348,7 +348,12 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 	if reconciledSandbox && instance.Spec.Suspended {
 		if err := r.stopReconciledSandboxForSuspension(ctx, instance); err != nil {
-			return reconciledSuspensionResult(err)
+			if onlyShutdownPending(err) {
+				// A successful timed retry also forgets prior provisioning
+				// failures in controller-runtime's per-item rate limiter.
+				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			}
+			return ctrl.Result{}, err
 		}
 	}
 
@@ -528,6 +533,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		// must not create a namespace that protected bootstrap cannot adopt.
 		if reconciledSandbox {
 			if err := r.bootstrapReconciledSandbox(ctx, instance); err != nil {
+				if stderrors.Is(err, errSandboxIntentChanged) {
+					return ctrl.Result{Requeue: true}, nil
+				}
 				return r.holdReconciledBootstrap(ctx, instance, err)
 			}
 		}
@@ -805,6 +813,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 	if namespaceErr != nil {
 		if reconciledSandbox {
+			if stderrors.Is(namespaceErr, errSandboxIntentChanged) {
+				prerequisitesComplete = true
+				return ctrl.Result{Requeue: true}, nil
+			}
 			return r.holdReconciledBootstrap(ctx, instance, namespaceErr)
 		}
 		return r.failWith(ctx, instance, "ProvisioningFailed", fmt.Sprintf("ensure namespace: %v", namespaceErr))
@@ -1187,7 +1199,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		logger.Info("Instance is suspended, removing ingress and marking Suspended", "alias", alias)
 		if reconciledSandbox {
 			if err := r.stopNativeSandboxReservation(ctx, instance); err != nil {
-				return reconciledSuspensionResult(err)
+				return ctrl.Result{}, err
 			}
 		}
 		// Delete VirtualService so users see connection refused instead of 503.

@@ -100,6 +100,24 @@ Server connection limits apply to each Portal replica. They are not a global
 execution queue or an exactly-once guarantee. Busy Agents must report their own
 concurrency limits.
 
+### Suspension and retained routes
+
+Custom suspension removes the public platform route and stops the owned
+workloads. It retains the separate Agent-owned, mesh-only private Chat
+VirtualService, with retries disabled. This applies to both standard and
+Sandbox Custom Agents.
+
+The retained route is configuration, not permission to dispatch. Both new
+request validation and active-request observation reject a suspended Agent,
+even if an earlier Ready condition or a private route remains. A normal resume
+must validate the current workload, policy and TLS approval again. It does not
+replay an interrupted request.
+
+When verifying suspension, distinguish the public platform route from this
+private route. Check acknowledged workload shutdown, absence of runtime Pods
+and ready endpoints, Gateway key blocking, and denied Chat dispatch. Do not
+delete the private route merely to make a count of all VirtualServices zero.
+
 ## Browser storage boundary
 
 The Portal and the Agent UIs can use paths on the same hostname. In normal Chat
