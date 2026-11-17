@@ -2,9 +2,10 @@
 // Licensed under the MIT License.
 
 import { useEffect, useState } from "react";
-import { Badge, Table, TableBody, TableCell, TableHeader, TableHeaderCell, TableRow, Text } from "@fluentui/react-components";
+import { Table, TableBody, TableCell, TableHeader, TableHeaderCell, TableRow, Text } from "@fluentui/react-components";
 import { Link } from "react-router-dom";
 import type { SandboxCompatibilityStatus, TeamCompatibilityStatus, TeamDTO } from "../api/adminTeam";
+import { StatusLabel, type StatusTone } from "./StatusLabel";
 
 export type CompatibilityPresentationState = "Compatible" | "Incompatible" | "Unknown" | "Pending" | "Not configured";
 
@@ -68,7 +69,7 @@ function useCompatibilityNow(validUntil?: string) {
   return Date.now();
 }
 
-function color(state: CompatibilityPresentationState): "success" | "danger" | "warning" | "informative" | "subtle" {
+function color(state: CompatibilityPresentationState): StatusTone {
   switch (state) {
     case "Compatible": return "success";
     case "Incompatible": return "danger";
@@ -81,7 +82,7 @@ function color(state: CompatibilityPresentationState): "success" | "danger" | "w
 export function CompatibilityBadge({ team }: { team: TeamDTO }) {
   const now = useCompatibilityNow(team.compatibility?.validUntil);
   const presentation = compatibilityPresentation(team, now);
-  return <Badge appearance="filled" color={color(presentation.state)}>{presentation.state}</Badge>;
+  return <StatusLabel tone={color(presentation.state)}>{presentation.state}</StatusLabel>;
 }
 
 function SandboxIssues({ status }: { status: SandboxCompatibilityStatus }) {
@@ -101,7 +102,7 @@ export function CompatibilityReport({ team, sandboxName, dependency }: { team: T
   return <div aria-label={`Compatibility report for ${team.name}`} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
     <Text size={200}>
       {sandboxName && team.sandboxRefs.length > 1 ? "Team compatibility" : "Compatibility"}:{" "}
-      <Badge appearance="filled" color={color(presentation.state)}>{presentation.state}</Badge>
+      <StatusLabel tone={color(presentation.state)} size="small">{presentation.state}</StatusLabel>
     </Text>
     <Text size={200}>Policy: {team.agentPolicyRef
       ? <Link to={`/admin/policies/${encodeURIComponent(team.agentPolicyRef)}/edit`}>{team.agentPolicyRef}</Link>
@@ -118,7 +119,7 @@ export function CompatibilityReport({ team, sandboxName, dependency }: { team: T
       </TableRow></TableHeader>
       <TableBody>{displayedSandboxes.map((status) => <TableRow key={status.sandbox.uid || status.sandbox.name}>
         <TableCell><Link to={`/admin/sandboxes/${encodeURIComponent(status.sandbox.name)}/edit`}>{status.sandbox.name}</Link></TableCell>
-        <TableCell><Badge appearance="filled" color={color(status.state)}>{status.state}</Badge></TableCell>
+        <TableCell><StatusLabel tone={color(status.state)} size="small">{status.state}</StatusLabel></TableCell>
         <TableCell>{status.reason || status.issues?.length ? <SandboxIssues status={status} /> : "—"}</TableCell>
       </TableRow>)}</TableBody>
     </Table>}

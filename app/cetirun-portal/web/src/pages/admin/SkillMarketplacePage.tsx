@@ -3,7 +3,6 @@
 
 import type { ReactNode } from "react";
 import {
-  Badge,
   Button,
   MessageBar,
   MessageBarBody,
@@ -16,15 +15,12 @@ import {
   TableHeaderCell,
   TableRow,
   Text,
-  Title2,
-  tokens,
 } from "@fluentui/react-components";
 import { ArrowSync20Regular } from "@fluentui/react-icons";
 import type { SkillMarketplaceCatalog, SkillMarketplaceSkill, SkillMarketplaceTeamPublication } from "../../api/skillMarketplace";
 import { useSkillMarketplace } from "../../hooks/useSkillMarketplace";
 import { formatSkillSize, formatSkillTime } from "../../utils/skillMarketplace";
-
-const monospace = { fontFamily: tokens.fontFamilyMonospace, overflowWrap: "anywhere" } as const;
+import { StatusLabel } from "../../components/StatusLabel";
 
 export type PublicationState = "upToDate" | "updating" | "pending";
 
@@ -48,22 +44,22 @@ export function publicationState(team: SkillMarketplaceTeamPublication, skills: 
 }
 
 function Heading({ children }: { children: ReactNode }) {
-  return <Text as="h2" weight="semibold" size={400} block style={{ margin: "0 0 8px" }}>{children}</Text>;
+  return <h2 className="portal-section-title" style={{ marginBottom: 8 }}>{children}</h2>;
 }
 
 function RepositorySummary({ catalog }: { catalog: SkillMarketplaceCatalog }) {
   const entries: Array<[string, ReactNode]> = [
-    ["Repository", <span style={monospace}>{catalog.repository.url || "—"}</span>],
+    ["Repository", <span className="portal-mono">{catalog.repository.url || "—"}</span>],
     ["Ref", catalog.repository.ref || "Default branch"],
     ["Path", catalog.repository.path || "Repository root"],
-    ["Commit", catalog.commit ? <span style={monospace}>{catalog.commit}</span> : "Not synchronized yet"],
+    ["Commit", catalog.commit ? <span className="portal-mono">{catalog.commit}</span> : "Not synchronized yet"],
     ["Synchronized", formatSkillTime(catalog.syncedAt)],
     ["Checked", formatSkillTime(catalog.checkedAt)],
   ];
-  return <dl style={{ display: "grid", gridTemplateColumns: "minmax(120px, auto) minmax(0, 1fr)", gap: "8px 16px", margin: 0 }}>
-    {entries.map(([label, value]) => <div key={label} style={{ display: "contents" }}>
-      <dt style={{ color: tokens.colorNeutralForeground3 }}>{label}</dt>
-      <dd style={{ margin: 0, overflowWrap: "anywhere" }}>{value}</dd>
+  return <dl className="portal-facts">
+    {entries.map(([label, value]) => <div key={label}>
+      <dt>{label}</dt>
+      <dd>{value}</dd>
     </div>)}
   </dl>;
 }
@@ -76,7 +72,7 @@ function PublicationDetails({ team }: { team: SkillMarketplaceTeamPublication })
   if (details.length === 0 && !team.error) return <>—</>;
   return <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
     {details.map((detail) => <Text key={detail} size={200}>{detail}</Text>)}
-    {team.error && <Text size={200} style={{ color: tokens.colorStatusDangerForeground1 }}>Error: {team.error}</Text>}
+    {team.error && <span className="portal-error-text" style={{ fontSize: 12, lineHeight: "16px" }}>Error: {team.error}</span>}
   </div>;
 }
 
@@ -99,15 +95,15 @@ function CatalogView({ catalog }: { catalog: SkillMarketplaceCatalog }) {
 
     <section aria-label="Skills">
       <Heading>Skills ({skills.length})</Heading>
-      {skills.length === 0 ? <Text>The repository has no valid skills.</Text> : <Table aria-label="Skills in the repository" size="small">
+      {skills.length === 0 ? <Text>The repository has no valid skills.</Text> : <div className="portal-table-scroll"><Table aria-label="Skills in the repository" size="small" style={{ minWidth: 900 }}>
         <TableHeader>
           <TableRow>
-            <TableHeaderCell>Name</TableHeaderCell>
+            <TableHeaderCell style={{ width: "22%" }}>Name</TableHeaderCell>
             <TableHeaderCell>Description</TableHeaderCell>
-            <TableHeaderCell>Version</TableHeaderCell>
-            <TableHeaderCell>Updated</TableHeaderCell>
-            <TableHeaderCell>Files</TableHeaderCell>
-            <TableHeaderCell>Size</TableHeaderCell>
+            <TableHeaderCell style={{ width: 130 }}>Version</TableHeaderCell>
+            <TableHeaderCell style={{ width: 190 }}>Updated</TableHeaderCell>
+            <TableHeaderCell style={{ width: 64 }}>Files</TableHeaderCell>
+            <TableHeaderCell style={{ width: 88 }}>Size</TableHeaderCell>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -115,36 +111,36 @@ function CatalogView({ catalog }: { catalog: SkillMarketplaceCatalog }) {
             <TableCell>
               <div style={{ display: "flex", flexDirection: "column", overflowWrap: "anywhere" }}>
                 <Text weight="semibold">{skill.name}</Text>
-                <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{skill.path}</Text>
+                <span className="portal-note" style={{ fontSize: 12, lineHeight: "16px" }}>{skill.path}</span>
               </div>
             </TableCell>
             <TableCell>{skill.description}</TableCell>
-            <TableCell><span style={monospace}>{skill.version}</span></TableCell>
+            <TableCell><span className="portal-mono">{skill.version}</span></TableCell>
             <TableCell>{formatSkillTime(skill.updatedAt)}</TableCell>
             <TableCell>{skill.files}</TableCell>
             <TableCell>{formatSkillSize(skill.bytes)}</TableCell>
           </TableRow>)}
         </TableBody>
-      </Table>}
+      </Table></div>}
     </section>
 
     {invalid.length > 0 && <section aria-label="Invalid skills">
       <Heading>Invalid skills ({invalid.length})</Heading>
       <Text size={200} block style={{ marginBottom: 8 }}>Teams cannot choose these skill directories until they are fixed in the repository.</Text>
-      <Table aria-label="Invalid skill directories" size="small">
+      <div className="portal-table-scroll"><Table aria-label="Invalid skill directories" size="small">
         <TableHeader>
           <TableRow>
-            <TableHeaderCell>Path</TableHeaderCell>
+            <TableHeaderCell style={{ width: "34%" }}>Path</TableHeaderCell>
             <TableHeaderCell>Reason</TableHeaderCell>
           </TableRow>
         </TableHeader>
         <TableBody>
           {invalid.map((problem) => <TableRow key={problem.path}>
-            <TableCell><span style={monospace}>{problem.path}</span></TableCell>
+            <TableCell><span className="portal-mono">{problem.path}</span></TableCell>
             <TableCell>{problem.reason}</TableCell>
           </TableRow>)}
         </TableBody>
-      </Table>
+      </Table></div>
     </section>}
 
     <section aria-label="Team publications">
@@ -152,14 +148,14 @@ function CatalogView({ catalog }: { catalog: SkillMarketplaceCatalog }) {
       <Text size={200} block style={{ marginBottom: 8 }}>
         Each policy-bound Team's selection is published as a release. Its Agents copy the current release when they start.
       </Text>
-      {teams.length === 0 ? <Text>No Team has a publication yet.</Text> : <Table aria-label="Team publications" size="small">
+      {teams.length === 0 ? <Text>No Team has a publication yet.</Text> : <div className="portal-table-scroll"><Table aria-label="Team publications" size="small" style={{ minWidth: 900 }}>
         <TableHeader>
           <TableRow>
-            <TableHeaderCell>Team</TableHeaderCell>
-            <TableHeaderCell>Release</TableHeaderCell>
-            <TableHeaderCell>Published</TableHeaderCell>
-            <TableHeaderCell>Skills</TableHeaderCell>
-            <TableHeaderCell>State</TableHeaderCell>
+            <TableHeaderCell style={{ width: "16%" }}>Team</TableHeaderCell>
+            <TableHeaderCell style={{ width: 190 }}>Release</TableHeaderCell>
+            <TableHeaderCell style={{ width: 190 }}>Published</TableHeaderCell>
+            <TableHeaderCell style={{ width: 64 }}>Skills</TableHeaderCell>
+            <TableHeaderCell style={{ width: 150 }}>State</TableHeaderCell>
             <TableHeaderCell>Details</TableHeaderCell>
           </TableRow>
         </TableHeader>
@@ -168,17 +164,17 @@ function CatalogView({ catalog }: { catalog: SkillMarketplaceCatalog }) {
             const state = PUBLICATION_STATES[publicationState(team, skills)];
             return <TableRow key={team.uid || team.name}>
               <TableCell>{team.name}</TableCell>
-              <TableCell>{team.release ? <span style={monospace}>{team.release}</span> : "—"}</TableCell>
+              <TableCell>{team.release ? <span className="portal-mono">{team.release}</span> : "—"}</TableCell>
               <TableCell>{formatSkillTime(team.publishedAt)}</TableCell>
               <TableCell>{team.skills?.length ?? 0}</TableCell>
               <TableCell>
-                <Badge appearance="filled" color={state.color}>{state.label}</Badge>
+                <StatusLabel tone={state.color}>{state.label}</StatusLabel>
               </TableCell>
               <TableCell><PublicationDetails team={team} /></TableCell>
             </TableRow>;
           })}
         </TableBody>
-      </Table>}
+      </Table></div>}
     </section>
   </>;
 }
@@ -188,15 +184,17 @@ export function SkillMarketplacePage() {
   const { data, isLoading, isFetching, error, refetch } = useSkillMarketplace();
   const catalog = data?.catalog;
   return (
-    <div style={{ maxWidth: 1100, display: "flex", flexDirection: "column", gap: 16 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-        <Title2>Skills</Title2>
-        <Button icon={<ArrowSync20Regular />} disabled={isFetching} onClick={() => void refetch()}>Refresh</Button>
+    <div style={{ maxWidth: 1100, display: "flex", flexDirection: "column", gap: 28 }}>
+      <div>
+        <div className="portal-page-head">
+          <h1 className="portal-page-title portal-page-title--section">Skills</h1>
+          <Button icon={<ArrowSync20Regular />} disabled={isFetching} onClick={() => void refetch()}>Refresh</Button>
+        </div>
+        <p className="portal-page-lede" style={{ marginBottom: 0 }}>
+          Teams choose their skills from one Git repository. The Skill Marketplace checks the repository regularly and publishes
+          each Team's selection for its Agents.
+        </p>
       </div>
-      <Text>
-        Teams choose their skills from one Git repository. The Skill Marketplace checks the repository regularly and publishes
-        each Team's selection for its Agents.
-      </Text>
       {isLoading && <Spinner label="Loading the Skill Marketplace..." />}
       {error && <MessageBar intent="error"><MessageBarBody>Failed to load: {error.message}</MessageBarBody></MessageBar>}
       {data && !data.enabled && <MessageBar intent="info">

@@ -1,17 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { lazy, Suspense, type CSSProperties } from "react";
+import { lazy, Suspense } from "react";
 import { useParams, useNavigate, Navigate } from "react-router-dom";
-import {
-  Button,
-  Text,
-  Badge,
-  makeStyles,
-  tokens,
-} from "@fluentui/react-components";
+import { Button } from "@fluentui/react-components";
 import {
   ArrowLeft20Regular,
+  ArrowUpRight16Regular,
   Home20Regular,
   Chat20Regular,
   WindowConsole20Regular,
@@ -22,12 +17,8 @@ import { useMe } from "../context/MeContext";
 import { SESSION_EXPIRED_MESSAGE } from "../api/fetch";
 import { OverviewSection } from "../components/OverviewSection";
 import { HermesWebappButton } from "../components/HermesWebappButton";
-import {
-  agentUIUrl,
-  desktopUrl,
-  phaseBadgeColor,
-  terminalUrl,
-} from "../utils/instance";
+import { AgentPhase } from "../components/Lifecycle";
+import { agentUIUrl, desktopUrl, terminalUrl } from "../utils/instance";
 import { useFeatures } from "../hooks/useFeatures";
 import { useChatAccount } from "../chat/ChatAccount";
 
@@ -65,33 +56,7 @@ const NAV_ITEMS: NavItem[] = [
 
 const VALID_SECTIONS = ["overview", "chat"] as const;
 
-const useStyles = makeStyles({
-  layout: {
-    display: "flex",
-    height: "100%",
-    overflow: "hidden",
-    "@media (max-width: 640px)": { flexDirection: "column" },
-  },
-  sidebar: {
-    width: "180px",
-    boxSizing: "border-box",
-    "@media (max-width: 640px)": { width: "100%" },
-  },
-  navigation: {
-    "@media (max-width: 640px)": {
-      display: "flex",
-      flexWrap: "wrap",
-      gap: "4px",
-    },
-  },
-  navButton: {
-    width: "100%",
-    "@media (max-width: 640px)": { width: "auto", flexGrow: 1 },
-  },
-});
-
 export function WorkspacePage() {
-  const styles = useStyles();
   const { instanceName, section } = useParams<{
     instanceName: string;
     section?: string;
@@ -137,11 +102,11 @@ export function WorkspacePage() {
     if (!chatEligible)
       return <Navigate to={`/instances/${instanceName}/overview`} replace />;
     if (features.isLoading)
-      return <div style={{ padding: 32 }}>Checking Chat availability…</div>;
+      return <div className="portal-detail">Checking Chat availability…</div>;
     if (!chatEnabled)
       return <Navigate to={`/instances/${instanceName}/overview`} replace />;
     return (
-      <Suspense fallback={<div style={{ padding: 32 }}>Opening chat…</div>}>
+      <Suspense fallback={<div className="portal-detail">Opening chat…</div>}>
         <ChatPage
           key={`${instance.uid}:${chatAccount?.scope ?? ""}`}
           instance={instance}
@@ -151,69 +116,25 @@ export function WorkspacePage() {
   }
 
   return (
-    <div className={styles.layout}>
-      {/* Sidebar */}
-      <div
-        className={styles.sidebar}
-        style={{
-          flexShrink: 0,
-          display: "flex",
-          flexDirection: "column",
-          backgroundColor: tokens.colorNeutralBackground2,
-          borderRight: `1px solid ${tokens.colorNeutralStroke1}`,
-        }}
-      >
-        {/* Back link */}
-        <div
-          style={{
-            padding: "12px 8px",
-            borderBottom: `1px solid ${tokens.colorNeutralStroke1}`,
-          }}
+    <div className="portal-split">
+      <div className="portal-side">
+        <Button
+          className="portal-side-link"
+          appearance="transparent"
+          icon={<ArrowLeft20Regular />}
+          onClick={() => navigate("/")}
         >
-          <Button
-            appearance="subtle"
-            icon={<ArrowLeft20Regular />}
-            onClick={() => navigate("/")}
-            style={{ width: "100%", justifyContent: "flex-start" }}
-          >
-            All Agents
-          </Button>
-        </div>
+          All Agents
+        </Button>
 
-        {/* Instance name + phase */}
-        <div
-          style={{
-            padding: "12px 16px",
-            borderBottom: `1px solid ${tokens.colorNeutralStroke1}`,
-          }}
-        >
-          <Text
-            weight="semibold"
-            size={300}
-            style={{ overflowWrap: "anywhere" }}
-          >
+        <div className="portal-side-identity">
+          <span className="portal-side-identity-name">
             {instance?.displayName.trim() || instanceName}
-          </Text>
-          {instance && (
-            <div style={{ marginTop: 4 }}>
-              <Badge
-                appearance="filled"
-                color={phaseBadgeColor[instance.phase] ?? "informative"}
-                size="small"
-              >
-                {instance.phase}
-              </Badge>
-            </div>
-          )}
+          </span>
+          {instance && <AgentPhase phase={instance.phase} size="small" />}
         </div>
 
-        {/* Nav items */}
-        <div
-          className={styles.navigation}
-          role="navigation"
-          aria-label="Agent workspace"
-          style={{ flex: 1, padding: "8px 0" }}
-        >
+        <div className="portal-side-nav" role="navigation" aria-label="Agent workspace">
           {NAV_ITEMS.map((item) => {
             if (item.section === "chat" && (!chatEligible || !chatEnabled))
               return null;
@@ -223,24 +144,15 @@ export function WorkspacePage() {
             const externalDisabled =
               Boolean(item.external) &&
               (instance?.phase !== "Ready" || !externalUrl);
-            const buttonStyle: CSSProperties = {
-              justifyContent: "flex-start",
-              borderRadius: 0,
-              fontWeight: section === item.section ? 600 : 400,
-              borderLeft: section === item.section
-                ? `3px solid ${tokens.colorBrandForeground1}`
-                : "3px solid transparent",
-            };
 
             if (item.external === "agent" && instance?.agent.type === "hermes") {
-              return <HermesWebappButton key={item.section} instance={instance}
-                disabled={externalDisabled} className={styles.navButton} style={buttonStyle} />;
+              return <HermesWebappButton key={item.section} instance={instance} disabled={externalDisabled} />;
             }
 
             return (
               <Button
                 key={item.section}
-                className={styles.navButton}
+                className="portal-side-link"
                 as={item.external ? "a" : undefined}
                 href={item.external ? externalUrl : undefined}
                 target={
@@ -252,7 +164,8 @@ export function WorkspacePage() {
                     : undefined
                 }
                 disabled={externalDisabled}
-                appearance={section === item.section ? "subtle" : "transparent"}
+                aria-current={section === item.section ? "page" : undefined}
+                appearance="transparent"
                 icon={item.icon}
                 onClick={
                   item.external
@@ -260,45 +173,27 @@ export function WorkspacePage() {
                     : () =>
                         navigate(`/instances/${instanceName}/${item.section}`)
                 }
-                style={buttonStyle}
               >
                 {item.external === "agent" && hasWebUI ? "Web UI" : item.label}
+                {item.external && <ArrowUpRight16Regular className="portal-side-link-out" />}
               </Button>
             );
           })}
         </div>
       </div>
 
-      {/* Content area */}
-      <div
-        style={{
-          flex: 1,
-          minWidth: 0,
-          minHeight: 0,
-          overflow: "hidden",
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
-        {isLoading && (
-          <div style={{ padding: 24 }}>
-            <Text>Loading...</Text>
-          </div>
-        )}
+      <div className="portal-split-main">
+        {isLoading && <div className="portal-detail">Loading...</div>}
 
         {!isLoading && isError && (
-          <div role="alert" style={{ padding: 24 }}>
-            <Text style={{ color: tokens.colorStatusDangerForeground1 }}>
-              {errorMessage}
-            </Text>
+          <div role="alert" className="portal-detail">
+            <span className="portal-error-text">{errorMessage}</span>
           </div>
         )}
 
         {!isLoading && !isError && !instance && (
-          <div style={{ padding: 24 }}>
-            <Text style={{ color: tokens.colorStatusDangerForeground1 }}>
-              Agent not found.
-            </Text>
+          <div className="portal-detail">
+            <span className="portal-error-text">Agent not found.</span>
           </div>
         )}
 

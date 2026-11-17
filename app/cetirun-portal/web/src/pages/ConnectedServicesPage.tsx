@@ -4,7 +4,6 @@
 import {
   Badge,
   Button,
-  Card,
   Dialog,
   DialogActions,
   DialogBody,
@@ -15,7 +14,6 @@ import {
   MessageBar,
   Spinner,
   Text,
-  Title1,
 } from "@fluentui/react-components";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -38,6 +36,7 @@ import {
   providerLabels,
   providerOrder,
 } from "../components/serviceAccess";
+import { StatusLabel } from "../components/StatusLabel";
 import { ForbiddenPage } from "./ForbiddenPage";
 import { useConnectionSignIn } from "../hooks/useConnectionSignIn";
 import { useFeatures } from "../hooks/useFeatures";
@@ -86,15 +85,15 @@ function ConnectionCard({ connection, historicalDuplicate = false }: { connectio
     : "Removing this connection does not remove the provider grant or its permissions.";
 
   return (
-    <Card style={{ padding: 16, minWidth: 0, overflowWrap: "anywhere" }}>
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+    <div className="portal-panel connection-card">
+      <div className="connection-card-head">
         <div>
-          <Text weight="semibold" size={400} block>{connectionTitle(connection)}</Text>
-          <Text size={200} block>{accessMethodLabel(connection)}</Text>
+          <span className="connection-card-title">{connectionTitle(connection)}</span>
+          <span className="portal-note">{accessMethodLabel(connection)}</span>
         </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {historicalDuplicate && <Badge appearance="tint">Historical duplicate</Badge>}
-          <Badge appearance="filled" color={connectionStatusColor(connection)}>{connectionStatusLabel(connection)}</Badge>
+        <div className="portal-inline">
+          {historicalDuplicate && <Badge appearance="outline" color="informative">Historical duplicate</Badge>}
+          <StatusLabel tone={connectionStatusColor(connection)} size="small">{connectionStatusLabel(connection)}</StatusLabel>
         </div>
       </div>
 
@@ -123,7 +122,7 @@ function ConnectionCard({ connection, historicalDuplicate = false }: { connectio
       <HowAccessWorks connection={connection} />
       <TechnicalDetails connection={connection} />
 
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 16 }}>
+      <div className="connection-card-actions">
         {canReauthorize && <Button disabled={disabled || signin.pending || remove.isPending} onClick={() => signin.begin(() => reconnectConnection(connection.id), () => {}, connection.mode)}>Sign in again</Button>}
         {setupIncomplete && <Button onClick={() => navigate("/")}>Finish setup from an Agent</Button>}
         <Dialog modalType="alert" open={confirmingRemoval} onOpenChange={(_, data) => { if (!remove.isPending) setConfirmingRemoval(data.open); }}>
@@ -138,7 +137,7 @@ function ConnectionCard({ connection, historicalDuplicate = false }: { connectio
           </DialogBody></DialogSurface>
         </Dialog>
       </div>
-    </Card>
+    </div>
   );
 }
 
@@ -146,15 +145,15 @@ function ProviderGroup({ provider, connections }: { provider: ConnectionProvider
   if (!connections.length) return null;
   const current = connections.filter((connection) => !isHistoricalDuplicate(connection));
   const historicalDuplicates = connections.filter(isHistoricalDuplicate);
-  return <section aria-labelledby={`${provider}-connections`} style={{ marginTop: 28 }}>
-    <Text id={`${provider}-connections`} as="h2" size={500} weight="semibold">{providerLabels[provider]}</Text>
-    {!!current.length && <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", marginTop: 12 }}>
+  return <section aria-labelledby={`${provider}-connections`} style={{ marginTop: 32 }}>
+    <h2 id={`${provider}-connections`} className="portal-section-title">{providerLabels[provider]}</h2>
+    {!!current.length && <div className="connection-grid">
       {current.map((connection) => <ConnectionCard key={connection.id} connection={connection} />)}
     </div>}
     {!!historicalDuplicates.length && <section aria-label="Historical duplicate connections" style={{ marginTop: current.length ? 20 : 12 }}>
-      <Text as="h3" size={300} weight="semibold">Historical duplicate connections</Text>
-      <Text size={200} block style={{ marginTop: 4 }}>These records are kept for existing Agent bindings. Review usage before removing an unused connection.</Text>
-      <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", marginTop: 12 }}>
+      <h3 className="portal-subsection-title">Historical duplicate connections</h3>
+      <span className="portal-note" style={{ display: "block", marginTop: 4 }}>These records are kept for existing Agent bindings. Review usage before removing an unused connection.</span>
+      <div className="connection-grid">
         {historicalDuplicates.map((connection) => <ConnectionCard key={connection.id} connection={connection} historicalDuplicate />)}
       </div>
     </section>}
@@ -165,16 +164,16 @@ export function ConnectedServicesPage() {
   const features = useFeatures();
   const enabled = features.data?.agentToolsEnabled === true;
   const { connections } = useToolConnections(enabled);
-  if (features.isLoading) return <div style={{ flex: 1, padding: 24 }}><Spinner label="Loading connections..." /></div>;
+  if (features.isLoading) return <div className="portal-page"><Spinner label="Loading connections..." /></div>;
   if (!enabled) return <ForbiddenPage message="Connections are not enabled." />;
 
   const usableConnections = (connections.data ?? []).filter((connection) => connection.mode === "delegated" || connection.mode === "installation");
-  return <main style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 24 }}>
-    <Title1>Connections</Title1>
-    <Text block style={{ marginTop: 8 }}>Manage external accounts and authorizations for your agents. To add a connection or give an agent access, open that agent and configure Identities.</Text>
-    {connections.isLoading && <Spinner label="Loading connections..." style={{ marginTop: 24 }} />}
-    {connections.error && <MessageBar intent="error" style={{ marginTop: 24 }}>Could not load connections: {connections.error.message}<Button appearance="transparent" onClick={() => void connections.refetch()}>Retry</Button></MessageBar>}
-    {!connections.isLoading && !connections.error && !usableConnections.length && <MessageBar intent="info" style={{ marginTop: 24 }}>No connections yet. <Link to="/">View agents</Link> and select Add identity to connect an external account.</MessageBar>}
+  return <main className="portal-page"><div className="portal-page-inner">
+    <div className="portal-page-head"><h1 className="portal-page-title">Connections</h1></div>
+    <p className="portal-page-lede">Manage external accounts and authorizations for your agents. To add a connection or give an agent access, open that agent and configure Identities.</p>
+    {connections.isLoading && <Spinner label="Loading connections..." />}
+    {connections.error && <MessageBar intent="error">Could not load connections: {connections.error.message}<Button appearance="transparent" onClick={() => void connections.refetch()}>Retry</Button></MessageBar>}
+    {!connections.isLoading && !connections.error && !usableConnections.length && <div className="portal-empty">No connections yet. <Link to="/">View agents</Link> and select Add identity to connect an external account.</div>}
     {!connections.isLoading && !connections.error && providerOrder.map((provider) => <ProviderGroup key={provider} provider={provider} connections={usableConnections.filter((connection) => connection.provider === provider)} />)}
-  </main>;
+  </div></main>;
 }

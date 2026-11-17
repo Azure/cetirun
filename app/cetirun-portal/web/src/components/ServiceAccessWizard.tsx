@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { Badge, Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Radio, RadioGroup, Spinner, Text, tokens } from "@fluentui/react-components";
+import { Badge, Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Radio, RadioGroup, Spinner, Text } from "@fluentui/react-components";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { getGitHubAppConfig, listGitHubInstallations, reconnectConnection, selectGitHubInstallation, startConnection, type Connection, type ConnectionBinding, type ConnectionMode, type ConnectionProvider, type GitHubBinding } from "../api/toolAuthorization";
@@ -134,8 +134,8 @@ export function ServiceAccessWizard({ instance, connections, editing, canManage,
     <DialogTitle tabIndex={-1} data-step-heading>{title}</DialogTitle>
     <DialogContent style={{ overflowWrap: "anywhere" }}>
       <Text size={200} block>For {instance.displayName || instance.instanceName}</Text>
-      {step !== "service" && <ol aria-label="Access setup steps" style={{ display: "flex", flexWrap: "wrap", gap: 24, paddingLeft: 20, color: tokens.colorNeutralForeground2 }}>
-        {["account", "access", "review"].map((item, index) => <li key={item} aria-current={step === item ? "step" : undefined} style={{ fontWeight: step === item ? 600 : 400 }}>{["Account", mode === "installation" ? "Repositories & permissions" : "Access", "Review"][index]}</li>)}
+      {step !== "service" && <ol aria-label="Access setup steps" className="portal-steps">
+        {["account", "access", "review"].map((item, index) => <li key={item} aria-current={step === item ? "step" : undefined}>{["Account", mode === "installation" ? "Repositories & permissions" : "Access", "Review"][index]}</li>)}
       </ol>}
       {step === "service" && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))", gap: 12, marginTop: 20 }}>
         {providerOrder.map((item) => <div key={item}><Button appearance="secondary" style={{ width: "100%", minHeight: 52 }} disabled={disabled || !!providerDisabledReasons[item]} onClick={() => changeProvider(item)}>{providerLabels[item]}</Button>{providerDisabledReasons[item] && <Text size={200} block>{providerDisabledReasons[item]}</Text>}</div>)}
@@ -172,7 +172,7 @@ export function ServiceAccessWizard({ instance, connections, editing, canManage,
       </>}
       {connection && (step === "access" || step === "review") && <>
         <Text weight="semibold" block style={{ marginTop: 12 }}>{providerLabels[connection.provider]} — {connectionTitle(connection)}</Text>
-        <Badge appearance="outline">{accessMethodLabel(connection)}</Badge>
+        <Badge appearance="outline" color="informative">{accessMethodLabel(connection)}</Badge>
         {step === "access" ? connection.mode === "installation" ? <GitHubAccessFields key={connection.id} connection={connection} value={github} onChange={setGitHub} disabled={disabled} /> : <>
           <Text block style={{ marginTop: 16 }}>Choose the services this agent can use.</Text>
           {connection.services.map((id) => <Checkbox key={id} label={serviceLabels[id] ?? id} disabled={disabled} checked={services.includes(id)} onChange={(_, data) => setServices(data.checked === true ? [...new Set([...services, id])] : services.filter((item) => item !== id))} />)}

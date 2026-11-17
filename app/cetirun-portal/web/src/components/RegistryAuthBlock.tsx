@@ -3,7 +3,7 @@
 
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Button, Field, Input, MessageBar, Text, tokens } from "@fluentui/react-components";
+import { Button, Field, Input, MessageBar } from "@fluentui/react-components";
 import type { Instance } from "../types/instance";
 import { updateRegistryAuth } from "../api/registry";
 
@@ -43,11 +43,13 @@ export function RegistryAuthBlock({ instance }: { instance: Instance }) {
     }
   };
 
+  const image = (target ?? instance).agent.image;
+
   return (
-    <section aria-label="Registry credentials" style={{ padding: 12, marginBlock: 12, minWidth: 0, overflowWrap: "anywhere", border: `1px solid ${tokens.colorNeutralStroke1}`, borderRadius: tokens.borderRadiusMedium }}>
-      <Text weight="semibold">Registry credentials</Text>
+    <section aria-label="Registry credentials" className="portal-section">
+      <h2 className="portal-section-title">Registry credentials</h2>
       <p>{instance.registryAuthConfigured ? "Configured (write-only)" : "Not configured"}</p>
-      <p style={{ overflowWrap: "anywhere" }}>{(target ?? instance).agent.image || "Waiting for the target image to be resolved"}</p>
+      <p className={image ? "portal-note portal-mono" : "portal-note"}>{image || "Waiting for the target image to be resolved"}</p>
       {canManage && !editing && !removing && (
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Button disabled={!instance.agent.image} onClick={() => { setError(""); setTarget(instance); setEditing(true); }}>
@@ -57,7 +59,7 @@ export function RegistryAuthBlock({ instance }: { instance: Instance }) {
         </div>
       )}
       {canManage && editing && (
-        <form onSubmit={(event) => { event.preventDefault(); void submit(false); }} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <form onSubmit={(event) => { event.preventDefault(); void submit(false); }} className="portal-stack" style={{ maxWidth: 480 }}>
           <Field label="Registry username" required>
             <Input style={{ minWidth: 0, width: "100%" }} autoComplete="off" value={username} disabled={busy} onChange={(_, data) => setUsername(data.value)} required />
           </Field>
@@ -72,7 +74,7 @@ export function RegistryAuthBlock({ instance }: { instance: Instance }) {
       )}
       {canManage && removing && (
         <div>
-          <p>Remove the managed credentials? Future image pulls may fail without another node authentication method.</p>
+          <p style={{ margin: "0 0 12px" }}>Remove the managed credentials? Future image pulls may fail without another node authentication method.</p>
           <Button disabled={busy} onClick={() => void submit(true)}>Confirm removal</Button>{" "}
           <Button disabled={busy} onClick={close}>Cancel</Button>
         </div>

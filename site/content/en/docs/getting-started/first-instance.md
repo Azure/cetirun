@@ -74,7 +74,7 @@ with this Team. Ask your administrator to examine model access.
 ## Wait until the Agent is ready
 
 After you select **Create Agent**, the form closes, and the new Agent shows in
-**My Agents**. The badge next to the Agent name shows its phase:
+**My Agents**. The row of the Agent shows its phase:
 
 | Phase | Meaning | What to do |
 | --- | --- | --- |
@@ -151,17 +151,17 @@ Do these steps if you selected **Use GitHub Copilot** in the form. Find the
 4. When the dialog shows the result, select **Close**. Do not select
    **Cancel** while the dialog waits, because it cancels the sign-in.
 
-The badge next to **GitHub Copilot** then shows the sign-in progress. The page
+The state next to **GitHub Copilot** then shows the sign-in progress. The page
 refreshes by itself.
 
-| Badge | Meaning | What to do |
+| State | Meaning | What to do |
 | --- | --- | --- |
 | **Sign-in required** | The Agent has no GitHub sign-in. | Select **Sign in with GitHub**. |
 | **Starting** | The platform prepares your Copilot models. | Wait. This usually takes a few minutes. Then the Agent restarts one time to get the models. |
 | **Ready** | Your Copilot models are in the model list. | No action is necessary. |
-| **Degraded** | The platform cannot use your sign-in or your models. | Read the message under the badge. If it says "Signing in again may help", select **Sign in again**. |
+| **Degraded** | The platform cannot use your sign-in or your models. | Read the message under the state. If it says "Signing in again may help", select **Sign in again**. |
 
-If the badge does not become **Ready**, refer to
+If the state does not become **Ready**, refer to
 [GitHub Copilot does not become ready](../../guides/troubleshooting/#github-copilot-does-not-become-ready).
 For the other model tasks, refer to [Choose a model](../../guides/models/).
 

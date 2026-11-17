@@ -3,9 +3,6 @@
 
 import {
   Button,
-  Select,
-  Text,
-  tokens,
   Checkbox,
   Dialog,
   DialogActions,
@@ -14,8 +11,14 @@ import {
   DialogSurface,
   DialogTitle,
 } from "@fluentui/react-components";
-import { lazy, Suspense, useState } from "react";
-import { Link, NavLink } from "react-router-dom";
+import {
+  Desktop16Regular,
+  History20Regular,
+  WeatherMoon16Regular,
+  WeatherSunny16Regular,
+} from "@fluentui/react-icons";
+import { lazy, Suspense, useState, type ReactElement } from "react";
+import { Link, NavLink, useLocation } from "react-router-dom";
 import { useThemeContext, type ThemeMode } from "../context/ThemeContext";
 import { useFeatures } from "../hooks/useFeatures";
 import { useMe } from "../context/MeContext";
@@ -24,11 +27,11 @@ import { useChatAccount } from "../chat/ChatAccount";
 
 const HistoryDrawer = lazy(() => import("../chat/HistoryDrawer"));
 
-const THEME_MODES: ThemeMode[] = ["system", "light", "dark"];
-
-function isThemeMode(value: string): value is ThemeMode {
-  return (THEME_MODES as string[]).includes(value);
-}
+const THEME_MODES: Array<{ mode: ThemeMode; label: string; icon: ReactElement }> = [
+  { mode: "system", label: "System", icon: <Desktop16Regular /> },
+  { mode: "light", label: "Light", icon: <WeatherSunny16Regular /> },
+  { mode: "dark", label: "Dark", icon: <WeatherMoon16Regular /> },
+];
 
 export function buildSignOutUrl(location: {
   protocol: string;
@@ -47,6 +50,8 @@ export function Header() {
   const { me } = useMe();
   const { data: features } = useFeatures();
   const account = useChatAccount();
+  const { pathname } = useLocation();
+  const onAgents = pathname === "/" || pathname.startsWith("/instances");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [signOutOpen, setSignOutOpen] = useState(false);
   const [clearHistory, setClearHistory] = useState(false);
@@ -70,104 +75,62 @@ export function Header() {
   };
 
   return (
-    <header
-      style={{
-        borderBottom: `1px solid ${tokens.colorNeutralStroke1}`,
-      }}
-    >
-      <div
-        className="portal-header-inner"
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}
-      >
-        <Link
-          to="/"
-          aria-label="CetiRun Portal home"
-          className="portal-header-brand"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "8px",
-            color: "inherit",
-            textDecoration: "none",
-          }}
-        >
-          <img src={cetirunLogo} alt="CetiRun" width={48} height={48} />
-          <Text size={500} weight="semibold">
-            CetiRun Portal
-          </Text>
+    <header className="portal-topbar">
+      <div className="portal-topbar-inner">
+        <Link to="/" aria-label="CetiRun Portal home" className="portal-brand">
+          <img src={cetirunLogo} alt="CetiRun" width={30} height={30} />
+          CetiRun Portal
         </Link>
-        <div className="portal-header-actions">
-          {(features?.agentToolsEnabled || me?.isAdmin) && (
-            <nav className="portal-header-navigation" aria-label="Main navigation">
-              {me?.isAdmin && (
-                <NavLink
-                  to="/admin"
-                  style={({ isActive }) => ({
-                    textDecoration: "none",
-                    padding: "4px 8px",
-                    borderRadius: "4px",
-                    fontSize: "14px",
-                    color: isActive
-                      ? tokens.colorBrandForeground1
-                      : tokens.colorNeutralForeground1,
-                    fontWeight: isActive ? 600 : 400,
-                  })}
-                >
-                  Admin
-                </NavLink>
-              )}
-              {features?.agentToolsEnabled && (
-                <NavLink
-                  to="/connections"
-                  style={({ isActive }) => ({
-                    textDecoration: "none",
-                    padding: "4px 8px",
-                    borderRadius: "4px",
-                    fontSize: "14px",
-                    color: isActive
-                      ? tokens.colorBrandForeground1
-                      : tokens.colorNeutralForeground1,
-                    fontWeight: isActive ? 600 : 400,
-                  })}
-                >
-                  Connections
-                </NavLink>
-              )}
-            </nav>
-          )}
-          <div className="portal-header-utilities">
-            {account?.scope && !account.checking && (
-              <Button
-                appearance="subtle"
-                size="small"
-                onClick={() => setHistoryOpen(true)}
-              >
-                Local history
-              </Button>
+        {(features?.agentToolsEnabled || me?.isAdmin) && (
+          <nav className="portal-nav" aria-label="Main navigation">
+            <Link to="/" className="portal-nav-link" aria-current={onAgents ? "page" : undefined}>
+              Agents
+            </Link>
+            {features?.agentToolsEnabled && (
+              <NavLink to="/connections" className="portal-nav-link">
+                Connections
+              </NavLink>
             )}
-            <label className="portal-header-theme">
-              <Text size={200}>Theme</Text>
-              <Select
-                size="small"
-                aria-label="Theme"
-                value={themeMode}
-                onChange={(_, data) => {
-                  if (isThemeMode(data.value)) setThemeMode(data.value);
-                }}
-              >
-                <option value="system">System</option>
-                <option value="light">Light</option>
-                <option value="dark">Dark</option>
-              </Select>
-            </label>
-            <Button appearance="subtle" size="small" onClick={handleSignOut}>
-              Sign out
+            {me?.isAdmin && (
+              <NavLink to="/admin" className="portal-nav-link">
+                Admin
+              </NavLink>
+            )}
+          </nav>
+        )}
+        <div className="portal-topbar-tools">
+          {account?.scope && !account.checking && (
+            <Button
+              appearance="subtle"
+              size="small"
+              icon={<History20Regular />}
+              onClick={() => setHistoryOpen(true)}
+            >
+              Local history
             </Button>
+          )}
+          <div className="portal-theme" role="radiogroup" aria-label="Theme">
+            {THEME_MODES.map(({ mode, label, icon }) => (
+              <label key={mode} className="portal-theme-option" title={`${label} theme`}>
+                <input
+                  type="radio"
+                  name="portal-theme"
+                  aria-label={label}
+                  checked={themeMode === mode}
+                  onChange={() => setThemeMode(mode)}
+                />
+                <span>{icon}</span>
+              </label>
+            ))}
           </div>
+          {me?.alias && (
+            <span className="portal-account" title={me.email || me.alias}>
+              {me.alias}
+            </span>
+          )}
+          <Button appearance="subtle" size="small" onClick={handleSignOut}>
+            Sign out
+          </Button>
         </div>
       </div>
       {account?.scope && !account.checking && historyOpen && (

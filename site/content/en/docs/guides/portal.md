@@ -14,10 +14,12 @@ The header shows on every page of the portal.
 | Item | What it does | When it shows |
 | --- | --- | --- |
 | **CetiRun Portal** | Opens **My Agents**. | Always. |
-| **Admin** | Opens the administration pages. | Only for Portal administrators. |
+| **Agents** | Opens **My Agents**. | Only when **Connections** or **Admin** shows. |
 | **Connections** | Lists the personal accounts that you connected, and the Agents that use them. Refer to [Agent Connections and Identity](../agent-identity/#manage-identities-and-connections). | Only when the deployment allows connected services. |
+| **Admin** | Opens the administration pages. | Only for Portal administrators. |
 | **Local history** | Opens the Chat conversations that this browser keeps. Refer to [Chat with a Custom Agent](../custom-chat/#where-history-lives). | Only when the deployment allows Portal Chat. |
-| **Theme** | Selects **System**, **Light**, or **Dark**. | Always. |
+| **Theme** | Selects **System**, **Light**, or **Dark**. The three buttons show a screen, a sun, and a moon. | Always. |
+| Your alias | Shows the account that is signed in. | After the portal reads your account. |
 | **Sign out** | Signs you out of the portal. | Always. |
 
 If the deployment allows Portal Chat, **Sign out** opens a dialog. In the
@@ -25,18 +27,22 @@ dialog, you can clear the local chat history of your account in this browser.
 
 ## My Agents
 
-**My Agents** is the home page of the portal. It lists your Agents. Each Agent
-card shows these items:
+**My Agents** is the home page of the portal. It lists your Agents. Below the
+title, the page shows how many Agents you have and how many you can have. Each
+Agent row shows these items:
 
+- An icon for the phase. A dashed ring shows while the Agent waits. A turning
+  arc shows while the platform creates the Agent. A filled ring shows when the
+  Agent is ready. The row always shows the phase in words too.
 - The Agent name and the display name.
-- A badge with the Agent type: **Hermes**, **OpenClaw**, or **Custom**.
-- A badge with the phase, for example **Ready** or **Provisioning**. For the
+- The Agent type: **Hermes**, **OpenClaw**, or **Custom**.
+- The phase, for example **Ready** or **Provisioning**. For the
   phases, refer to
   [Wait until the Agent is ready](../../getting-started/first-instance/#wait-until-the-agent-is-ready).
 - A governance status, if the platform holds the Agent. Refer to
   [Troubleshoot your Agent](../troubleshooting/#the-agent-does-not-become-ready).
 
-To create an Agent, select **New Agent**. To open an Agent, select its card.
+To create an Agent, select **New Agent**. To open an Agent, select its row.
 
 ## Agent sidebar
 
@@ -52,7 +58,8 @@ When you open an Agent, a sidebar shows on the left side of the page.
 | **Desktop** | A remote desktop with Google Chrome. The browser tools of Hermes and OpenClaw use this Chrome, so you can see what the Agent does in the browser. |
 
 **Agent UI**, **Terminal**, and **Desktop** are unavailable until the phase is
-**Ready**. They open in the same browser tab, and they leave the portal. To
+**Ready**. They open in the same browser tab, and they leave the portal. An
+arrow marks the entries that leave the portal. To
 return to the portal, use the back button of the browser. **Web UI** of a Custom Agent opens
 in a new tab.
 
@@ -65,15 +72,12 @@ instructions. Automatic sign-in requires the Webapp on the Portal address.
 
 The **Overview** tab of an Agent shows these items, from top to bottom:
 
-- The display name and the phase badge.
+- The display name and the phase.
 - A governance message, if the platform holds the Agent. The message gives a
   next step.
-- The Agent name, the owner, the Team, and the configuration: type, image,
-  username, and port.
-- The credential that opens the Agent UI. A Hermes Agent shows
-  **Hermes API / Webapp Key (user: cetirun)**. An OpenClaw Agent shows
-  **Gateway Token**. Use the eye button to show the value, and the copy button
-  to copy it.
+- The lifecycle buttons: **Upgrade to Latest**, **Edit Agent**,
+  **Restart Agent**, **Suspend Agent** or **Resume Agent**, and
+  **Delete Agent**. Refer to [Manage your Agent](../lifecycle/).
 - **Models**: the models that the Agent can use, the default model, the
   request limits of the Agent Policy, and the GitHub Copilot sign-in. Refer to
   [Choose a model](../models/#select-and-switch-models). This section does not
@@ -83,9 +87,16 @@ The **Overview** tab of an Agent shows these items, from top to bottom:
 - **Identities**: the accounts and the Azure identity that the Agent uses for
   external services. Refer to
   [Agent Connections and Identity](../agent-identity/).
-- The lifecycle buttons: **Upgrade to Latest**, **Edit Agent**,
-  **Restart Agent**, **Suspend Agent** or **Resume Agent**, and
-  **Delete Agent**. Refer to [Manage your Agent](../lifecycle/).
+
+A column beside these items shows the facts of the Agent. In a narrow window,
+the column shows below the lifecycle buttons.
+
+- The Agent name, the owner, the Team, and the configuration: type, image,
+  username, and port.
+- The credential that opens the Agent UI. A Hermes Agent shows
+  **Hermes API / Webapp Key (user: cetirun)**. An OpenClaw Agent shows
+  **Gateway Token**. Use the eye button to show the value, and the copy button
+  to copy it.
 
 Some items show only when the deployment allows them, for example
 **Identities**.

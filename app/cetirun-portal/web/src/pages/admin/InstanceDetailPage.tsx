@@ -5,7 +5,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Badge,
   Button,
   Checkbox,
   Dialog,
@@ -21,7 +20,6 @@ import {
   Tab,
   TabList,
   Text,
-  tokens,
   type SelectTabData,
 } from "@fluentui/react-components";
 import { ArrowLeft20Regular, Delete20Regular, Edit20Regular } from "@fluentui/react-icons";
@@ -39,6 +37,7 @@ import { StatusTab } from "../../components/StatusTab";
 import { GovernanceNotice } from "../../components/GovernanceNotice";
 import { ChartUnavailableNotice } from "../../components/ChartUnavailableNotice";
 import { useFeatures } from "../../hooks/useFeatures";
+import { AgentPhase } from "../../components/Lifecycle";
 import { agentTypeLabel } from "../../utils/instance";
 
 interface Draft {
@@ -57,13 +56,6 @@ function fromDetail(detail: AdminInstanceDetail): Draft {
     webUI: detail.agent.webUI || false,
     model: detail.model || "",
   };
-}
-
-function phaseColor(phase?: string): "success" | "warning" | "danger" | "informative" {
-  if (phase === "Ready") return "success";
-  if (phase === "Failed") return "danger";
-  if (phase === "Deleting" || phase === "Suspended") return "warning";
-  return "informative";
 }
 
 function timestamp(value?: string): string {
@@ -88,8 +80,8 @@ function DetailList({ detail }: { detail: AdminInstanceDetail }) {
     ["Generation", String(detail.generation)],
     ["Observed generation", String(detail.observedGeneration)],
   ];
-  return <dl style={{ display: "grid", gridTemplateColumns: "minmax(130px, auto) minmax(0, 1fr)", gap: "8px 16px", margin: 0 }}>
-    {entries.map(([label, value]) => <div key={label} style={{ display: "contents" }}><dt style={{ color: tokens.colorNeutralForeground3 }}>{label}</dt><dd style={{ margin: 0, overflowWrap: "anywhere" }}>{value || "—"}</dd></div>)}
+  return <dl className="portal-facts">
+    {entries.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value || "—"}</dd></div>)}
   </dl>;
 }
 
@@ -104,8 +96,8 @@ function ConfigSummary({ detail }: { detail: AdminInstanceDetail }) {
     ["Agent identity reason", detail.agentIdentity?.reason || "—"],
     ["Registry authentication", detail.registryAuthConfigured ? "Configured" : "Not configured"],
   ];
-  return <dl style={{ display: "grid", gridTemplateColumns: "minmax(170px, auto) minmax(0, 1fr)", gap: "8px 16px", margin: 0 }}>
-    {entries.map(([label, value]) => <div key={label} style={{ display: "contents" }}><dt style={{ color: tokens.colorNeutralForeground3 }}>{label}</dt><dd style={{ margin: 0, overflowWrap: "anywhere" }}>{value}</dd></div>)}
+  return <dl className="portal-facts">
+    {entries.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
   </dl>;
 }
 
@@ -309,14 +301,14 @@ export function InstanceDetailPage() {
 
   return <div style={{ maxWidth: 980 }}>
     {detailQuery.error && !editing && !deleteTarget && <MessageBar intent="error">Failed to refresh Agent: {detailQuery.error.message}. The last loaded configuration is shown.</MessageBar>}
-    <Button appearance="subtle" icon={<ArrowLeft20Regular />} onClick={() => navigate("/admin/instances")} style={{ marginBottom: 12 }}>All agents</Button>
+    <Button appearance="subtle" icon={<ArrowLeft20Regular />} onClick={() => navigate("/admin/instances")} style={{ marginBottom: 12, marginLeft: -12 }}>All agents</Button>
     <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, marginBottom: 16 }}>
-      <Text as="h1" size={600} weight="semibold" style={{ margin: 0, overflowWrap: "anywhere" }}>{detail.displayName || detail.name}</Text>
-      <Badge appearance="filled" color={phaseColor(detail.phase)}>{deletionInProgress ? "Deleting" : detail.phase || "Unknown"}</Badge>
-      <Text size={200}>{detail.alias}{detail.team ? ` · ${detail.team}` : ""}</Text>
+      <h1 className="portal-detail-title">{detail.displayName || detail.name}</h1>
+      <AgentPhase phase={deletionInProgress ? "Deleting" : detail.phase || "Unknown"} />
+      <span className="portal-detail-owner">{detail.alias}{detail.team ? ` · ${detail.team}` : ""}</span>
       <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
         <Button appearance="secondary" icon={<Edit20Regular />} onClick={startEditing} disabled={deletionInProgress || editing || updateMutation.isPending}>Edit</Button>
-        <Button appearance="primary" icon={<Delete20Regular />} onClick={() => { setDeleteName(""); deleteMutation.reset(); setDeleteTarget({ name: detail.name, alias: detail.alias, team: detail.team, uid: detail.uid, resourceVersion: detail.resourceVersion }); }} disabled={deletionInProgress} style={{ backgroundColor: tokens.colorStatusDangerBackground3 }}>Delete</Button>
+        <Button className="portal-danger" appearance="primary" icon={<Delete20Regular />} onClick={() => { setDeleteName(""); deleteMutation.reset(); setDeleteTarget({ name: detail.name, alias: detail.alias, team: detail.team, uid: detail.uid, resourceVersion: detail.resourceVersion }); }} disabled={deletionInProgress}>Delete</Button>
       </div>
     </div>
     {!editableType && <MessageBar intent="info">Runtime configuration is unavailable because this Agent type is not enabled by the current platform policy. The display name can still be changed.</MessageBar>}
@@ -326,13 +318,13 @@ export function InstanceDetailPage() {
     {!deletionInProgress && <GovernanceNotice instance={detail} />}
     {!deletionInProgress && <ChartUnavailableNotice conditions={detail.conditions} />}
 
-    <TabList selectedValue={selectedTab} onTabSelect={(_, data: SelectTabData) => setSelectedTab(data.value as string)} style={{ marginTop: 16, marginBottom: 16 }}>
+    <TabList selectedValue={selectedTab} onTabSelect={(_, data: SelectTabData) => setSelectedTab(data.value as string)} style={{ marginTop: 16, marginBottom: 20, marginInline: -10 }}>
       <Tab value="overview">Overview</Tab><Tab value="status">Status</Tab><Tab value="events">Events</Tab>
     </TabList>
-    {selectedTab === "overview" && <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      <section><Text as="h2" weight="semibold" size={400} block style={{ marginBottom: 12 }}>Agent details</Text><DetailList detail={detail} /></section>
-      <section><Text as="h2" weight="semibold" size={400} block style={{ marginBottom: 12 }}>Configuration</Text><ConfigSummary detail={detail} /></section>
-      {detail.conditions.length > 0 && <section><Text as="h2" weight="semibold" size={400} block style={{ marginBottom: 12 }}>Current conditions</Text>{detail.conditions.map((condition) => <div key={condition.type} style={{ marginBottom: 8 }}><Text weight="semibold">{condition.type}: </Text><Text>{condition.status}{condition.reason ? ` — ${condition.reason}` : ""}{condition.message ? `: ${condition.message}` : ""}</Text></div>)}</section>}
+    {selectedTab === "overview" && <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
+      <section><h2 className="portal-section-title" style={{ marginBottom: 8 }}>Agent details</h2><DetailList detail={detail} /></section>
+      <section><h2 className="portal-section-title" style={{ marginBottom: 8 }}>Configuration</h2><ConfigSummary detail={detail} /></section>
+      {detail.conditions.length > 0 && <section><h2 className="portal-section-title" style={{ marginBottom: 12 }}>Current conditions</h2>{detail.conditions.map((condition) => <div key={condition.type} style={{ marginBottom: 8, overflowWrap: "anywhere" }}><Text weight="semibold">{condition.type}: </Text><Text>{condition.status}{condition.reason ? ` — ${condition.reason}` : ""}{condition.message ? `: ${condition.message}` : ""}</Text></div>)}</section>}
     </div>}
     {(selectedTab === "status" || selectedTab === "events") && <>
       {statusQuery.error && <MessageBar intent="error">Failed to load diagnostics: {statusQuery.error.message}</MessageBar>}
@@ -355,7 +347,7 @@ export function InstanceDetailPage() {
             {custom && <Checkbox label="Serve Web UI" checked={draft.webUI} disabled={!editableType || deletionInProgress || editBusy} onChange={(_, data) => setDraft({ ...draft, webUI: data.checked === true })} />}
             <Field label="Model override" hint="Leave blank to use the platform default."><Input value={draft.model} disabled={!editableType || deletionInProgress || editBusy} onChange={(_, data) => setDraft({ ...draft, model: data.value })} /></Field>
             <Text size={200}>Agent type, username, owner, Team, Sandbox and registry credentials are read-only.</Text>
-            {validationError && <Text style={{ color: tokens.colorStatusDangerForeground1 }}>{validationError}</Text>}
+            {validationError && <span className="portal-error-text">{validationError}</span>}
             {conflict && <MessageBar intent="warning">This Agent changed since you opened it. Reload and review the current configuration; your draft is retained.</MessageBar>}
             {updateMutation.isError && !conflict && <MessageBar intent="error">{updateMutation.error.message}</MessageBar>}
             {deletionInProgress && <MessageBar intent="warning">This Agent is deleting, so edits cannot be saved.</MessageBar>}
@@ -378,7 +370,7 @@ export function InstanceDetailPage() {
         </div>
       </DialogContent><DialogActions>
         <Button appearance="secondary" onClick={() => setDeleteTarget(null)} disabled={deleteBusy}>Cancel</Button>
-        {deleteConflict ? <Button appearance="primary" onClick={() => void reloadDeletionConflict()} disabled={detailQuery.isFetching}>Reload and review</Button> : <Button appearance="primary" onClick={() => { if (deleteTarget) deleteMutation.mutate({ targetName: name!, target: deleteTarget }); }} disabled={deleteName !== deleteTarget?.name || deleteMutation.isPending || deletionInProgress} style={{ backgroundColor: tokens.colorStatusDangerBackground3 }}>{deleteMutation.isPending ? "Deleting..." : "Delete"}</Button>}
+        {deleteConflict ? <Button appearance="primary" onClick={() => void reloadDeletionConflict()} disabled={detailQuery.isFetching}>Reload and review</Button> : <Button appearance="primary" onClick={() => { if (deleteTarget) deleteMutation.mutate({ targetName: name!, target: deleteTarget }); }} disabled={deleteName !== deleteTarget?.name || deleteMutation.isPending || deletionInProgress} className="portal-danger">{deleteMutation.isPending ? "Deleting..." : "Delete"}</Button>}
       </DialogActions></DialogBody></DialogSurface>
     </Dialog>
   </div>;

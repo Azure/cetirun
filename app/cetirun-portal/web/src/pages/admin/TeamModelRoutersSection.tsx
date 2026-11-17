@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { useId } from "react";
-import { Button, Field, Input, MessageBar, Select, Text, tokens } from "@fluentui/react-components";
+import { Button, Field, Input, MessageBar, Select, Text } from "@fluentui/react-components";
 import type { TeamModelRouter, TeamModelRouterClassifier, TeamModelRouterStatus } from "../../api/adminTeam";
 
 export const MAX_MODEL_ROUTERS = 10;
@@ -92,7 +92,7 @@ export function TeamModelRoutersSection({ routers, status, sharedModels, decisio
   };
   return (
     <section aria-label="Smart routing" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <Text size={400} weight="semibold">Smart routing</Text>
+      <h2 className="portal-section-title">Smart routing</h2>
       <Text size={300}>
         Each smart-routing model is a model name members can choose, such as auto-team. It cannot be the name of a shared
         model, such as the Gateway's own router auto. The AI Gateway classifies each request and sends it to the model of its
@@ -110,7 +110,7 @@ export function TeamModelRoutersSection({ routers, status, sharedModels, decisio
         const decision = classifier === "jev";
         return (
           <div key={index} role="group" aria-label={`Smart-routing model ${index + 1}`}
-            style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, padding: 12, border: `1px solid ${tokens.colorNeutralStroke2}`, borderRadius: 4 }}>
+            className="portal-form-grid portal-form-well">
             <Field label="Model name" required hint="The name members choose, e.g. auto-team. It cannot be the name of a shared model.">
               <Input value={router.name} onChange={(_, data) => update(index, { name: data.value })} placeholder="auto-team" />
             </Field>
@@ -145,7 +145,7 @@ export function TeamModelRoutersSection({ routers, status, sharedModels, decisio
               </Field>
             ))}
             {report?.ready && report.nonReasoningModels && report.nonReasoningModels.length > 0 && (
-              <div style={{ gridColumn: "1 / span 2" }}>
+              <div style={{ gridColumn: "1 / -1" }}>
                 <MessageBar intent="info">
                   {`These models do not reason: ${report.nonReasoningModels.join(", ")}. Agents do not offer reasoning levels ` +
                     "for this router. The AI Gateway removes reasoning settings from the requests that the router sends to a " +
@@ -153,7 +153,7 @@ export function TeamModelRoutersSection({ routers, status, sharedModels, decisio
                 </MessageBar>
               </div>
             )}
-            <div style={{ gridColumn: "1 / span 2", display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ gridColumn: "1 / -1", display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
               {report && (report.ready
                 ? <Text size={200}>Registered in the AI Gateway.</Text>
                 : <MessageBar intent="warning">{report.message || "Not registered in the AI Gateway yet."}</MessageBar>)}

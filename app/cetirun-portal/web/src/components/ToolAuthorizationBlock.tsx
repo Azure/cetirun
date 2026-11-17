@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { Badge, Button, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, Spinner, Text, tokens } from "@fluentui/react-components";
+import { Badge, Button, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, Spinner, Text } from "@fluentui/react-components";
 import { MoreHorizontal20Regular } from "@fluentui/react-icons";
 import { useEffect, useRef, useState } from "react";
 import type { Connection, ConnectionBinding, ConnectionProvider } from "../api/toolAuthorization";
@@ -10,6 +10,7 @@ import type { Instance } from "../types/instance";
 import { useToolConnections, useConnectionBindings } from "../hooks/useToolAuthorization";
 import { useConnectionSignIn } from "../hooks/useConnectionSignIn";
 import { ServiceAccessWizard } from "./ServiceAccessWizard";
+import { StatusLabel } from "./StatusLabel";
 import { GitHubPermissionSummary } from "./GitHubAccessFields";
 import { AzureAccessInstructions, HowAccessWorks, TechnicalDetails } from "./ServiceAccessDetails";
 import { accessMethodLabel, connectionStatusColor, connectionStatusLabel, connectionTitle, providerDisabledReasons, providerLabels, providerOrder, serviceLabels } from "./serviceAccess";
@@ -45,12 +46,12 @@ function AgentServiceAccess({ instance }: { instance: Instance }) {
     setAdding(false); setEditing(undefined);
     requestAnimationFrame(() => wizardTrigger.current?.focus());
   };
-  return <section ref={section} id="service-access" tabIndex={-1} aria-label="Identities" style={{ marginTop: 16, padding: 20, borderRadius: tokens.borderRadiusLarge, border: `1px solid ${tokens.colorNeutralStroke1}`, overflowWrap: "anywhere" }}>
-    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-      <Text as="h2" size={400} weight="semibold" style={{ margin: 0 }}>Identities</Text>
-      <Button appearance="primary" disabled={!canManage} onClick={(event) => { wizardTrigger.current = event.currentTarget; setAdding(true); }}>Add identity</Button>
+  return <section ref={section} id="service-access" tabIndex={-1} aria-label="Identities" className="portal-section">
+    <div className="portal-section-head">
+      <h2 className="portal-section-title">Identities</h2>
+      <Button disabled={!canManage} onClick={(event) => { wizardTrigger.current = event.currentTarget; setAdding(true); }}>Add identity</Button>
     </div>
-    <Text size={200} block style={{ marginTop: 8 }}>Manage the identities and permissions this agent uses to access external services.</Text>
+    <span className="portal-note">Manage the identities and permissions this agent uses to access external services.</span>
     {loading && <Spinner size="tiny" label="Loading identities..." />}
     {error && <div role="alert"><Text block>{error.message}</Text><Button onClick={retry}>Retry</Button></div>}
     {signin.message && <Text role="status" block>{signin.message}</Text>}
@@ -61,14 +62,14 @@ function AgentServiceAccess({ instance }: { instance: Instance }) {
       });
       if (!rows.length) return null;
       const mixedGitHub = provider === "github" && rows.some((row) => row.connection?.mode === "installation") && rows.some((row) => row.connection?.mode === "delegated");
-      return <section key={provider} aria-label={provider === "unavailable" ? "Unavailable service" : providerLabels[provider]} style={{ marginTop: 24 }}>
-        <Text as="h3" weight="semibold" style={{ margin: "0 0 8px" }}>{provider === "unavailable" ? "Unavailable service" : providerLabels[provider]}</Text>
+      return <section key={provider} aria-label={provider === "unavailable" ? "Unavailable service" : providerLabels[provider]} style={{ marginTop: 12 }}>
+        <h3 className="portal-subsection-title" style={{ marginBottom: 8 }}>{provider === "unavailable" ? "Unavailable service" : providerLabels[provider]}</h3>
         {mixedGitHub && <Text block style={{ marginBottom: 12 }}>Personal GitHub access is also enabled. Its permissions remain available independently of the selected repository limits.</Text>}
-        {rows.map(({ binding, connection }) => <article key={binding.id} aria-label={connection ? `${connectionTitle(connection)} — ${accessMethodLabel(connection)}` : "Unavailable connection"} style={{ padding: 16, marginTop: 8, borderRadius: tokens.borderRadiusMedium, background: tokens.colorNeutralBackground2 }}>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+        {rows.map(({ binding, connection }) => <article key={binding.id} aria-label={connection ? `${connectionTitle(connection)} — ${accessMethodLabel(connection)}` : "Unavailable connection"} className="portal-tile" style={{ marginTop: 8 }}>
+          <div className="portal-tile-head">
             <Text weight="semibold">{connection ? connectionTitle(connection) : "Unavailable connection"}</Text>
-            {connection && <Badge appearance="outline">{accessMethodLabel(connection)}</Badge>}
-            <Badge appearance="tint" color={connectionStatusColor(connection)}>{connection ? connectionStatusLabel(connection) : "Unavailable"}</Badge>
+            {connection && <Badge appearance="outline" color="informative">{accessMethodLabel(connection)}</Badge>}
+            <StatusLabel tone={connectionStatusColor(connection)} size="small">{connection ? connectionStatusLabel(connection) : "Unavailable"}</StatusLabel>
           </div>
           {connection?.mode === "installation" && <Text size={200} block>Acts as {connection.accountDisplay || "the GitHub App bot"}</Text>}
           {binding.github ? <GitHubPermissionSummary value={binding.github} /> : <Text size={200} block>{binding.services.map((id) => serviceLabels[id] ?? id).join(" · ")}</Text>}

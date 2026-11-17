@@ -1,20 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { Button, Text, tokens } from "@fluentui/react-components";
-import { Chat20Regular } from "@fluentui/react-icons";
+import { useEffect, useRef, useState } from "react";
+import { Button } from "@fluentui/react-components";
+import { ArrowUpRight16Regular, Chat20Regular } from "@fluentui/react-icons";
 import { signInToHermes } from "../api/hermes";
 import type { Instance } from "../types/instance";
 
 type Props = {
   instance: Pick<Instance, "uid" | "instanceName">;
   disabled: boolean;
-  className?: string;
-  style?: CSSProperties;
 };
 
-export function HermesWebappButton({ instance, disabled, className, style }: Props) {
+export function HermesWebappButton({ instance, disabled }: Props) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const request = useRef<AbortController | null>(null);
@@ -60,8 +58,7 @@ export function HermesWebappButton({ instance, disabled, className, style }: Pro
   return <>
     <Button
       type="button"
-      className={className}
-      style={style}
+      className="portal-side-link"
       appearance="transparent"
       icon={<Chat20Regular />}
       disabled={disabled || pending}
@@ -69,7 +66,8 @@ export function HermesWebappButton({ instance, disabled, className, style }: Pro
       onClick={() => void open()}
     >
       {pending ? "Opening Agent UI..." : "Agent UI"}
+      <ArrowUpRight16Regular className="portal-side-link-out" />
     </Button>
-    {error && <Text block role="alert" size={200} style={{ padding: "8px 12px", color: tokens.colorStatusDangerForeground1 }}>{error}</Text>}
+    {error && <span role="alert" className="portal-side-note">{error}</span>}
   </>;
 }

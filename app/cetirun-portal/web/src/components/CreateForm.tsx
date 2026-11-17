@@ -18,7 +18,11 @@ const AGENT_TYPE_LABELS: Record<AgentType, string> = {
   custom: "Custom",
 };
 
-export function CreateForm({ onCreated }: { onCreated?: () => void }) {
+export function CreateForm({ onCreated, onCancel }: {
+  onCreated?: () => void;
+  /** Shows a Cancel button next to Create Agent. */
+  onCancel?: () => void;
+}) {
   const [instanceName, setInstanceName] = useState("");
   const [agentType, setAgentType] = useState<AgentType>("hermes");
   const [image, setImage] = useState("");
@@ -160,10 +164,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   };
 
   return (
-    <form
-      onSubmit={handleSubmit}
-      style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 16 }}
-    >
+    <form onSubmit={handleSubmit} className="portal-form">
       <Field
         label="Agent Name (optional)"
         hint={
@@ -181,7 +182,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
       </Field>
 
       <TeamPicker value={team} onChange={setTeam} />
-      {options?.policyName && <p style={{ margin: 0 }}>Agent Policy: {options.policyName}</p>}
+      {options?.policyName && <p className="portal-note" style={{ margin: 0 }}>Agent Policy: {options.policyName}</p>}
       {options?.policyName && (
         <RateLimitsSummary limits={options.rateLimits} intro="The policy limits each Agent's own AI Gateway key:" />
       )}
@@ -373,20 +374,23 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
         />
       )}
 
-      <p style={{ margin: 0, fontSize: 12 }}>
+      <p className="portal-form-footnote">
         When Memory assets are installed, memory and bounded learning are enabled automatically.
         Qualified entrypoints may use up to four extra model requests per day for synthetic method
         checks. Conversation-level memory restrictions still apply; Team Skills and tool permissions
         are unchanged.
       </p>
 
-      <Button
-        type="submit"
-        appearance="primary"
-        disabled={creationBlocked}
-      >
-        {createMutation.isPending ? "Creating..." : "Create Agent"}
-      </Button>
+      <div className="portal-form-actions">
+        <Button
+          type="submit"
+          appearance="primary"
+          disabled={creationBlocked}
+        >
+          {createMutation.isPending ? "Creating..." : "Create Agent"}
+        </Button>
+        {onCancel && <Button onClick={onCancel}>Cancel</Button>}
+      </div>
 
       {validationError && <MessageBar intent="error">{validationError}</MessageBar>}
       {createMutation.error && (

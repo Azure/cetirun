@@ -5,7 +5,6 @@ import { Fragment, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  Title2,
   Button,
   Spinner,
   MessageBar,
@@ -84,15 +83,8 @@ export function TeamListPage() {
 
   return (
     <div>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 16,
-        }}
-      >
-        <Title2>Teams</Title2>
+      <div className="portal-page-head">
+        <h1 className="portal-page-title portal-page-title--section">Teams</h1>
         <Button
           appearance="primary"
           icon={<Add20Regular />}
@@ -106,7 +98,7 @@ export function TeamListPage() {
       {error && <MessageBar intent="error">Failed to load: {error.message}</MessageBar>}
 
       {teams && (
-        <Table aria-label="Teams">
+        <div className="portal-table-scroll"><Table aria-label="Teams">
           <TableHeader>
             <TableRow>
               <TableHeaderCell>Name</TableHeaderCell>
@@ -115,7 +107,7 @@ export function TeamListPage() {
               <TableHeaderCell>Default Sandbox</TableHeaderCell>
               <TableHeaderCell>Compatibility</TableHeaderCell>
               <TableHeaderCell>Skills</TableHeaderCell>
-              <TableHeaderCell style={{ width: 120 }}>Actions</TableHeaderCell>
+              <TableHeaderCell className="portal-col-actions">Actions</TableHeaderCell>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -134,7 +126,7 @@ export function TeamListPage() {
                 <TableCell>{t.defaultSandboxRef || "—"}</TableCell>
                 <TableCell><CompatibilityBadge team={t} /></TableCell>
                 <TableCell>{t.skills?.length ?? 0}</TableCell>
-                <TableCell>
+                <TableCell><div className="portal-row-actions">
                   <Button size="small" appearance="subtle" onClick={() => setExpanded(expanded === t.name ? null : t.name)} aria-expanded={expanded === t.name} aria-label={`Show compatibility for ${t.name}`}>Details</Button>
                   <Button
                     size="small"
@@ -156,12 +148,12 @@ export function TeamListPage() {
                     }}
                     aria-label={`Delete ${t.name}`}
                   />
-                </TableCell>
+                </div></TableCell>
               </TableRow>
-              {expanded === t.name && <TableRow><TableCell colSpan={7}><CompatibilityReport team={t} /></TableCell></TableRow>}
+              {expanded === t.name && <TableRow className="portal-row-detail"><TableCell colSpan={7}><CompatibilityReport team={t} /></TableCell></TableRow>}
             </Fragment>)}
           </TableBody>
-        </Table>
+        </Table></div>
       )}
 
       <Dialog
@@ -190,6 +182,7 @@ export function TeamListPage() {
                 <Button appearance="secondary">Cancel</Button>
               </DialogTrigger>
               <Button
+                className="portal-danger"
                 appearance="primary"
                 disabled={delMutation.isPending || reloadingDelete || !!activeDeleteError || !!pendingDelete?.deleting}
                 onClick={() => { if (pendingDelete) delMutation.mutate({ team: pendingDelete, epoch: deleteEpoch.current }); }}

@@ -941,6 +941,7 @@ export default function ChatPage({ instance }: { instance: Instance }) {
           onClick={() => setRailOpen(false)}
         />
         <Button
+          className="chat-back"
           appearance="subtle"
           icon={<ArrowLeft20Regular />}
           onClick={() =>

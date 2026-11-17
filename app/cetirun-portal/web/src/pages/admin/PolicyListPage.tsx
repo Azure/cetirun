@@ -22,13 +22,13 @@ import {
   TableHeaderCell,
   TableRow,
   Text,
-  Title2,
 } from "@fluentui/react-components";
 import { Add20Regular, Delete20Regular, Edit20Regular } from "@fluentui/react-icons";
 import { deletePolicy, listPolicies, type AgentPolicyDTO } from "../../api/adminPolicy";
 import { listTeams, type TeamDTO } from "../../api/adminTeam";
 import { describeRateLimits } from "../../utils/rateLimits";
 import { CompatibilityReferences } from "../../components/CompatibilityReport";
+import { StatusLabel, type StatusTone } from "../../components/StatusLabel";
 
 function modelAccessLabel(policy: AgentPolicyDTO): string {
   const labels: string[] = [];
@@ -43,6 +43,13 @@ function acceptedLabel(policy: AgentPolicyDTO): string {
   const condition = acceptedCondition(policy);
   if (!condition) return "Pending";
   return condition.status === "True" ? "Accepted" : condition.status === "False" ? "Rejected" : "Unknown";
+}
+
+const CONFIGURATION_TONES: Record<string, StatusTone> = { Accepted: "success", Rejected: "danger", Unknown: "warning", Pending: "subtle", Deleting: "informative" };
+
+function ConfigurationStatus({ policy }: { policy: AgentPolicyDTO }) {
+  const label = policy.deleting ? "Deleting" : acceptedLabel(policy);
+  return <StatusLabel tone={CONFIGURATION_TONES[label]}>{label}</StatusLabel>;
 }
 
 function acceptedCondition(policy: AgentPolicyDTO) {
@@ -77,20 +84,20 @@ export function PolicyListPage() {
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <Title2>Agent policies</Title2>
+      <div className="portal-page-head">
+        <h1 className="portal-page-title portal-page-title--section">Agent policies</h1>
         <Button appearance="primary" icon={<Add20Regular />} onClick={() => navigate("/admin/policies/new")}>
           New policy
         </Button>
       </div>
-      <Text block style={{ marginBottom: 16 }}>
+      <p className="portal-page-lede">
         Policies declare which harnesses, skills, and AI Gateway model access an Agent may use. Assign a Policy and its allowed Sandboxes in the Team editor.
-      </Text>
+      </p>
       {isLoading && <Spinner label="Loading policies..." />}
       {error && <MessageBar intent="error">Failed to load: {error.message}</MessageBar>}
       {deleteError && <MessageBar intent="error">{deleteError}</MessageBar>}
       {policies && (
-        <Table aria-label="Agent policies">
+        <div className="portal-table-scroll"><Table aria-label="Agent policies">
           <TableHeader>
             <TableRow>
               <TableHeaderCell>Name</TableHeaderCell>
@@ -98,7 +105,7 @@ export function PolicyListPage() {
               <TableHeaderCell>Skills</TableHeaderCell>
               <TableHeaderCell>Model access</TableHeaderCell>
               <TableHeaderCell>Configuration</TableHeaderCell>
-              <TableHeaderCell style={{ width: 120 }}>Actions</TableHeaderCell>
+              <TableHeaderCell className="portal-col-actions">Actions</TableHeaderCell>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -111,14 +118,14 @@ export function PolicyListPage() {
                 <TableCell>{policy.harnesses.allowed.join(", ")}</TableCell>
                 <TableCell>{policy.skills?.allowed?.length ?? 0}</TableCell>
                 <TableCell>{modelAccessLabel(policy)}</TableCell>
-                <TableCell>{policy.deleting ? "Deleting" : acceptedLabel(policy)}</TableCell>
-                <TableCell>
+                <TableCell><ConfigurationStatus policy={policy} /></TableCell>
+                <TableCell><div className="portal-row-actions">
                   <Button size="small" appearance="subtle" onClick={() => setExpanded(expanded === policy.name ? null : policy.name)} aria-expanded={expanded === policy.name} aria-label={`Show Teams using ${policy.name}`}>Teams</Button>
                   <Button size="small" appearance="subtle" icon={<Edit20Regular />} aria-label={`Edit ${policy.name}`} disabled={policy.deleting} onClick={() => navigate(`/admin/policies/${policy.name}/edit`)} />
                   <Button size="small" appearance="subtle" icon={<Delete20Regular />} aria-label={`Delete ${policy.name}`} disabled={policy.deleting} onClick={() => { setDeleteError(null); setPendingDelete(policy); }} />
-                </TableCell>
+                </div></TableCell>
               </TableRow>
-              {expanded === policy.name && <TableRow><TableCell colSpan={6}>
+              {expanded === policy.name && <TableRow className="portal-row-detail"><TableCell colSpan={6}>
                 {conditionDetails(acceptedCondition(policy)) && <Text block size={200} style={{ marginBottom: 8 }}>
                   Configuration: {conditionDetails(acceptedCondition(policy))}
                 </Text>}
@@ -128,7 +135,7 @@ export function PolicyListPage() {
               </TableCell></TableRow>}
             </Fragment>)}
           </TableBody>
-        </Table>
+        </Table></div>
       )}
       <Dialog open={pendingDelete !== null} onOpenChange={(_, data) => { if (!data.open) setPendingDelete(null); }}>
         <DialogSurface>
@@ -137,7 +144,7 @@ export function PolicyListPage() {
             <DialogContent>Deleting <strong>{pendingDelete?.name}</strong> can deny Agents assigned to Teams that use it.</DialogContent>
             <DialogActions>
               <DialogTrigger disableButtonEnhancement><Button appearance="secondary">Cancel</Button></DialogTrigger>
-              <Button appearance="primary" disabled={deleteMutation.isPending || !pendingDelete} onClick={() => {
+              <Button className="portal-danger" appearance="primary" disabled={deleteMutation.isPending || !pendingDelete} onClick={() => {
                 if (pendingDelete) deleteMutation.mutate(pendingDelete);
               }}>Delete</Button>
             </DialogActions>

@@ -4,7 +4,7 @@
 import { useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Button, Combobox, Divider, Field, Input, MessageBar, Option, Select, Spinner, Switch, Text, Textarea, Title2 } from "@fluentui/react-components";
+import { Button, Combobox, Divider, Field, Input, MessageBar, Option, Select, Spinner, Switch, Text, Textarea } from "@fluentui/react-components";
 import {
   createPolicy, getPolicy, updatePolicy, PolicyConflictError, type AgentPolicyDTO,
   type AgentPolicyPort, type AgentPolicyProtocol, type AgentPolicyUpsertRequest, type PolicyHarness,
@@ -265,17 +265,17 @@ export function PolicyEditPage() {
   const pending = createMutation.isPending || updateMutation.isPending;
   const readonlyNetwork = existing?.network;
   const allowedSkills = lines(form.skills);
-  return <form onSubmit={submit} style={{ maxWidth: 820, display: "flex", flexDirection: "column", gap: 16 }}>
-    <Title2>{isCreate ? "New agent policy" : `Agent policy: ${name}`}</Title2>
-    <Text>Configure the harnesses, skills, model access, and Sandbox controls that Agents may use.</Text>
+  return <form onSubmit={submit} className="portal-form portal-form--wide">
+    <h1 className="portal-page-title portal-page-title--section">{isCreate ? "New agent policy" : `Agent policy: ${name}`}</h1>
+    <p className="portal-page-lede">Configure the harnesses, skills, model access, and Sandbox controls that Agents may use.</p>
     <Field label="Name" required><Input value={form.name} disabled={!isCreate} onChange={(_, data) => setForm({ ...form, name: data.value })} placeholder="e.g. standard" /></Field>
-    <Divider /><Text weight="semibold">Allowed harnesses</Text>
+    <Divider /><h2 className="portal-section-title">Allowed harnesses</h2>
     <Switch checked={form.openclaw} label="OpenClaw" onChange={(_, data) => setForm({ ...form, openclaw: data.checked })} />
     <Switch checked={form.hermes} label="Hermes" onChange={(_, data) => setForm({ ...form, hermes: data.checked })} />
     <Switch checked={form.custom} label="Custom" onChange={(_, data) => setForm({ ...form, custom: data.checked })} />
     <Field label="Allowed skills" hint="Enter one skill identifier per line; commas are not separators. Leave empty to allow no Team or Agent skills."><Textarea rows={4} value={form.skills} onChange={(_, data) => setForm({ ...form, skills: data.value })} placeholder={"skill-a\nnpm:@scope/skill-b\nskill-c@1.2.0"} /></Field>
     {marketplaceEnabled && <section aria-label="Skill Marketplace skills" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <Text size={300} weight="semibold">Skill Marketplace skills</Text>
+      <h3 className="portal-subsection-title">Skill Marketplace skills</h3>
       <Text size={200}>Checking a skill adds its name to Allowed skills; unchecking removes it. Other entries, such as npm packages, stay in the list above. A skill that a Team using this policy selects cannot be removed until the Team drops it.</Text>
       {marketplace.error && <MessageBar intent="error">Failed to load the skill catalog: {marketplace.error.message}</MessageBar>}
       {marketplace.isLoading && <Spinner size="tiny" label="Loading the skill catalog..." />}
@@ -287,7 +287,7 @@ export function PolicyEditPage() {
         emptyText="The skills repository has no valid skills yet."
         onToggle={(skill, checked) => setForm({ ...form, skills: toggleAllowedSkill(form.skills, skill, checked) })} />}
     </section>}
-    <Divider /><Text weight="semibold">AI Gateway</Text>
+    <Divider /><h2 className="portal-section-title">AI Gateway</h2>
     <Switch checked={form.copilot} label="Allow GitHub Copilot" onChange={(_, data) => {
       const copilot = data.checked;
       setForm({ ...form, copilot, budgetEnabled: copilot || form.sharedModels.trim() !== "" ? form.budgetEnabled : false });
@@ -297,10 +297,10 @@ export function PolicyEditPage() {
       setForm({ ...form, sharedModels, budgetEnabled: form.copilot || sharedModels.trim() !== "" ? form.budgetEnabled : false });
     }} />
     <Switch checked={form.budgetEnabled} label="Set monthly Gateway budget" onChange={(_, data) => setForm({ ...form, budgetEnabled: data.checked })} />
-    {form.budgetEnabled && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}><Field label="Default monthly USD" required><Input value={form.defaultMonthlyUSD} onChange={(_, data) => setForm({ ...form, defaultMonthlyUSD: data.value })} placeholder="e.g. 20" /></Field><Field label="Maximum monthly USD" required><Input value={form.maxMonthlyUSD} onChange={(_, data) => setForm({ ...form, maxMonthlyUSD: data.value })} placeholder="e.g. 50" /></Field></div>}
-    <Divider /><Text weight="semibold">AI Gateway limits per Agent</Text>
+    {form.budgetEnabled && <div className="portal-form-grid"><Field label="Default monthly USD" required><Input value={form.defaultMonthlyUSD} onChange={(_, data) => setForm({ ...form, defaultMonthlyUSD: data.value })} placeholder="e.g. 20" /></Field><Field label="Maximum monthly USD" required><Input value={form.maxMonthlyUSD} onChange={(_, data) => setForm({ ...form, maxMonthlyUSD: data.value })} placeholder="e.g. 50" /></Field></div>}
+    <Divider /><h2 className="portal-section-title">AI Gateway limits per Agent</h2>
     <Text size={200}>Every Agent of a Team that uses this policy gets these limits on its own Gateway key; Agents do not share them. Leave a field empty for no limit. Changes to limits alone update each Agent's existing key without restarting running Agents. Budget, model access, and Sandbox control changes retain their normal enforcement checks.</Text>
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+    <div className="portal-form-grid portal-form-grid--three">
       <Field label="Max parallel requests" hint="At least 1."><Input inputMode="numeric" value={form.limits.maxParallelRequests} onChange={(_, data) => setLimits({ maxParallelRequests: data.value })} placeholder="No limit" /></Field>
       <Field label="Requests per minute" hint="At least 1."><Input inputMode="numeric" value={form.limits.rpm} onChange={(_, data) => setLimits({ rpm: data.value })} placeholder="No limit" /></Field>
       <Field label="Tokens per minute" hint="At least 4,096."><Input inputMode="numeric" value={form.limits.tpm} onChange={(_, data) => setLimits({ tpm: data.value })} placeholder="No limit" /></Field>
@@ -320,7 +320,7 @@ export function PolicyEditPage() {
     </div>
     <Divider />
     <section aria-label="Identity" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <Text weight="semibold">Identity</Text>
+      <h2 className="portal-section-title">Identity</h2>
       <Field label="Agent Identity" hint="An independent Microsoft Entra directory identity for access through Connections. Optional lets users choose without enabling it on existing Agents. Required also applies to existing Agents and stops any without it. Disabled denies Agents that request it.">
         <Select value={form.agentIdentityMode} onChange={(event) => setForm({ ...form, agentIdentityMode: event.target.value as PolicyFormState["agentIdentityMode"] })}>
           <option value="disabled">Disabled</option><option value="optional">Optional</option><option value="required">Required</option>
@@ -330,12 +330,12 @@ export function PolicyEditPage() {
       <Switch checked={form.entraIDEnabled} label="Entra workload identity" onChange={(_, data) => setForm({ ...form, entraIDEnabled: data.checked })} />
       <Text size={200}>Provides a token and Azure SDK configuration to the main application container. Requires a platform-approved identity and federation. This is independent of Agent Identity.</Text>
     </section>
-    <Divider /><Text weight="semibold">Sandbox selection and security</Text>
+    <Divider /><h2 className="portal-section-title">Sandbox selection and security</h2>
     <Switch checked={form.allowMultiple} label="Allow multiple Sandboxes per Team" onChange={(_, data) => setForm({ ...form, allowMultiple: data.checked })} />
     <Switch checked={form.readOnlyRootFilesystem} label="Use a read-only root filesystem" onChange={(_, data) => setForm({ ...form, readOnlyRootFilesystem: data.checked })} />
-    <Divider /><Text weight="semibold">Network</Text>
+    <Divider /><h2 className="portal-section-title">Network</h2>
     <Field label="Blocked CIDRs" hint="One IPv4 or IPv6 CIDR per line."><Textarea rows={3} value={form.blockedCIDRs} onChange={(_, data) => setForm({ ...form, blockedCIDRs: data.value })} placeholder={"10.0.0.0/8\n2001:db8::/32"} /></Field>
-    <Text size={300} weight="semibold">Blocked ports</Text>
+    <h3 className="portal-subsection-title">Blocked ports</h3>
     {form.blockedPorts.map((port, index) => <div key={index} style={{ display: "flex", gap: 8 }}><Input aria-label={`Blocked port ${index + 1}`} type="number" value={String(port.port)} onChange={(_, data) => setForm({ ...form, blockedPorts: updateAt(form.blockedPorts, index, { ...port, port: Number(data.value) }) })} /><Select aria-label={`Blocked port protocol ${index + 1}`} value={port.protocol} onChange={(event) => setForm({ ...form, blockedPorts: updateAt(form.blockedPorts, index, { ...port, protocol: event.target.value as AgentPolicyProtocol }) })}><option>TCP</option><option>UDP</option><option>SCTP</option></Select><Button type="button" onClick={() => setForm({ ...form, blockedPorts: form.blockedPorts.filter((_, itemIndex) => itemIndex !== index) })}>Remove</Button></div>)}
     <Button type="button" onClick={() => setForm({ ...form, blockedPorts: [...form.blockedPorts, { port: 443, protocol: "TCP" }] })}>Add blocked port</Button>
     <InternalNetworkRules key={name || "__new__"} rules={form.allowedInternalCIDRs}
@@ -344,10 +344,10 @@ export function PolicyEditPage() {
     <Field label="Ingress mode"><Select value={form.ingressMode} onChange={(event) => setForm({ ...form, ingressMode: event.target.value as PolicyFormState["ingressMode"] })}><option value="authenticated">Authenticated</option><option value="disabled">Disabled</option></Select></Field>
     <Divider />
     <section aria-label="Read-only policy capabilities" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <Text weight="semibold">Read-only policy capabilities</Text>
+      <h2 className="portal-section-title">Read-only policy capabilities</h2>
       <Text size={200}>These values cannot be edited in the Portal. Saving other settings preserves them.</Text>
       <section aria-label="Kubernetes API access" style={{ display: "flex", flexDirection: "column", gap: 8, overflowWrap: "anywhere" }}>
-        <Text weight="semibold">Kubernetes API access</Text>
+        <h3 className="portal-subsection-title">Kubernetes API access</h3>
         <Text size={200}>Managed by your platform administrator. This policy records requested access; authorization is configured separately.</Text>
         {existing?.kubernetesAccess ? <>
           <Text>Service account: {existing.kubernetesAccess.serviceAccountName}</Text>
@@ -372,6 +372,6 @@ export function PolicyEditPage() {
       </MessageBar>
       <Button type="button" style={{ alignSelf: "flex-start" }} disabled={pending} onClick={reload}>Discard edits and reload</Button>
     </div>}
-    <div style={{ display: "flex", gap: 8 }}><Button appearance="primary" type="submit" disabled={pending || needsReload}>{pending ? "Saving..." : isCreate ? "Create" : "Save"}</Button><Button appearance="secondary" type="button" onClick={() => navigate("/admin/policies")}>Cancel</Button></div>
+    <div className="portal-form-actions"><Button appearance="primary" type="submit" disabled={pending || needsReload}>{pending ? "Saving..." : isCreate ? "Create" : "Save"}</Button><Button appearance="secondary" type="button" onClick={() => navigate("/admin/policies")}>Cancel</Button></div>
   </form>;
 }

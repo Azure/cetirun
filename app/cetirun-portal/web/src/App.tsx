@@ -18,28 +18,14 @@ import { PolicyEditPage } from "./pages/admin/PolicyEditPage";
 import { SkillMarketplacePage } from "./pages/admin/SkillMarketplacePage";
 import { InstanceListPage as AdminInstanceListPage } from "./pages/admin/InstanceListPage";
 import { InstanceDetailPage as AdminInstanceDetailPage } from "./pages/admin/InstanceDetailPage";
-import "./components/Layout.css";
+import "./styles/portal.css";
 
 export default function App() {
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        height: "100dvh",
-        overflow: "hidden",
-      }}
-    >
+    <div className="portal-app">
       <Header />
       <NoticeBanner />
-      <div
-        style={{
-          flex: 1,
-          overflow: "hidden",
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
+      <div className="portal-main">
         <Routes>
           <Route path="/" element={<InstanceListPage />} />
           <Route path="/connections" element={<ConnectedServicesPage />} />

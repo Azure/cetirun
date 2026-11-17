@@ -91,7 +91,7 @@ export function TeamSkillsSection({ value, onChange, allowed, catalog }: {
   const count = new Set(value).size;
   return (
     <section aria-label="Team skills" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <Text size={400} weight="semibold">Skills</Text>
+      <h2 className="portal-section-title">Skills</h2>
       <Text size={300}>
         Choose the skills the Team's Agents get from the Skill Marketplace. The Team's Agent Policy must allow each skill.
       </Text>
