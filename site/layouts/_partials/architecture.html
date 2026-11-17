@@ -1,0 +1,69 @@
+<!--
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT License.
+-->
+{{- /* The layers of the platform, from the Portal down to Kubernetes. */ -}}
+<svg viewBox="0 0 380 364" role="img" aria-labelledby="cr-bp-title cr-bp-desc">
+  <title id="cr-bp-title">Architecture of CetiRun</title>
+  <desc id="cr-bp-desc">Users open the Portal. The Portal uses the control plane, which has the operator, the Skill Marketplace, governance, and Agent Identity. The control plane manages the Agents of Team A and Team B. Team A has a Hermes Agent and Team B has an OpenClaw Agent. Each Agent can have a GitHub Copilot proxy. The two Agents call the model providers through the shared AI Gateway. CetiAdmin, observability, and Helm charts support the platform. All components run on Kubernetes.</desc>
+  <defs>
+    <pattern id="cr-bp-grid" width="16" height="16" patternUnits="userSpaceOnUse">
+      <circle class="cr-bp-dot" cx="8" cy="8" r=".75"/>
+    </pattern>
+  </defs>
+  <rect width="380" height="364" fill="url(#cr-bp-grid)"/>
+
+  <rect class="cr-bp-cell" x="16" y="16" width="348" height="32" rx="8"/>
+  <text x="190" y="36.3">Portal</text>
+
+  <path class="cr-bp-control" d="M190 48V64"/>
+  <path class="cr-bp-head cr-bp-head--control" d="M186.5 59 190 64l3.5-5"/>
+  <rect class="cr-bp-frame" x="16" y="64" width="348" height="94" rx="10"/>
+  <text class="cr-bp-label cr-bp-label--frame" x="26" y="81">Control plane</text>
+  <rect class="cr-bp-cell" x="24" y="88" width="162" height="28" rx="6"/>
+  <text x="105" y="106.3">Operator</text>
+  <rect class="cr-bp-cell" x="194" y="88" width="162" height="28" rx="6"/>
+  <text x="275" y="106.3">Skill Marketplace</text>
+  <rect class="cr-bp-cell" x="24" y="122" width="162" height="28" rx="6"/>
+  <text x="105" y="140.3">Governance</text>
+  <rect class="cr-bp-cell" x="194" y="122" width="162" height="28" rx="6"/>
+  <text x="275" y="140.3">Agent Identity</text>
+
+  <path class="cr-bp-control" d="M72 158V174"/>
+  <path class="cr-bp-head cr-bp-head--control" d="M68.5 169 72 174l3.5-5"/>
+  <rect class="cr-bp-frame cr-bp-frame--boundary" x="16" y="174" width="112" height="100" rx="10"/>
+  <text class="cr-bp-label cr-bp-label--frame" x="26" y="191">Team A</text>
+  <rect class="cr-bp-cell cr-bp-cell--path" x="24" y="198" width="96" height="32" rx="6"/>
+  <text x="72" y="218.3">Hermes</text>
+  <rect class="cr-bp-cell cr-bp-cell--option" x="24" y="242" width="96" height="24" rx="6"/>
+  <text class="cr-bp-label" x="72" y="257.8">Copilot proxy</text>
+
+  <path class="cr-bp-control" d="M308 158V174"/>
+  <path class="cr-bp-head cr-bp-head--control" d="M304.5 169 308 174l3.5-5"/>
+  <rect class="cr-bp-frame cr-bp-frame--boundary" x="252" y="174" width="112" height="100" rx="10"/>
+  <text class="cr-bp-label cr-bp-label--frame" x="262" y="191">Team B</text>
+  <rect class="cr-bp-cell cr-bp-cell--path" x="260" y="198" width="96" height="32" rx="6"/>
+  <text x="308" y="218.3">OpenClaw</text>
+  <rect class="cr-bp-cell cr-bp-cell--option" x="260" y="242" width="96" height="24" rx="6"/>
+  <text class="cr-bp-label" x="308" y="257.8">Copilot proxy</text>
+
+  <path class="cr-bp-flow" d="M120 214H140"/>
+  <path class="cr-bp-head" d="M135 210.5 140 214l-5 3.5"/>
+  <path class="cr-bp-flow" d="M260 214H240"/>
+  <path class="cr-bp-head" d="M245 210.5 240 214l5 3.5"/>
+  <rect class="cr-bp-cell cr-bp-cell--path" x="140" y="198" width="100" height="32" rx="6"/>
+  <text x="190" y="218.3">AI Gateway</text>
+  <path class="cr-bp-flow" d="M190 230V244"/>
+  <path class="cr-bp-head" d="M186.5 239 190 244l3.5-5"/>
+  <text x="190" y="258.3">Model providers</text>
+
+  <rect class="cr-bp-cell" x="16" y="284" width="108" height="24" rx="6"/>
+  <text class="cr-bp-label" x="70" y="299.8">CetiAdmin</text>
+  <rect class="cr-bp-cell" x="136" y="284" width="108" height="24" rx="6"/>
+  <text class="cr-bp-label" x="190" y="299.8">Observability</text>
+  <rect class="cr-bp-cell" x="256" y="284" width="108" height="24" rx="6"/>
+  <text class="cr-bp-label" x="310" y="299.8">Helm charts</text>
+
+  <rect class="cr-bp-cell" x="16" y="316" width="348" height="32" rx="8"/>
+  <text x="190" y="336.3">Kubernetes</text>
+</svg>

@@ -3,73 +3,77 @@
 Copyright (c) Microsoft Corporation.
 Licensed under the MIT License.
 -->
+{{ $chevron := `<svg class="cr-chevron" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6 3.5 10.5 8 6 12.5"/></svg>` | safeHTML }}
 <div class="cr-home">
   <section class="cr-hero" aria-labelledby="hero-title">
-    <div class="cr-hero-copy">
-      <p class="cr-eyebrow">Open source · Runs on AKS · Your Azure subscription</p>
-      <h1 id="hero-title">Your agents.<br>Your <em>infrastructure.</em></h1>
-      <p class="cr-mission">{{ .Description }}</p>
-      <p class="cr-lead">Give each person in your organization long-lived AI agents for software development, code review, incident investigation, and knowledge discovery. CetiRun runs OpenClaw, Hermes, and your own agent images, each with a private, persistent HOME.</p>
-      <div class="cr-actions">
-        <a class="cr-button cr-primary" href="{{ "docs/getting-started/" | relURL }}">Get started <span aria-hidden="true">→</span></a>
-        <a class="cr-button" href="{{ "docs/overview/" | relURL }}">Explore the platform <span aria-hidden="true">→</span></a>
-      </div>
-      <p class="cr-caption">CetiRun runs on Azure Kubernetes Service (AKS). Your platform team installs and operates it in your own Azure subscription.</p>
-    </div>
-    <div class="cr-hero-art">
-      <img src="{{ "images/logo.jpg" | relURL }}" alt="CetiRun logo: an orbit around a blue C and an agent robot" width="1254" height="1254" fetchpriority="high">
-      <div class="cr-art-caption"><span class="cr-dot" aria-hidden="true"></span> A shared platform. A private HOME for each Agent.</div>
-    </div>
-  </section>
-  <section class="cr-paths" aria-labelledby="paths-title">
-    <div class="cr-section-heading">
-      <p class="cr-eyebrow">Find your starting point</p>
-      <h2 id="paths-title">For engineers. For platform teams.</h2>
-    </div>
-    <div class="cr-grid">
-      <a class="cr-card" href="{{ "docs/getting-started/first-instance/" | relURL }}">
-        <span class="cr-card-number" aria-hidden="true">01 / BUILD</span>
-        <h3>An AI partner for engineers</h3>
-        <p>Gather context and do tasks with an Agent that keeps its files and memory between sessions.</p>
-        <span class="cr-card-link">Create your first Agent <span aria-hidden="true">→</span></span>
-      </a>
-      <a class="cr-card" href="{{ "docs/getting-started/platform/" | relURL }}">
-        <span class="cr-card-number" aria-hidden="true">02 / OPERATE</span>
-        <h3>A foundation for platform teams</h3>
-        <p>Install CetiRun on AKS. Give every Agent its own model key and budget, and control the agent types, skills, and network access of policy-bound Teams.</p>
-        <span class="cr-card-link">Install CetiRun <span aria-hidden="true">→</span></span>
-      </a>
-      <a class="cr-card" href="{{ "docs/guides/agent-identity/" | relURL }}">
-        <span class="cr-card-number" aria-hidden="true">03 / EXTEND</span>
-        <h3>Your tools and accounts</h3>
-        <p>Connect Agents to GitHub, Google, and Azure. The platform keeps the credentials, so the Agents do not receive them.</p>
-        <span class="cr-card-link">Agent connections <span aria-hidden="true">→</span></span>
-      </a>
-    </div>
-  </section>
-  <section class="cr-foundation" aria-labelledby="foundation-title">
     <div>
-      <p class="cr-eyebrow">Existing agents. Shared controls.</p>
+      <img class="cr-hero-logo" src="{{ ((resources.Get "images/logo.jpg").Fit "384x384 q85").RelPermalink }}" alt="CetiRun logo: an orbit around a blue C and an agent robot" width="112" height="112">
+      <h1 id="hero-title">Your agents.<br>Your infrastructure.</h1>
+      <p class="cr-hero-mission">{{ .Description }}</p>
+      <p class="cr-hero-lead">Give each person in your organization long-lived AI agents for software development, code review, incident investigation, and knowledge discovery. CetiRun runs OpenClaw, Hermes, and your own agent images, each with a private, persistent HOME.</p>
+      <div class="cr-actions">
+        <a class="cr-button cr-button--primary" href="{{ "docs/getting-started/" | relURL }}">Get started</a>
+        <a class="cr-button" href="{{ "docs/overview/" | relURL }}">Explore the platform</a>
+      </div>
+      <p class="cr-note">CetiRun runs on Azure Kubernetes Service (AKS). Your platform team installs and operates it in your own Azure subscription.</p>
+    </div>
+    <figure class="cr-blueprint">
+      <div class="cr-blueprint-sheet">{{ partial "architecture.html" . }}</div>
+      <figcaption>A shared platform. A private HOME for each Agent.</figcaption>
+    </figure>
+  </section>
+  <section class="cr-section" aria-labelledby="paths-title">
+    <h2 id="paths-title">Find your starting point</h2>
+    <div class="cr-routes">
+      <div class="cr-route">
+        <div class="cr-route-text">
+          <h3>An AI partner for engineers</h3>
+          <p>Gather context and do tasks with an Agent that keeps its files and memory between sessions.</p>
+        </div>
+        <a class="cr-route-link" href="{{ "docs/getting-started/first-instance/" | relURL }}">Create your first Agent</a>
+        {{ $chevron }}
+      </div>
+      <div class="cr-route">
+        <div class="cr-route-text">
+          <h3>A foundation for platform teams</h3>
+          <p>Install CetiRun on AKS. Give every Agent its own model key and budget, and control the agent types, skills, and network access of policy-bound Teams.</p>
+        </div>
+        <a class="cr-route-link" href="{{ "docs/getting-started/platform/" | relURL }}">Install CetiRun</a>
+        {{ $chevron }}
+      </div>
+      <div class="cr-route">
+        <div class="cr-route-text">
+          <h3>Your tools and accounts</h3>
+          <p>Connect Agents to GitHub, Google, and Azure. The platform keeps the credentials, so the Agents do not receive them.</p>
+        </div>
+        <a class="cr-route-link" href="{{ "docs/guides/agent-identity/" | relURL }}">Agent connections</a>
+        {{ $chevron }}
+      </div>
+    </div>
+  </section>
+  <section class="cr-section cr-foundation" aria-labelledby="foundation-title">
+    <div class="cr-foundation-copy">
       <h2 id="foundation-title">Native agents.<br>Shared platform controls.</h2>
       <p>CetiRun runs agents that already exist, for example OpenClaw and Hermes, and your own agent images. It does not add a new reasoning framework.</p>
       <p>OAuth2 Proxy signs users in with Microsoft Entra ID. When each user has a unique alias, the ingress gateway lets only the owner open an Agent. CetiAdmin, an operations Agent that the operator installs by default, can read the Secrets of each standard Agent and run commands in its Pod.</p>
-      <p class="cr-caption">Isolation depends on the RuntimeClass, the network policies, and the Sandbox of each Agent. <a href="{{ "docs/security/#workload-isolation" | relURL }}">Read about workload isolation.</a></p>
-      <a class="cr-text-link" href="{{ "docs/concepts/architecture/" | relURL }}">Understand the architecture <span aria-hidden="true">→</span></a>
+      <p class="cr-note">Isolation depends on the RuntimeClass, the network policies, and the Sandbox of each Agent. <a href="{{ "docs/security/#workload-isolation" | relURL }}">Read about workload isolation.</a></p>
+      <p><a href="{{ "docs/concepts/architecture/" | relURL }}">Understand the architecture</a></p>
     </div>
-    <ul class="cr-flow" aria-label="Platform responsibilities">
-      <li><span class="cr-flow-step" aria-hidden="true">D</span><div><h3>Deploy</h3><p>A namespace and a persistent HOME for each Agent, managed by the operator</p></div></li>
-      <li><span class="cr-flow-step" aria-hidden="true">G</span><div><h3>Govern</h3><p>AI Gateway keys, budgets, and routing for every Agent, and Agent Policies and Sandboxes for the Agents of policy-bound Teams</p></div></li>
-      <li><span class="cr-flow-step" aria-hidden="true">C</span><div><h3>Connect</h3><p>The Agent UI, chat, terminal, and desktop of each Agent, from a self-service Portal</p></div></li>
+    <ul class="cr-duties" aria-label="Platform responsibilities">
+      <li><h3>Deploy</h3><p>A namespace and a persistent HOME for each Agent, managed by the operator</p></li>
+      <li><h3>Govern</h3><p>AI Gateway keys, budgets, and routing for every Agent, and Agent Policies and Sandboxes for the Agents of policy-bound Teams</p></li>
+      <li><h3>Connect</h3><p>The Agent UI, chat, terminal, and desktop of each Agent, from a self-service Portal</p></li>
     </ul>
   </section>
-  <section class="cr-explore" aria-labelledby="explore-title">
+  <section class="cr-section" aria-labelledby="explore-title">
     <h2 id="explore-title">Browse the documentation</h2>
-    <div class="cr-quicklinks">
-      <a href="{{ "docs/user-guide/" | relURL }}">User Guide <span aria-hidden="true">→</span></a>
-      <a href="{{ "docs/operations/" | relURL }}">Operations <span aria-hidden="true">→</span></a>
-      <a href="{{ "docs/reference/" | relURL }}">Reference <span aria-hidden="true">→</span></a>
-      <a href="{{ "docs/contributing/" | relURL }}">Contributing <span aria-hidden="true">→</span></a>
-    </div>
+    <ul class="cr-index">
+      <li><a href="{{ "docs/overview/" | relURL }}">Overview</a><span>Learn what CetiRun does, its concepts, its architecture, and its security model</span></li>
+      <li><a href="{{ "docs/user-guide/" | relURL }}">User Guide</a><span>Create and use Agents on a deployment that already exists</span></li>
+      <li><a href="{{ "docs/operations/" | relURL }}">Operations</a><span>Install, configure, and troubleshoot a deployment</span></li>
+      <li><a href="{{ "docs/reference/" | relURL }}">Reference</a><span>Find resource fields, Helm values, and command options</span></li>
+      <li><a href="{{ "docs/contributing/" | relURL }}">Contributing</a><span>Change, test, and document CetiRun</span></li>
+    </ul>
   </section>
 </div>
 {{ end }}
