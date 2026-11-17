@@ -84,8 +84,10 @@ function toolNameOf(selector) {
 // them. A selector only inside args or input moves to the top. With a
 // non-empty args or input, the selector is id, toolId, or name, in this order.
 // Without them, OpenClaw takes the first of these whose value is in the tool
-// catalog of the run, which the transcript does not keep. So one selector, or
-// one catalog id among them, names the tool; otherwise only the result does.
+// catalog of the run, which the transcript does not keep; the form of a value,
+// such as a catalog id, does not show that the catalog has it. So such a call
+// is named only when all its selectors have the same value; otherwise only
+// the result names the tool.
 function toolCallTarget(value) {
   let params = argumentsObject(value);
   if (!params) return undefined;
@@ -103,9 +105,8 @@ function toolCallTarget(value) {
   }
   const values = TOOL_SELECTORS.map((key) => params[key]).filter((item) => item != null);
   const names = values.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim());
-  if (values.length === 1) return names.length === 1 ? toolNameOf(names[0]) : undefined;
-  const catalogIds = names.filter((item) => CATALOG_ID.test(item));
-  return catalogIds.length === 1 ? toolNameOf(catalogIds[0]) : undefined;
+  if (names.length === 0 || names.length !== values.length) return undefined;
+  return names.every((name) => name === names[0]) ? toolNameOf(names[0]) : undefined;
 }
 
 // The tool that a tool_call result came from: OpenClaw keeps it in the

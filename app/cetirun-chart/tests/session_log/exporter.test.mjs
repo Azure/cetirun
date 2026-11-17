@@ -159,11 +159,23 @@ test("a flattened tool_call is named only when its tool does not depend on OpenC
       throughToolCall(5, { toolId: "openclaw:core:inspect_resource", id: "record-7" }),
       throughToolCall(6, { id: "inspect_resource", args: { id: "record-7" } }),
       throughToolCall(7, { args: { name: "inspect_resource", id: "record-7" } }),
+      // A catalog id does not show that the catalog has it. With only
+      // openclaw:core:inspect_resource in the catalog, OpenClaw runs
+      // inspect_resource for both, with the other value as its argument.
+      throughToolCall(8, { toolId: "inspect_resource", id: "mcp:docs:search_docs" }),
+      throughToolCall(9, { toolId: "inspect_resource", name: "mcp:docs:search_docs" }),
+      // Selectors with the same value select the same tool.
+      throughToolCall(10, { id: "inspect_resource", name: "inspect_resource", command: "list" }),
+      throughToolCall(11, { id: "openclaw:core:inspect_resource", toolId: "openclaw:core:inspect_resource" }),
+      // A selector that is not a string differs from the others.
+      throughToolCall(12, { id: "inspect_resource", toolId: 7 }),
     ],
   }), target, redact);
   assert.deepEqual(records.map((record) => [record.tool, record.via]), [
     ["inspect_resource", "tool_call"],
     ["tool_call", undefined], ["tool_call", undefined], ["tool_call", undefined], ["tool_call", undefined],
+    ["tool_call", undefined], ["inspect_resource", "tool_call"], ["tool_call", undefined],
+    ["tool_call", undefined], ["tool_call", undefined],
     ["inspect_resource", "tool_call"], ["inspect_resource", "tool_call"], ["tool_call", undefined],
   ]);
 });
