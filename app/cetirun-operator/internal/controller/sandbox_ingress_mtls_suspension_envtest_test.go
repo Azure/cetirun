@@ -7,19 +7,147 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
+	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+func TestInitialIngressMTLSSuspensionAPIServer(t *testing.T) {
+	ctrl.SetLogger(logr.Discard())
+	for _, scenario := range []string{"missing approval", "stale Portal client"} {
+		t.Run(scenario, func(t *testing.T) {
+			h := newNativeStartAPIHarnessWithRuntime(t, true, true, corev1.ReadWriteOnce, "custom", api.SandboxKata, nil)
+			installer := &nativeSandboxInstaller{kube: h.kube, chart: h.localHelm.chart}
+			h.installer = installer
+			h.r.HelmClient = &sharedSandboxInstaller{nativeSandboxInstaller: installer}
+			if _, err := h.r.reconcilePolicy(h.ctx, h.current(t)); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.r.bootstrapReconciledSandbox(h.ctx, h.current(t)); err != nil {
+				t.Fatal(err)
+			}
+			h.create(t, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: instanceNamespace(h.agent.Name)}})
+			h.create(t, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "platform"}})
+			h.create(t, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "portal-system"}})
+			current := h.current(t)
+			current.Spec.Agent.WebUI = false
+			if err := h.admin.Update(h.ctx, current); err != nil {
+				t.Fatal(err)
+			}
+			withCustomMTLS(t, false)(h.r, h.admin)
+			var approved []ingressmtls.Binding
+			updateContainerPlatformForTest(t, h.r, h.admin, func(document *SandboxPlatformConfiguration) {
+				registration := document.Platforms[api.SandboxKata].IngressMTLS
+				approved = append([]ingressmtls.Binding(nil), registration.Bindings...)
+				if scenario == "missing approval" {
+					registration.Bindings = []ingressmtls.Binding{}
+				} else {
+					registration.Bindings[0].ChatClients = append([]ingressmtls.ChatClient(nil), approved[0].ChatClients...)
+					registration.Bindings[0].ChatClients[0].Secret.UID = "wrong-portal-secret-uid"
+				}
+			})
+			policyReconciler := &AgentPolicyReconciler{Client: h.kube, APIReader: h.kube, Source: h.r.SandboxPreparation.Configuration, NativeExecution: true}
+			if _, err := policyReconciler.Reconcile(h.ctx, ctrl.Request{NamespacedName: client.ObjectKey{Name: "policy-example"}}); err != nil {
+				t.Fatal(err)
+			}
+			for range 4 {
+				if _, err := h.reconcile(); err != nil && !errors.Is(err, ingressmtls.ErrApprovalStale) {
+					t.Fatal(err)
+				}
+			}
+			current = h.current(t)
+			namespace := &corev1.Namespace{}
+			if err := h.admin.Get(h.ctx, client.ObjectKey{Name: instanceNamespace(current.Name)}, namespace); err != nil {
+				t.Fatal(err)
+			}
+			home := &corev1.PersistentVolumeClaim{}
+			homeKey := client.ObjectKey{Namespace: namespace.Name, Name: h.r.SandboxPreparation.bootstrap.HomeClaimName}
+			if err := h.admin.Get(h.ctx, homeKey, home); err != nil {
+				t.Fatal(err)
+			}
+			homeUID := home.UID
+			if err := h.admin.Get(h.ctx, client.ObjectKey{Namespace: h.r.OperatorNamespace,
+				Name: w.PodExpectationName(namespace.Name, namespace.UID)}, &corev1.ConfigMap{}); !apierrors.IsNotFound(err) {
+				t.Fatal("served initial enrollment created an execution expectation:", err)
+			}
+			before := current.DeepCopy()
+			current.Spec.Suspended = true
+			if err := h.member.Patch(h.ctx, current, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+				t.Fatal("member suspension rejected:", err)
+			}
+			for range 2 {
+				if _, err := h.reconcile(); err != nil && !errors.Is(err, ingressmtls.ErrApprovalStale) {
+					t.Fatal(err)
+				}
+			}
+			stopped := h.current(t)
+			if stopped.Status.Phase != api.PhaseSuspended || stopped.Status.ObservedGeneration != stopped.Generation {
+				t.Fatalf("served first-enrollment suspension was not acknowledged: %+v", stopped.Status)
+			}
+			reason := "IngressMTLSApprovalPending"
+			if scenario == "stale Portal client" {
+				reason = "IngressMTLSApprovalStale"
+			}
+			condition := apimeta.FindStatusCondition(stopped.Status.Conditions, api.ConditionIngressReady)
+			if condition == nil || condition.Reason != reason || condition.ObservedGeneration != stopped.Generation {
+				t.Fatalf("served initial suspension lost approval diagnosis: %+v", condition)
+			}
+			h.r = restartEntraReconciler(h.r)
+			for range 3 {
+				if _, err := h.reconcile(); err != nil && !errors.Is(err, ingressmtls.ErrApprovalStale) {
+					t.Fatal(err)
+				}
+				if h.current(t).ResourceVersion != stopped.ResourceVersion {
+					t.Fatal("served unchanged first-enrollment suspension changed resourceVersion")
+				}
+			}
+			before = stopped.DeepCopy()
+			stopped.Spec.Suspended = false
+			if err := h.member.Patch(h.ctx, stopped, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+				t.Fatal("member conditional resume rejected:", err)
+			}
+			for range 2 {
+				if _, err := h.reconcile(); err != nil && !errors.Is(err, ingressmtls.ErrApprovalStale) {
+					t.Fatal(err)
+				}
+			}
+			if h.current(t).Status.Phase != api.PhasePending || installer.stages != 0 {
+				t.Fatal("served resume bypassed first-enrollment approval")
+			}
+			updateContainerPlatformForTest(t, h.r, h.admin, func(document *SandboxPlatformConfiguration) {
+				document.Platforms[api.SandboxKata].IngressMTLS.Bindings = approved
+			})
+			for range 4 {
+				h.reconcileOK(t)
+			}
+			workload := h.workload(t)
+			workload.Status = appsv1.StatefulSetStatus{ObservedGeneration: workload.Generation, Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 1}
+			if err := h.admin.Status().Update(h.ctx, workload); err != nil {
+				t.Fatal(err)
+			}
+			h.reconcileOK(t)
+			if h.current(t).Status.Phase != api.PhaseReady {
+				t.Fatal("served explicit enrollment did not recover the same lifetime")
+			}
+			if err := h.admin.Get(h.ctx, homeKey, home); err != nil || home.UID != homeUID {
+				t.Fatal("served enrollment replaced HOME:", err)
+			}
+		})
+	}
+}
 
 func TestReconciledSandboxStaleIngressMTLSSuspensionAPIServer(t *testing.T) {
 	ctrl.SetLogger(logr.Discard())

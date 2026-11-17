@@ -1111,6 +1111,10 @@ func (r *AgentReconciler) reconciledSandboxFailure(ctx context.Context, agent *a
 	if currentErr == nil && !current {
 		return ctrl.Result{}, cause
 	}
+	if errors.Is(cause, errSandboxIngressMTLS) && errors.Is(cause, ingressmtls.ErrApprovalStale) {
+		result, holdErr := r.holdReconciledIngressMTLS(ctx, agent, cause)
+		return result, errors.Join(cause, currentErr, holdErr)
+	}
 	result, holdErr := r.holdPolicyDependencyUnavailable(ctx, agent)
 	return result, errors.Join(cause, currentErr, holdErr)
 }
@@ -1137,18 +1141,23 @@ func (r *AgentReconciler) holdReconciledSandboxBecause(ctx context.Context, agen
 }
 
 // holdReconciledIngressMTLS holds an Agent whose mTLS prerequisites failed.
-// A stale approval names the object so that an administrator can register
-// its current identity; other failures keep the generic hold status.
+// Pending and stale approvals keep their diagnosis, including before the
+// first workload. A stale approval names the object to re-register.
 func (r *AgentReconciler) holdReconciledIngressMTLS(ctx context.Context, agent *api.Agent, cause error) (ctrl.Result, error) {
-	if !errors.Is(cause, ingressmtls.ErrApprovalStale) {
+	if !errors.Is(cause, ingressmtls.ErrApprovalStale) && !errors.Is(cause, ingressmtls.ErrApprovalPending) {
 		return r.holdReconciledSandbox(ctx, agent)
 	}
 	_, reason, message := sandboxStatusFailure(cause)
 	if agent.Spec.Suspended {
 		return r.holdSuspendedIngressMTLS(ctx, agent, reason, message)
 	}
+	var blockErr error
+	if r.AIGateway.configured() && (errors.Is(cause, ingressmtls.ErrApprovalPending) || agent.Spec.Agent.Type == api.AgentTypeCustom) {
+		blockErr = r.beginAIGatewayPolicyReprojection(ctx, agent)
+	}
 	status := reconciledSandboxHoldStatus{phase: api.PhasePending, reason: reason, message: message}
-	return r.holdReconciledSandboxWithStatus(ctx, agent, status, status)
+	result, holdErr := r.holdReconciledSandboxWithStatus(ctx, agent, status, status)
+	return result, errors.Join(blockErr, holdErr)
 }
 
 type reconciledSandboxHoldStatus struct {

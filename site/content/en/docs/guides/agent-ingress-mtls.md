@@ -318,10 +318,30 @@ To change to the UID-only form, remove the `resourceVersion` fields and make
 the Secrets immutable. This changes the execution revision, so the Agent
 restarts one time.
 
-If an approval is stale, the Agent stays `Pending`, and its `Ready` and
-`SandboxReady` conditions have the reason `IngressMTLSApprovalStale`. The
+If an approval is stale and the Agent is not suspended, it stays `Pending`.
+Its `Ready` and `SandboxReady` conditions have the reason `IngressMTLSApprovalStale`. The
 condition message names the kind, the namespace, and the name of the stale
 object.
+
+A missing first certificate binding reports `IngressMTLSApprovalPending`.
+An authorized caller can request suspension through the Agent API while this
+binding is missing or stale, including after namespace and HOME bootstrap but
+before the first workload exists.
+The Operator acknowledges `Suspended` and the current generation only after
+verifying shutdown and access revocation. When no execution expectation exists,
+it also requires the complete owned bootstrap inventory, no preparation or
+grant history, no execution reservation, and no workloads or Pods. Missing or
+conflicting evidence keeps suspension `Pending`; workload absence alone is not
+proof that a previous submission stopped.
+
+After confirmed suspension, `Ready` and `PodReady` report `Suspended`, while
+`SandboxReady` and `IngressReady` retain the missing or stale approval diagnosis.
+Repeated checks do not rewrite unchanged status. Resume retains the same HOME
+but does not bypass enrollment: execution stays held until the administrator
+registers a current approval.
+
+The Portal's existing HOME check is unchanged. This status fix does not add
+Portal suspension for a bootstrap-completed Agent that has no workload yet.
 
 ## OpenClaw Control UI Portal sign-in
 

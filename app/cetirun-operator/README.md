@@ -227,6 +227,18 @@ reason `Suspended` on `Ready`, `PodReady`, `SandboxReady`, and `IngressReady`.
 An incomplete one reports the phase `Pending`, with the reason
 `SuspensionPending` on the same conditions.
 
+A managed-mTLS Agent can also acknowledge suspension after owned namespace and
+HOME bootstrap, while its first certificate approval is missing or stale.
+Without an execution expectation, this requires a complete current bootstrap
+inventory, no prior execution/preparation/grant evidence, no native reservation,
+no workloads or Pods, and withdrawn public ingress. An existing expectation
+still uses the recorded shutdown proof; absent workloads alone never cancel an
+uncertain submission. `Ready` and `PodReady` report `Suspended` at the current
+generation, while `SandboxReady` and `IngressReady` retain
+`IngressMTLSApprovalPending` or `IngressMTLSApprovalStale`. Repeated observations
+do not rewrite unchanged status. Resume preserves HOME and remains held until
+current certificate approval is supplied.
+
 The current AI Gateway reconciliation also removes the per-Agent Copilot token
 and proxy-key Secrets during explicit suspension. Suspension keeps HOME and the
 AI Gateway spend, but it does not keep the Copilot sign-in. The owner must sign
