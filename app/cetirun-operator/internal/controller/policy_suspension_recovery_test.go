@@ -291,7 +291,7 @@ func TestPolicyDeniedSuspensionWaitsForGatewayBlock(t *testing.T) {
 
 	current = f.current(t)
 	if current.Status.Phase != api.PhasePending || current.Status.AIGateway == nil ||
-		current.Status.AIGateway.Reason != aiGatewayReasonPolicyReprojection || current.Status.AIGateway.KeyID == "" {
+		current.Status.AIGateway.Reason != aiGatewayReasonSuspended || current.Status.AIGateway.KeyID == "" {
 		t.Fatalf("failed policy block did not remain pending with its identity: phase=%s gateway=%+v", current.Status.Phase, current.Status.AIGateway)
 	}
 	if len(f.gateway.keys) != 1 || len(f.gateway.generated) != 1 {
@@ -328,7 +328,7 @@ func TestPolicyDeniedSuspensionWaitsForWorkloadStop(t *testing.T) {
 
 	current = f.current(t)
 	if current.Status.Phase != api.PhasePending || current.Status.AIGateway == nil ||
-		current.Status.AIGateway.Reason != aiGatewayReasonPolicyReprojection || current.Status.AIGateway.KeyID == "" {
+		current.Status.AIGateway.Reason != aiGatewayReasonSuspended || current.Status.AIGateway.KeyID == "" {
 		t.Fatalf("failed workload stop incorrectly completed suspension: phase=%s gateway=%+v", current.Status.Phase, current.Status.AIGateway)
 	}
 	condition := apimeta.FindStatusCondition(current.Status.Conditions, api.ConditionPodReady)
