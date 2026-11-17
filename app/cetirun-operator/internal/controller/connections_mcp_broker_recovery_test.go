@@ -276,24 +276,29 @@ func TestReconcileConnectionsMCPBrokerRejectsUnverifiableNamespaceWithoutMutatio
 	}
 }
 
-func TestReconcileConnectionsMCPBrokerRoleNotFoundDoesNotTriggerNamespaceRecovery(t *testing.T) {
+func TestReconcileConnectionsMCPBrokerRoleReadbackNotFoundDoesNotTriggerNamespaceRecovery(t *testing.T) {
 	instance := connectionsMCPBrokerRecoveryAgent(api.PhaseReady)
 	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
 		Name: instanceNamespace(instance.Name), OwnerReferences: connectionsMCPBrokerOwner(instance),
 	}}
 	reconciler, kube := newConnectionsMCPBrokerRecoveryReconciler(t, instance, namespace)
 	setConnectionsMCPBrokerRecoveryHash(t, kube, instance, reconciler, "")
+	role, _ := reconciler.desiredConnectionsMCPBrokerRBAC(instance)
+	if err := kube.Create(context.Background(), role); err != nil {
+		t.Fatal(err)
+	}
 	roleReads := 0
 	reconciler.Client = interceptor.NewClient(kube, interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
 			if _, isRole := object.(*rbacv1.Role); isRole && key.Name == connectionsMCPBrokerRoleName {
 				roleReads++
-				// Simulate a cache that still cannot observe the newly created Role.
+				// AlreadyExists with unavailable authoritative readback is not a missing namespace.
 				return apierrors.NewNotFound(schema.GroupResource{Group: rbacv1.GroupName, Resource: "roles"}, key.Name)
 			}
 			return c.Get(ctx, key, object, options...)
 		},
 	})
+	reconciler.APIReader = reconciler.Client
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(instance)}); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
