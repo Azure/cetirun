@@ -47,7 +47,7 @@ func TestMiddlewareUsesPortalOnlyIdentityTokenHeader(t *testing.T) {
 	tenant := "11111111-1111-1111-1111-111111111111"
 	client := "22222222-2222-2222-2222-222222222222"
 	object := "33333333-3333-3333-3333-333333333333"
-	verifier, err := NewOIDCVerifier(tenant, client)
+	verifier, err := NewOIDCVerifier(tenant, client, "AzureCloud")
 	if err != nil {
 		t.Fatal(err)
 	}

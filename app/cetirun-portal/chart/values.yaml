@@ -1,3 +1,6 @@
+# -- Entra cloud for Portal ID-token verification. Match the separate Istio chart.
+cloud: AzureCloud
+
 # -- Shared release coordinates. An umbrella chart can set these once for all
 # CetiRun subcharts.
 global:

@@ -89,7 +89,7 @@ func main() {
 	// rejects an incomplete configured identity at startup.
 	var oidcVerifier *auth.OIDCVerifier
 	if cfg.AgentIdentityEnabled || cfg.AgentToolsEnabled || cfg.EntraTenantID != "" || cfg.PortalClientID != "" {
-		oidcVerifier, err = auth.NewOIDCVerifier(cfg.EntraTenantID, cfg.PortalClientID)
+		oidcVerifier, err = auth.NewOIDCVerifier(cfg.EntraTenantID, cfg.PortalClientID, cfg.AzureCloud)
 		if err != nil {
 			slog.Error("Invalid Portal OIDC configuration", "error", err)
 			os.Exit(1)

@@ -31,6 +31,12 @@ repository root. The `lint` target in this Makefile does not work. Refer to
 
 ## Use
 
+For Azure China, set `cloud: AzureChinaCloud` in the Portal chart values
+(`cetirun-portal.cloud` in the platform chart), matching the separate Istio
+chart's `cloud` setting. The backend reads `AZURE_CLOUD` and defaults to
+`AzureCloud`. It uses the selected cloud's Entra issuer and signing keys;
+tenant, audience, signature, and token lifetime checks remain required.
+
 For the user tasks, refer to the
 [User Guide](../../site/content/en/docs/user-guide/_index.md). For the
 installation, refer to

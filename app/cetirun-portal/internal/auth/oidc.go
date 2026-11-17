@@ -75,16 +75,24 @@ type OIDCVerifier struct {
 	refreshGeneration uint64
 }
 
-func NewOIDCVerifier(tenantID, clientID string) (*OIDCVerifier, error) {
+func NewOIDCVerifier(tenantID, clientID, cloud string) (*OIDCVerifier, error) {
 	if !canonicalID.MatchString(tenantID) || !canonicalID.MatchString(clientID) {
 		return nil, errors.New("OIDC tenant and client IDs must be UUIDs")
 	}
-	issuer := "https://login.microsoftonline.com/" + tenantID + "/v2.0"
+	var authority string
+	switch cloud {
+	case "AzureCloud":
+		authority = "https://login.microsoftonline.com/"
+	case "AzureChinaCloud":
+		authority = "https://login.partner.microsoftonline.cn/"
+	default:
+		return nil, errors.New("OIDC cloud must be AzureCloud or AzureChinaCloud")
+	}
 	return &OIDCVerifier{
 		tenantID: tenantID,
 		clientID: clientID,
-		issuer:   issuer,
-		jwksURL:  "https://login.microsoftonline.com/" + tenantID + "/discovery/v2.0/keys",
+		issuer:   authority + tenantID + "/v2.0",
+		jwksURL:  authority + tenantID + "/discovery/v2.0/keys",
 		client:   &http.Client{Timeout: 10 * time.Second},
 		keys:     map[string]*rsa.PublicKey{},
 	}, nil
