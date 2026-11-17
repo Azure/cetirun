@@ -1,0 +1,8 @@
+<!--
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT License.
+-->
+{{- /* The pages write a warning as a quotation that opens with a bold "Warning:" label. */ -}}
+<blockquote class="cr-callout{{ if findRE `^\s*<p><strong>Warning:?</strong>` .Text 1 }} cr-callout--warning{{ end }}">
+  {{ .Text }}
+</blockquote>

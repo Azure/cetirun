@@ -196,6 +196,113 @@ class ContentTests(unittest.TestCase):
             [],
         )
 
+    # A light and a dark palette that pass each rule. A test changes one color
+    # of one theme, so a rule that reads the other theme does not pass.
+    LIGHT, DARK = ":root", 'html[data-bs-theme="dark"]'
+    PALETTES = {
+        LIGHT: {
+            "bg": "#ffffff",
+            "panel": "#ffffff",
+            "soft": "#eeeeee",
+            "text": "#111111",
+            "muted": "#555555",
+            "border": "#dddddd",
+            "link": "#0000aa",
+            "link-hover": "#000066",
+            "accent": "#111111",
+            "on-accent": "#ffffff",
+            "warning-bg": "#fff4d6",
+            "warning-text": "#663c00",
+            "code-value": "#00308f",
+        },
+        DARK: {
+            "bg": "#000000",
+            "panel": "#111111",
+            "soft": "#1a1a1a",
+            "text": "#eeeeee",
+            "muted": "#aaaaaa",
+            "border": "#222222",
+            "link": "#99bbff",
+            "link-hover": "#ffffff",
+            "accent": "#eeeeee",
+            "on-accent": "#111111",
+            "warning-bg": "#2a2110",
+            "warning-text": "#f2c36b",
+            "code-value": "#9fc1ff",
+        },
+    }
+
+    def styles_with(self, theme: str | None = None, **changes: str) -> list[str]:
+        """Check generated styles: the passing palettes, with tokens of one theme changed.
+
+        The Bootstrap variables keep the colors of the passing palettes.
+        """
+        changed = {name.replace("_", "-"): color for name, color in changes.items()}
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        path = Path(temp.name) / "_styles_project.scss"
+        path.write_text(
+            "".join(
+                f"{name} {{\n"
+                + "".join(
+                    f"  --cr-{token}: {color};\n"
+                    for token, color in (palette | (changed if name == theme else {})).items()
+                )
+                + "}\n"
+                for name, palette in self.PALETTES.items()
+            )
+            + ":focus-visible {} .cr-skip:focus {}\n"
+            + "@media (max-width: 767px) {} @media (prefers-reduced-motion: reduce) {}\n"
+        )
+        path.with_name("_variables_project.scss").write_text(
+            "".join(
+                f"${variable}{suffix}: {palette[token]};\n"
+                for suffix, palette in zip(("", "-dark"), self.PALETTES.values())
+                for variable, token in check_site.BOOTSTRAP_COLORS.items()
+            )
+        )
+        return check_site.check_styles(path)
+
+    def test_generated_palettes_pass(self):
+        self.assertEqual(self.styles_with(), [])
+
+    def test_warning_label_must_be_readable_on_its_background(self):
+        self.assertEqual(
+            self.styles_with(self.LIGHT, warning_text="#a87900"),
+            [f"{self.LIGHT}: insufficient warning-text/warning-bg contrast"],
+        )
+
+    def test_text_and_links_must_be_readable_in_a_warning(self):
+        self.assertEqual(
+            self.styles_with(self.LIGHT, warning_bg="#7a4a00"),
+            [
+                f"{self.LIGHT}: insufficient {text}/warning-bg contrast"
+                for text in ("text", "link", "warning-text")
+            ],
+        )
+
+    def test_code_values_must_be_readable_in_a_code_block(self):
+        value = "#7e7e7e"
+        dark = self.PALETTES[self.DARK]
+        # The color is readable on the page, but not on the surface of a code block.
+        self.assertGreaterEqual(check_site.contrast(value, dark["panel"]), 4.5)
+        self.assertLess(check_site.contrast(value, dark["soft"]), 4.5)
+        self.assertEqual(
+            self.styles_with(self.DARK, code_value=value),
+            [f"{self.DARK}: insufficient code-value/soft contrast"],
+        )
+
+    def test_bootstrap_colors_must_equal_the_tokens(self):
+        # The changed colors stay readable, so the difference is the only finding.
+        self.assertEqual(
+            self.styles_with(self.LIGHT, muted="#444444"),
+            [f"{self.LIGHT}: $body-secondary-color is not the --cr-muted color"],
+        )
+        self.assertEqual(
+            self.styles_with(self.DARK, border="#333333"),
+            [f"{self.DARK}: $border-color-dark is not the --cr-border color"],
+        )
+
     def test_current_content_and_pointers(self):
         policy_root = os.environ.get("CETIRUN_POLICY_ROOT")
         self.assertEqual(

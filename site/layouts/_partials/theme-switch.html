@@ -1,0 +1,20 @@
+<!--
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT License.
+-->
+{{ $modes := slice
+  (dict "value" "auto" "label" "System" "icon" `<rect x="2" y="3" width="12" height="8.5" rx="1.5"/><path d="M8 11.5v2M5.75 13.5h4.5"/>`)
+  (dict "value" "light" "label" "Light" "icon" `<circle cx="8" cy="8" r="2.75"/><path d="M8 1.5V3M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.05 1.05M11.55 11.55l1.05 1.05M3.4 12.6l1.05-1.05M11.55 4.45l1.05-1.05"/>`)
+  (dict "value" "dark" "label" "Dark" "icon" `<path d="M13.25 9.75a5.75 5.75 0 0 1-7-7 5.75 5.75 0 1 0 7 7z"/>`)
+}}
+<div class="cr-theme" role="radiogroup" aria-label="Theme">
+  {{ range $modes }}
+    <label class="cr-theme-option" title="{{ .label }} theme">
+      <input type="radio" name="cr-theme" value="{{ .value }}" aria-label="{{ .label }}">
+      <span>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">{{ .icon | safeHTML }}</svg>
+      </span>
+    </label>
+  {{ end }}
+</div>

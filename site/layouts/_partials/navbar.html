@@ -2,17 +2,19 @@
 Copyright (c) Microsoft Corporation.
 Licensed under the MIT License.
 -->
-{{ $current := . }}
 {{ $module := partial "navigation-module.html" . }}
-<nav class="td-navbar cr-navbar" aria-label="Main navigation">
-  <div class="cr-navbar-inner">
-    <a class="navbar-brand" href="{{ site.Home.RelPermalink }}">{{ site.Title }}</a>
-    <ul class="cr-top-links">
+<div class="cr-topbar">
+  <a class="cr-brand" href="{{ site.Home.RelPermalink }}">
+    <img src="{{ ((resources.Get "images/logo.jpg").Fit "96x96 q85").RelPermalink }}" alt="" width="30" height="30">
+    {{ site.Title }}
+  </a>
+  <nav class="cr-nav" aria-label="Main navigation">
+    <ul>
       {{ range site.Menus.main }}
         {{ if .Page }}
         {{ $active := eq .Identifier ($module.id | default "") }}
         <li>
-          <a class="nav-link{{ if $active }} active{{ end }}" href="{{ .Page.RelPermalink }}" data-nav-top="{{ .Identifier }}"
+          <a class="cr-nav-link" href="{{ .Page.RelPermalink }}" data-nav-top="{{ .Identifier }}"
             {{ if $active }}aria-current="true"{{ end }}>
             {{ .Name }}
           </a>
@@ -20,18 +22,20 @@ Licensed under the MIT License.
         {{ end }}
       {{ end }}
     </ul>
+  </nav>
+  <div class="cr-topbar-tools">
+    <div class="cr-topbar-search d-none d-lg-block">
+      {{ partial "search-input.html" . }}
+    </div>
+    {{ partial "theme-switch.html" . }}
     {{ range site.Menus.main }}
       {{ if not .Page }}
-        <a class="cr-repository-link" href="{{ .URL }}" data-nav-top="{{ .Identifier }}"
+        <a class="cr-icon-link" href="{{ .URL }}" data-nav-top="{{ .Identifier }}"
           title="{{ .Name }} (opens in a new tab)" target="_blank" rel="noopener noreferrer">
-          <i class="fa-brands fa-github" aria-hidden="true"></i>
+          {{ replace (resources.Get "icons/github.svg").Content "<svg " `<svg aria-hidden="true" focusable="false" ` | safeHTML }}
           <span class="visually-hidden">{{ .Name }}</span>
         </a>
       {{ end }}
     {{ end }}
-    <div class="cr-theme-toggle">{{ partial "theme-toggler" $current }}</div>
-    <div class="td-navbar__search d-none d-lg-block">
-      {{ partial "search-input.html" . }}
-    </div>
   </div>
-</nav>
+</div>

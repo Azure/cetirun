@@ -1,10 +1,48 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
-$primary: #073956;
-$secondary: #075b78;
-$enable-gradients: false;
-$enable-rounded: true;
+
+// Bootstrap and Docsy read these values at build time. The colors that follow
+// the theme at run time are the --cr-* properties in _styles_project.scss. The
+// site check makes sure that the colors here are the same.
+
+// The text and the display cut of the system font, then one fallback list.
+$cr-font-system: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", "Noto Sans", "Liberation Sans", Arial, sans-serif;
+$cr-font-display: join(("Segoe UI Variable Display",), $cr-font-system);
+
+$font-family-sans-serif: join(("Segoe UI Variable Text",), $cr-font-system);
+$font-family-monospace: "Cascadia Code", "Cascadia Mono", Consolas, "SF Mono", Menlo, "Noto Sans Mono", "DejaVu Sans Mono", "Liberation Mono", ui-monospace, monospace;
+$headings-font-family: $cr-font-display;
+$headings-font-weight: 650;
+$line-height-base: 1.6;
+
 $google_font_name: "";
 $google_font_family: "";
 $td-enable-google-fonts: false;
-$font-family-sans-serif: system-ui, -apple-system, "Segoe UI", sans-serif;
+
+$primary: #1a1a1a;
+$secondary: #5d5d5d;
+$body-bg: #ffffff;
+$body-color: #1a1a1a;
+$body-secondary-color: #5d5d5d;
+$body-tertiary-bg: #f3f3f3;
+$border-color: #ebebeb;
+$link-color: #1a1a1a;
+$link-hover-color: #000000;
+$code-color: $body-color;
+
+$body-bg-dark: #000000;
+$body-color-dark: #e8e8e8;
+$body-secondary-color-dark: #a8a8a8;
+$body-tertiary-bg-dark: #1c1c1c;
+$border-color-dark: #232323;
+$link-color-dark: #e8e8e8;
+$link-hover-color-dark: #ffffff;
+$code-color-dark: $body-color-dark;
+
+$enable-gradients: false;
+$enable-rounded: true;
+$border-radius-sm: .1875rem;
+$border-radius-lg: .625rem;
+
+// The height of the top bar. Docsy derives the anchor scroll offset from it.
+$td-navbar-min-height: 3.5rem;

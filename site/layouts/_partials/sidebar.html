@@ -5,26 +5,25 @@ Licensed under the MIT License.
 {{ $current := . }}
 {{ with partial "navigation-module.html" . }}
   {{ $module := . }}
-  <div id="td-sidebar-menu" class="td-sidebar__inner cr-module-sidebar">
-    <form class="td-sidebar__search d-flex align-items-center">
+  <div id="td-sidebar-menu" class="cr-side">
+    <form class="d-flex d-lg-none align-items-center">
       {{ partial "search-input.html" $current }}
       <button class="btn btn-link td-sidebar__toggle" type="button"
         data-bs-toggle="collapse" data-bs-target="#td-section-nav"
         aria-controls="td-section-nav" aria-expanded="false"
         aria-label="Toggle {{ .title }} navigation"></button>
     </form>
-    <nav class="td-sidebar-nav collapse" id="td-section-nav"
+    <nav class="collapse d-md-block" id="td-section-nav"
       aria-label="{{ .title }} navigation" data-nav-module="{{ .id }}">
-      <p class="cr-module-label">{{ .title }}</p>
       {{ range .groups }}
-        {{ with .title }}<p class="cr-sidebar-group">{{ . }}</p>{{ end }}
-        <ul class="cr-sidebar-links">
+        {{ with .title }}<p class="cr-side-group">{{ . }}</p>{{ end }}
+        <ul class="cr-side-links">
           {{ range .pages }}
             {{ $target := site.GetPage . }}
             {{ if not $target }}{{ errorf "Missing navigation page: %s" . }}{{ end }}
             {{ $active := or (eq $current $target) (and (in ($module.extra_paths | default slice) $current.Path) (eq . $module.page)) }}
             <li>
-              <a href="{{ $target.RelPermalink }}" class="cr-sidebar-link{{ if $active }} active{{ end }}"
+              <a href="{{ $target.RelPermalink }}" class="cr-side-link{{ if eq . $module.page }} cr-side-link--module{{ end }}"
                 {{ if $active }}aria-current="page"{{ end }}>{{ $target.LinkTitle }}</a>
             </li>
           {{ end }}

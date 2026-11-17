@@ -1370,23 +1370,56 @@ def contrast(foreground: str, background: str) -> float:
     return (light + 0.05) / (dark + 0.05)
 
 
+# A text color and a surface that it is drawn on. Each pair needs a contrast of 4.5.
+CONTRAST_PAIRS = (
+    *(
+        (text, surface)
+        for text in ("text", "muted", "link")
+        for surface in ("bg", "panel", "soft")
+    ),
+    *((text, "warning-bg") for text in ("text", "link", "warning-text")),
+    ("code-value", "soft"),
+)
+# A Bootstrap variable of _variables_project.scss and the token of the same color.
+BOOTSTRAP_COLORS = {
+    "body-bg": "bg",
+    "body-color": "text",
+    "body-secondary-color": "muted",
+    "body-tertiary-bg": "soft",
+    "border-color": "border",
+    "link-color": "link",
+    "link-hover-color": "link-hover",
+}
+
+
 def check_styles(path: Path) -> list[str]:
     text = path.read_text(encoding="utf-8")
+    variables = dict(
+        re.findall(
+            r"^\$([\w-]+):\s*(#[\da-fA-F]{6});",
+            path.with_name("_variables_project.scss").read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+    )
     errors: list[str] = []
-    for selector in (":root", 'html[data-bs-theme="dark"]'):
+    for selector, suffix in ((":root", ""), ('html[data-bs-theme="dark"]', "-dark")):
         match = re.search(re.escape(selector) + r"\s*\{([^}]+)\}", text)
         if not match:
             errors.append(f"missing theme: {selector}")
             continue
         tokens = dict(re.findall(r"--cr-([\w-]+):\s*(#[\da-fA-F]{6});", match[1]))
-        for foreground in ("text", "muted", "link"):
-            for background in ("bg", "panel", "soft"):
-                if contrast(tokens[foreground], tokens[background]) < 4.5:
-                    errors.append(
-                        f"{selector}: insufficient {foreground}/{background} contrast"
-                    )
+        for foreground, background in CONTRAST_PAIRS:
+            if contrast(tokens[foreground], tokens[background]) < 4.5:
+                errors.append(
+                    f"{selector}: insufficient {foreground}/{background} contrast"
+                )
         if contrast(tokens["on-accent"], tokens["accent"]) < 4.5:
             errors.append(f"{selector}: insufficient button contrast")
+        for variable, token in BOOTSTRAP_COLORS.items():
+            if variables.get(variable + suffix) != tokens[token]:
+                errors.append(
+                    f"{selector}: ${variable}{suffix} is not the --cr-{token} color"
+                )
     for marker in (
         ":focus-visible",
         ".cr-skip:focus",

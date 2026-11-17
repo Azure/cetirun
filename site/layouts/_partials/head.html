@@ -9,14 +9,7 @@ Licensed under the MIT License.
 <meta name="description" content="{{ .Description | default site.Params.description }}">
 <link rel="canonical" href="{{ .Permalink }}">
 {{ if hugo.IsServer }}<meta name="robots" content="noindex, nofollow">{{ end }}
-<script>
-  (() => {
-    let theme = "auto";
-    try { theme = localStorage.getItem("td-color-theme") || theme; } catch {}
-    if (theme === "auto") theme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-    document.documentElement.setAttribute("data-bs-theme", theme);
-  })();
-</script>
+{{ with resources.Get "js/theme.js" | minify }}<script>{{ .Content | safeJS }}</script>{{ end }}
 {{ partial "favicons.html" . }}
 {{ partial "head-css.html" . }}
 {{ range slice "vendor/jquery.min.js" "vendor/lunr.min.js" }}

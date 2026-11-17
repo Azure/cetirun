@@ -163,6 +163,8 @@ Also follow these project rules:
 - Explain prerequisites and limitations where the reader needs them. Use a
   warning for a security or data-loss risk, and put it before the step that it
   applies to. In the warning, state the consequence and the action to take.
+  Write the warning as a quotation that starts with `**Warning:**`. The site
+  shows such a quotation in the warning color.
 - Keep API fields, commands, defaults, and identifiers accurate. An edit to the
   prose must not change their meaning or imply that a defect is fixed.
 - When a compatibility difference is important, use a specific version.
@@ -230,14 +232,39 @@ maintainer setting outside the site sources.
 
 ## Theme and third-party assets
 
-Docsy supplies the documentation sidebar, table of contents, breadcrumbs,
-theme selection, and client-side search. CetiRun supplies its own home layout,
-styles, and local-asset head. jQuery and Lunr are bundled from pinned npm
-dependencies. The site configures no analytics service.
+Docsy supplies the base styles, the table of contents, the page source links,
+the client-side search, and the copy button of the code blocks. CetiRun
+supplies its own page layouts, navigation, theme switch, styles, and
+local-asset head. jQuery and Lunr are bundled from pinned npm dependencies.
+The site configures no analytics service.
 
-The [page head]({{< repo "site/layouts/_partials/head.html" >}}) reads the
-`td-color-theme` value from the browser `localStorage`. It uses this value to
-apply the theme that the reader selected.
+The surfaces and the text of the site are neutral. The light theme uses white,
+gray, and near black, and the dark theme uses the inverse. A link has the
+color of the text and an underline. The site has no accent color. The colors
+of the logo show only in the logo. Amber shows only a warning.
+
+The [project styles]({{< repo "site/assets/scss/_styles_project.scss" >}}) set
+the colors of the light theme and the dark theme as `--cr-*` properties. The
+site check measures the contrast of the text, link, button, warning, and code
+colors. It also makes sure that the Bootstrap colors in the
+[project variables]({{< repo "site/assets/scss/_variables_project.scss" >}})
+are the same. When you change a color, change it in the two themes.
+
+The [architecture drawing]({{< repo "site/layouts/_partials/architecture.html" >}})
+of the home page shows the main components of the
+[Architecture](../../concepts/architecture/) page, from the Portal to
+Kubernetes. It uses the neutral colors of the theme. When the components
+change, change the drawing. Keep space around each label, because the width of
+the text changes with the fonts of the operating system.
+
+The text uses the fonts of the operating system. The only font that the site
+loads is the Font Awesome icon font, which Docsy uses.
+
+The [page head]({{< repo "site/layouts/_partials/head.html" >}}) includes the
+[theme script]({{< repo "site/assets/js/theme.js" >}}). The script reads the
+`td-color-theme` value from the browser `localStorage` and applies the theme
+that the reader selected. It stores the value when the reader selects
+**System**, **Light**, or **Dark** in the top bar.
 
 Keep upstream license notices with dependencies. For dependency license
 locations and the content map, refer to

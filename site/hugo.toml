@@ -46,7 +46,8 @@ enableRobotsTXT = true
 
 [markup]
   [markup.highlight]
-    style = "github-dark"
+    # The site styles the code classes for the light and the dark theme.
+    noClasses = false
   [markup.goldmark.renderer]
     unsafe = false
 
@@ -67,7 +68,8 @@ enableRobotsTXT = true
     sidebar_menu_foldable = true
     sidebar_root_enabled = false
     sidebar_search_disable = false
-    showLightDarkModeMenu = true
+    # The top bar has its own theme switch, so the Docsy menu and its script stay off.
+    showLightDarkModeMenu = false
     footer_about_enable = false
     [params.ui.feedback]
       enable = false
@@ -88,6 +90,13 @@ enableRobotsTXT = true
   [[module.mounts]]
     source = "../docs/logo.jpg"
     target = "static/images/logo.jpg"
+  # The layouts make small copies of the logo from this mount.
+  [[module.mounts]]
+    source = "../docs/logo.jpg"
+    target = "assets/images/logo.jpg"
+  [[module.mounts]]
+    source = "node_modules/@fortawesome/fontawesome-free/svgs/brands/github.svg"
+    target = "assets/icons/github.svg"
   [[module.mounts]]
     source = "node_modules/jquery/dist/jquery.min.js"
     target = "assets/vendor/jquery.min.js"
