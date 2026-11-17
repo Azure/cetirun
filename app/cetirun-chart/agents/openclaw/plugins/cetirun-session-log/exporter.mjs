@@ -51,6 +51,44 @@ function argumentsText(value) {
   }
 }
 
+// OpenClaw's Tool Search keeps most tools in a catalog, and the model runs
+// them through the control tool tool_call. The transcript names tool_call, so
+// the records name the tool that ran, and `via` names tool_call.
+const TOOL_CALL = "tool_call";
+const TOOL_SELECTORS = ["id", "toolId", "name"];
+
+function argumentsObject(value) {
+  if (isRecord(value)) return value;
+  if (typeof value !== "string") return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// The tool that tool_call arguments select, read as OpenClaw reads them: id,
+// toolId or name, or one of them inside args or input when none is at the top.
+// A catalog id is <source>:<owner>:<tool name>, and a tool name has no colon.
+function toolCallTarget(value) {
+  const params = argumentsObject(value);
+  if (!params) return undefined;
+  const nested = params.args ?? params.input;
+  const holder = TOOL_SELECTORS.some((key) => Object.hasOwn(params, key)) || !isRecord(nested) ? params : nested;
+  const selector = holder.id ?? holder.toolId ?? holder.name;
+  if (typeof selector !== "string" || !selector.trim()) return undefined;
+  const match = /^(?:openclaw|mcp|client):[^:]+:([^:]+)$/.exec(selector.trim());
+  return match ? match[1] : selector.trim();
+}
+
+// The tool that a tool_call result came from: OpenClaw keeps it in the
+// result's details. A call that failed before it found a tool has none.
+function toolCallResultTool(details) {
+  const tool = isRecord(details) ? details.tool : undefined;
+  return isRecord(tool) && typeof tool.name === "string" && tool.name ? tool.name : undefined;
+}
+
 // The records of one transcript event. Only the messages of the conversation
 // count: user input, assistant output, tool calls, and tool results. Session
 // headers, model and thinking changes, compaction summaries, custom entries,
@@ -82,17 +120,21 @@ export function recordsFor(event, target, redact, now = () => new Date().toISOSt
     if (text) records.push({ ...base, id: id(""), kind: "assistant", ...(model ? { model } : {}), content: redact(text) });
     parts.forEach((part, index) => {
       if (!isRecord(part) || part.type !== "toolCall") return;
+      const name = typeof part.name === "string" ? part.name : "";
+      const ran = name === TOOL_CALL ? toolCallTarget(part.arguments) : undefined;
       records.push({
         ...base, id: id(`:${index}`), kind: "tool_call", ...(model ? { model } : {}),
-        tool: typeof part.name === "string" ? part.name : "",
+        tool: ran ?? name, ...(ran ? { via: TOOL_CALL } : {}),
         ...(typeof part.id === "string" ? { toolCallId: part.id } : {}),
         content: redact(argumentsText(part.arguments)),
       });
     });
   } else if (message.role === "toolResult") {
+    const name = typeof message.toolName === "string" ? message.toolName : "";
+    const ran = name === TOOL_CALL ? toolCallResultTool(message.details) : undefined;
     records.push({
       ...base, id: id(""), kind: "tool_result",
-      tool: typeof message.toolName === "string" ? message.toolName : "",
+      tool: ran ?? name, ...(ran ? { via: TOOL_CALL } : {}),
       ...(typeof message.toolCallId === "string" ? { toolCallId: message.toolCallId } : {}),
       isError: message.isError === true,
       content: redact(textOf(message.content)),

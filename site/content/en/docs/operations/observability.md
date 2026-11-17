@@ -79,6 +79,11 @@ and tool result of an Agent. The collector parses each record into `Body`.
 `Body.content` holds the text, and `Body.sessionId`, `Body.ts`, `Body.model`,
 and `Body.tool` describe it.
 
+By default, OpenClaw runs most of its tools through its Tool Search tool
+`tool_call`. For these tools, `Body.tool` is the name of the tool that the call
+selects, and `Body.via` is `tool_call`. When `tool_call` cannot find the tool,
+its result record keeps the name `tool_call`.
+
 An Agent command can also print any text. Give `CetiRunAgents` a smaller group
 of readers and a shorter retention than the other databases.
 
