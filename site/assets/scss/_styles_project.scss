@@ -303,10 +303,13 @@ a:hover { color: var(--cr-link-hover); text-decoration-color: currentColor; }
   @media (min-width: 1200px) { padding-inline: #{"max(3rem, calc((100% - #{$cr-wide}) / 2))"}; }
 }
 .cr-docs-toc-inner { padding: 2.25rem 1.25rem 2.5rem 1.5rem; }
-// The two side columns stay in view under the top bar.
+// The two side columns stay in view under the top bar. Without a z-index, the
+// browser puts the code blocks after a sticky column in their own layers, and
+// their text loses subpixel antialiasing.
 @media (min-width: 768px) {
   .cr-side, .cr-docs-toc-inner {
     position: sticky;
+    z-index: 1;
     top: $cr-topbar-height;
     max-height: calc(100vh - #{$cr-topbar-height});
     overflow-y: auto;
