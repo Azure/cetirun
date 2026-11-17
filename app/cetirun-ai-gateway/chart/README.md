@@ -3333,6 +3333,10 @@ Python base from MCR. It runs as the non-root user 65532.
   LiteLLM 1.108.3 permits filelock 4.x; the lockfile selects 4.2.4, which includes
   the security fixes released in 4.2.1. The build fails if the enterprise
   package is present or if `pip check` finds an unmet dependency.
+
+  Each pin lists the sha256 hashes of the files that PyPI has for that version.
+  The build installs with `--require-hashes`, so it fails if an index serves a
+  different file for a pinned version.
 - The prisma CLI and engines are installed at build time. As a result, neither
   npm nor network access is necessary for migrations. In a measurement on a
   network with no route out, migrations applied, and the proxy became ready.

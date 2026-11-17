@@ -180,7 +180,7 @@ class ImageDependencyTests(unittest.TestCase):
         requirements = (
             ROOT / "app/cetirun-ai-gateway/requirements.txt"
         ).read_text()
-        versions = re.findall(r"^oauthlib==([\d.]+)$", requirements, re.MULTILINE)
+        versions = re.findall(r"^oauthlib==([\d.]+)(?: \\)?$", requirements, re.MULTILINE)
         self.assertEqual(len(versions), 1)
         self.assertGreaterEqual(version_tuple(versions[0]), (4, 0, 0))
 
