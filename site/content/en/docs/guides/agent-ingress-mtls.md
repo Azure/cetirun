@@ -324,8 +324,9 @@ condition message names the kind, the namespace, and the name of the stale
 object.
 
 A missing first certificate binding reports `IngressMTLSApprovalPending`.
-An owner can suspend an Agent while this binding is missing or stale, including
-after namespace and HOME bootstrap but before the first workload exists.
+An authorized caller can request suspension through the Agent API while this
+binding is missing or stale, including after namespace and HOME bootstrap but
+before the first workload exists.
 The Operator acknowledges `Suspended` and the current generation only after
 verifying shutdown and access revocation. When no execution expectation exists,
 it also requires the complete owned bootstrap inventory, no preparation or
@@ -338,6 +339,9 @@ After confirmed suspension, `Ready` and `PodReady` report `Suspended`, while
 Repeated checks do not rewrite unchanged status. Resume retains the same HOME
 but does not bypass enrollment: execution stays held until the administrator
 registers a current approval.
+
+The Portal's existing HOME check is unchanged. This status fix does not add
+Portal suspension for a bootstrap-completed Agent that has no workload yet.
 
 ## OpenClaw Control UI Portal sign-in
 
