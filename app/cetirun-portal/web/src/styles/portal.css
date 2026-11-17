@@ -599,7 +599,6 @@ details > summary::marker {
 .portal-side .fui-Button.portal-side-link[aria-current="page"] .fui-Button__icon {
   color: var(--colorNeutralForeground1);
 }
-.portal-side-link.is-disabled,
 .portal-side .fui-Button.portal-side-link[aria-disabled="true"],
 .portal-side .fui-Button.portal-side-link:disabled {
   background: transparent;
