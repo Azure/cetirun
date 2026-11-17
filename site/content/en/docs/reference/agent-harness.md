@@ -371,7 +371,10 @@ terminal integration keep their previous Custom behavior.
 
 The terminal opens a Kubernetes exec session in the main container of the
 Agent. Its entrypoint searches that container for `zsh`, then `bash`, then
-`sh`. If none of them can run, it reports that no terminal exists and fails.
+`sh`. Recognized missing-executable errors, including Kata's file lookup
+errors, allow it to try the next shell. Authorization and unclassified exec
+failures stop that discovery attempt. If all three shells are missing, it
+reports that no terminal exists and fails.
 It repeats discovery after a container replacement. The Agent image keeps its
 own ENTRYPOINT/CMD and does not have to start ttyd. The terminal Pod does not
 mount Agent HOME, share its process namespace or receive model credentials.
