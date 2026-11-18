@@ -1762,7 +1762,7 @@ func (r *AgentReconciler) ensureNamespace(ctx context.Context, ns, alias string,
 	if len(owner) > 0 && owner[0] != nil && owner[0].UID != "" {
 		nsObj.OwnerReferences = []metav1.OwnerReference{registryauth.Owner(owner[0])}
 	}
-	if err := r.Create(ctx, nsObj); err != nil {
+	if err := r.Create(ctx, nsObj); err != nil && (!errors.IsAlreadyExists(err) || len(owner) > 0 && owner[0] != nil) {
 		return fmt.Errorf("create namespace %s: %w", ns, err)
 	}
 	return nil
