@@ -1381,6 +1381,18 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 
 	ns := instanceNamespace(instance.Name)
 	releaseName := helmReleaseName(instance.Name)
+	if !reconciledSandbox {
+		namespace := &corev1.Namespace{}
+		if err := r.customReader().Get(ctx, client.ObjectKey{Name: ns}, namespace); err != nil {
+			if !errors.IsNotFound(err) {
+				return ctrl.Result{}, fmt.Errorf("read namespace ownership before cleanup: %w", err)
+			}
+		} else if len(namespace.OwnerReferences) != 0 {
+			if err := validateConnectionsMCPBrokerNamespaceOwner(namespace, instance); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	}
 	if reconciledSandbox {
 		if err := stderrors.Join(r.revokeSandboxPreparationGrants(ctx, instance), r.deleteAIGatewayKey(ctx, instance),
 			r.stopSandboxBuiltin(ctx, instance), r.stopReconciledAuxiliaries(ctx, instance)); err != nil {
@@ -1447,7 +1459,7 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 	// Delete namespace (cascades all resources).
 	logger.Info("Deleting namespace", "namespace", ns)
 	nsObj := &corev1.Namespace{}
-	if err := r.Get(ctx, types.NamespacedName{Name: ns}, nsObj); err != nil {
+	if err := r.customReader().Get(ctx, types.NamespacedName{Name: ns}, nsObj); err != nil {
 		if errors.IsNotFound(err) {
 			logger.V(1).Info("Namespace not found, skipping delete", "namespace", ns)
 		} else {
@@ -1455,6 +1467,11 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 			return ctrl.Result{}, fmt.Errorf("get namespace %s for deletion: %w", ns, err)
 		}
 	} else {
+		if !reconciledSandbox && len(nsObj.OwnerReferences) != 0 {
+			if err := validateConnectionsMCPBrokerNamespaceOwner(nsObj, instance); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		if reconciledSandbox {
 			if err := r.checkSandboxBootstrapCleanup(ctx, instance); err != nil {
 				return r.cleanupWaitResult(ctx, instance, err)
@@ -1463,14 +1480,14 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 				return ctrl.Result{}, err
 			}
 		}
-		if err := r.Delete(ctx, nsObj); err != nil && !errors.IsNotFound(err) {
-			logger.Error(err, "delete namespace failed", "namespace", ns)
-		} else {
+		if nsObj.DeletionTimestamp.IsZero() {
+			if err := r.Delete(ctx, nsObj, client.Preconditions{UID: &nsObj.UID, ResourceVersion: &nsObj.ResourceVersion}); err != nil && !errors.IsNotFound(err) {
+				logger.Error(err, "delete namespace failed; retaining finalizer", "namespace", ns)
+				return ctrl.Result{}, fmt.Errorf("delete namespace %s: %w", ns, err)
+			}
 			logger.V(1).Info("Namespace deletion initiated", "namespace", ns)
 		}
-		if reconciledSandbox {
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-		}
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
 	if reconciledSandbox {
@@ -1701,6 +1718,14 @@ func (r *AgentReconciler) ensureNamespace(ctx context.Context, ns, alias string,
 	nsObj := &corev1.Namespace{}
 	err := r.Get(ctx, types.NamespacedName{Name: ns}, nsObj)
 	if err == nil {
+		if len(owner) > 0 && owner[0] != nil && len(nsObj.OwnerReferences) != 0 {
+			if err := validateConnectionsMCPBrokerNamespaceOwner(nsObj, owner[0]); err != nil {
+				return err
+			}
+		}
+		if !nsObj.DeletionTimestamp.IsZero() {
+			return fmt.Errorf("Agent namespace %s is terminating; wait for its cleanup", ns)
+		}
 		// Namespace exists — ensure labels are up to date.
 		needUpdate := false
 		if nsObj.Labels == nil {
@@ -1737,7 +1762,7 @@ func (r *AgentReconciler) ensureNamespace(ctx context.Context, ns, alias string,
 	if len(owner) > 0 && owner[0] != nil && owner[0].UID != "" {
 		nsObj.OwnerReferences = []metav1.OwnerReference{registryauth.Owner(owner[0])}
 	}
-	if err := r.Create(ctx, nsObj); err != nil && !errors.IsAlreadyExists(err) {
+	if err := r.Create(ctx, nsObj); err != nil && (!errors.IsAlreadyExists(err) || len(owner) > 0 && owner[0] != nil) {
 		return fmt.Errorf("create namespace %s: %w", ns, err)
 	}
 	return nil

@@ -617,11 +617,21 @@ run Helm uninstall hooks. Absent records or changed ownership block cleanup. Do
 not remove these finalizers to bypass the ownership check.
 
 Deletion of a built-in `Agent` invokes finalizer cleanup. This cleanup tries a
-Helm uninstall, then route and namespace deletion. Some cleanup errors are
-logged but do not block finalizer removal. Namespace deletion is asynchronous.
-As a result, a custom resource that disappeared does not prove that all
-Kubernetes or Azure resources are gone. Examine these resources separately
-under the same authorized scope.
+Helm uninstall, then route and namespace deletion. A namespace read or deletion
+failure keeps the Agent finalizer and is retried. After namespace deletion is
+accepted, cleanup retries every five seconds until an authoritative read
+confirms absence. It does not report cleanup complete while the namespace is
+terminating. Helm uninstall errors remain best-effort because namespace deletion
+removes the remaining namespaced resources.
+
+An existing namespace with an owner reference to a different Agent UID is not
+relabelled, reused, uninstalled, or deleted by the new Agent. Legacy namespaces
+without owner references keep their existing handling; the Operator does not
+add an owner reference to adopt them.
+
+Namespace absence does not prove that an external storage backend has completed
+reclamation. Examine retained PVs and Azure resources separately under the same
+authorized scope.
 
 > **Warning:** Before you delete an Agent, make a backup of the necessary data
 > and test recovery. Namespace deletion removes PVC objects. This includes claims
@@ -632,6 +642,45 @@ Before you authorize deletion, examine the reclaim policy of the storage
 backend. Do not remove finalizers only to hide a blocked cleanup. `Ready` with
 the reason `PodsTerminating` shows that the deletion of a Sandbox Agent waits
 for its Pods to terminate.
+
+### Recover an ordinary namespace orphaned by an older Operator
+
+Older versions could release a non-Sandbox Agent's finalizer after namespace
+deletion failed. Upgrade the Operator and admission server before recovery.
+Do not create a replacement Agent to adopt the old HOME.
+
+The CetiAdmin admission permits an explicit recovery DELETE only when:
+
+- The caller is a configured deployment administrator and Kubernetes RBAC
+  permits namespace deletion.
+- The namespace is not Sandbox-protected and has one exact Agent owner
+  reference. Its name and any ownership or maintenance markers agree.
+- An authoritative read confirms that this owner UID no longer exists. A
+  same-name replacement Agent is a different owner. An API error is not proof
+  of absence.
+- The DELETE pins the namespace's current UID and resourceVersion.
+
+Live-owner namespaces and the CetiAdmin installation retain their existing
+protections. Ordinary callers do not gain recovery permission.
+
+After confirming the target context, ownership and backup requirements, prepare
+the exact deletion outside the repository. This example uses a synthetic name:
+
+```bash
+kubectl --context "$CONTEXT" get namespace cetirun-alice-example -o json > namespace.json
+jq '{apiVersion:"v1",kind:"DeleteOptions",preconditions:{
+  uid:.metadata.uid,resourceVersion:.metadata.resourceVersion
+}}' namespace.json > delete-options.json
+kubectl --context "$CONTEXT" delete \
+  --raw /api/v1/namespaces/cetirun-alice-example -f delete-options.json
+kubectl --context "$CONTEXT" wait --for=delete \
+  namespace/cetirun-alice-example --timeout=5m
+```
+
+Inspect the saved owner reference and current Agent before submitting the DELETE.
+If a precondition fails, inspect the new state; do not strip preconditions,
+labels, ownership references, maintenance markers, or finalizers. A missing or
+conflicting ownership record needs a separately reviewed recovery procedure.
 
 Sources: [Agent controller]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}}),
 [value builder]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}}),
