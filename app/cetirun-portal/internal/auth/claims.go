@@ -31,13 +31,12 @@ type Claims struct {
 	// is never accepted as proof of identity.
 	LoginHint string
 
-	// IsAdmin is true when the user's alias matches the configured admin
-	// allowlist. Used by the RequireAdmin middleware and the /api/v1/me
-	// endpoint to gate the admin portal.
+	// IsAdmin is derived from the verified object ID in the configured tenant.
+	// Only deployments without a token verifier use the legacy alias allowlist.
 	IsAdmin bool
 
 	// TenantID and ObjectID are taken only from a cryptographically verified
-	// Entra ID token. They are empty when Agent Identity is disabled.
+	// Entra ID token. They are empty when no token verifier is configured.
 	TenantID string
 	ObjectID string
 }

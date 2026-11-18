@@ -327,6 +327,8 @@ spec:
                 -- oauth2-proxy ID token out of Authorization; for Agent routes,
                 -- remove it before the router selects an instance workload.
                 request_handle:headers():remove("x-cetirun-portal-id-token")
+                request_handle:headers():remove("x-cetirun-owner-tenant-id")
+                request_handle:headers():remove("x-cetirun-owner-object-id")
                 if is_exempt(path_only, authority) then
                   if request_host(authority) == PORTAL_DOMAIN then
                     if not is_anonymous_apex_bypass(path_only, method, authority) then
@@ -417,6 +419,15 @@ spec:
                     request_handle:respond({[":status"] = "503"}, "Agent access verification is temporarily unavailable")
                   end
                   return
+                end
+                -- Forward only the owner identity returned by Portal over
+                -- the authenticated channel, never a client-supplied value.
+                if PORTAL_AUTH_MTLS_ENABLED then
+                  for _, name in ipairs({"x-cetirun-owner-tenant-id", "x-cetirun-owner-object-id"}) do
+                    if headers[name] and headers[name] ~= "" then
+                      request_handle:headers():replace(name, headers[name])
+                    end
+                  end
                 end
                 -- Portal authentication is complete and ownership has been
                 -- verified. Remove only the Portal session and sign-in cookies

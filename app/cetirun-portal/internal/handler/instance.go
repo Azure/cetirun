@@ -436,8 +436,8 @@ func (h *InstanceHandler) GetInstanceStatusByName(w http.ResponseWriter, r *http
 // Called by the Istio EnvoyFilter Lua script to verify instance ownership.
 // Returns 200 for an owner, 403 for denied access, or 503 if lookup is unavailable.
 // Not behind auth middleware: the gateway forwards the verified OAuth2 Proxy
-// ID token only to this internal endpoint. Older unbound Agents retain the
-// alias/email comparison used before owner identity annotations existed.
+// ID token only to this internal endpoint. Alias/email matching is available
+// only without a token verifier and only for unbound Agents.
 func (h *InstanceHandler) InternalAuth(w http.ResponseWriter, r *http.Request) {
 	instanceName := r.Header.Get("X-Internal-Instance")
 	alias := r.Header.Get("X-Internal-Alias")
@@ -459,7 +459,7 @@ func (h *InstanceHandler) InternalAuth(w http.ResponseWriter, r *http.Request) {
 	}
 	ownerTenant := instance.Annotations[cetirunv1alpha1.AnnotationOwnerTenantID]
 	ownerObject := instance.Annotations[cetirunv1alpha1.AnnotationOwnerObjectID]
-	if ownerTenant != "" || ownerObject != "" {
+	if h.VerifyInternalIdentity != nil || ownerTenant != "" || ownerObject != "" {
 		const portalIdentityTokenHeader = "X-CetiRun-Portal-ID-Token"
 		const bearerPrefix = "Bearer "
 		authorization := r.Header.Get(portalIdentityTokenHeader)
@@ -472,6 +472,8 @@ func (h *InstanceHandler) InternalAuth(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
+		w.Header().Set("X-CetiRun-Owner-Tenant-ID", identity.TenantID)
+		w.Header().Set("X-CetiRun-Owner-Object-ID", identity.ObjectID)
 		w.WriteHeader(http.StatusOK)
 		return
 	}

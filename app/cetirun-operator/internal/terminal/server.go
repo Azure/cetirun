@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 )
 
@@ -54,6 +55,7 @@ func NewServer(cfg Config, reader AgentReader, socket string) *Server {
 			request.Out.Header.Del("Authorization")
 			for key := range request.Out.Header {
 				if strings.HasPrefix(strings.ToLower(key), "x-auth-request-") ||
+					strings.HasPrefix(strings.ToLower(key), "x-cetirun-owner-") ||
 					strings.HasPrefix(strings.ToLower(key), "x-internal-") {
 					request.Out.Header.Del(key)
 				}
@@ -112,16 +114,17 @@ func NewServer(cfg Config, reader AgentReader, socket string) *Server {
 }
 
 func identityFrom(request *http.Request) Identity {
-	for _, name := range []string{"X-Auth-Request-Email", "X-Auth-Request-Preferred-Username"} {
+	for _, name := range []string{"X-Auth-Request-Email", "X-Auth-Request-Preferred-Username", "X-CetiRun-Owner-Tenant-ID", "X-CetiRun-Owner-Object-ID"} {
 		if len(request.Header.Values(name)) > 1 {
 			return Identity{}
 		}
 	}
-	// Use Portal's UPN-first alias and retain full-email ownership matching.
 	// Only the authenticated gateway may supply these identity headers.
 	identity := Identity{
 		Value:             request.Header.Get("X-Auth-Request-Email"),
 		PreferredUsername: request.Header.Get("X-Auth-Request-Preferred-Username"),
+		TenantID:          request.Header.Get("X-CetiRun-Owner-Tenant-ID"),
+		ObjectID:          request.Header.Get("X-CetiRun-Owner-Object-ID"),
 	}
 	if identity.Value == "" {
 		identity.Value = identity.PreferredUsername
@@ -290,7 +293,9 @@ func watchShell(ctx context.Context, cfg Config, backend Backend, interval time.
 		observation := startupObservation{stage: "agent-read", category: startupFailureCategory(err)}
 		var target Snapshot
 		if err == nil {
-			identity := Identity{Value: agent.Spec.User.Alias}
+			identity := Identity{Value: agent.Spec.User.Alias,
+				TenantID: agent.Annotations[api.AnnotationOwnerTenantID],
+				ObjectID: agent.Annotations[api.AnnotationOwnerObjectID]}
 			target, err = backend.Resolve(request, identity)
 			observation = startupObservation{stage: "target-resolve", category: startupFailureCategory(err)}
 			if err == nil && target != checked {

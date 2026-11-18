@@ -11,13 +11,13 @@ import (
 	"strings"
 )
 
-// LoadAdminAliases reads a list of admin aliases from a file. Each non-empty,
-// non-comment line is treated as one alias. Whitespace is trimmed. Lines
+// LoadAdminAllowlist reads a list of admin identifiers from a file. Each non-empty,
+// non-comment line is treated as one identifier. Whitespace is trimmed. Lines
 // beginning with '#' are skipped.
 //
 // If path is empty or the file does not exist, returns nil with no error so
 // portal deployments without an admin allowlist still start.
-func LoadAdminAliases(path string) ([]string, error) {
+func LoadAdminAllowlist(path string) ([]string, error) {
 	if path == "" {
 		return nil, nil
 	}

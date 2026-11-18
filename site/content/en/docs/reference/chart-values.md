@@ -622,8 +622,9 @@ Source: [app/cetirun-portal/chart/values.yaml]({{< repo "app/cetirun-portal/char
 | `tolerations` | `[]` | Tolerations. |
 | `affinity` | `{}` | Affinity rules. |
 | `podAnnotations` | `{}` | Additional pod annotations. |
-| `admins` |  | Admin configuration. Aliases listed here can access /admin/* routes and admin APIs in the portal. Keep this list in sync with the istio chart's `authPolicy.adminAliases` (the istio deploy script sources both from the same `ADMIN_ALIASES` environment variable). |
-| `admins.aliases` | `[]` |  |
+| `admins` |  | Portal administrator allowlists. Verified deployments use only objectIDs. |
+| `admins.objectIDs` | `[]` | Entra object IDs in agentIdentity.tenantId. Used when ID tokens are verified. |
+| `admins.aliases` | `[]` | Legacy aliases. Ignored when ID tokens are verified. |
 | `features` |  | Feature flags. These control which features are exposed in the portal UI. |
 | `features.tailscaleEnabled` | `false` | Enable the Tailscale integration feature. |
 | `features.maxInstancesPerUser` | `1` | Maximum number of Agents a user may create. 0 = unlimited. |

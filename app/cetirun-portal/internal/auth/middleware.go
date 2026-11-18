@@ -16,8 +16,8 @@ const portalIdentityTokenHeader = "X-CetiRun-Portal-ID-Token"
 // Group-based authorization is enforced by OAuth2 Proxy at the gateway level
 // (via --allowed-group), so no group check is performed here.
 //
-// admins is the set of aliases granted admin privileges. If nil/empty, no
-// user is admin.
+// admins contains object IDs from the verifier's tenant, or legacy aliases
+// when no verifier is configured. If nil/empty, no user is admin.
 func Middleware(admins AdminSet, verifiers ...*OIDCVerifier) func(http.Handler) http.Handler {
 	var verifier *OIDCVerifier
 	if len(verifiers) > 0 {
@@ -69,7 +69,6 @@ func Middleware(admins AdminSet, verifiers ...*OIDCVerifier) func(http.Handler) 
 				DisplayName: displayName,
 				Email:       email,
 				LoginHint:   identity,
-				IsAdmin:     admins.Contains(alias),
 			}
 			if verifier != nil {
 				authorization := r.Header.Get(portalIdentityTokenHeader)
@@ -89,9 +88,12 @@ func Middleware(admins AdminSet, verifiers ...*OIDCVerifier) func(http.Handler) 
 				}
 				claims.TenantID = identity.TenantID
 				claims.ObjectID = identity.ObjectID
+				claims.IsAdmin = admins.Contains(identity.ObjectID)
 				if identity.LoginHint != "" {
 					claims.LoginHint = identity.LoginHint
 				}
+			} else {
+				claims.IsAdmin = admins.Contains(alias)
 			}
 
 			ctx := NewContext(r.Context(), claims)

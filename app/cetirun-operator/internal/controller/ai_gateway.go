@@ -618,7 +618,17 @@ func (c *aiGatewayOwnerCache) mark(key string, now time.Time) {
 func (r *AgentReconciler) ensureAIGatewayOwner(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent, force bool) (string, string, error) {
 	now := time.Now()
 	teamID := aiGatewayTeamID(instance.Spec.Team)
-	userID := instance.Spec.User.Alias
+	// An unbound Agent has no proven user identity. Keep its accounting separate
+	// until an administrator binds the owner; never merge records by display name.
+	userID := "agent:" + string(instance.UID)
+	tenant := instance.Annotations[cetirunv1alpha1.AnnotationOwnerTenantID]
+	object := instance.Annotations[cetirunv1alpha1.AnnotationOwnerObjectID]
+	if tenant != "" || object != "" {
+		if !canonicalUUID.MatchString(tenant) || !canonicalUUID.MatchString(object) {
+			return "", "", fmt.Errorf("Agent owner tenant and object IDs must both be UUIDs")
+		}
+		userID = strings.ToLower(tenant + "/" + object)
+	}
 	if teamID != "" && (force || !r.aiGatewayOwners.fresh("team:"+teamID, now)) {
 		if err := client.EnsureTeam(ctx, teamID, instance.Spec.Team, map[string]string{"cetirun_team": instance.Spec.Team}); err != nil {
 			return "", "", fmt.Errorf("ensure Gateway team %s: %w", teamID, err)

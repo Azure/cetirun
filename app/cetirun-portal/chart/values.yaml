@@ -88,11 +88,11 @@ affinity: {}
 # -- Additional pod annotations.
 podAnnotations: {}
 
-# -- Admin configuration. Aliases listed here can access /admin/* routes
-# and admin APIs in the portal. Keep this list in sync with the istio chart's
-# `authPolicy.adminAliases` (the istio deploy script sources both from the
-# same `ADMIN_ALIASES` environment variable).
+# -- Portal administrator allowlists. Verified deployments use only objectIDs.
 admins:
+  # -- Entra object IDs in agentIdentity.tenantId. Used when ID tokens are verified.
+  objectIDs: []
+  # -- Legacy aliases. Ignored when ID tokens are verified.
   aliases: []
 
 # -- Feature flags. These control which features are exposed in the portal UI.

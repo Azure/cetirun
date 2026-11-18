@@ -23,6 +23,7 @@
 #   ISTIO_HOST           — Required Portal hostname
 #   ENTRA_TENANT_ID       — Required Entra tenant ID for verified owner identity
 #   PORTAL_OIDC_CLIENT_ID — Required Portal application client ID used by ingress
+#   ADMIN_OBJECT_IDS     — Comma-separated administrator object IDs in ENTRA_TENANT_ID
 #   ISTIO_LEGACY_HOST    — Optional legacy hostname to 301-redirect to ISTIO_HOST (e.g. portal.<domain>)
 #   NOTICE_BANNER        — Optional notice banner message shown in the portal UI
 #   MAX_INSTANCES_PER_USER — Max Agents per user (default: 1, 0 = unlimited)
@@ -110,18 +111,17 @@ HELM_ARGS+=(--set-string "image.tag=${IMAGE_TAG:-${VERSION:-${CHART_VERSION}}}")
 [ "${NOTICE_BANNER+x}" = x ]     && HELM_ARGS+=(--set-literal "noticeBanner=${NOTICE_BANNER}")
 [ -n "${MAX_INSTANCES_PER_USER:-}" ] && HELM_ARGS+=(--set "features.maxInstancesPerUser=${MAX_INSTANCES_PER_USER}")
 
-# Admin aliases — same source as the istio chart's authPolicy.adminAliases.
-# Accept ADMIN_ALIASES as comma-separated and project into admins.aliases[*].
-if [ -n "${ADMIN_ALIASES:-}" ]; then
-  IFS=',' read -ra _ADMIN_LIST <<< "${ADMIN_ALIASES}"
+# This helper enables verified identity; aliases cannot grant admin access.
+if [ -n "${ADMIN_OBJECT_IDS:-}" ]; then
+  IFS=',' read -ra _ADMIN_LIST <<< "${ADMIN_OBJECT_IDS}"
   _IDX=0
-  for _ALIAS in "${_ADMIN_LIST[@]}"; do
-    _ALIAS_TRIMMED=$(echo "${_ALIAS}" | xargs)
-    [ -z "${_ALIAS_TRIMMED}" ] && continue
-    HELM_ARGS+=(--set-string "admins.aliases[${_IDX}]=${_ALIAS_TRIMMED}")
+  for _OBJECT_ID in "${_ADMIN_LIST[@]}"; do
+    _OBJECT_ID_TRIMMED=$(echo "${_OBJECT_ID}" | xargs)
+    [ -z "${_OBJECT_ID_TRIMMED}" ] && continue
+    HELM_ARGS+=(--set-string "admins.objectIDs[${_IDX}]=${_OBJECT_ID_TRIMMED}")
     _IDX=$((_IDX + 1))
   done
-  echo "Admin aliases configured: ${_IDX} entry/entries."
+  echo "Admin object IDs configured: ${_IDX} entry/entries."
 fi
 
 helm upgrade --install "$RELEASE_NAME" "${HELM_ARGS[@]}" \

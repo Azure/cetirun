@@ -827,7 +827,6 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
             raise ValueError("MCP runtimeTypes must be nonempty lists of distinct supported runtimes")
     if any(set(runtimes) != set(runtime_lists[0]) for runtimes in runtime_lists[1:]):
         raise ValueError("Operator connectionsMCP.runtimeTypes, Portal agentTools.runtimeTypes and Broker toolService.runtimeTypes must match")
-    portal["admins"]["aliases"] = sorted(set([*portal["admins"]["aliases"], config["ownerAlias"]]))
     if values["istio"]["oauth2Proxy"]["mode"] != "entra-id":
         raise ValueError("The complete Agent Identity deployment requires Entra ID; local-oidc cannot supply Broker identity")
     required(values["istio"], "allowedGroups")
@@ -905,6 +904,9 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
         if "api_key" in params and not re.fullmatch(r"os\.environ/[A-Za-z_][A-Za-z0-9_]*", str(params["api_key"])):
             raise ValueError("Model api_key must reference a provider Secret environment variable")
     validate_cetiadmin(config, operator)
+    if operator["cetiadmin"]["enabled"]:
+        owner_id = operator["cetiadmin"]["owner"]["objectID"].lower()
+        portal["admins"]["objectIDs"] = sorted(set([*portal["admins"]["objectIDs"], owner_id]))
     validate_excluded_images(config)
     if tls_config:
         values["platform"].update(PUBLIC_TLS.chart_values(tls_config, config["domain"], production=True, bootstrap=False))

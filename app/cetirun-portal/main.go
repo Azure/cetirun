@@ -50,21 +50,6 @@ func main() {
 
 	cfg := config.Load()
 
-	// Load admin alias allowlist (optional). Path defaults to the location
-	// the Helm chart mounts the admins ConfigMap; empty / missing file is
-	// not an error — the portal simply has no admin users.
-	adminFile := os.Getenv("ADMIN_ALIASES_FILE")
-	if adminFile == "" {
-		adminFile = "/etc/cetirun-portal/admins/aliases"
-	}
-	adminAliases, err := config.LoadAdminAliases(adminFile)
-	if err != nil {
-		slog.Error("Failed to load admin aliases", "path", adminFile, "error", err)
-		os.Exit(1)
-	}
-	admins := auth.NewAdminSet(adminAliases)
-	slog.Info("Admin allowlist loaded", "count", len(admins), "path", adminFile)
-
 	// Register CRD scheme.
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -95,6 +80,22 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	// Verified deployments never load the legacy alias allowlist.
+	adminFileEnv, adminFileName := "ADMIN_ALIASES_FILE", "aliases"
+	if oidcVerifier != nil {
+		adminFileEnv, adminFileName = "ADMIN_OBJECT_IDS_FILE", "objectIDs"
+	}
+	adminFile := os.Getenv(adminFileEnv)
+	if adminFile == "" {
+		adminFile = "/etc/cetirun-portal/admins/" + adminFileName
+	}
+	adminIDs, err := config.LoadAdminAllowlist(adminFile)
+	if err != nil {
+		slog.Error("Failed to load admin allowlist", "path", adminFile, "error", err)
+		os.Exit(1)
+	}
+	admins := auth.NewAdminSet(adminIDs)
+	slog.Info("Admin allowlist loaded", "count", len(admins), "path", adminFile)
 	authMiddleware := auth.Middleware(admins, oidcVerifier)
 	requireAdmin := auth.RequireAdmin()
 

@@ -363,6 +363,24 @@ class ReleaseCoordinateTests(DeploymentFixture, unittest.TestCase):
 
 
 class DeploymentInputTests(DeploymentFixture, unittest.TestCase):
+    def test_portal_admins_use_owner_object_id_not_alias(self):
+        config = yaml.safe_load(FIXTURE.read_text())
+        extra = "99999999-9999-9999-9999-999999999999"
+        config["platform"]["values"].setdefault("cetirun-portal", {})["admins"] = {
+            "objectIDs": [extra], "aliases": ["legacy-admin"],
+        }
+        _, values = self.configure(config)
+        admins = values["platform"]["cetirun-portal"]["admins"]
+        owner = config["platform"]["values"]["cetirun-operator"]["cetiadmin"]["owner"]["objectID"]
+        self.assertEqual(admins["objectIDs"], sorted([owner, extra]))
+        self.assertEqual(admins["aliases"], ["legacy-admin"])
+
+    def test_disabled_cetiadmin_does_not_grant_admin_by_alias(self):
+        _, values = self.configure(self.config)
+        admins = values["platform"]["cetirun-portal"]["admins"]
+        self.assertEqual(admins["objectIDs"], [])
+        self.assertNotIn(self.config["ownerAlias"], admins["aliases"])
+
     def test_optional_image_exclusion_selects_artifacts(self):
         config = copy.deepcopy(self.config)
         config["release"]["excludeImages"] = ["cetirun-vscode"]

@@ -6,6 +6,13 @@ metadata:
   labels:
     {{- include "cetirun-portal.labels" . | nindent 4 }}
 data:
+  objectIDs: |
+{{- range (default (list) ((.Values.admins).objectIDs)) }}
+{{- if or (not (kindIs "string" .)) (not (regexMatch "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" (toString .))) }}
+{{- fail "admins.objectIDs must contain Entra object UUIDs from agentIdentity.tenantId" }}
+{{- end }}
+    {{ . }}
+{{- end }}
   aliases: |
 {{- range (default (list) ((.Values.admins).aliases)) }}
     {{ . }}

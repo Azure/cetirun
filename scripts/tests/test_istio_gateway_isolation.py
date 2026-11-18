@@ -39,12 +39,15 @@ function gateway_fixture(kind)
     ["x-auth-request-email"] = "owner@example.com",
     ["authorization"] = "Bearer verified-id-token",
     ["x-cetirun-portal-id-token"] = "Bearer client-supplied-token",
+    ["x-cetirun-owner-tenant-id"] = "client-supplied-tenant",
+    ["x-cetirun-owner-object-id"] = "client-supplied-object",
     ["cookie"] = "_cetirun_oauth2=portal; agent_session=agent",
   }
   if kind == "missing-identity" then
     values["x-auth-request-email"] = nil
     values["x-auth-request-preferred-username"] = nil
   end
+  if kind == "portal" then values[":path"] = "/api/v1/me" end
   local headers = {}
   function headers:get(name) return values[name] end
   function headers:remove(name) values[name] = nil end
@@ -74,7 +77,11 @@ function gateway_fixture(kind)
     if kind:match("^status%-") then
       return {[":status"] = kind:sub(8)}, "private backend detail"
     end
-    return {[":status"] = "200"}, ""
+    return {
+      [":status"] = "200",
+      ["x-cetirun-owner-tenant-id"] = "11111111-1111-1111-1111-111111111111",
+      ["x-cetirun-owner-object-id"] = "22222222-2222-2222-2222-222222222222",
+    }, ""
   end
   function handle:respond(response_headers, body)
     result.response_status = response_headers[":status"]
@@ -92,6 +99,8 @@ function gateway_fixture(kind)
     values["authorization"] or "",
     values["cookie"] or "",
     values["x-cetirun-portal-id-token"] or "",
+    values["x-cetirun-owner-tenant-id"] or "",
+    values["x-cetirun-owner-object-id"] or "",
   }, "\t")
 end
 '''
@@ -349,7 +358,7 @@ class IstioGatewayIsolationTests(unittest.TestCase):
         plaintext_owned = self._call_rendered_lua(plaintext_script, "gateway_fixture", "owned").split("\t")
         self.assertEqual(plaintext_owned, [
             "portal_auth_cluster", "", "5000", "", "",
-            "metadata-read", "Bearer agent-token", "agent_session=agent", "",
+            "metadata-read", "Bearer agent-token", "agent_session=agent", "", "", "",
         ])
 
         script = self._render_ownership_lua(*MTLS_VALUES) + LUA_GATEWAY_FIXTURE
@@ -358,6 +367,7 @@ class IstioGatewayIsolationTests(unittest.TestCase):
         self.assertEqual(owned, [
             "portal_auth_mtls_cluster", "Bearer verified-id-token", "5000", "", "",
             "metadata-read", "Bearer agent-token", "agent_session=agent", "",
+            "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222",
         ])
 
         denied = self._call_rendered_lua(script, "gateway_fixture", "denied").split("\t")
@@ -370,6 +380,15 @@ class IstioGatewayIsolationTests(unittest.TestCase):
         missing_identity = self._call_rendered_lua(script, "gateway_fixture", "missing-identity").split("\t")
         self.assertEqual(missing_identity[0], "")
         self.assertEqual(missing_identity[3:6], ["403", "Forbidden: no identity", ""])
+
+    @unittest.skipUnless(shutil.which("helm") and LUA_LIBRARY, "requires Helm and liblua5.4")
+    def test_owner_headers_cannot_be_supplied_by_clients_or_plaintext_auth(self):
+        for args in (("--set", "portalAuth.mtls.enabled=false"), MTLS_VALUES):
+            script = self._render_ownership_lua(*args) + LUA_GATEWAY_FIXTURE
+            for kind in ("denied", "status-200", "missing-identity", "portal"):
+                with self.subTest(args=args, kind=kind):
+                    result = self._call_rendered_lua(script, "gateway_fixture", kind).split("\t")
+                    self.assertEqual(result[9:], ["", ""])
 
     @unittest.skipUnless(shutil.which("helm") and LUA_LIBRARY, "requires Helm and liblua5.4")
     def test_auth_failures_are_safe_and_distinct_from_service_failures(self):

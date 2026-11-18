@@ -8,17 +8,16 @@ import (
 	"strings"
 )
 
-// AdminSet is the set of aliases authorized to access /api/v1/admin/* and
-// the /admin SPA section. Aliases are stored lowercased; lookups are
-// case-insensitive.
+// AdminSet contains object IDs from the configured Entra tenant, or aliases
+// for deployments without a token verifier. The two lists are never combined.
 type AdminSet map[string]struct{}
 
-// NewAdminSet constructs an AdminSet from a slice of aliases. Empty entries
+// NewAdminSet constructs an AdminSet from a slice of identifiers. Empty entries
 // and surrounding whitespace are ignored; entries are lowercased; duplicates
 // are deduplicated.
-func NewAdminSet(aliases []string) AdminSet {
+func NewAdminSet(identifiers []string) AdminSet {
 	s := AdminSet{}
-	for _, a := range aliases {
+	for _, a := range identifiers {
 		a = strings.ToLower(strings.TrimSpace(a))
 		if a == "" {
 			continue
@@ -28,12 +27,12 @@ func NewAdminSet(aliases []string) AdminSet {
 	return s
 }
 
-// Contains reports whether alias is in the admin set.
-func (s AdminSet) Contains(alias string) bool {
-	if s == nil || alias == "" {
+// Contains reports whether the identifier is in the admin set.
+func (s AdminSet) Contains(identifier string) bool {
+	if s == nil || identifier == "" {
 		return false
 	}
-	_, ok := s[strings.ToLower(alias)]
+	_, ok := s[strings.ToLower(identifier)]
 	return ok
 }
 

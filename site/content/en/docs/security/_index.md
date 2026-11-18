@@ -148,7 +148,7 @@ the apex domain, for example `https://example.com/oauth2/callback`. The
 [OAuth2 VirtualService]({{< repo "infra/istio/templates/ingress/oauth2-proxy-virtualservice.yaml" >}})
 routes the apex `/oauth2` requests.
 
-The Portal identifies each user by an alias. The alias is the lowercase part
+The Portal derives an alias for display and Agent names. The alias is the lowercase part
 before `@` of the `preferred_username` claim, or of the email address when that
 claim is empty. An alias must start with a letter, and it can contain only lowercase
 letters, digits, and hyphens, up to 63 characters. A sign-in name with a
@@ -157,10 +157,13 @@ such a user, the Portal rejects each API request with HTTP 403 and the code
 `invalid_identity`. Before you install, check the names of your users as
 [User names](../getting-started/platform/#user-names) describes.
 
-> **Warning:** The Portal identifies users and Portal administrators by alias.
-> Make sure that the part before `@` is unique for all users who can sign in,
-> and that users cannot change it. Do not add guest accounts to the groups in
-> `allowedGroups`. Otherwise, the Portal cannot tell these users apart.
+With verified Entra ID tokens, authorization uses the tenant and object IDs,
+not the alias or email address. Two accounts with the same alias do not share
+administrator privileges or Agent ownership.
+
+> **Warning:** Installations without a token verifier retain legacy alias-based
+> authorization. In that mode, require unique, non-user-editable local parts
+> among all allowed accounts and keep guest accounts out of `allowedGroups`.
 
 ### Agent ownership
 
@@ -170,12 +173,21 @@ object ID of the owner. It writes them in the annotations
 `agentidentity.cetirun.microsoft.com/owner-tenant-id` and
 `agentidentity.cetirun.microsoft.com/owner-object-id`. For such an Agent, the
 Portal API and the ownership check admit only that identity. The Portal
-verifies tokens when `istio.internalAuthMTLS`, Agent Identity, or the Agent
-tools feature is on. `make deploy` enables them.
+verifies tokens when Entra tenant/client settings, `istio.internalAuthMTLS`,
+Agent Identity, or the Agent tools feature are configured. `make deploy`
+enables verification.
 
-For an Agent without these annotations, the Portal API compares the alias of
-the user with `spec.user.alias`. The ownership check also accepts a match with
-`spec.user.email`.
+When verification is enabled, an Agent without both owner annotations is
+inaccessible through owner routes. A cluster administrator must establish the
+correct owner independently and set both annotations; a matching name does not
+claim the Agent. Existing bound Agents remain accessible after the owner changes
+their username. The Custom terminal uses the same owner IDs, passed by the
+gateway only after the Portal ownership check succeeds over mTLS. Upgrade the
+Portal, Istio chart, and terminal image together.
+
+Only without a verifier, and only for unbound Agents, does the Portal API
+compare `spec.user.alias`; the ingress check and terminal also accept the
+full email address.
 
 By default, each user can create one Agent (`features.maxInstancesPerUser: 1`
 of the Portal chart). The Portal names it `<alias>`, or `<alias>-<suffix>`.
@@ -185,7 +197,7 @@ of the Portal chart). The Portal names it `<alias>`, or `<alias>-<suffix>`.
 | Role | How a person or a workload gets it | What it can do |
 | --- | --- | --- |
 | Agent owner | Creates the Agent in the Portal | Opens and uses the Agent. Changes, suspends, resumes, and deletes it. Cannot open the Agents of other users |
-| Portal administrator | The alias is in `admins.aliases` of the Portal chart. `make deploy` adds `ownerAlias`. The Portal reads the list when it starts | Sees all Agents with their status and events. Changes their image, display name, and model, and deletes them. Creates, changes, and deletes Teams, Agent Policies, and Sandboxes. Cannot open the Agent UI, chat, terminal, or desktop of another user's Agent, and does not see Secrets in the Portal |
+| Portal administrator | The verified object ID is in `admins.objectIDs` of the Portal chart and the token matches `agentIdentity.tenantId`. `make deploy` adds the CetiAdmin owner's object ID when enabled. The Portal reads the list when it starts | Sees all Agents with their status and events. Changes their image, display name, and model, and deletes them. Creates, changes, and deletes Teams, Agent Policies, and Sandboxes. Cannot open the Agent UI, chat, terminal, or desktop of another user's Agent, and does not see Secrets in the Portal |
 | Admission administrator | `sandboxAdmission.adminUsers` and `sandboxAdmission.adminGroups` of the operator chart. The Portal service account is also one | Writes Sandboxes, Agent Policies, and policy-bound Teams through the Kubernetes API |
 | Platform administrator | The Azure and cluster permissions of the deployment | Installs, upgrades, and operates CetiRun. With Kubernetes RBAC, can also read the Secrets in Agent namespaces. By default, admission refuses `kubectl exec` in Agent namespaces, also for this role. Refer to [Kubernetes exec restriction](#kubernetes-exec-restriction) |
 | CetiAdmin owner | The user in `cetiadmin.owner` of the operator chart. With `make deploy`, this is the user in `ownerAlias`. CetiAdmin is on by default | Opens CetiAdmin in the Portal and can tell it to use its access. In the namespace of each standard Agent, CetiAdmin can read all Secrets, use `kubectl exec`, and delete Pods. Refer to [CetiAdmin](../operations/cetiadmin/#access) |
@@ -427,10 +439,10 @@ network activity.
 
 ## Deployment checklist
 
-- Make sure that the part before `@` is unique for all users who can sign in,
-  and keep guest accounts out of `allowedGroups`.
-- Keep `admins.aliases` of the Portal chart to the people who manage the
-  Portal.
+- Enable verified Entra identity and bind each Agent to its owner's tenant and
+  object IDs before admitting users.
+- Keep `admins.objectIDs` of the Portal chart to the people who manage the
+  Portal. Migrate the old alias allowlist before upgrading.
 - Give write access to the platform namespaces, the CetiRun resources, and the
   Secrets in Agent namespaces only to cluster administrators.
 - Keep Istio sidecar injection in the Portal namespace, and keep

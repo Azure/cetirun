@@ -168,6 +168,8 @@ spec:
             {{- end }}
             - name: ADMIN_ALIASES_FILE
               value: /etc/cetirun-portal/admins/aliases
+            - name: ADMIN_OBJECT_IDS_FILE
+              value: /etc/cetirun-portal/admins/objectIDs
             {{- if .Values.noticeBanner }}
             - name: NOTICE_BANNER
               value: {{ .Values.noticeBanner | quote }}

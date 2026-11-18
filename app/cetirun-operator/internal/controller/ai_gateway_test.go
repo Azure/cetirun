@@ -536,6 +536,38 @@ func mustKeyValue(t *testing.T) string {
 
 func copilotGroup() string { return aiGatewayCopilotGroupPrefix + testAIGatewayUID }
 
+func TestAIGatewayUsersDoNotShareAliases(t *testing.T) {
+	const tenant = "11111111-1111-1111-1111-111111111111"
+	const owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	const other = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	r := &AgentReconciler{}
+	gateway := newFakeAIGateway()
+	for _, tc := range []struct {
+		name, alias, tenant, object, uid, want string
+	}{
+		{"owner", "alice", tenant, owner, "agent-1", tenant + "/" + owner},
+		{"same alias different object", "alice", tenant, other, "agent-2", tenant + "/" + other},
+		{"same object different tenant", "alice", other, owner, "agent-3", other + "/" + owner},
+		{"renamed owner", "renamed", tenant, strings.ToUpper(owner), "agent-4", tenant + "/" + owner},
+		{"unbound first Agent", "alice", "", "", "agent-5", "agent:agent-5"},
+		{"unbound second Agent", "alice", "", "", "agent-6", "agent:agent-6"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			agent := aiGatewayTestAgent(testAIGatewayTeam)
+			agent.UID = types.UID(tc.uid)
+			agent.Spec.User.Alias = tc.alias
+			agent.Annotations = map[string]string{
+				cetirunv1alpha1.AnnotationOwnerTenantID: tc.tenant,
+				cetirunv1alpha1.AnnotationOwnerObjectID: tc.object,
+			}
+			team, user, err := r.ensureAIGatewayOwner(context.Background(), gateway, agent, false)
+			if err != nil || user != tc.want || !gateway.users[user] || !gateway.members[team+"/"+user] {
+				t.Fatalf("user=%q, want %q, error=%v", user, tc.want, err)
+			}
+		})
+	}
+}
+
 func TestReconcileAIGatewayCreatesKeyAfterPersistingSecret(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
@@ -563,11 +595,11 @@ func TestReconcileAIGatewayCreatesKeyAfterPersistingSecret(t *testing.T) {
 	wantGroups := sortedCopy([]string{testManagedGroup, copilotGroup()})
 	if req.Key != value || req.Alias != "cetirun-alice-"+testAIGatewayUID || !slices.Equal(req.Models, wantGroups) ||
 		req.MaxBudget != 10 || req.BudgetDuration != "1mo" || req.Metadata["cetirun_agent_uid"] != testAIGatewayUID ||
-		req.TeamID != aiGatewayTeamPrefix+testAIGatewayTeam || req.UserID != "alice" {
+		req.TeamID != aiGatewayTeamPrefix+testAIGatewayTeam || req.UserID != "agent:"+testAIGatewayUID {
 		t.Fatalf("unexpected create request %+v", req)
 	}
-	if !gateway.teams[aiGatewayTeamPrefix+testAIGatewayTeam] || !gateway.users["alice"] ||
-		!gateway.members[aiGatewayTeamPrefix+testAIGatewayTeam+"/alice"] {
+	if !gateway.teams[aiGatewayTeamPrefix+testAIGatewayTeam] || !gateway.users["agent:"+testAIGatewayUID] ||
+		!gateway.members[aiGatewayTeamPrefix+testAIGatewayTeam+"/agent:"+testAIGatewayUID] {
 		t.Fatalf("the Gateway team, user and membership must exist before the key: %v %v %v", gateway.teams, gateway.users, gateway.members)
 	}
 	status := agent.Status.AIGateway
@@ -592,6 +624,50 @@ func TestReconcileAIGatewayCreatesKeyAfterPersistingSecret(t *testing.T) {
 	if len(gateway.generated) != 1 || len(gateway.updates) != 0 || len(gateway.ownerUpdates) != 0 {
 		t.Fatalf("a steady reconcile must not create or update: generated=%d updates=%d owner=%d",
 			len(gateway.generated), len(gateway.updates), len(gateway.ownerUpdates))
+	}
+}
+
+func TestReconcileAIGatewayOwnerBindingPreservesKeyAndSpend(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	value := string(readKeySecret(t, kube).Data[aiGatewayKeySecretField])
+	token := aigateway.Token(value)
+	key := gateway.keys[token]
+	spend := 3.25
+	key.UserID, key.Spend = "alice", &spend // Record issued by an earlier Operator.
+	budget := *key.MaxBudget
+	agent.Annotations[cetirunv1alpha1.AnnotationOwnerTenantID] = "11111111-1111-1111-1111-111111111111"
+	agent.Annotations[cetirunv1alpha1.AnnotationOwnerObjectID] = "22222222-2222-2222-2222-222222222222"
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if key.UserID != "11111111-1111-1111-1111-111111111111/22222222-2222-2222-2222-222222222222" ||
+		len(gateway.ownerUpdates) != 1 || len(gateway.generated) != 1 || *key.Spend != spend || *key.MaxBudget != budget ||
+		string(readKeySecret(t, kube).Data[aiGatewayKeySecretField]) != value {
+		t.Fatal("owner binding must update the existing key without replacing it or resetting spend/budget")
+	}
+}
+
+func TestAIGatewayRejectsIncompleteOwnerBinding(t *testing.T) {
+	for _, owner := range [][2]string{
+		{"11111111-1111-1111-1111-111111111111", ""},
+		{"", "22222222-2222-2222-2222-222222222222"},
+		{"tenant", "object"},
+	} {
+		agent := aiGatewayTestAgent(testAIGatewayTeam)
+		agent.Annotations[cetirunv1alpha1.AnnotationOwnerTenantID] = owner[0]
+		agent.Annotations[cetirunv1alpha1.AnnotationOwnerObjectID] = owner[1]
+		r := &AgentReconciler{}
+		gateway := newFakeAIGateway()
+		if _, _, err := r.ensureAIGatewayOwner(context.Background(), gateway, agent, false); err == nil {
+			t.Fatal("invalid owner binding fell back to another identity")
+		}
+		if len(gateway.teams)+len(gateway.users)+len(gateway.members) != 0 {
+			t.Fatal("invalid owner binding changed Gateway records")
+		}
 	}
 }
 
@@ -758,7 +834,7 @@ func TestReconcileAIGatewayMovesKeyWhenTeamChanges(t *testing.T) {
 	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
 		t.Fatal(err)
 	}
-	if len(gateway.ownerUpdates) != 1 || gateway.ownerUpdates[0] != [2]string{aiGatewayTeamPrefix + "team-b", "alice"} {
+	if len(gateway.ownerUpdates) != 1 || gateway.ownerUpdates[0] != [2]string{aiGatewayTeamPrefix + "team-b", "agent:" + testAIGatewayUID} {
 		t.Fatalf("the key must move to the new team after the user joins it: %v", gateway.ownerUpdates)
 	}
 	for _, key := range gateway.keys {
@@ -3600,7 +3676,7 @@ func TestReconcileAIGatewayRequiresRecoveryWhenTheGatewayLostItsData(t *testing.
 		t.Fatal(err)
 	}
 	team := aiGatewayTeamPrefix + testAIGatewayTeam
-	if !gateway.teams[team] || !gateway.users["alice"] || !gateway.members[team+"/alice"] {
+	if !gateway.teams[team] || !gateway.users["agent:"+testAIGatewayUID] || !gateway.members[team+"/agent:"+testAIGatewayUID] {
 		t.Fatalf("first pass must create the owner: teams=%v users=%v members=%v", gateway.teams, gateway.users, gateway.members)
 	}
 	// The Gateway's database is replaced: keys, teams and users are gone,

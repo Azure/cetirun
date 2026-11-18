@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 )
 
 func proxyFixture(t *testing.T, handler http.HandlerFunc) (*Server, *httptest.Server) {
@@ -102,17 +104,71 @@ func TestTerminalAliasUsesPreferredUsername(t *testing.T) {
 	}
 }
 
+func TestTerminalRequiresBoundOwnerIdentity(t *testing.T) {
+	const tenant = "11111111-1111-1111-1111-111111111111"
+	const owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	const other = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	for _, tc := range []struct {
+		name, email, tenant, object string
+		unbound, duplicate          bool
+		want                        int
+	}{
+		{"same alias in another domain", "alice@example.org", tenant, other, false, false, 403},
+		{"reassigned email", "alice@example.com", tenant, other, false, false, 403},
+		{"missing identity", "alice@example.com", "", "", false, false, 403},
+		{"missing object", "alice@example.com", tenant, "", false, false, 403},
+		{"wrong tenant", "alice@example.com", other, owner, false, false, 403},
+		{"owner", "alice@example.com", tenant, owner, false, false, 200},
+		{"renamed owner", "renamed@example.org", tenant, owner, false, false, 200},
+		{"uppercase identity", "renamed@example.org", tenant, strings.ToUpper(owner), false, false, 200},
+		{"duplicate identity", "alice@example.com", tenant, owner, false, true, 403},
+		{"unbound Agent", "alice@example.com", tenant, owner, true, false, 403},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			proxy, server := proxyFixture(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+			if !tc.unbound {
+				proxy.Reader.(*fakeBackend).agent.Annotations = map[string]string{
+					api.AnnotationOwnerTenantID: tenant,
+					api.AnnotationOwnerObjectID: owner,
+				}
+			}
+			req, _ := http.NewRequest(http.MethodGet, server.URL+"/term/", nil)
+			req.Header.Set("X-Auth-Request-Email", tc.email)
+			req.Header.Set("X-CetiRun-Owner-Tenant-ID", tc.tenant)
+			req.Header.Set("X-CetiRun-Owner-Object-ID", tc.object)
+			if tc.duplicate {
+				req.Header.Add("X-CetiRun-Owner-Object-ID", other)
+			}
+			resp, err := server.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != tc.want {
+				t.Fatalf("status=%d, want %d", resp.StatusCode, tc.want)
+			}
+		})
+	}
+}
+
 func TestTerminalProxyDoesNotForwardBrowserCredentials(t *testing.T) {
-	_, server := proxyFixture(t, func(w http.ResponseWriter, request *http.Request) {
+	proxy, server := proxyFixture(t, func(w http.ResponseWriter, request *http.Request) {
 		if request.Header.Get("Cookie") != "" || request.Header.Get("Authorization") != "" ||
+			request.Header.Get("X-CetiRun-Owner-Tenant-ID") != "" || request.Header.Get("X-CetiRun-Owner-Object-ID") != "" ||
 			request.Header.Get("X-Auth-Request-Email") != "" || request.Header.Get("X-Internal-Instance") != "" {
 			t.Error("browser identity/credentials leaked into ttyd")
 		}
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte("<html><head></head><body>Terminal</body></html>"))
 	})
+	proxy.Reader.(*fakeBackend).agent.Annotations = map[string]string{
+		api.AnnotationOwnerTenantID: "11111111-1111-1111-1111-111111111111",
+		api.AnnotationOwnerObjectID: "22222222-2222-2222-2222-222222222222",
+	}
 	request, _ := http.NewRequest(http.MethodGet, server.URL+"/term/", nil)
 	request.Header.Set("X-Auth-Request-Email", "alice@example.com")
+	request.Header.Set("X-CetiRun-Owner-Tenant-ID", "11111111-1111-1111-1111-111111111111")
+	request.Header.Set("X-CetiRun-Owner-Object-ID", "22222222-2222-2222-2222-222222222222")
 	request.Header.Set("X-Internal-Instance", "foreign")
 	request.Header.Set("Cookie", "synthetic-cookie")
 	request.Header.Set("Authorization", "Bearer sk-dummy")
@@ -181,8 +237,14 @@ func TestTerminalWebSocketReceivesOnlyServerIssuedHandle(t *testing.T) {
 		claims <- claimed
 		_, _ = w.Write([]byte("handshake fixture"))
 	})
+	proxy.Reader.(*fakeBackend).agent.Annotations = map[string]string{
+		api.AnnotationOwnerTenantID: "11111111-1111-1111-1111-111111111111",
+		api.AnnotationOwnerObjectID: "22222222-2222-2222-2222-222222222222",
+	}
 	request, _ := http.NewRequest(http.MethodGet, server.URL+"/term/ws", nil)
 	request.Header.Set("X-Auth-Request-Email", "alice@example.com")
+	request.Header.Set("X-CetiRun-Owner-Tenant-ID", "11111111-1111-1111-1111-111111111111")
+	request.Header.Set("X-CetiRun-Owner-Object-ID", "22222222-2222-2222-2222-222222222222")
 	request.Header.Set(sessionHeader, "client-supplied")
 	request.Header.Set("Origin", server.URL)
 	request.Header.Set("Upgrade", "websocket")
@@ -195,6 +257,10 @@ func TestTerminalWebSocketReceivesOnlyServerIssuedHandle(t *testing.T) {
 	claimed := <-claims
 	if claimed.AgentUID != "example-uid" || claimed.Identity.Value != "alice@example.com" {
 		t.Fatal("exec handle was not bound to the authorized session")
+	}
+	if claimed.Identity.TenantID != "11111111-1111-1111-1111-111111111111" ||
+		claimed.Identity.ObjectID != "22222222-2222-2222-2222-222222222222" {
+		t.Fatal("exec handle lost the verified owner identity")
 	}
 }
 
