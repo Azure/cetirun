@@ -74,7 +74,7 @@ func hasNativeCreateFields(fields map[string]json.RawMessage) bool {
 func ownsInstance(instance *api.Agent, claims auth.Claims) bool {
 	tenant := instance.Annotations[api.AnnotationOwnerTenantID]
 	object := instance.Annotations[api.AnnotationOwnerObjectID]
-	if tenant != "" || object != "" {
+	if tenant != "" || object != "" || claims.TenantID != "" || claims.ObjectID != "" {
 		return tenant != "" && object != "" && strings.EqualFold(tenant, claims.TenantID) && strings.EqualFold(object, claims.ObjectID)
 	}
 	return claims.Alias != "" && strings.EqualFold(instance.Spec.User.Alias, claims.Alias)

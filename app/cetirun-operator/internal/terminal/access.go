@@ -25,18 +25,27 @@ var (
 type Identity struct {
 	Value             string `json:"value"`
 	PreferredUsername string `json:"preferredUsername,omitempty"`
+	// Owner IDs are supplied by the gateway after Portal verifies the ID token.
+	TenantID string `json:"tenantID,omitempty"`
+	ObjectID string `json:"objectID,omitempty"`
 }
 
 func (i Identity) Valid() bool {
 	valid := func(value string) bool {
 		return value != "" && len(value) <= 256 && !strings.ContainsAny(value, "\r\n\t ,")
 	}
-	return valid(i.Value) && (i.PreferredUsername == "" || valid(i.PreferredUsername))
+	return valid(i.Value) && (i.PreferredUsername == "" || valid(i.PreferredUsername)) &&
+		((i.TenantID == "" && i.ObjectID == "") || (valid(i.TenantID) && valid(i.ObjectID)))
 }
 
 func (i Identity) Owns(agent *api.Agent) bool {
 	if !i.Valid() {
 		return false
+	}
+	tenant := agent.Annotations[api.AnnotationOwnerTenantID]
+	object := agent.Annotations[api.AnnotationOwnerObjectID]
+	if tenant != "" || object != "" || i.TenantID != "" || i.ObjectID != "" {
+		return tenant != "" && object != "" && strings.EqualFold(tenant, i.TenantID) && strings.EqualFold(object, i.ObjectID)
 	}
 	username := i.PreferredUsername
 	if username == "" {

@@ -96,6 +96,23 @@ func TestInternalAuthBoundOwnerIdentity(t *testing.T) {
 			wantToken:   "owner-token",
 		},
 		{
+			name:        "verified identity cannot claim an unbound Agent by name",
+			alias:       "renamed-owner",
+			email:       "owner@example.com",
+			portalToken: "owner-token",
+			verifier:    func(context.Context, string) (auth.VerifiedIdentity, error) { return ownerIdentity, nil },
+			wantStatus:  http.StatusForbidden,
+			wantCall:    true,
+			wantToken:   "owner-token",
+		},
+		{
+			name:       "unbound Agent still requires token when verification is enabled",
+			alias:      "renamed-owner",
+			email:      "owner@example.com",
+			verifier:   func(context.Context, string) (auth.VerifiedIdentity, error) { return ownerIdentity, nil },
+			wantStatus: http.StatusForbidden,
+		},
+		{
 			name:        "bound owner allows identity token without display headers",
 			annotations: boundOwner,
 			portalToken: "owner-token",
@@ -237,6 +254,18 @@ func TestInternalAuthBoundOwnerIdentity(t *testing.T) {
 			}
 			if tt.wantBody != "" && strings.Contains(w.Body.String(), tt.wantBody) {
 				t.Fatalf("response body leaked verifier detail: %q", w.Body.String())
+			}
+			for header, value := range map[string]string{
+				"X-CetiRun-Owner-Tenant-ID": internalOwnerTenant,
+				"X-CetiRun-Owner-Object-ID": internalOwnerObject,
+			} {
+				want := ""
+				if tt.wantStatus == http.StatusOK {
+					want = value
+				}
+				if got := w.Header().Get(header); got != want {
+					t.Errorf("%s = %q, want %q", header, got, want)
+				}
 			}
 		})
 	}

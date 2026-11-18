@@ -299,9 +299,9 @@ the OpenClaw gateway token, and the Hermes gateway process. In code format,
 role allows.
 
 - **Agent owner:** the user who creates an Agent.
-- **Portal administrator:** a user whose alias is in the Portal value
-  `admins.aliases`. Manages Agents, Teams, Agent Policies, and Sandboxes in the
-  Portal.
+- **Portal administrator:** a user whose verified object ID is in the Portal
+  value `admins.objectIDs`, in the configured Entra tenant. Manages Agents,
+  Teams, Agent Policies, and Sandboxes in the Portal.
 - **Admission administrator:** a user or group that can write policy-bound
   configuration directly through the Kubernetes API.
 - **Platform administrator:** a person who installs, upgrades, and operates

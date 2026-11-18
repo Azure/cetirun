@@ -10,11 +10,20 @@ Agents of the installation. This page lists the Admin pages and their limits.
 
 ## Portal administrators
 
-A user is a Portal administrator when the alias of the user is in
-`cetirun-portal.admins.aliases`. `make deploy` adds the `ownerAlias` of the
-environment file to this list. To add other Portal administrators, list their
-aliases under `platform.values.cetirun-portal.admins.aliases`. For how the
-Portal identifies users, refer to [Security](../../security/).
+With verified Entra identity, a user is a Portal administrator when their
+object ID is in `cetirun-portal.admins.objectIDs` and their token belongs to
+the configured `agentIdentity.tenantId`. `make deploy` adds the object ID of
+the CetiAdmin owner when CetiAdmin is enabled. To add other administrators,
+or to configure them without CetiAdmin, list their object IDs under
+`platform.values.cetirun-portal.admins.objectIDs`. The component deploy helper
+accepts the same list as comma-separated `ADMIN_OBJECT_IDS`.
+
+The Portal reads the allowlist at startup. On upgrade, replace admin aliases
+with verified object IDs and restart the Portal. It ignores `admins.aliases`
+when token verification is enabled; an empty object-ID list grants no admin
+access. Only installations without a token verifier retain legacy alias-based
+administration. For the identity and ownership rules, refer to
+[Security](../../security/).
 
 Two other administrator roles are separate:
 

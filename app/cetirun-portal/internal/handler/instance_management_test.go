@@ -321,6 +321,40 @@ func TestVerifiedOwnerCannotBeReplacedByMatchingAlias(t *testing.T) {
 	}
 }
 
+func TestVerifiedIdentityCannotClaimUnboundInstance(t *testing.T) {
+	for _, operation := range []string{"read", "list", "update", "delete"} {
+		t.Run(operation, func(t *testing.T) {
+			instance := customManagementInstance()
+			instance.Annotations = nil
+			h := customManagementHandler(instance)
+			r := managementRequest(http.MethodPatch, `{"uid":"agent-alice","resourceVersion":"1","agent":{"port":9090}}`)
+			w := httptest.NewRecorder()
+			switch operation {
+			case "read":
+				h.GetInstanceByName(w, r)
+			case "list":
+				h.ListInstances(w, r)
+			case "update":
+				h.UpdateInstanceByName(w, r)
+			case "delete":
+				r = managementRequest(http.MethodDelete, `{"uid":"agent-alice","resourceVersion":"1"}`)
+				h.DeleteInstanceByName(w, r)
+			}
+			if operation == "list" {
+				if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "[]" {
+					t.Fatalf("unbound Agent was listed: %d %s", w.Code, w.Body.String())
+				}
+			} else if w.Code != http.StatusForbidden {
+				t.Fatalf("unbound Agent accepted matching alias: %d %s", w.Code, w.Body.String())
+			}
+			stored, err := h.Kube.GetInstance(context.Background(), instance.Name)
+			if err != nil || *stored.Spec.Agent.Port != 8080 || !stored.DeletionTimestamp.IsZero() {
+				t.Fatalf("request changed an unbound Agent: %v", err)
+			}
+		})
+	}
+}
+
 func TestDisabledTypePreservesOwnerReadAndDelete(t *testing.T) {
 	h := customManagementHandler(customManagementInstance())
 	h.Config.AllowedAgentTypes = []string{"hermes", "openclaw"}

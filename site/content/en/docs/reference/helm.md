@@ -919,13 +919,14 @@ For all values and their defaults, see
 | `istio.gateway` | `aks-istio-ingress/cetirun-gateway` |
 | `istio.gatewayNamespace`, `istio.gatewayServiceAccount` | `aks-istio-ingress`, `aks-istio-ingressgateway-external`. The access controls use them. |
 | `istio.sidecarInjection` | `true`. Injection must be enabled on the namespace. |
-| `admins.aliases` | The explicit aliases of the Portal administrators |
+| `admins.objectIDs` | Administrator object IDs in `agentIdentity.tenantId`. Used when the Portal verifies Entra tokens. |
+| `admins.aliases` | Legacy aliases, used only without a token verifier. Ignored in verified deployments. |
 | `features.tailscaleEnabled` | `false` |
 | `features.maxInstancesPerUser` | `1`. `0` means unlimited. |
 | `features.allowedAgentTypes` | Defaults to `hermes`, `openclaw`, `custom`. Remove a type to disable its creation. The form and the backend both examine it. `make deploy` sets all three types. |
 | `sandboxRuntimeProfiles` | `{}`. Approved pins for the creation of built-in Sandbox Agents. Each entry has `chartVersion`, a digest-pinned `image`, and `port` (18789 for OpenClaw, 8642 for Hermes). If a profile is absent, creation is rejected, unless controller defaults are explicitly enabled. |
 | `sandboxStorage.platformNamespace`, `sandboxStorage.platformConfigMapName`, `sandboxStorage.defaultStorageClassName` | Empty. The platform inventory that gives the HOME StorageClass choices of the Sandbox form, and the default choice. |
-| `istio.internalAuthMTLS` | `true`. The internal ownership port 8081 uses strict mTLS. Configure the matching `portalAuth.mtls` settings of the Istio chart, `agentIdentity.tenantId`, `agentIdentity.portalClientId`, and `istio.host`. Explicit `false` selects legacy alias-only ownership and cannot authorize identity-bound Agents. |
+| `istio.internalAuthMTLS` | `true`. The internal ownership port 8081 uses strict mTLS. Configure the matching `portalAuth.mtls` settings of the Istio chart, `agentIdentity.tenantId`, `agentIdentity.portalClientId`, and `istio.host`. Explicit `false` permits plaintext transport, but does not disable a configured token verifier. The plaintext gateway does not forward tokens and cannot authorize identity-bound Agents. |
 | `features.agentIdentityEnabled`, `features.agentToolsEnabled` | `false`. `make deploy` sets both to `true`. Agent Identity and Agent Tools in the Portal. Each needs `agentIdentity.tenantId`, `agentIdentity.portalClientId`, and `istio.host`. Agent Tools also needs `agentTools.brokerURL`. |
 | `features.aiGatewayEnabled` | `true`. The platform chart refuses to install with `false`. |
 | `sandboxRuntimeDefaultsFromController` | `false`. Allow absent profiles only after the Operator's common Sandbox executor is enabled. |
@@ -963,7 +964,7 @@ must have the namespace of the intended ingress gateway.
 
 The portal service name comes from `fullnameOverride` or the chart name, not
 from the Helm release name. If you change that name or the namespace, align the
-shared Istio chart's `portalAuth.clusterHost`. `admins.aliases` controls the
+shared Istio chart's `portalAuth.clusterHost`. `admins.objectIDs` controls the
 portal administrative APIs. It does not control access to the Agent UI of
 every Agent. By default, `noticeBanner` is empty. When a notice is necessary,
 set it to deployment text that you reviewed.

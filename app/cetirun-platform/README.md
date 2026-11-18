@@ -66,7 +66,7 @@ The file contains these inputs:
 | --- | --- |
 | `target` | Explicit kubeconfig context, its cluster name and HTTPS API server exactly as in the kubeconfig, and the `kube-system` namespace UID that you get independently |
 | `release` | Registry with any repository prefix, release version, full source Git SHA, and optionally `excludeImages` for declared optional images. Omitted registry/version use the public MCR prefix and source agent chart version. `make deploy` checks only the format of the Git SHA. Run it from the commit that built the artifacts |
-| `domain`, `identityRealm`, `ownerAlias` | Public hostname, Portal Chat identity realm, and the alias of the first Portal administrator |
+| `domain`, `identityRealm`, `ownerAlias` | Public hostname, Portal Chat identity realm, and the CetiAdmin owner's display/name prefix. The alias does not grant administrator access |
 | `publicTLS` | Optional Azure Public IP DNS or custom-DNS HTTP-01 certificate configuration. It derives the Helm release from `platform`, and the ingress namespace from `istio` |
 | `identity` | Entra tenant, Portal, blueprint, authorization, and encryption client IDs, and the Key Vault key URL. Use the URL without a key version, for example `https://<vault>.vault.azure.net/keys/<key>`, so that new records use a rotated version |
 | `istio` | Separate release/namespace, the managed control plane and ingress identities that exist, mesh ConfigMap, and Istio Chart values |
@@ -434,6 +434,11 @@ Entra object ID explicitly. The helper examines format and consistency. It does
 not query the directory, create an account, or treat an email address as proof
 of identity. Owner access still uses SSO claims that match the assigned
 identity.
+
+When CetiAdmin is enabled, `make deploy` adds this owner's object ID to
+`cetirun-portal.admins.objectIDs`. Without CetiAdmin, configure Portal
+administrators explicitly under `platform.values.cetirun-portal.admins.objectIDs`.
+They must belong to `identity.tenantId`; `admins.aliases` is ignored.
 
 Portal access requires verified owner identity, not only a matching alias.
 `make deploy` configures this. For component-chart installations, set the Portal's

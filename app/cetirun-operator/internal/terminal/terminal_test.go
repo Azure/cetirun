@@ -124,6 +124,28 @@ func TestEntryPointFailsWhenNoShellExists(t *testing.T) {
 	}
 }
 
+func TestEntryPointUsesBoundOwnerForShellProbe(t *testing.T) {
+	agent := testAgent()
+	agent.Annotations = map[string]string{
+		api.AnnotationOwnerTenantID: "11111111-1111-1111-1111-111111111111",
+		api.AnnotationOwnerObjectID: "22222222-2222-2222-2222-222222222222",
+	}
+	backend := &fakeBackend{agent: agent}
+	backend.resolve = func(ctx context.Context, identity Identity) (Snapshot, error) {
+		return Snapshot{PodUID: "pod", ContainerID: "container"}, Authorize(ctx, backend, testConfig(), identity)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := false
+	err := watchShell(ctx, testConfig(), backend, time.Millisecond, func(value bool) {
+		ready = value
+		cancel()
+	}, func(startupObservation, bool) {})
+	if !ready || !errors.Is(err, context.Canceled) {
+		t.Fatalf("bound owner shell probe failed: ready=%v error=%v", ready, err)
+	}
+}
+
 func TestSessionHandlesAreBoundedOneUseAndExpire(t *testing.T) {
 	store := NewSessionStore()
 	now := time.Now()

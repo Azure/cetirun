@@ -124,9 +124,9 @@ The alias must be a DNS label:
 
 The Portal does not replace characters. For other users, for example
 `jane.doe@example.com` or `jane_doe@example.com`, it returns HTTP 403
-`invalid_identity`. `ownerAlias`, the aliases in
-`platform.values.cetirun-portal.admins.aliases`, and the CetiAdmin
-`owner.alias` must use the same format.
+`invalid_identity`. `ownerAlias` and the CetiAdmin `owner.alias` must use the
+same format. These names do not grant administrator access; that uses verified
+Entra object IDs.
 
 ### Tools
 
@@ -462,9 +462,12 @@ exists.
 Some inputs are difficult to change after the first run. Make a decision about
 these inputs before the first run:
 
-- `ownerAlias` is the Portal administrator. Portal administrators create Teams,
-  Agent Policies, and Sandboxes. To add other Portal administrators, list them
-  in `platform.values.cetirun-portal.admins.aliases`.
+- `ownerAlias` is the display/name prefix of the CetiAdmin owner. When CetiAdmin
+  is enabled, `make deploy` grants Portal administration to its owner's Entra
+  object ID. To add other Portal administrators, or configure them without
+  CetiAdmin, use `platform.values.cetirun-portal.admins.objectIDs` in the
+  configured tenant. Portal administrators create Teams, Agent Policies, and
+  Sandboxes; aliases alone never grant this access.
 - `identityRealm` names the authentication realm of Portal Chat history, for
   example `entra:<tenant-id>`. Keep it stable. A new value selects a different
   history partition in each browser, and users do not see their earlier
@@ -855,8 +858,8 @@ you set for them under `platform.values` has no effect:
   service account. The Broker values `portal.serviceAccount`,
   `operator.serviceAccount`, and `toolService.serviceAccount` get the service
   accounts of the Portal, the Operator, and Connections MCP.
-- `cetirun-portal.admins.aliases` gets `ownerAlias` in addition to the aliases
-  that you list.
+- `cetirun-portal.admins.objectIDs` gets the CetiAdmin owner's object ID when
+  CetiAdmin is enabled, in addition to the object IDs that you list.
 
 `make deploy` refuses these settings:
 
@@ -952,7 +955,9 @@ namespace for Istio injection. Set `ISTIO_REV` to the actual installed revision
 instead of its built-in `asm-1-27`. Supply `ISTIO_HOST`, `ENTRA_TENANT_ID`, and
 `PORTAL_OIDC_CLIENT_ID` explicitly. The identity inputs must match the tenant
 and Portal client configured at ingress. The helper requires all three before
-any cluster call and enables internal ownership mTLS. Neither helper waits for the
+any cluster call and enables internal ownership mTLS. Set `ADMIN_OBJECT_IDS`
+to the administrator object IDs in that tenant; `ADMIN_ALIASES` no longer
+grants access. Neither helper waits for the
 operator or portal rollout.
 
 `LOCAL_CHART=1` selects the local operator or portal chart. It does **not** make
@@ -960,7 +965,7 @@ the installation offline. Images and the operator-managed agent chart must
 still be available.
 
 Review [chart configuration](../../reference/helm/) for image pins, OCI pull
-credentials, deployment-wide Helm values, default model, admin aliases, and
+credentials, deployment-wide Helm values, default model, admin object IDs, and
 portal features. Before you serve users, configure these explicitly. The
 operator helper supports simple extra `HELM_SET_ARGS`, but the portal helper
 does not. For settings that a helper does not expose, use a separately reviewed

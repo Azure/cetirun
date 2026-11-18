@@ -569,17 +569,17 @@ tenant-facing UPN stays available for Portal identity headers. Set
 `oauth2Proxy.emailClaim: email` only when you know that every allowed user in
 the tenant receives that claim.
 
-Portal administrator checks always use the alias derived from these trusted
-identity headers. Without Agent Identity and
-Tools, Portal ownership checks also use this alias, and the ingress ownership
-endpoint accepts the owner's alias or email. Providers must assign the claims,
-keep their local parts unique among all users who can sign in, and prevent
-users from changing them. Do not put guest accounts in the allowed groups. For
-custom issuers and the supported OIDC configuration, see [cloud and OIDC parameters]({{< repo "infra/istio/README.md" >}}#cloud-and-oidc-parameters).
+With a configured Entra token verifier, Portal administration uses object IDs
+in the configured tenant, and ownership requires matching tenant and object ID
+annotations. An unbound Agent is denied, even when its alias or email matches.
+After successful ownership verification over mTLS, the gateway forwards those
+IDs to the Custom terminal. It strips client-supplied owner-ID headers first.
 
-Agent Identity and Tools require additional Entra ID-token verification and use
-verified tenant and object IDs for Agent authorization. Generic OIDC does not
-enable that verification.
+Only installations without a token verifier retain alias-based administration
+and alias/email ownership for unbound Agents. In that mode, providers must keep
+local parts unique and non-user-editable, and guest accounts must stay out of
+the allowed groups. Generic OIDC does not enable Entra token verification.
+For custom issuers, see [cloud and OIDC parameters]({{< repo "infra/istio/README.md" >}}#cloud-and-oidc-parameters).
 
 When the Portal ID token includes Entra's optional `login_hint` claim, the
 Portal passes that opaque value to the separate Agent authorization client.
@@ -683,7 +683,8 @@ Sources: [ownership filter]({{< repo "infra/istio/templates/ingress/envoy-filter
 and [portal NetworkPolicy]({{< repo "app/cetirun-portal/chart/templates/network-policy-internal-auth.yaml" >}}).
 The operator owns per-instance VirtualServices, not this shared chart.
 
-Portal `admins.aliases` enables administrative APIs. It is not blanket
+Portal `admins.objectIDs` enables administrative APIs in the verified tenant.
+Legacy `admins.aliases` is ignored in this mode. Administration is not blanket
 authorization to read another user's Agent. The Istio helper passes
 `authPolicy.adminAliases`, but no Istio template uses it. Configure the
 reviewed list of Portal administrators separately. If you run only the Istio

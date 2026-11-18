@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @unittest.skipUnless(shutil.which("helm"), "requires Helm")
 class PortalOwnershipChartTests(unittest.TestCase):
-    def render(self, enabled=None, identity=None, cloud="AzureCloud"):
+    def render(self, enabled=None, identity=None, cloud="AzureCloud", admins=None):
         istio = {"host": "portal.example.com", "gatewayNamespace": "test-ingress", "gatewayServiceAccount": "test-gateway"}
         if enabled is not None:
             istio["internalAuthMTLS"] = enabled
@@ -28,6 +28,7 @@ class PortalOwnershipChartTests(unittest.TestCase):
                 "cloud": cloud,
                 "istio": istio,
                 "features": {"agentIdentityEnabled": False, "agentToolsEnabled": False},
+                "admins": admins or {},
                 "agentIdentity": identity if identity is not None else {
                     "tenantId": "11111111-1111-1111-1111-111111111111",
                     "portalClientId": "22222222-2222-2222-2222-222222222222",
@@ -109,3 +110,23 @@ class PortalOwnershipChartTests(unittest.TestCase):
         result = self.render("false")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("istio.internalAuthMTLS must be a boolean", result.stderr)
+
+    def test_admin_object_ids_are_separate_from_legacy_aliases(self):
+        owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        result = self.render(admins={"objectIDs": [owner], "aliases": ["alice"]})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        objects = [x for x in yaml.safe_load_all(result.stdout) if x]
+        admins = next(x for x in objects if x["kind"] == "ConfigMap" and x["metadata"]["name"].endswith("-admins"))
+        self.assertEqual(admins["data"]["objectIDs"].splitlines(), [owner])
+        self.assertEqual(admins["data"]["aliases"].splitlines(), ["alice"])
+        deployment = next(x for x in objects if x["kind"] == "Deployment")
+        env = {item["name"]: item.get("value") for item in
+               deployment["spec"]["template"]["spec"]["containers"][0]["env"]}
+        self.assertEqual(env["ADMIN_OBJECT_IDS_FILE"], "/etc/cetirun-portal/admins/objectIDs")
+
+    def test_admin_object_ids_reject_names_and_incomplete_ids(self):
+        for value in ("alice", "alice@example.com", "", "not-a-uuid", 42):
+            with self.subTest(value=value):
+                result = self.render(admins={"objectIDs": [value]})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("admins.objectIDs must contain Entra object UUIDs", result.stderr)

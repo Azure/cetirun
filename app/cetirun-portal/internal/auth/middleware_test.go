@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -76,6 +77,53 @@ func TestMiddlewareUsesPortalOnlyIdentityTokenHeader(t *testing.T) {
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusNoContent || captured.TenantID != tenant || captured.ObjectID != object || captured.LoginHint != "opaque-login-hint==" {
 		t.Fatalf("Portal-only identity token was not verified: status=%d claims=%#v", w.Code, captured)
+	}
+}
+
+func TestMiddlewareVerifiedAdminRequiresObjectID(t *testing.T) {
+	const tenant = "11111111-1111-1111-1111-111111111111"
+	const client = "22222222-2222-2222-2222-222222222222"
+	const owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	const other = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	verifier, err := NewOIDCVerifier(tenant, client, "AzureCloud")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier.keys["test-key"] = &key.PublicKey
+	verifier.fetched = time.Now()
+	for _, tc := range []struct {
+		name, username, tenant, object string
+		admins                         []string
+		want                           int
+	}{
+		{"alias in another domain", "alice@example.org", tenant, other, []string{"alice"}, http.StatusForbidden},
+		{"reassigned username", "alice@example.com", tenant, other, []string{"alice", owner}, http.StatusForbidden},
+		{"object ID owner", "alice@example.com", tenant, owner, []string{owner}, http.StatusNoContent},
+		{"renamed owner", "renamed@example.org", tenant, owner, []string{owner}, http.StatusNoContent},
+		{"case insensitive object ID", "renamed@example.org", tenant, owner, []string{strings.ToUpper(owner)}, http.StatusNoContent},
+		{"same object in another tenant", "alice@example.com", other, owner, []string{owner}, http.StatusUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := Middleware(NewAdminSet(tc.admins), verifier)(RequireAdmin()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			})))
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/teams", nil)
+			req.Header.Set("X-Auth-Request-Preferred-Username", tc.username)
+			req.Header.Set(portalIdentityTokenHeader, "Bearer "+signedToken(t, key, map[string]any{
+				"iss": "https://login.microsoftonline.com/" + tc.tenant + "/v2.0",
+				"aud": client, "tid": tc.tenant, "oid": tc.object,
+				"exp": time.Now().Add(time.Minute).Unix(),
+			}))
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			if w.Code != tc.want {
+				t.Fatalf("status=%d, want %d: %s", w.Code, tc.want, w.Body.String())
+			}
+		})
 	}
 }
 

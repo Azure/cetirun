@@ -460,6 +460,13 @@ you can change.
 
 ## Logs and metrics
 
+The AI Gateway user ID is `<owner tenant ID>/<owner object ID>` for a bound Agent.
+An unbound Agent uses `agent:<Agent UID>`, so users with the same alias do not
+share accounting records. When an administrator binds an existing Agent, the
+Operator updates its key's user assignment in place, preserving the key and
+its spend and budget. Historical alias-based user records and spend logs are
+not reassigned by name.
+
 The AI Gateway keeps these records of model calls:
 
 | Record | Where | Content |
