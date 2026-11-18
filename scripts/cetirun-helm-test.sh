@@ -261,6 +261,15 @@ if helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" 
   echo "FAIL: Hermes ttyd.port=8642 should have been rejected (API collision)" >&2; exit 1
 fi
 
+# Test variant: the removed per-Agent LiteLLM sidecar (should fail)
+echo "==> helm template ${release_name} ${chart_dir} (litellm.enabled=true, expect failure)"
+if output=$(helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
+  --set secrets.openclawGatewayToken=lint-token \
+  --set litellm.enabled=true 2>&1); then
+  echo "FAIL: litellm.enabled=true should have been rejected (removed per-Agent model proxy)" >&2; exit 1
+fi
+grep -q "/litellm" <<< "$output" || { echo "FAIL: the litellm refusal does not name litellm" >&2; exit 1; }
+
 
 # ---------------------------------------------------------------------------
 # Desktop sidecar tests

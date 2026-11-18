@@ -34,10 +34,11 @@ ENV PATH=/app/.venv/bin:${PATH} \
 COPY requirements.txt /tmp/requirements.txt
 # --no-deps: the list is the complete set, so nothing outside it, including
 # litellm-enterprise, is pulled in. Wheels only, so nothing is compiled here.
+# --require-hashes: each file must match a hash of its pin.
 #
 # pip check must pass: a requirement the set does not meet fails the build.
 RUN python3 -m venv /app/.venv && \
-    pip install --index-url "${PYPI_INDEX_URL}" --no-deps --only-binary=:all: -r /tmp/requirements.txt && \
+    pip install --index-url "${PYPI_INDEX_URL}" --no-deps --only-binary=:all: --require-hashes -r /tmp/requirements.txt && \
     pip check
 
 RUN schema="$(python -c 'import litellm_proxy_extras, os; print(os.path.join(os.path.dirname(litellm_proxy_extras.__file__), "schema.prisma"))')" && \
