@@ -581,18 +581,22 @@ With 402, Hermes shows the AI Gateway's message after "Billing or credits
 exhausted", followed by its own advice to add credits with the provider.
 OpenClaw 2026.9.6 shows its own text for a billing error instead: the provider
 `cetirun` returned a billing error, and the user should check its billing
-dashboard. It then stops using the AI Gateway key for ten minutes, so a raised
-budget would wait that long. The CetiRun OpenClaw image changes both, with
-`agents/openclaw/compat/apply-gateway-budget.mjs` of the agent chart. Its
-text says that the Agent is out of budget on the CetiRun AI Gateway, and that a
-CetiRun administrator can raise the budget or that the budget resets. It does
-not give the reset time.
+dashboard. The failed turn in the conversation gets a different OpenClaw text:
+the request failed because of a provider billing issue, and the user should
+check the provider billing. OpenClaw then stops using the AI Gateway key for ten
+minutes, so a raised budget would wait that long. The CetiRun OpenClaw image
+changes the two texts and the cooldown, with
+`agents/openclaw/compat/apply-gateway-budget.mjs` of the agent chart. The error
+text and the failed turn both say that the Agent is out of budget on the CetiRun
+AI Gateway, and that a CetiRun administrator can raise the budget or that the
+budget resets. They do not give the reset time. A failed turn that OpenClaw
+saved before the change keeps its earlier text.
 
 OpenClaw keeps no cooldown for the AI Gateway key, as it does for the providers
 `openrouter` and `kilocode`. After a refusal, its next request goes to the
-AI Gateway again. The image changes two chunks of the published OpenClaw
-2026.9.6 package. The change was checked on those files, and not with a running
-Agent.
+AI Gateway again. The image changes three chunks of the published OpenClaw
+2026.9.6 package. The change was checked on those files and with a running
+OpenClaw Agent.
 
 ### Key request limits
 
