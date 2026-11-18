@@ -66,12 +66,15 @@ func TestCetiAdminAgentDisabledReconcile(t *testing.T) {
 			if ptr.Deref(workload.Spec.Replicas, -1) != 0 {
 				t.Fatal("CetiAdmin workload was not stopped")
 			}
+			if f.result.RequeueAfter == 0 {
+				t.Fatal("unobserved workload stop was not requeued")
+			}
 			workload.Status.ObservedGeneration = workload.Generation
 			if err := f.kube.Status().Update(f.ctx, workload); err != nil {
 				t.Fatal(err)
 			}
-			if err := f.run(); err != nil {
-				t.Fatal(err)
+			if err := f.run(); err != nil || f.result != (ctrl.Result{}) {
+				t.Fatalf("stopped installation keeps retrying: result=%+v err=%v", f.result, err)
 			}
 			if state := f.state(); state.Phase != cetiadmin.PhaseDisabled || state.Reason != reason {
 				t.Fatalf("installation did not settle: phase=%s reason=%s", state.Phase, state.Reason)
@@ -96,8 +99,8 @@ func TestCetiAdminAgentDisabledReconcile(t *testing.T) {
 				t.Fatal("disable did not block and retain the existing Gateway key")
 			}
 			for range 3 {
-				if err := f.run(); err != nil {
-					t.Fatal(err)
+				if err := f.run(); err != nil || f.result != (ctrl.Result{}) {
+					t.Fatalf("settled installation keeps retrying: result=%+v err=%v", f.result, err)
 				}
 				if result, err := f.r.Runtime.Reconcile(f.ctx, request); err != nil || result != (ctrl.Result{}) {
 					t.Fatalf("settled Agent keeps retrying: result=%+v err=%v", result, err)
@@ -117,6 +120,19 @@ func TestCetiAdminAgentDisabledReconcile(t *testing.T) {
 			if _, handled, err := f.r.BindingForAgent(f.ctx, imitation); handled || err != nil {
 				t.Fatalf("a same-name Agent was treated as the retained installation: handled=%v err=%v", handled, err)
 			}
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "late-writer", Namespace: state.Namespace.Name},
+				Status: corev1.PodStatus{Phase: corev1.PodRunning}}
+			f.seed(pod)
+			if err := f.run(); err != nil || f.result.RequeueAfter == 0 {
+				t.Fatalf("retained installation ignored a live writer: result=%+v err=%v", f.result, err)
+			}
+			pod.Status.Phase = corev1.PodSucceeded
+			if err := f.kube.Status().Update(f.ctx, pod); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.run(); err != nil || f.result != (ctrl.Result{}) {
+				t.Fatalf("confirmed stop keeps retrying: result=%+v err=%v", f.result, err)
+			}
 
 			f.config.Enabled = true
 			f.updateConfig()
@@ -133,6 +149,22 @@ func TestCetiAdminAgentDisabledReconcile(t *testing.T) {
 				t.Fatalf("resume did not restore the retained binding: handled=%v err=%v", handled, err)
 			}
 		})
+	}
+}
+
+func TestCetiAdminPauseAlreadyStoppedAgent(t *testing.T) {
+	f := newCetiAdminFixture(t)
+	f.converge()
+	agent := f.agent()
+	agent.Spec.Suspended = true
+	if err := f.kube.Update(f.ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.run(); err != nil || f.result != (ctrl.Result{}) {
+		t.Fatalf("already stopped installation keeps retrying: result=%+v err=%v", f.result, err)
+	}
+	if state := f.state(); state.Phase != cetiadmin.PhaseDisabled || state.Reason != "UserSuspended" {
+		t.Fatalf("installation did not settle: phase=%s reason=%s", state.Phase, state.Reason)
 	}
 }
 

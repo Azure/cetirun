@@ -260,7 +260,10 @@ func (r *CetiAdminReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (re
 		}
 	}
 	if state.Phase == cetiadmin.PhaseStopping {
-		_, err := r.deactivate(ctx, object, state, state.Reason)
+		stopped, err := r.deactivate(ctx, object, state, state.Reason)
+		if stopped && state.Reason == "UserSuspended" {
+			result = ctrl.Result{}
+		}
 		return result, err
 	}
 	if state.ConfigHash != installationConfigHash(config) || state.OperatorImage != r.OperatorImage || state.RuntimeVersion != r.ChartVersion {
@@ -288,7 +291,10 @@ func (r *CetiAdminReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (re
 			if err := r.validateRetainedObjects(ctx, state); err != nil {
 				return result, err
 			}
-			_, err := r.deactivate(ctx, object, state, "UserSuspended")
+			stopped, err := r.deactivate(ctx, object, state, "UserSuspended")
+			if stopped {
+				result = ctrl.Result{}
+			}
 			return result, err
 		}
 	}
@@ -317,7 +323,10 @@ func (r *CetiAdminReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (re
 		return result, err
 	}
 	if state.Bootstrapped && observed.Agent.Spec.Suspended {
-		_, err := r.deactivate(ctx, object, state, "UserSuspended")
+		stopped, err := r.deactivate(ctx, object, state, "UserSuspended")
+		if stopped {
+			result = ctrl.Result{}
+		}
 		return result, err
 	}
 	binding, err := cetiadmin.ResolveBinding(config, &state.Record, observed)
