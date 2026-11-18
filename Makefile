@@ -43,11 +43,15 @@ help:
 
 check: lint test
 
-test: ci-test python-test go-test portal-test memory-native-test
+test: ci-test python-test go-test portal-test memory-native-test openclaw-skills-test
 
 .PHONY: memory-native-test
 memory-native-test:
 	node --test app/cetirun-memory-context/tests/native.test.mjs
+
+.PHONY: openclaw-skills-test
+openclaw-skills-test:
+	node --test scripts/tests/openclaw_skills.test.mjs
 
 lint: version-check artifact-check license-check python-check go-lint portal-lint chart-check bicep-check shell-check workflow-check
 

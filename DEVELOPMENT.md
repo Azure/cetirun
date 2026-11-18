@@ -181,7 +181,7 @@ them, run `python3 -B scripts/ci/validate.py --help`. `version-check`,
 
 | Command | What it runs |
 | --- | --- |
-| `make test` | `ci-test`, `python-test`, `go-test`, `portal-test`, and the Memory Context native test (`memory-native-test`) |
+| `make test` | `ci-test`, `python-test`, `go-test`, `portal-test`, `memory-native-test`, and `openclaw-skills-test` |
 | `make lint` | `version-check`, `artifact-check`, `license-check`, `python-check`, `go-lint`, `portal-lint`, `chart-check`, `bicep-check`, `shell-check`, and `workflow-check` |
 | `make ci-test` | Python `unittest` suites in `scripts/ci/tests`, `scripts/tests`, and `app/cetirun-operator/internal/cetiadmin/tests`. Needs PyYAML. |
 | `make python-test` | `pytest` suites in `app/cetirun-chart/tests`. Needs all packages in `scripts/ci/requirements.txt`. |
@@ -190,6 +190,7 @@ them, run `python3 -B scripts/ci/validate.py --help`. `version-check`,
 | `make portal-test` | `npm test` in `app/cetirun-portal/web` |
 | `make portal-lint` | The TypeScript project check (`tsc -b`) in `app/cetirun-portal/web` |
 | `make memory-native-test` | `node --test app/cetirun-memory-context/tests/native.test.mjs`. It builds the Memory helper offline with Go. |
+| `make openclaw-skills-test` | Native OpenClaw skill context and file/shell tools against a scripted loopback model. Requires a separately installed pinned host; otherwise reports skipped cases. |
 | `make chart-check` | `helm lint --strict` and `helm template` for every chart in `CHARTS` of the validation runner, with synthetic values. Then the render regression scripts of the charts. Needs PyYAML. |
 | `make bicep-check` | `bicep build --no-restore` for every Bicep file |
 | `make shell-check` | `bash -n` and `shellcheck --severity=error` for every shell script |
@@ -876,6 +877,26 @@ need `jq`.
 
 Operator render tests keep the original configuration and resource baselines.
 Do not replace a baseline fixture with changed output only to make a test pass.
+
+The optional native skill checks use OpenClaw 2026.9.6 with its dependencies
+already installed. Use the checksum-pinned installation in
+`.github/workflows/memory-context-ci.yml`, and the Node version from
+`app/cetirun-chart/Dockerfile.base` or another version the pinned host supports:
+
+```bash
+CETIRUN_OPENCLAW_SOURCE=/path/to/node_modules/openclaw make openclaw-skills-test
+```
+
+The test copies that package into a temporary directory, applies the image's
+compatibility patches, and uses isolated native state. It inspects the final
+Chat Completions requests and executes the real `read` and `exec` tools on
+synthetic files. Cases cover relative and absolute bundled-script paths,
+paths containing spaces, an omitted script subdirectory, and a denied `read`
+tool. No real model, cluster, credentials, or shared HOME is used. It does not
+test model instruction adherence, browser behavior, Memory plugin hooks, or
+the deployed Marketplace delivery path. A pass cannot establish that a real
+model will choose the correct command. CI runs these checks using the native
+host it already installs for Memory Context qualification.
 
 The Hermes Webapp storage test needs a prepared Playwright module and Chromium.
 It was last run with Playwright 1.64.0:

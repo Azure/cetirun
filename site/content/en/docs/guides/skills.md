@@ -5,8 +5,11 @@ weight: 55
 ---
 
 A skill is a set of instructions and files that teaches your Agent a task.
-To use a skill, describe the task to the Agent. The Agent finds the skill that
-matches the task and reads it. You do not start a skill yourself.
+To use a skill, describe the task to the Agent. You can name the skill and ask
+the Agent to read its instructions first. The runtime makes eligible skills
+available to the model; the model decides which instructions to read and
+which tools to call. A published or discovered skill does not prove that the
+model read it or ran its scripts successfully.
 
 A Hermes or OpenClaw Agent can have three types of skills:
 
@@ -68,8 +71,9 @@ agent type:
 | Hermes | `~/.hermes/skills` |
 | OpenClaw | `~/.openclaw/skills` |
 
-The Agent always reads the skills in this directory. The directory is in your
-home directory, so your skills are kept when the Agent restarts.
+The runtime discovers eligible skills in this directory. Discovery makes a
+skill available; it does not run the skill. The directory is in your home
+directory, so your skills are kept when the Agent restarts.
 
 1. Open **Terminal**.
 2. Make a directory for the skill, for example
@@ -83,6 +87,21 @@ home directory, so your skills are kept when the Agent restarts.
 For the file format, refer to the skill documentation of
 [OpenClaw](https://docs.openclaw.ai/tools/skills) or
 [Hermes](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills).
+
+## Check a bundled script invocation
+
+Keep the directory structure of the skill intact. For example, a skill can
+contain `SKILL.md` and `scripts/probe.sh`. After reading `SKILL.md`, the Agent
+must use the complete script path. From the skill directory, the command is
+`/bin/sh scripts/probe.sh`; `/bin/sh probe.sh` names a different file. An
+absolute path to the same script also works. Changing to the skill directory
+does not remove the `scripts/` component.
+
+If a skill fails, inspect the tool call and its result before repeating the
+task. Check whether the Agent read the intended `SKILL.md`, used the complete
+path, and received successful script output. A matching answer alone does
+not establish that a tool ran. Keep the failed result when testing a changed
+skill or runtime.
 
 > **Warning:** A skill can tell the Agent to run commands and to use your
 > connected services. Add only skills that you trust. Do not put passwords,
