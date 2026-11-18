@@ -144,8 +144,9 @@ RUN --mount=from=openclaw-source,source=/home/vibe/openclaw-pack/openclaw.tgz,ta
     ! npm ls undici@7.29.0 --all >/dev/null 2>&1
 
 # CetiRun's changes to the pinned OpenClaw package, after its last install:
-# workload authentication for the platform MCP, and the text and key cooldown
-# for a spent AI Gateway budget. Each refuses an OpenClaw source it does not know.
+# workload authentication for the platform MCP, and the texts and the key
+# cooldown for a spent AI Gateway budget. Each refuses an OpenClaw source it does
+# not know.
 COPY --chown=vibe:vibe agents/openclaw/compat/ /tmp/cetirun-openclaw-compat/
 RUN node /tmp/cetirun-openclaw-compat/apply-workload-mcp.mjs /usr/local/share/npm-global/lib/node_modules/openclaw && \
     node /tmp/cetirun-openclaw-compat/apply-gateway-budget.mjs /usr/local/share/npm-global/lib/node_modules/openclaw && \

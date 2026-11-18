@@ -5,16 +5,19 @@
 // Agent: OpenClaw's provider cetirun. When the Agent's Gateway budget is
 // spent, OpenClaw 2026.9.6 shows its own text for a billing error, which tells
 // the user to top up the provider's billing dashboard, and stops using the
-// Gateway key for ten minutes, so a raised budget waits that long.
+// Gateway key for ten minutes, so a raised budget waits that long. The failed
+// turn in the conversation gets another text of OpenClaw, which tells the user
+// to check the provider billing.
 //
 // This gives a billing error of the provider cetirun a text about the CetiRun
 // budget, and one without a provider too: in this image, it comes from the
-// Gateway. It also adds cetirun to the providers whose key cooldowns their
-// provider manages, as OpenClaw does for openrouter and kilocode: OpenClaw
-// keeps no auth or billing cooldown for the Gateway key, and the Gateway
-// refuses each request over budget itself, before any model call.
+// Gateway. The failed turn gets the same text. It also adds cetirun to the
+// providers whose key cooldowns their provider manages, as OpenClaw does for
+// openrouter and kilocode: OpenClaw keeps no auth or billing cooldown for the
+// Gateway key, and the Gateway refuses each request over budget itself, before
+// any model call.
 //
-// It changes two chunks of the published package, each pinned by its digest,
+// It changes three chunks of the published package, each pinned by its digest,
 // and checks each change by running the changed function. The bundles in
 // dist/worker, which OpenClaw sends to cloud workers that CetiRun does not
 // configure, stay as published: a cloud worker that installs OpenClaw from
@@ -49,6 +52,22 @@ const BYPASS = {
   context: { normalizeProviderId: (value) => String(value).trim().toLowerCase() },
 };
 
+// The text of a failed turn. A turn that OpenClaw saved without its provider
+// reads "LLM request failed (provider billing issue, HTTP 402). Check provider
+// billing and try again."
+const REPLY_BILLING =
+  '\tif (facts.reason === "billing") return `${summary} Check ${provider ? `${provider} billing` : "provider billing"} and try again.`;\n';
+const REPLY = {
+  name: "renderAssistantRequestFailureCopy",
+  before: REPLY_BILLING,
+  after: `\tif (facts.reason === "billing" && (!provider || provider.toLowerCase() === ${JSON.stringify(PROVIDER)})) ` +
+    `return ${JSON.stringify(BUDGET_COPY)};\n` + REPLY_BILLING,
+  // The module constant that the function reads for these checks, with OpenClaw's values.
+  context: {
+    ASSISTANT_REQUEST_FAILURE_REASON: { billing: "provider billing issue", rate_limit: "rate limited", model_not_found: "model not found" },
+  },
+};
+
 // OpenClaw 2026.9.6, as published (sha512-Ie0kyQSC... in the Dockerfile).
 export const FILES = {
   "dist/user-copy-DfLWtdTx.mjs": {
@@ -58,6 +77,10 @@ export const FILES = {
   "dist/usage-state-Bm5iXGhR.mjs": {
     sha256: "4abd9dab006d0b708e69e869ab8e56d92312cd074ac8ef7fc04b33999be9c60a",
     edit: BYPASS,
+  },
+  "dist/assistant-request-failure-copy-D0cfsUk2.mjs": {
+    sha256: "7ec3637305985d3e929398f886c463ec800419649dab85e01f646afc83475ebc",
+    edit: REPLY,
   },
 };
 
@@ -97,6 +120,17 @@ export function verify(source, edit) {
       if (changed(...args) !== BUDGET_COPY) throw new Error(`billing text for ${JSON.stringify(args)} is not CetiRun's`);
     }
     if (changed("openai", "gpt-6", "api-key") === BUDGET_COPY) throw new Error("another provider's billing text changed");
+  } else if (edit === REPLY) {
+    const billing = { reason: "billing", status: 402 };
+    for (const facts of [billing, { ...billing, provider: PROVIDER, model: "gpt-6" }, { ...billing, provider: " CetiRun " }]) {
+      if (changed(facts) !== BUDGET_COPY) throw new Error(`failed-turn text for ${JSON.stringify(facts)} is not CetiRun's`);
+    }
+    if (changed({ ...billing, provider: "openai", model: "gpt-6" }) === BUDGET_COPY) {
+      throw new Error("another provider's failed-turn text changed");
+    }
+    for (const facts of [{ reason: "rate_limit", status: 429 }, { reason: "model_not_found", status: 404 }]) {
+      if (changed(facts) === BUDGET_COPY) throw new Error(`the failed-turn text for ${JSON.stringify(facts)} changed`);
+    }
   } else {
     for (const [name, expected] of [[PROVIDER, true], ["openrouter", true], ["kilocode", true], ["openai", false]]) {
       if (changed(name) !== expected) throw new Error(`the cooldown of ${name} is not left to the provider as expected`);
