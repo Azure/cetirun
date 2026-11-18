@@ -10,8 +10,8 @@ keywords:
   - websocket
 name: cetirun
 type: application
-version: 0.1.3
-appVersion: "0.1.3"
+version: 0.2.0
+appVersion: "0.2.0"
 maintainers: []
 annotations:
   cetirun.microsoft.com/custom-copilot: v1

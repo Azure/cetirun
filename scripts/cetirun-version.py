@@ -116,7 +116,7 @@ def set_version(version):
             r"^(\s*github\.com/Azure/CetiRun/app/cetirun-operator )v\S+$",
             rf"\g<1>v{version}",
         )
-    for directory in ("app/cetirun-portal/web", "examples/pi-agent"):
+    for directory in ("app/cetirun-portal/web", "examples/pi-agent", "site"):
         for filename in ("package.json", "package-lock.json"):
             replace(
                 ROOT / directory / filename,
@@ -181,7 +181,7 @@ def check_version(version):
         if expected not in (ROOT / relative).read_text():
             errors.append(f"{relative}: expected {expected!r}")
 
-    for directory in ("app/cetirun-portal/web", "examples/pi-agent"):
+    for directory in ("app/cetirun-portal/web", "examples/pi-agent", "site"):
         package = json.loads((ROOT / directory / "package.json").read_text())
         package_lock = json.loads((ROOT / directory / "package-lock.json").read_text())
         if package.get("version") != version:

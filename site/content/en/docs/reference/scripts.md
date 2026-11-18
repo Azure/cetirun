@@ -183,7 +183,7 @@ supply-chain input, so mutable tags are rejected before the build. For example:
 
 ```bash
 SBOM_GENERATOR=registry.example.com/tools/sbom-generator@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
-  make publish-images REGISTRY=registry.example.com VERSION=0.1.1 \
+  make publish-images REGISTRY=registry.example.com VERSION=0.2.0 \
   GIT_SHA="$(git rev-parse HEAD)"
 ```
 

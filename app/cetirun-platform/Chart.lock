@@ -1,18 +1,18 @@
 dependencies:
 - name: cetirun-connections-mcp
   repository: file://../cetirun-connections-mcp/chart
-  version: 0.1.3
+  version: 0.2.0
 - name: cetirun-operator
   repository: file://../cetirun-operator/chart
-  version: 0.1.3
+  version: 0.2.0
 - name: cetirun-portal
   repository: file://../cetirun-portal/chart
-  version: 0.1.3
+  version: 0.2.0
 - name: cetirun-ai-gateway
   repository: file://../cetirun-ai-gateway/chart
-  version: 0.1.3
+  version: 0.2.0
 - name: cetirun-observability
   repository: file://../cetirun-observability/chart
-  version: 0.1.3
-digest: sha256:54337edb32e29a6042d104b5ed295abd1be8ec516740aace36dd2c9927e77936
-generated: "2026-11-16T09:45:21.215056096+08:00"
+  version: 0.2.0
+digest: sha256:e307b49ffdabc72f62e18fb179690f8745ca4fda30879fc36193cf9c4cf0f725
+generated: "2026-11-18T13:54:27.270967701+08:00"

@@ -42,10 +42,10 @@ covers smart routing of models and the first call from a client.
 Official images and charts are on Microsoft Container Registry (MCR). You do
 not need to build or publish them. Clone a
 [release tag](https://github.com/Azure/cetirun/tags) whose artifacts are published
-to MCR. For `v0.1.3`:
+to MCR. For `v0.2.0`, once its artifacts are published:
 
 ```bash
-git clone --branch v0.1.3 --single-branch https://github.com/Azure/cetirun.git
+git clone --branch v0.2.0 --single-branch https://github.com/Azure/cetirun.git
 cd cetirun
 git rev-parse HEAD
 git status --short
@@ -303,16 +303,17 @@ examine the Entra applications or the Key Vault key.
 ## 4. Select the release artifacts {#publish-the-images-and-charts}
 
 In the environment file (step 6), set `release` to match the selected tag.
-For `v0.1.3`:
+For `v0.2.0`:
 
 ```yaml
 release:
   registry: mcr.microsoft.com/aks/ai-runtime/cetirun
-  version: 0.1.3
-  gitSHA: 28c38f851bb082a2e8150f4dcdb0cec45ac7ec17
+  version: 0.2.0
+  gitSHA: "<full commit ID from git rev-parse HEAD>"
 ```
 
-For another release, set `version` and `gitSHA` from its tag. Check
+Replace `gitSHA` with the full commit ID from the selected tag's clone. For
+another release, also set `version` from its tag. Check
 [MCR access](../../operations/artifacts/#use-official-mcr-artifacts) and set the
 [approved Custom image digests](../../operations/artifacts/#use-the-artifacts-with-make-deploy).
 For a custom build or private registry, follow the optional
@@ -896,7 +897,7 @@ helm template cetirun-operator app/cetirun-operator/chart \
   --set-string image.repository=registry.example.com/cetirun-operator \
   --set-string image.tag=example-build \
   --set-string cetirun.chart.repoURL=oci://registry.example.com/helm/cetirun \
-  --set-string cetirun.chart.version=0.1.1 \
+  --set-string cetirun.chart.version=0.2.0 \
   --set cetiadmin.enabled=false > /dev/null
 ```
 
@@ -915,12 +916,12 @@ After you complete the prerequisites, run the deployment scripts from the
 repository root. Before you run these commands, replace all example values:
 
 ```bash
-REGISTRY=registry.example.com CHART_VERSION=0.1.1 IMAGE_TAG=example-build \
-CETIRUN_CHART_VERSION=0.1.1 DOMAIN=example.com \
+REGISTRY=registry.example.com CHART_VERSION=0.2.0 IMAGE_TAG=example-build \
+CETIRUN_CHART_VERSION=0.2.0 DOMAIN=example.com \
 HELM_SET_ARGS="cetiadmin.enabled=false" \
   bash app/cetirun-operator/deploy/deploy.sh
 
-REGISTRY=registry.example.com CHART_VERSION=0.1.1 IMAGE_TAG=example-build \
+REGISTRY=registry.example.com CHART_VERSION=0.2.0 IMAGE_TAG=example-build \
 ISTIO_HOST=example.com ISTIO_REV=your-installed-istio-revision \
 ENTRA_TENANT_ID="<tenant-id>" \
 PORTAL_OIDC_CLIENT_ID="<portal-client-id>" \
@@ -928,7 +929,7 @@ NOTICE_BANNER="" \
   bash app/cetirun-portal/deploy/deploy.sh
 ```
 
-Replace every example value. The version `0.1.1` is an example. It does not
+Replace every example value. The version `0.2.0` is an example. It does not
 show that an artifact exists in your registry. `example-build` is not a
 published image tag.
 
