@@ -5,19 +5,85 @@ package sandboxadmission
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/cetiadmin"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
+	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
+
+func TestCetiAdminOrphanNamespaceRecovery(t *testing.T) {
+	for _, scenario := range []string{"orphan", "same-name replacement", "live owner", "ordinary caller", "missing preconditions", "wrong namespace UID", "protected Sandbox", "owner read failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newCetiAdminFixture(t)
+			ctx := context.Background()
+			namespace := &corev1.Namespace{}
+			if err := f.kube.Get(ctx, client.ObjectKey{Name: f.targetIdentity.Namespace.Name}, namespace); err != nil {
+				t.Fatal(err)
+			}
+			namespace.Labels = map[string]string{"app.kubernetes.io/managed-by": "cetirun-operator"}
+			namespace.Annotations = map[string]string{
+				cetiadmin.MaintenanceAgentName: f.target.Name, cetiadmin.MaintenanceAgentUID: string(f.target.UID),
+				cetiadmin.MaintenanceRequestID: "previous-maintenance",
+			}
+			if scenario == "protected Sandbox" {
+				namespace.Labels[w.ProtectedNamespaceLabel] = "true"
+			}
+			if err := f.kube.Update(ctx, namespace); err != nil {
+				t.Fatal(err)
+			}
+			if scenario != "live owner" {
+				if err := f.kube.Delete(ctx, f.target); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "same-name replacement" {
+				replacement := f.target.DeepCopy()
+				replacement.UID, replacement.ResourceVersion = "replacement-agent-uid", ""
+				if err := f.kube.Create(ctx, replacement); err != nil {
+					t.Fatal(err)
+				}
+			}
+			user := authenticationv1.UserInfo{Username: "administrator", Groups: []string{"system:authenticated"}}
+			if scenario == "ordinary caller" {
+				user.Username = "ordinary-writer"
+			}
+			request := adminRequest(t, admissionv1.Delete, "", "Namespace", "namespaces", nil, namespace, user)
+			uid, version := namespace.UID, namespace.ResourceVersion
+			if scenario == "wrong namespace UID" {
+				uid = "wrong-uid"
+			}
+			if scenario != "missing preconditions" {
+				request.Options.Raw = adminJSON(t, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &version}})
+			}
+			if scenario == "owner read failure" {
+				f.guard.reader = interceptor.NewClient(f.kube.(client.WithWatch), interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+						if _, ok := object.(*api.Agent); ok && key.Name == f.target.Name {
+							return errors.New("synthetic owner read failure")
+						}
+						return c.Get(ctx, key, object, options...)
+					},
+				})
+			}
+			response := f.guard.Validate(ctx, request)
+			want := scenario == "orphan" || scenario == "same-name replacement"
+			if response.Allowed != want {
+				t.Fatalf("orphan recovery allowed=%v, want %v: %v", response.Allowed, want, response.Result)
+			}
+		})
+	}
+}
 
 func TestCetiAdminExecBindingOnHeldAgentPassesBothWebhooks(t *testing.T) {
 	for _, operation := range []string{"add", "replace", "remove"} {

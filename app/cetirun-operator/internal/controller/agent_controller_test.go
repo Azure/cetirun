@@ -7,6 +7,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -27,6 +29,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 
@@ -48,6 +51,7 @@ type fakeHelmClient struct {
 	prepareCalls        int
 	prepareErr          error
 	disableChatContract bool
+	uninstallCalls      int
 }
 
 func (f *fakeHelmClient) ResolveImageUpgrade(_, _, _, _, image, _ string) (string, error) {
@@ -193,7 +197,115 @@ func (f *fakeHelmClient) CustomApplied(namespace, releaseName string, prepared *
 }
 
 func (f *fakeHelmClient) Uninstall(namespace, releaseName string) error {
+	f.uninstallCalls++
 	return nil
+}
+
+func TestOrdinaryDeletionRetainsFinalizerUntilNamespaceGone(t *testing.T) {
+	for _, kind := range []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes} {
+		t.Run(string(kind), func(t *testing.T) {
+			ctx := context.Background()
+			agent := newCR("deletion", cetirunv1alpha1.PhaseReady, nil, 1, 1, "")
+			agent.Spec.Agent.Type = kind
+			namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+				Name: "cetirun-deletion", UID: "namespace-uid", Finalizers: []string{"example.com/namespace-controller"},
+				OwnerReferences: []metav1.OwnerReference{{APIVersion: cetirunv1alpha1.GroupVersion.String(),
+					Kind: "Agent", Name: agent.Name, UID: agent.UID}},
+			}}
+			scheme := testScheme()
+			kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(agent, namespace).
+				WithStatusSubresource(agent).Build()
+			failure := errors.New("synthetic namespace deletion failure")
+			deleteCalls := 0
+			writes := interceptor.NewClient(kube, interceptor.Funcs{
+				Delete: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.DeleteOption) error {
+					if _, ok := object.(*corev1.Namespace); ok {
+						deleteCalls++
+						if deleteCalls == 1 {
+							return failure
+						}
+						opts := (&client.DeleteOptions{}).ApplyOptions(options)
+						if opts.Preconditions == nil || opts.Preconditions.UID == nil ||
+							*opts.Preconditions.UID != object.GetUID() || opts.Preconditions.ResourceVersion == nil ||
+							*opts.Preconditions.ResourceVersion != object.GetResourceVersion() {
+							t.Fatal("namespace deletion did not pin the observed UID and resourceVersion")
+						}
+					}
+					return c.Delete(ctx, object, options...)
+				},
+			})
+			recorder := record.NewFakeRecorder(20)
+			r := &controller.AgentReconciler{Client: writes, APIReader: kube, Scheme: scheme,
+				HelmClient: &fakeHelmClient{}, EventRecorder: recorder}
+			if err := kube.Delete(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(agent)}
+			if _, err := r.Reconcile(ctx, request); !errors.Is(err, failure) {
+				t.Fatalf("namespace deletion failure was not surfaced: %v", err)
+			}
+			for pass := range 3 {
+				if err := kube.Get(ctx, request.NamespacedName, agent); err != nil ||
+					!slices.Contains(agent.Finalizers, cetirunv1alpha1.Finalizer) {
+					t.Fatal("cleanup released the Agent before namespace absence:", err)
+				}
+				for len(recorder.Events) > 0 {
+					if event := <-recorder.Events; strings.Contains(event, "InstanceDeleted") {
+						t.Fatal("incomplete cleanup reported success:", event)
+					}
+				}
+				if pass < 2 {
+					result, err := r.Reconcile(ctx, request)
+					if err != nil || result.RequeueAfter != 5*time.Second {
+						t.Fatalf("namespace cleanup did not retry: %+v %v", result, err)
+					}
+				}
+			}
+			if deleteCalls != 2 {
+				t.Fatalf("terminating namespace was deleted repeatedly: %d calls", deleteCalls)
+			}
+			if err := kube.Get(ctx, client.ObjectKeyFromObject(namespace), namespace); err != nil || namespace.DeletionTimestamp.IsZero() {
+				t.Fatal("retry did not initiate namespace deletion:", err)
+			}
+			// The fake API has no namespace controller; complete only its synthetic finalizer.
+			namespace.Finalizers = nil
+			if err := kube.Update(ctx, namespace); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.Reconcile(ctx, request); err != nil {
+				t.Fatal(err)
+			}
+			if err := kube.Get(ctx, request.NamespacedName, agent); !apierrors.IsNotFound(err) {
+				t.Fatal("confirmed namespace absence did not finish deletion:", err)
+			}
+		})
+	}
+}
+
+func TestOrdinaryDeletionPreservesNamespaceOfPreviousAgent(t *testing.T) {
+	ctx := context.Background()
+	agent := newCR("recreated", cetirunv1alpha1.PhasePending, nil, 1, 0, "")
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: "cetirun-recreated", UID: "retained-namespace", OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: cetirunv1alpha1.GroupVersion.String(), Kind: "Agent", Name: agent.Name, UID: "previous-agent-uid",
+		}},
+	}}
+	scheme := testScheme()
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(agent, namespace).WithStatusSubresource(agent).Build()
+	hc := &fakeHelmClient{}
+	r := &controller.AgentReconciler{Client: kube, APIReader: kube, Scheme: scheme, HelmClient: hc, EventRecorder: record.NewFakeRecorder(10)}
+	if err := kube.Delete(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(agent)}); err == nil {
+		t.Fatal("replacement Agent deleted a namespace owned by a different lifetime")
+	}
+	if hc.uninstallCalls != 0 {
+		t.Fatal("ownership conflict reached Helm uninstall")
+	}
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(namespace), namespace); err != nil || !namespace.DeletionTimestamp.IsZero() {
+		t.Fatal("previous lifetime's namespace was changed:", err)
+	}
 }
 
 // --- Test helpers ---

@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/http"
 	"reflect"
 	"strings"
 
@@ -28,6 +29,20 @@ func (h *CetiAdminHandler) maintenanceGuard(ctx context.Context, request admissi
 		var next, old corev1.Namespace
 		_ = decodeJSON(request.Object.Raw, &next, false)
 		_ = decodeJSON(request.OldObject.Raw, &old, false)
+		if request.Operation == admissionv1.Delete {
+			// DELETE has no Object. Recovery removes an orphan lifetime, not
+			// the selector or maintenance markers of a live namespace.
+			if old.Labels["app.kubernetes.io/managed-by"] == "cetirun-operator" ||
+				old.Annotations[cetiadmin.MaintenanceAgentUID] != "" ||
+				old.Annotations[cetiadmin.MaintenanceAgentName] != "" ||
+				old.Annotations[cetiadmin.MaintenanceRequestID] != "" {
+				if authenticated(request.UserInfo) && request.UserInfo.Username == h.config.ControllerUsername {
+					return admission.Response{}, false
+				}
+				return h.orphanNamespaceDeletion(ctx, request, &old), true
+			}
+			return admission.Response{}, false
+		}
 		if next.Labels["app.kubernetes.io/managed-by"] != old.Labels["app.kubernetes.io/managed-by"] &&
 			(next.Labels["app.kubernetes.io/managed-by"] == "cetirun-operator" || old.Labels["app.kubernetes.io/managed-by"] == "cetirun-operator") &&
 			(!authenticated(request.UserInfo) || request.UserInfo.Username != h.config.ControllerUsername) {
@@ -110,6 +125,44 @@ func (h *CetiAdminHandler) maintenanceGuard(ctx context.Context, request admissi
 		}
 	}
 	return admission.Allowed("runtime intent update while Pod and hook startup remain blocked"), true
+}
+
+func (h *CetiAdminHandler) orphanNamespaceDeletion(ctx context.Context, request admission.Request, namespace *corev1.Namespace) admission.Response {
+	deny := func() admission.Response {
+		return admission.Denied("managed namespace deletion requires the Operator, or a deployment administrator with exact namespace preconditions and a confirmed absent Agent owner")
+	}
+	if !h.config.CetiAdmin.administrator(request.UserInfo) || namespace.UID == "" || namespace.Name != request.Name ||
+		namespace.Labels[w.ProtectedNamespaceLabel] == "true" || len(namespace.OwnerReferences) != 1 {
+		return deny()
+	}
+	owner := namespace.OwnerReferences[0]
+	if owner.APIVersion != api.GroupVersion.String() || owner.Kind != "Agent" || owner.Name == "" || owner.UID == "" ||
+		namespace.Name != "cetirun-"+owner.Name {
+		return deny()
+	}
+	for _, field := range []struct{ key, value string }{
+		{w.AgentNameAnnotation, owner.Name}, {w.AgentUIDAnnotation, string(owner.UID)},
+		{cetiadmin.MaintenanceAgentName, owner.Name}, {cetiadmin.MaintenanceAgentUID, string(owner.UID)},
+	} {
+		if value := namespace.Annotations[field.key]; value != "" && value != field.value {
+			return deny()
+		}
+	}
+	var options metav1.DeleteOptions
+	if decodeJSON(request.Options.Raw, &options, false) != nil || options.Preconditions == nil ||
+		options.Preconditions.UID == nil || *options.Preconditions.UID != namespace.UID ||
+		options.Preconditions.ResourceVersion == nil || *options.Preconditions.ResourceVersion != namespace.ResourceVersion {
+		return deny()
+	}
+	current := &api.Agent{}
+	if err := h.reader.Get(ctx, client.ObjectKey{Name: owner.Name}, current); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return admission.Errored(http.StatusServiceUnavailable, fmt.Errorf("orphan namespace recovery cannot read the Agent owner"))
+		}
+	} else if current.UID == "" || current.UID == owner.UID {
+		return deny()
+	}
+	return admission.Allowed("deployment administrator removes the exact namespace of a retired ordinary Agent")
 }
 
 // Maintenance observation includes deleting and bootstrapping Agents. It does

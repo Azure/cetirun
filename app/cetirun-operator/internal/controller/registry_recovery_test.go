@@ -16,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 type registryRecoveryRaceClient struct {
@@ -151,5 +152,51 @@ func TestRegistryNamespaceCreationDoesNotAdoptExistingNamespace(t *testing.T) {
 	}
 	if err := r.ensureRegistryNamespace(ctx, agent, ""); err == nil {
 		t.Fatal("an unowned pending namespace was accepted for registry credentials")
+	}
+}
+
+func TestNamespaceCreationRejectsPreviousAgentOwner(t *testing.T) {
+	r, agent, _ := registryFixture(t)
+	ctx := context.Background()
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: instanceNamespace(agent.Name), UID: "old-namespace",
+		Labels: map[string]string{"app.kubernetes.io/instance": "previous-owner"},
+		OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: agent.Name, UID: "previous-agent-uid",
+		}},
+	}}
+	if err := r.Create(ctx, namespace); err != nil {
+		t.Fatal(err)
+	}
+	before := namespace.DeepCopy()
+	if err := r.ensureNamespace(ctx, namespace.Name, agent.Spec.User.Alias, agent); err == nil {
+		t.Fatal("a new Agent reused its predecessor's namespace")
+	}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(namespace), namespace); err != nil || !reflect.DeepEqual(before, namespace) {
+		t.Fatal("namespace reuse changed the previous owner's metadata:", err)
+	}
+}
+
+func TestNamespaceCreationRaceRequiresOwnershipRetry(t *testing.T) {
+	r, agent, _ := registryFixture(t)
+	ctx := context.Background()
+	kube := r.Client.(client.WithWatch)
+	r.Client = interceptor.NewClient(kube, interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.CreateOption) error {
+			if namespace, ok := object.(*corev1.Namespace); ok {
+				other := namespace.DeepCopy()
+				other.OwnerReferences[0].UID = "previous-agent-uid"
+				if err := c.Create(ctx, other); err != nil {
+					return err
+				}
+			}
+			return c.Create(ctx, object, options...)
+		},
+	})
+	if err := r.ensureNamespace(ctx, instanceNamespace(agent.Name), agent.Spec.User.Alias, agent); !apierrors.IsAlreadyExists(err) {
+		t.Fatal("concurrent namespace creation bypassed the ownership check:", err)
+	}
+	if err := r.ensureNamespace(ctx, instanceNamespace(agent.Name), agent.Spec.User.Alias, agent); err == nil {
+		t.Fatal("ownership retry accepted the conflicting lifetime")
 	}
 }

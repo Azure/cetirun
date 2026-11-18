@@ -6,9 +6,12 @@
 package controller
 
 import (
+	"context"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
@@ -24,12 +27,125 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
+
+func TestOrdinaryNamespaceDeletionRecoveryAPIServer(t *testing.T) {
+	ctrl.SetLogger(logr.Discard())
+	h := newCetiAdminInstallationAPI(t, true)
+	if _, err := envtest.InstallCRDs(h.config, envtest.CRDInstallOptions{CRDs: []*apiextensionsv1.CustomResourceDefinition{
+		nativeStartExternalCRD("networking.istio.io", "v1beta1", "VirtualService", "virtualservices"),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	agent, namespace := h.target(t, "namespace-retry", "engineering", api.AgentTypeHermes, true)
+	namespace.Labels = map[string]string{"app.kubernetes.io/managed-by": "cetirun-operator"}
+	if err := h.operator.Update(h.ctx, namespace); err != nil {
+		t.Fatal(err)
+	}
+	agent.Finalizers = []string{api.Finalizer}
+	if err := h.operator.Update(h.ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	policy := &admissionv1.ValidatingAdmissionPolicy{ObjectMeta: metav1.ObjectMeta{Name: "deny-owned-namespace-delete"},
+		Spec: admissionv1.ValidatingAdmissionPolicySpec{
+			FailurePolicy: ptr.To(admissionv1.Fail), MatchConstraints: &admissionv1.MatchResources{
+				ResourceRules: []admissionv1.NamedRuleWithOperations{{
+					ResourceNames: []string{namespace.Name},
+					RuleWithOperations: admissionv1.RuleWithOperations{Operations: []admissionv1.OperationType{admissionv1.Delete},
+						Rule: admissionv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"namespaces"}}},
+				}},
+			}, Validations: []admissionv1.Validation{{
+				Expression: "request.userInfo.username != 'system:serviceaccount:operator-test:controller'",
+				Message:    "synthetic namespace deletion failure",
+				Reason:     ptr.To(metav1.StatusReasonForbidden),
+			}},
+		}}
+	binding := &admissionv1.ValidatingAdmissionPolicyBinding{ObjectMeta: metav1.ObjectMeta{Name: policy.Name},
+		Spec: admissionv1.ValidatingAdmissionPolicyBindingSpec{PolicyName: policy.Name, ValidationActions: []admissionv1.ValidationAction{admissionv1.Deny}}}
+	h.create(t, policy)
+	h.create(t, binding)
+	var deleteErr error
+	if err := wait.PollUntilContextTimeout(h.ctx, 50*time.Millisecond, 10*time.Second, true, func(context.Context) (bool, error) {
+		deleteErr = h.operator.Delete(h.ctx, namespace, client.DryRunAll)
+		if deleteErr != nil && !apierrors.IsForbidden(deleteErr) {
+			return false, deleteErr
+		}
+		return deleteErr != nil && strings.Contains(deleteErr.Error(), "synthetic namespace deletion failure"), nil
+	}); err != nil {
+		t.Fatal("injected namespace failure did not become active:", err, deleteErr)
+	}
+	if err := h.admin.Delete(h.ctx, agent, client.Preconditions{UID: &agent.UID, ResourceVersion: &agent.ResourceVersion}); err != nil {
+		t.Fatal(err)
+	}
+	r := &AgentReconciler{Client: h.operator, APIReader: h.operator, Scheme: h.operator.Scheme(),
+		OperatorNamespace: h.source.Namespace, HelmClient: h.helm, EventRecorder: record.NewFakeRecorder(20)}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(agent)}
+	if _, err := r.Reconcile(h.ctx, request); !apierrors.IsForbidden(err) {
+		t.Fatalf("served namespace deletion failure was not surfaced: %v", err)
+	}
+	if err := h.admin.Get(h.ctx, client.ObjectKeyFromObject(agent), agent); err != nil || !slices.Contains(agent.Finalizers, api.Finalizer) {
+		t.Fatal("failed deletion lost the Agent's finalizer:", err)
+	}
+	if err := h.admin.Delete(h.ctx, binding); err != nil {
+		t.Fatal(err)
+	}
+	if err := wait.PollUntilContextTimeout(h.ctx, 50*time.Millisecond, 10*time.Second, true, func(context.Context) (bool, error) {
+		err := h.operator.Delete(h.ctx, namespace, client.DryRunAll)
+		if apierrors.IsForbidden(err) && strings.Contains(err.Error(), "synthetic namespace deletion failure") {
+			return false, nil
+		}
+		return err == nil, err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		result, err := r.Reconcile(h.ctx, request)
+		if err != nil || result.RequeueAfter != 5*time.Second {
+			t.Fatalf("served deletion did not wait for namespace GC: %+v %v", result, err)
+		}
+		if err := h.admin.Get(h.ctx, client.ObjectKeyFromObject(agent), agent); err != nil || !slices.Contains(agent.Finalizers, api.Finalizer) {
+			t.Fatal("namespace deletion acceptance released the Agent too early:", err)
+		}
+	}
+	if err := h.admin.Get(h.ctx, client.ObjectKeyFromObject(namespace), namespace); err != nil {
+		t.Fatal(err)
+	}
+	completeRetainedDeletionNamespaceGC(t, h, namespace, h.admin)
+	if _, err := r.Reconcile(h.ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.admin.Get(h.ctx, client.ObjectKeyFromObject(agent), agent); !apierrors.IsNotFound(err) {
+		t.Fatal("confirmed namespace absence did not complete Agent deletion:", err)
+	}
+
+	orphaned, orphan := h.target(t, "orphan-recovery", "engineering", api.AgentTypeOpenClaw, true)
+	orphan.Labels = map[string]string{"app.kubernetes.io/managed-by": "cetirun-operator"}
+	if err := h.operator.Update(h.ctx, orphan); err != nil {
+		t.Fatal(err)
+	}
+	conditional := client.Preconditions{UID: &orphan.UID, ResourceVersion: &orphan.ResourceVersion}
+	if err := h.admin.Delete(h.ctx, orphan, conditional, client.DryRunAll); !apierrors.IsForbidden(err) {
+		t.Fatal("live-owner namespace became administrator-deletable:", err)
+	}
+	if err := h.admin.Delete(h.ctx, orphaned); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.admin.Delete(h.ctx, orphan, client.DryRunAll); !apierrors.IsForbidden(err) {
+		t.Fatal("orphan recovery accepted deletion without exact preconditions:", err)
+	}
+	if err := h.admin.Delete(h.ctx, orphan, conditional); err != nil {
+		t.Fatal("authorized exact orphan recovery failed:", err)
+	}
+	if err := h.admin.Get(h.ctx, client.ObjectKeyFromObject(orphan), orphan); err != nil || orphan.DeletionTimestamp.IsZero() {
+		t.Fatal("orphan recovery did not initiate normal namespace cleanup:", err)
+	}
+}
 
 func TestCetiAdminHeldTargetWithdrawalAPIServer(t *testing.T) {
 	ctrl.SetLogger(logr.Discard())
