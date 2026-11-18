@@ -67,6 +67,8 @@ VERSION_FILES = (
     "app/cetirun-portal/web/package-lock.json",
     "examples/pi-agent/package.json",
     "examples/pi-agent/package-lock.json",
+    "site/package.json",
+    "site/package-lock.json",
 )
 
 
@@ -140,6 +142,8 @@ class CetiRunVersionTests(unittest.TestCase):
                     "app/cetirun-portal/web/package-lock.json",
                     "examples/pi-agent/package.json",
                     "examples/pi-agent/package-lock.json",
+                    "site/package.json",
+                    "site/package-lock.json",
                 ):
                     self.assertEqual(json.loads((self.root / relative).read_text())["version"], version)
 
