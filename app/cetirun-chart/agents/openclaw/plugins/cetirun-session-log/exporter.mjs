@@ -51,6 +51,71 @@ function argumentsText(value) {
   }
 }
 
+// OpenClaw's Tool Search keeps most tools in a catalog, and the model runs
+// them through the control tool tool_call. The transcript names tool_call, so
+// the records name the tool that ran, and `via` names tool_call.
+const TOOL_CALL = "tool_call";
+const TOOL_SELECTORS = ["id", "toolId", "name"];
+// A catalog id is <source>:<owner>:<tool name>, and a tool name has no colon.
+const CATALOG_ID = /^(?:openclaw|mcp|client):[^:]+:([^:]+)$/;
+
+function argumentsObject(value) {
+  if (isRecord(value)) return value;
+  if (typeof value !== "string") return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function selectorOf(params) {
+  const value = params.id ?? params.toolId ?? params.name;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function toolNameOf(selector) {
+  const match = CATALOG_ID.exec(selector);
+  return match ? match[1] : selector;
+}
+
+// The tool that tool_call arguments select, read as OpenClaw 2026.9.6 reads
+// them. A selector only inside args or input moves to the top. With a
+// non-empty args or input, the selector is id, toolId, or name, in this order.
+// Without them, OpenClaw takes the first of these whose value is in the tool
+// catalog of the run, which the transcript does not keep; the form of a value,
+// such as a catalog id, does not show that the catalog has it. So such a call
+// is named only when all its selectors have the same value; otherwise only
+// the result names the tool.
+function toolCallTarget(value) {
+  let params = argumentsObject(value);
+  if (!params) return undefined;
+  if (!TOOL_SELECTORS.some((key) => Object.hasOwn(params, key))) {
+    const nested = params.args ?? params.input;
+    const hoisted = isRecord(nested) ? selectorOf(nested) : undefined;
+    if (hoisted === undefined) return undefined;
+    const { args: _args, input: _input, ...rest } = params;
+    params = { ...rest, ...nested, id: hoisted };
+  }
+  const input = params.args ?? params.input;
+  if (input != null && !(isRecord(input) && Object.keys(input).length === 0)) {
+    const selector = selectorOf(params);
+    return selector === undefined ? undefined : toolNameOf(selector);
+  }
+  const values = TOOL_SELECTORS.map((key) => params[key]).filter((item) => item != null);
+  const names = values.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim());
+  if (names.length === 0 || names.length !== values.length) return undefined;
+  return names.every((name) => name === names[0]) ? toolNameOf(names[0]) : undefined;
+}
+
+// The tool that a tool_call result came from: OpenClaw keeps it in the
+// result's details. A call that failed before it found a tool has none.
+function toolCallResultTool(details) {
+  const tool = isRecord(details) ? details.tool : undefined;
+  return isRecord(tool) && typeof tool.name === "string" && tool.name ? tool.name : undefined;
+}
+
 // The records of one transcript event. Only the messages of the conversation
 // count: user input, assistant output, tool calls, and tool results. Session
 // headers, model and thinking changes, compaction summaries, custom entries,
@@ -82,17 +147,21 @@ export function recordsFor(event, target, redact, now = () => new Date().toISOSt
     if (text) records.push({ ...base, id: id(""), kind: "assistant", ...(model ? { model } : {}), content: redact(text) });
     parts.forEach((part, index) => {
       if (!isRecord(part) || part.type !== "toolCall") return;
+      const name = typeof part.name === "string" ? part.name : "";
+      const ran = name === TOOL_CALL ? toolCallTarget(part.arguments) : undefined;
       records.push({
         ...base, id: id(`:${index}`), kind: "tool_call", ...(model ? { model } : {}),
-        tool: typeof part.name === "string" ? part.name : "",
+        tool: ran ?? name, ...(ran ? { via: TOOL_CALL } : {}),
         ...(typeof part.id === "string" ? { toolCallId: part.id } : {}),
         content: redact(argumentsText(part.arguments)),
       });
     });
   } else if (message.role === "toolResult") {
+    const name = typeof message.toolName === "string" ? message.toolName : "";
+    const ran = name === TOOL_CALL ? toolCallResultTool(message.details) : undefined;
     records.push({
       ...base, id: id(""), kind: "tool_result",
-      tool: typeof message.toolName === "string" ? message.toolName : "",
+      tool: ran ?? name, ...(ran ? { via: TOOL_CALL } : {}),
       ...(typeof message.toolCallId === "string" ? { toolCallId: message.toolCallId } : {}),
       isError: message.isError === true,
       content: redact(textOf(message.content)),

@@ -112,10 +112,87 @@ test("exports user input, assistant output, and tool calls and results, and noth
   assert.equal(records[1].model, "gpt-test");
   assert.deepEqual([records[2].tool, records[2].toolCallId, JSON.parse(records[2].content)], ["exec", "call-1", { command: "kubectl get pods" }]);
   assert.deepEqual([records[3].tool, records[3].isError, records[3].content], ["exec", false, "pod-a Running"]);
+  assert.ok(!("via" in records[2]) && !("via" in records[3]));
   const text = fs.readFileSync(path.join(dir, "openclaw.jsonl"), "utf8");
   for (const absent of [SECRET, "private reasoning", "replay-data", "older turns", "internal", "exitCode"]) {
     assert.ok(!text.includes(absent), `${absent} must not be exported`);
   }
+});
+
+// Tools that OpenClaw 2026.9.6 runs through Tool Search: the transcript has a
+// tool_call call, and a tool_call result with the tool that ran in its details.
+const throughToolCall = (index, args) => ({ type: "toolCall", id: `call-${index}`, name: "tool_call", arguments: args });
+const SESSION_STATUS = { id: "openclaw:core:session_status", name: "session_status", source: "openclaw" };
+
+test("a tool that runs through tool_call is named in its call record", () => {
+  const records = recordsFor(message("e-calls", {
+    role: "assistant", model: "gpt-test",
+    content: [
+      throughToolCall(0, { id: "session_status", args: {} }),
+      throughToolCall(1, { id: "openclaw:cetirun-memory-context:cetirun_memory", args: { command: "query" } }),
+      throughToolCall(2, { args: { id: "mcp:docs:search_docs", query: "pods" } }),
+      throughToolCall(3, JSON.stringify({ toolId: "browser" })),
+      throughToolCall(4, { name: "web_fetch", args: { url: "https://example.com" } }),
+      throughToolCall(5, { args: {} }),
+      { type: "toolCall", id: "call-6", name: "process", arguments: { action: "poll", id: "proc-1" } },
+    ],
+  }), target, redact);
+  assert.deepEqual(records.map((record) => [record.tool, record.via]), [
+    ["session_status", "tool_call"], ["cetirun_memory", "tool_call"], ["search_docs", "tool_call"],
+    ["browser", "tool_call"], ["web_fetch", "tool_call"], ["tool_call", undefined], ["process", undefined],
+  ]);
+  // The content keeps the arguments as the model sent them.
+  assert.deepEqual(JSON.parse(records[1].content), { id: "openclaw:cetirun-memory-context:cetirun_memory", args: { command: "query" } });
+});
+
+test("a flattened tool_call is named only when its tool does not depend on OpenClaw's catalog", () => {
+  // The shapes of OpenClaw's own tests for flattened arguments. Without args or
+  // input, OpenClaw takes the selector whose value is in the catalog of the run.
+  const records = recordsFor(message("e-flat", {
+    role: "assistant", model: "gpt-test",
+    content: [
+      throughToolCall(0, { id: "inspect_resource", command: "list", timeout_ms: 5000 }),
+      throughToolCall(1, { toolId: "inspect_resource", id: "record-7" }),
+      throughToolCall(2, { id: "inspect_resource", name: "record-name" }),
+      throughToolCall(3, { name: "inspect_resource", id: "record-7" }),
+      throughToolCall(4, { args: {}, toolId: "inspect_resource", id: "record-7" }),
+      throughToolCall(5, { toolId: "openclaw:core:inspect_resource", id: "record-7" }),
+      throughToolCall(6, { id: "inspect_resource", args: { id: "record-7" } }),
+      throughToolCall(7, { args: { name: "inspect_resource", id: "record-7" } }),
+      // A catalog id does not show that the catalog has it. With only
+      // openclaw:core:inspect_resource in the catalog, OpenClaw runs
+      // inspect_resource for both, with the other value as its argument.
+      throughToolCall(8, { toolId: "inspect_resource", id: "mcp:docs:search_docs" }),
+      throughToolCall(9, { toolId: "inspect_resource", name: "mcp:docs:search_docs" }),
+      // Selectors with the same value select the same tool.
+      throughToolCall(10, { id: "inspect_resource", name: "inspect_resource", command: "list" }),
+      throughToolCall(11, { id: "openclaw:core:inspect_resource", toolId: "openclaw:core:inspect_resource" }),
+      // A selector that is not a string differs from the others.
+      throughToolCall(12, { id: "inspect_resource", toolId: 7 }),
+    ],
+  }), target, redact);
+  assert.deepEqual(records.map((record) => [record.tool, record.via]), [
+    ["inspect_resource", "tool_call"],
+    ["tool_call", undefined], ["tool_call", undefined], ["tool_call", undefined], ["tool_call", undefined],
+    ["tool_call", undefined], ["inspect_resource", "tool_call"], ["tool_call", undefined],
+    ["tool_call", undefined], ["tool_call", undefined],
+    ["inspect_resource", "tool_call"], ["inspect_resource", "tool_call"], ["tool_call", undefined],
+  ]);
+});
+
+test("a tool_call result names the tool that ran, unless the call failed before it found one", () => {
+  const [ran] = recordsFor(message("e-ran", {
+    role: "toolResult", toolCallId: "call-0", toolName: "tool_call", isError: false,
+    content: [{ type: "text", text: JSON.stringify({ tool: SESSION_STATUS, result: { content: [] } }, null, 2) }],
+    details: { tool: SESSION_STATUS, result: { content: [] } },
+  }), target, redact);
+  assert.deepEqual([ran.tool, ran.via, ran.toolCallId, ran.isError], ["session_status", "tool_call", "call-0", false]);
+  const [failed] = recordsFor(message("e-failed", {
+    role: "toolResult", toolCallId: "call-1", toolName: "tool_call", isError: true,
+    content: [{ type: "text", text: "{\"status\": \"error\", \"tool\": \"tool_call\", \"error\": \"Unknown tool id: no_such_tool.\"}" }],
+    details: { status: "error", tool: "tool_call", error: "Unknown tool id: no_such_tool." },
+  }), target, redact);
+  assert.deepEqual([failed.tool, failed.via, failed.isError], ["tool_call", undefined, true]);
 });
 
 test("a long content is cut to the line limit and marked", () => {
