@@ -189,8 +189,9 @@ For an installation that has CetiAdmin, do these steps:
 
 The operator removes the access of CetiAdmin and stops its Agent. It keeps the
 Agent, its HOME, and its installation records, so that you can enable
-CetiAdmin again. After shutdown is confirmed, the installation controller stops
-its periodic retries. Relevant resource changes can still trigger a check, and
+CetiAdmin again. The Agent reports `Ready=False` with reason `CetiAdminDisabled`.
+After shutdown is confirmed, the Agent and installation controllers stop
+periodic retries. Relevant resource changes can still trigger a check, and
 Helm's check and stop hooks still verify safe shutdown during upgrades and
 removal. Before you remove the operator, disable CetiAdmin. Refer to
 [Disable CetiAdmin before removing the Operator]({{< repo "app/cetirun-platform/README.md" >}}#disable-cetiadmin-before-removing-the-operator).

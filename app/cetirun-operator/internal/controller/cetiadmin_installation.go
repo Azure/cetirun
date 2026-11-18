@@ -877,7 +877,7 @@ func (r *CetiAdminReconciler) holdOrphanedInstallation(ctx context.Context) (boo
 		}
 		found = true
 		errs = append(errs, r.revokeNamespaceAccess(ctx, state), r.withdrawResources(ctx, state))
-		_, err := r.stop(ctx, state.Record)
+		_, err := r.stop(ctx, state)
 		errs = append(errs, err)
 	}
 	return found, errors.Join(errs...)
@@ -902,6 +902,9 @@ func (r *CetiAdminReconciler) BindingForAgent(ctx context.Context, agent *api.Ag
 	}
 	if !handled {
 		return cetiadmin.Binding{}, false, nil
+	}
+	if state.Agent == identityOf(agent) && cetiAdminDisabled(state) {
+		return cetiadmin.Binding{}, true, cetiadmin.ErrDisabled
 	}
 	if !state.CanRun() || state.OperatorImage != r.OperatorImage || state.RuntimeVersion != r.ChartVersion || r.AdmissionReady == nil {
 		return cetiadmin.Binding{}, true, cetiadmin.ErrUnbound
@@ -943,6 +946,19 @@ func (r *CetiAdminReconciler) BindingForAgent(ctx context.Context, agent *api.Ag
 	return binding, true, nil
 }
 
+func cetiAdminDisabled(state *cetiadmin.Installation) bool {
+	return state.Phase == cetiadmin.PhaseDisabled && state.Hold &&
+		(state.Reason == "Disabled" || state.Reason == "UserSuspended")
+}
+
+func (r *AgentReconciler) suspendCetiAdmin(ctx context.Context, agent *api.Agent, disabled bool) (ctrl.Result, error) {
+	if !disabled {
+		return r.suspendRegistryBuiltin(ctx, agent)
+	}
+	return r.suspendRegistryBuiltinWithReason(ctx, agent, "CetiAdminDisabled",
+		"CetiAdmin is disabled or paused; its Agent and HOME are retained", 0)
+}
+
 func (r *CetiAdminReconciler) deactivate(ctx context.Context, checkpoint *corev1.ConfigMap, state *cetiadmin.Installation, reason string) (bool, error) {
 	state.Hold, state.Reason = true, reason
 	if state.Phase != cetiadmin.PhaseDisabled {
@@ -961,7 +977,7 @@ func (r *CetiAdminReconciler) deactivate(ctx context.Context, checkpoint *corev1
 	} else {
 		revokeErr = r.RevokeAccess(ctx, state)
 	}
-	stopped, err := r.stop(ctx, state.Record)
+	stopped, err := r.stop(ctx, state)
 	if err != nil || !stopped || revokeErr != nil {
 		return false, errors.Join(saveErr, revokeErr, err)
 	}
@@ -981,25 +997,25 @@ func (r *CetiAdminReconciler) deactivate(ctx context.Context, checkpoint *corev1
 	return err == nil, err
 }
 
-func (r *CetiAdminReconciler) stop(ctx context.Context, record cetiadmin.Record) (bool, error) {
-	if record.Agent.UID == "" {
+func (r *CetiAdminReconciler) stop(ctx context.Context, state *cetiadmin.Installation) (bool, error) {
+	if state.Agent.UID == "" {
 		return true, nil
 	}
 	agent := &api.Agent{}
-	if err := r.reader().Get(ctx, client.ObjectKey{Name: record.Agent.Name}, agent); err != nil {
+	if err := r.reader().Get(ctx, client.ObjectKey{Name: state.Agent.Name}, agent); err != nil {
 		return apierrors.IsNotFound(err), client.IgnoreNotFound(err)
 	}
-	if !identityMatches(record.Agent, agent) {
+	if !identityMatches(state.Agent, agent) {
 		return false, cetiadmin.ErrConflict
 	}
-	if record.Namespace.UID == "" {
+	if state.Namespace.UID == "" {
 		return true, nil
 	}
 	namespace := &corev1.Namespace{}
-	if err := r.reader().Get(ctx, client.ObjectKey{Name: record.Namespace.Name}, namespace); err != nil {
+	if err := r.reader().Get(ctx, client.ObjectKey{Name: state.Namespace.Name}, namespace); err != nil {
 		return apierrors.IsNotFound(err), client.IgnoreNotFound(err)
 	}
-	if !identityMatches(record.Namespace, namespace) || !hasAgentOwner(namespace, agent) {
+	if !identityMatches(state.Namespace, namespace) || !hasAgentOwner(namespace, agent) {
 		return false, cetiadmin.ErrConflict
 	}
 	if r.Runtime == nil {
@@ -1013,7 +1029,7 @@ func (r *CetiAdminReconciler) stop(ctx context.Context, record cetiadmin.Record)
 	if err == nil && !attributableRuntimeObject(workload, agent, helmReleaseName(agent.Name)) {
 		return false, fmt.Errorf("runtime ownership changed before stop")
 	}
-	if _, err := r.Runtime.suspendRegistryBuiltin(ctx, agent); err != nil {
+	if _, err := r.Runtime.suspendCetiAdmin(ctx, agent, cetiAdminDisabled(state)); err != nil {
 		return false, err
 	}
 	return r.writersStopped(ctx, namespace.Name)

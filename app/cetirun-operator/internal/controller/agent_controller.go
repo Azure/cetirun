@@ -44,6 +44,7 @@ import (
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents/builtin"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/cetiadmin"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
@@ -319,11 +320,15 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	if r.CetiAdmin != nil {
 		_, managed, bindingErr := r.CetiAdmin.BindingForAgent(ctx, instance)
 		if managed && (bindingErr != nil || instance.Spec.Suspended) {
-			result, stopErr := r.suspendRegistryBuiltin(ctx, instance)
-			if bindingErr != nil {
-				return result, stderrors.Join(bindingErr, stopErr)
+			disabled := stderrors.Is(bindingErr, cetiadmin.ErrDisabled)
+			result, stopErr := r.suspendCetiAdmin(ctx, instance, disabled)
+			if disabled {
+				bindingErr = nil
 			}
-			return result, stopErr
+			if err := stderrors.Join(bindingErr, stopErr); err != nil {
+				return ctrl.Result{}, err
+			}
+			return result, nil
 		}
 	}
 

@@ -25,6 +25,7 @@ const (
 )
 
 var (
+	ErrDisabled = errors.New("CetiAdminDisabled")
 	ErrUnbound  = errors.New("CetiAdminBindingUnavailable")
 	ErrConflict = errors.New("CetiAdminBindingConflict")
 )

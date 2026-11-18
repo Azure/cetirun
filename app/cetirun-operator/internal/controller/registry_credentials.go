@@ -422,6 +422,11 @@ func registryServiceAccount(values map[string]any, fullname string) (string, err
 
 // Suspension must not need a working registry, a chart pull, or a new hook Pod.
 func (r *AgentReconciler) suspendRegistryBuiltin(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
+	return r.suspendRegistryBuiltinWithReason(ctx, agent, "Suspended",
+		"Suspension requested; registry credentials are not required", time.Minute)
+}
+
+func (r *AgentReconciler) suspendRegistryBuiltinWithReason(ctx context.Context, agent *api.Agent, reason, message string, requeueAfter time.Duration) (ctrl.Result, error) {
 	if err := r.checkRegistryIntent(ctx, agent); err != nil {
 		return ctrl.Result{Requeue: true}, nil
 	}
@@ -444,7 +449,7 @@ func (r *AgentReconciler) suspendRegistryBuiltin(ctx context.Context, agent *api
 	// when the suspend/resume spec round trip left other inputs unchanged.
 	agent.Status.ObservedGeneration = 0
 	for _, condition := range []string{api.ConditionReady, api.ConditionPodReady, api.ConditionIngressReady} {
-		setCondition(&agent.Status.Conditions, condition, metav1.ConditionFalse, "Suspended", "Suspension requested; registry credentials are not required")
+		setCondition(&agent.Status.Conditions, condition, metav1.ConditionFalse, reason, message)
 	}
 	if !reflect.DeepEqual(beforeStatus, agent.Status) {
 		if err := r.updateStatus(ctx, agent); err != nil {
@@ -454,7 +459,7 @@ func (r *AgentReconciler) suspendRegistryBuiltin(ctx context.Context, agent *api
 	if beforeStatus.Phase != api.PhaseSuspended && r.EventRecorder != nil {
 		r.EventRecorder.Event(agent, corev1.EventTypeNormal, "InstanceSuspended", "Instance suspended — scaled to zero and ingress removed")
 	}
-	return ctrl.Result{RequeueAfter: time.Minute}, keyErr
+	return ctrl.Result{RequeueAfter: requeueAfter}, keyErr
 }
 
 func (r *AgentReconciler) stopRegistryBuiltinWorkload(ctx context.Context, agent *api.Agent) error {
