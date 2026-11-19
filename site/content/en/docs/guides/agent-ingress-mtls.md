@@ -343,6 +343,14 @@ registers a current approval.
 The Portal's existing HOME check is unchanged. This status fix does not add
 Portal suspension for a bootstrap-completed Agent that has no workload yet.
 
+An authorized Agent DELETE also removes this first-approval hold. The Operator
+uses the recorded bootstrap ownership even when only the bootstrap and hold
+finalizers exist. It waits for namespace deletion before releasing those
+records and finalizers; certificate enrollment is not required for cleanup.
+An already-terminating Agent in this state resumes cleanup after the Operator
+is upgraded. Do not add or remove finalizers manually. Ownership conflicts,
+remaining Pods and uncertain execution history still block cleanup.
+
 ## OpenClaw Control UI Portal sign-in
 
 With the registered mTLS endpoint above, an OpenClaw Sandbox Agent can use

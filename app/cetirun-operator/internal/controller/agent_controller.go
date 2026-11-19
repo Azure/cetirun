@@ -1368,7 +1368,9 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 		return ctrl.Result{}, err
 	}
 
-	if !controllerutil.ContainsFinalizer(instance, cetirunv1alpha1.Finalizer) {
+	// First-approval holds can create a protected bootstrap lifetime before
+	// the ordinary finalizer is installed. Its recorded cleanup still applies.
+	if !reconciledSandbox && !controllerutil.ContainsFinalizer(instance, cetirunv1alpha1.Finalizer) {
 		return ctrl.Result{}, nil
 	}
 
