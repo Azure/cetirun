@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -29,6 +29,16 @@ function shellQuote(value) {
 function messageText(content) {
   return typeof content === "string" ? content
     : content.filter(part => part.type === "text").map(part => part.text).join("\n");
+}
+
+async function copyPackage(source, destination) {
+  // A package-root symlink must not survive as the disposable host itself:
+  // patching that link would modify the separately installed native package.
+  const resolved = await realpath(source);
+  await cp(resolved, destination, { recursive: true });
+  for (const name of await readdir(path.dirname(resolved))) {
+    if (name !== path.basename(resolved)) await symlink(path.join(path.dirname(resolved), name), path.join(path.dirname(destination), name));
+  }
 }
 
 async function runScenario(source, scenario) {
@@ -59,10 +69,7 @@ async function runScenario(source, scenario) {
     // Fault injection in a disposable host only: simulate removal of the
     // carrier by a context transform immediately before the production guard.
     const shadow = path.join(root, "node_modules/openclaw");
-    await cp(source, shadow, { recursive: true });
-    for (const name of await readdir(path.dirname(source))) {
-      if (name !== "openclaw") await symlink(path.join(path.dirname(source), name), path.join(root, "node_modules", name));
-    }
+    await copyPackage(source, shadow);
     const bundle = path.join(shadow, "dist/builtin-openclaw-q1hiFm14.mjs");
     const contents = await readFile(bundle, "utf8");
     const anchor = "if (!activeSession.isCompacting) await input.verifySelectedSkillContext?.(context);";
@@ -306,10 +313,7 @@ if (process.argv[2] === "--scenario") {
     host = path.join(directory, "node_modules/openclaw");
     // Apply the image's pinned compatibility changes to a disposable copy,
     // preserving the separately installed package and its dependencies.
-    await cp(source, host, { recursive: true });
-    for (const name of await readdir(path.dirname(source))) {
-      if (name !== "openclaw") await symlink(path.join(path.dirname(source), name), path.join(directory, "node_modules", name));
-    }
+    await copyPackage(source, host);
     for (const name of ["apply-workload-mcp.mjs", "apply-gateway-budget.mjs", "apply-skill-paths.mjs", "apply-skill-activation.mjs"]) {
       await execute(process.execPath, [path.join(repository, "app/cetirun-chart/agents/openclaw/compat", name), host]);
     }
@@ -326,6 +330,29 @@ if (process.argv[2] === "--scenario") {
     await execute("python3", [path.join(repository, "app/cetirun-chart/configs/apply-memory-skills.py"), "--runtime", "openclaw", "--root", host]);
   });
   after(async () => { if (directory) await rm(directory, { recursive: true, force: true }); });
+  test("copying a symlinked native package isolates patches and cleanup", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "cetirun-package-copy-"));
+    try {
+      const installed = path.join(root, "installed/node_modules/openclaw");
+      const dependency = path.join(root, "installed/node_modules/example-dependency");
+      const alias = path.join(root, "package-link");
+      const disposable = path.join(root, "copy/node_modules/openclaw");
+      await mkdir(installed, { recursive: true });
+      await mkdir(dependency);
+      await writeFile(path.join(installed, "bundle.mjs"), "original");
+      await symlink(installed, alias);
+      await copyPackage(alias, disposable);
+      assert.equal((await lstat(disposable)).isSymbolicLink(), false);
+      assert.equal(await realpath(path.join(path.dirname(disposable), "example-dependency")), dependency);
+      await writeFile(path.join(disposable, "bundle.mjs"), "patched");
+      assert.equal(await readFile(path.join(installed, "bundle.mjs"), "utf8"), "original");
+      await rm(path.dirname(disposable), { recursive: true });
+      assert.equal(await readFile(path.join(installed, "bundle.mjs"), "utf8"), "original");
+      assert.equal(await realpath(alias), installed);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   for (const scenario of scenarios) {
     test(`pinned OpenClaw skill request and native tools: ${scenario}`, {
       skip: !source && "Set CETIRUN_OPENCLAW_SOURCE to the separately installed pinned package",
