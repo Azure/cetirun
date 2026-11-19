@@ -8,11 +8,13 @@ package controller
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
@@ -24,6 +26,99 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+func TestInitialIngressMTLSBootstrapDeletionAPIServer(t *testing.T) {
+	ctrl.SetLogger(logr.Discard())
+	h := newNativeStartAPIHarnessWithRuntime(t, true, true, corev1.ReadWriteOncePod, "custom", api.SandboxKata, nil)
+	h.installer = &nativeSandboxInstaller{kube: h.kube, chart: h.localHelm.chart}
+	h.r.HelmClient = &sharedSandboxInstaller{nativeSandboxInstaller: h.installer}
+	if slices.Contains(h.current(t).Finalizers, api.Finalizer) {
+		t.Fatal("served creation unexpectedly seeded the ordinary finalizer")
+	}
+	if _, err := h.r.reconcilePolicy(h.ctx, h.current(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.r.bootstrapReconciledSandbox(h.ctx, h.current(t)); err != nil {
+		t.Fatal(err)
+	}
+	h.create(t, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: instanceNamespace(h.agent.Name)}})
+	h.create(t, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "platform"}})
+	h.create(t, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "portal-system"}})
+	current := h.current(t)
+	current.Spec.Agent.WebUI = false
+	if err := h.admin.Update(h.ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	withCustomMTLS(t, false)(h.r, h.admin)
+	updateContainerPlatformForTest(t, h.r, h.admin, func(document *SandboxPlatformConfiguration) {
+		document.Platforms[api.SandboxKata].IngressMTLS.Bindings = []ingressmtls.Binding{}
+	})
+	h.reconcileOK(t)
+	bootstrap, receipt, err := h.r.readSandboxBootstrap(h.ctx, h.current(t))
+	if err != nil || !receipt.Reconciled {
+		t.Fatal("served first-approval hold has no common bootstrap receipt:", err)
+	}
+	home := &corev1.PersistentVolumeClaim{}
+	if err := h.admin.Get(h.ctx, client.ObjectKey{Namespace: receipt.Namespace, Name: h.r.SandboxPreparation.bootstrap.HomeClaimName}, home); err != nil {
+		t.Fatal(err)
+	}
+	homeUID := home.UID
+	for _, suspended := range []bool{true, false, true} {
+		current = h.current(t)
+		before := current.DeepCopy()
+		current.Spec.Suspended = suspended
+		if err := h.member.Patch(h.ctx, current, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+			t.Fatal("member lifecycle request failed:", err)
+		}
+		h.reconcileOK(t)
+		current = h.current(t)
+		phase := api.PhasePending
+		if suspended {
+			phase = api.PhaseSuspended
+		}
+		if current.Status.Phase != phase || suspended && current.Status.ObservedGeneration != current.Generation {
+			t.Fatal("served initial approval suspension/resume regressed")
+		}
+		if len(current.Finalizers) != 2 || !slices.Contains(current.Finalizers, sandbox.BootstrapFinalizer) ||
+			!slices.Contains(current.Finalizers, sandbox.HoldFinalizer) {
+			t.Fatalf("served enrollment has unexpected finalizers: %v", current.Finalizers)
+		}
+	}
+	stoppedVersion := current.ResourceVersion
+	h.reconcileOK(t)
+	if h.current(t).ResourceVersion != stoppedVersion || h.installer.stages != 0 || len(h.gateway.generated) != 0 {
+		t.Fatal("unchanged initial suspension rewrote status or submitted execution")
+	}
+	if err := h.admin.Get(h.ctx, client.ObjectKeyFromObject(home), home); err != nil || home.UID != homeUID {
+		t.Fatal("first-approval lifecycle changed HOME:", err)
+	}
+	current = h.current(t)
+	if err := h.member.Delete(h.ctx, current, client.Preconditions{UID: &current.UID, ResourceVersion: &current.ResourceVersion}); err != nil {
+		t.Fatal("member conditional DELETE failed:", err)
+	}
+	h.r = restartEntraReconciler(h.r)
+	result, err := h.reconcile()
+	if err != nil || result.RequeueAfter != 5*time.Second || h.current(t).Status.Phase != api.PhaseDeleting {
+		t.Fatalf("served already-terminating bootstrap-only Agent never entered cleanup: %+v %v", result, err)
+	}
+	namespace := &corev1.Namespace{}
+	if err := h.admin.Get(h.ctx, client.ObjectKey{Name: receipt.Namespace}, namespace); err != nil ||
+		namespace.DeletionTimestamp.IsZero() || len(namespace.Finalizers) != 0 {
+		t.Fatal("served bootstrap cleanup did not release and delete the exact namespace:", err)
+	}
+	h.reconcileOK(t)
+	if current = h.current(t); slices.Contains(current.Finalizers, api.Finalizer) ||
+		!slices.Contains(current.Finalizers, sandbox.BootstrapFinalizer) || !slices.Contains(current.Finalizers, sandbox.HoldFinalizer) {
+		t.Fatal("cleanup added the ordinary finalizer or released state before namespace absence")
+	}
+	h.finishNamespaceGC(t, namespace)
+	h.reconcileOK(t)
+	for _, object := range []client.Object{current, namespace, home, bootstrap} {
+		if err := h.admin.Get(h.ctx, client.ObjectKeyFromObject(object), object); !apierrors.IsNotFound(err) {
+			t.Fatalf("served bootstrap-only deletion retained %T: %v", object, err)
+		}
+	}
+}
 
 func TestInitialIngressMTLSSuspensionAPIServer(t *testing.T) {
 	ctrl.SetLogger(logr.Discard())

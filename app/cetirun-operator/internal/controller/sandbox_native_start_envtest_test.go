@@ -815,6 +815,21 @@ func (h *nativeStartAPIHarness) cleanupAgent(t *testing.T, pod *corev1.Pod, stat
 	if err := h.admin.Get(h.ctx, client.ObjectKey{Name: pod.Namespace}, namespace); err != nil {
 		t.Fatal(err)
 	}
+	h.finishNamespaceGC(t, namespace)
+	h.reconcileOK(t)
+	for _, object := range []client.Object{
+		&api.Agent{ObjectMeta: metav1.ObjectMeta{Name: agent.Name}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace.Name}},
+		state, receipt,
+	} {
+		if err := h.admin.Get(h.ctx, client.ObjectKeyFromObject(object), object); !apierrors.IsNotFound(err) {
+			t.Fatalf("normal controller cleanup retained %T %s: %v", object, client.ObjectKeyFromObject(object), err)
+		}
+	}
+}
+
+func (h *nativeStartAPIHarness) finishNamespaceGC(t *testing.T, namespace *corev1.Namespace) {
+	t.Helper()
 	if namespace.DeletionTimestamp.IsZero() || len(namespace.Finalizers) != 0 {
 		t.Fatal("controller did not release its namespace protection before requesting deletion")
 	}
@@ -855,16 +870,6 @@ func (h *nativeStartAPIHarness) cleanupAgent(t *testing.T, pod *corev1.Pod, stat
 	namespace.Spec.Finalizers = nil
 	if err := h.admin.SubResource("finalize").Update(h.ctx, namespace); err != nil {
 		t.Fatalf("supply ordinary namespace finalization after dependent cleanup: %v", err)
-	}
-	h.reconcileOK(t)
-	for _, object := range []client.Object{
-		&api.Agent{ObjectMeta: metav1.ObjectMeta{Name: agent.Name}},
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace.Name}},
-		state, receipt,
-	} {
-		if err := h.admin.Get(h.ctx, client.ObjectKeyFromObject(object), object); !apierrors.IsNotFound(err) {
-			t.Fatalf("normal controller cleanup retained %T %s: %v", object, client.ObjectKeyFromObject(object), err)
-		}
 	}
 }
 

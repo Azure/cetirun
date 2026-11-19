@@ -8,10 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"testing"
+	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	istio "istio.io/client-go/pkg/apis/networking/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -289,6 +292,172 @@ func TestInitialIngressMTLSSuspensionRequiresBootstrapOnlyProof(t *testing.T) {
 			current := f.current(t)
 			if current.Status.Phase != api.PhasePending || current.Status.ObservedGeneration == current.Generation {
 				t.Fatal("incomplete or conflicting first-enrollment evidence acknowledged suspension")
+			}
+		})
+	}
+}
+
+func initialIngressMTLSDeletionFixture(t *testing.T, kind string) *nativeSandboxFixture {
+	t.Helper()
+	setup := []func(*AgentReconciler, client.Client){withReconciledCoordination(t)}
+	if kind == "custom" {
+		setup = append(setup, withCommonCustom(t, "chat"), withCustomMTLS(t, false))
+	} else {
+		setup = append(setup, withIngressMTLS(t, kind))
+	}
+	setup = append(setup, func(r *AgentReconciler, kube client.Client) {
+		agent := &api.Agent{}
+		if err := kube.Get(context.Background(), client.ObjectKey{Name: "example"}, agent); err != nil {
+			t.Fatal(err)
+		}
+		// The shared fixture presets the ordinary finalizer. Start before that
+		// controller write, which a real first-approval hold never reaches.
+		agent.Finalizers = nil
+		if err := kube.Update(context.Background(), agent); err != nil {
+			t.Fatal(err)
+		}
+		updateContainerPlatformForTest(t, r, kube, func(document *SandboxPlatformConfiguration) {
+			document.Platforms[api.SandboxKata].IngressMTLS.Bindings = []ingressmtls.Binding{}
+		})
+	})
+	f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, kind, true, false, setup...)
+	for range 3 {
+		f.reconcileOK(t)
+	}
+	agent := f.current(t)
+	if agent.Status.Phase != api.PhasePending || slices.Contains(agent.Finalizers, api.Finalizer) ||
+		!slices.Contains(agent.Finalizers, sandbox.BootstrapFinalizer) || !slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) {
+		t.Fatalf("fixture did not retain the real first-approval finalizer shape: %+v", agent)
+	}
+	if err := f.r.verifySuspendedReconciledBootstrap(context.Background(), agent); err != nil {
+		t.Fatal("fixture has no complete owned bootstrap:", err)
+	}
+	return f
+}
+
+func TestInitialIngressMTLSHoldDeletesWithoutOrdinaryFinalizer(t *testing.T) {
+	for _, kind := range []string{"custom", "openclaw", "hermes"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			f := initialIngressMTLSDeletionFixture(t, kind)
+			agent := f.current(t)
+			bootstrapKey := f.r.sandboxBootstrapKey(agent)
+			namespace := &corev1.Namespace{}
+			namespaceKey := client.ObjectKey{Name: instanceNamespace(agent.Name)}
+			if err := f.kube.Get(ctx, namespaceKey, namespace); err != nil {
+				t.Fatal(err)
+			}
+			for _, suspended := range []bool{true, false, true} {
+				agent = f.current(t)
+				agent.Spec.Suspended, agent.Generation = suspended, agent.Generation+1
+				if err := f.kube.Update(ctx, agent); err != nil {
+					t.Fatal(err)
+				}
+				f.reconcileOK(t)
+				current := f.current(t)
+				phase := api.PhasePending
+				if suspended {
+					phase = api.PhaseSuspended
+				}
+				if current.Status.Phase != phase || suspended && current.Status.ObservedGeneration != current.Generation ||
+					slices.Contains(current.Finalizers, api.Finalizer) {
+					t.Fatal("initial suspension/resume changed its finalizer or lifecycle contract")
+				}
+			}
+			if f.installer.stages != 0 || len(f.gateway.generated) != 0 {
+				t.Fatal("first-approval hold submitted execution or issued a model key")
+			}
+			stateKey := client.ObjectKey{Namespace: f.r.OperatorNamespace, Name: w.PodExpectationName(namespace.Name, namespace.UID)}
+			if err := f.kube.Get(ctx, stateKey, &corev1.ConfigMap{}); !apierrors.IsNotFound(err) {
+				t.Fatal("bootstrap-only fixture published an execution expectation:", err)
+			}
+			if _, found, err := f.r.SandboxNativeCoordination.ReadNative(ctx, agent.UID); err != nil || found {
+				t.Fatal("bootstrap-only fixture has an execution reservation:", err)
+			}
+			agent = f.current(t)
+			if err := f.kube.Delete(ctx, agent, client.Preconditions{UID: &agent.UID, ResourceVersion: &agent.ResourceVersion}); err != nil {
+				t.Fatal(err)
+			}
+			f.r = restartEntraReconciler(f.r)
+			result, err := f.reconcile()
+			if err != nil || result.RequeueAfter != 5*time.Second || f.current(t).Status.Phase != api.PhaseDeleting {
+				t.Fatalf("already-terminating first-approval Agent never entered cleanup: %+v %v", result, err)
+			}
+			if err := f.kube.Get(ctx, namespaceKey, namespace); !apierrors.IsNotFound(err) {
+				t.Fatal("bootstrap-only deletion did not remove the namespace:", err)
+			}
+			home := &corev1.PersistentVolumeClaim{}
+			if err := f.kube.Get(ctx, client.ObjectKey{Namespace: namespaceKey.Name, Name: f.r.SandboxPreparation.bootstrap.HomeClaimName}, home); err != nil ||
+				slices.Contains(home.Finalizers, sandbox.BootstrapFinalizer) {
+				t.Fatal("bootstrap-only cleanup did not release its HOME protection:", err)
+			}
+			f.reconcileOK(t)
+			for _, object := range []client.Object{
+				&api.Agent{ObjectMeta: metav1.ObjectMeta{Name: agent.Name}},
+				&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: bootstrapKey.Name, Namespace: bootstrapKey.Namespace}},
+			} {
+				if err := f.kube.Get(ctx, client.ObjectKeyFromObject(object), object); !apierrors.IsNotFound(err) {
+					t.Fatalf("bootstrap-only cleanup retained %T: %v", object, err)
+				}
+			}
+		})
+	}
+}
+
+func TestInitialIngressMTLSDeletionKeepsBootstrapGuards(t *testing.T) {
+	for _, scenario := range []string{"foreign HOME", "missing receipt", "remaining Pod", "namespace deletion failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx := context.Background()
+			f := initialIngressMTLSDeletionFixture(t, "custom")
+			agent := f.current(t)
+			namespaceKey := client.ObjectKey{Name: instanceNamespace(agent.Name)}
+			switch scenario {
+			case "foreign HOME":
+				home := &corev1.PersistentVolumeClaim{}
+				if err := f.kube.Get(ctx, client.ObjectKey{Namespace: namespaceKey.Name, Name: f.r.SandboxPreparation.bootstrap.HomeClaimName}, home); err != nil {
+					t.Fatal(err)
+				}
+				home.OwnerReferences[0].UID = "different-agent-uid"
+				if err := f.kube.Update(ctx, home); err != nil {
+					t.Fatal(err)
+				}
+			case "missing receipt":
+				f.r.APIReader = &mtlsPrerequisiteReadOutage{
+					Reader: f.kube, key: f.r.sandboxBootstrapKey(agent), active: true,
+					failure: apierrors.NewNotFound(corev1.Resource("configmaps"), f.r.sandboxBootstrapKey(agent).Name),
+				}
+			case "remaining Pod":
+				if err := f.kube.Create(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "remaining", Namespace: namespaceKey.Name}}); err != nil {
+					t.Fatal(err)
+				}
+			case "namespace deletion failure":
+				f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+					Delete: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.DeleteOption) error {
+						if _, ok := object.(*corev1.Namespace); ok {
+							return errors.New("synthetic namespace deletion failure")
+						}
+						return c.Delete(ctx, object, options...)
+					},
+				})
+			}
+			if err := f.kube.Delete(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			result, err := f.reconcile()
+			if scenario == "remaining Pod" {
+				if err != nil || result.RequeueAfter != cleanupWaitRequeue {
+					t.Fatalf("bootstrap-only cleanup did not wait for Pods: %+v %v", result, err)
+				}
+			} else if err == nil {
+				t.Fatal("bootstrap-only cleanup ignored unavailable or conflicting evidence")
+			}
+			if current := f.current(t); !slices.Contains(current.Finalizers, sandbox.BootstrapFinalizer) ||
+				!slices.Contains(current.Finalizers, sandbox.HoldFinalizer) || slices.Contains(current.Finalizers, api.Finalizer) {
+				t.Fatal("blocked cleanup changed the retained bootstrap-only finalizer shape")
+			}
+			namespace := &corev1.Namespace{}
+			if err := f.kube.Get(ctx, namespaceKey, namespace); err != nil || !namespace.DeletionTimestamp.IsZero() {
+				t.Fatal("blocked cleanup deleted the namespace:", err)
 			}
 		})
 	}
