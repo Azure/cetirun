@@ -190,7 +190,7 @@ them, run `python3 -B scripts/ci/validate.py --help`. `version-check`,
 | `make portal-test` | `npm test` in `app/cetirun-portal/web` |
 | `make portal-lint` | The TypeScript project check (`tsc -b`) in `app/cetirun-portal/web` |
 | `make memory-native-test` | `node --test app/cetirun-memory-context/tests/native.test.mjs`. It builds the Memory helper offline with Go. |
-| `make openclaw-skills-test` | Native OpenClaw skill context and file/shell tools against a scripted loopback model. Requires a separately installed pinned host; otherwise reports skipped cases. |
+| `make openclaw-skills-test` | Skill prompt patch checks and native OpenClaw file/shell tools against a scripted loopback model. Native cases require a separately installed pinned host; otherwise they report skips. |
 | `make chart-check` | `helm lint --strict` and `helm template` for every chart in `CHARTS` of the validation runner, with synthetic values. Then the render regression scripts of the charts. Needs PyYAML. |
 | `make bicep-check` | `bicep build --no-restore` for every Bicep file |
 | `make shell-check` | `bash -n` and `shellcheck --severity=error` for every shell script |
@@ -891,8 +891,10 @@ The test copies that package into a temporary directory, applies the image's
 compatibility patches, and uses isolated native state. It inspects the final
 Chat Completions requests and executes the real `read` and `exec` tools on
 synthetic files. Cases cover relative and absolute bundled-script paths,
-paths containing spaces, an omitted script subdirectory, and a denied `read`
-tool. No real model, cluster, credentials, or shared HOME is used. It does not
+paths containing spaces, retained and compact skill catalogs, minimal
+prompts, an omitted script subdirectory, and a denied `read` tool. The
+complete-path guidance must reach the provider without rewriting a saved
+skill snapshot. No real model, cluster, credentials, or shared HOME is used. It does not
 test model instruction adherence, browser behavior, Memory plugin hooks, or
 the deployed Marketplace delivery path. A pass cannot establish that a real
 model will choose the correct command. CI runs these checks using the native

@@ -97,6 +97,12 @@ must use the complete script path. From the skill directory, the command is
 absolute path to the same script also works. Changing to the skill directory
 does not remove the `scripts/` component.
 
+The CetiRun OpenClaw image includes this complete-path rule in each run's
+system instructions, including runs that reuse a saved skill catalog. It
+also tells the model to read the selected `SKILL.md` before using its files.
+This guidance does not rewrite commands, change tool permissions, or replace
+checking the execution result.
+
 If a skill fails, inspect the tool call and its result before repeating the
 task. Check whether the Agent read the intended `SKILL.md`, used the complete
 path, and received successful script output. A matching answer alone does

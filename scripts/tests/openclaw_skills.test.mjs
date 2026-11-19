@@ -13,13 +13,14 @@ import path from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { GUIDANCE } from "../../app/cetirun-chart/agents/openclaw/compat/apply-skill-paths.mjs";
 
 const execute = promisify(execFile);
 const filename = fileURLToPath(import.meta.url);
 const repository = path.resolve(path.dirname(filename), "../..");
 const success = "CETIRUN_SKILL_SCRIPT_OK";
 const failure = "CETIRUN_SKILL_SCRIPT_FAILED";
-const scenarios = ["relative", "absolute", "missing-subdirectory", "read-denied"];
+const scenarios = ["relative", "absolute", "retained-snapshot", "compact-catalog", "minimal", "missing-subdirectory", "read-denied"];
 
 function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
@@ -85,6 +86,7 @@ async function runScenario(source, scenario) {
         if (scenario === "read-denied") {
           assert.ok(!tools.includes("read"));
           assert.ok(!system.includes("<available_skills>"), "No skill catalog without an available reader");
+          for (const line of GUIDANCE) assert.ok(!system.includes(line), "No skill guidance without an available reader");
           delta = { role: "assistant", content: "READ_UNAVAILABLE" };
           finishReason = "stop";
         } else {
@@ -102,6 +104,8 @@ async function runScenario(source, scenario) {
           assert.ok(system.includes("read exact <location>"), "Skill-read instruction missing");
           assert.ok(system.includes("resolve it against the skill directory"), "Relative-path rule missing");
           assert.ok(system.includes("use that absolute path in tool commands"));
+          for (const line of GUIDANCE) assert.ok(system.includes(line), "Per-run complete-path guidance missing from provider input");
+          if (scenario === "compact-catalog") assert.ok(!entry[1].includes("<description>"));
           // Intentionally repeat the observed error in the negative control.
           // The runtime must report it, not silently rewrite the command.
           delta = scenario === "missing-subdirectory"
@@ -168,6 +172,19 @@ async function runScenario(source, scenario) {
       } } },
     };
     await writeFile(process.env.OPENCLAW_CONFIG_PATH, JSON.stringify(config));
+    let skillsSnapshot;
+    if (["retained-snapshot", "compact-catalog"].includes(scenario)) {
+      const { t: snapshot } = await native("workspace-skill-prompt-BuT-L5LS.mjs");
+      skillsSnapshot = await snapshot(workspace, { config, agentId: "main" });
+      assert.ok(skillsSnapshot.prompt.includes("example-probe"));
+      if (scenario === "compact-catalog") {
+        const { i: compact } = await native("skill-contract-BkCILPDQ.mjs");
+        skillsSnapshot.prompt = compact(skillsSnapshot.resolvedSkills, { descriptionMaxChars: 0 });
+      }
+      // Old catalog text does not need to be rewritten in retained HOME.
+      for (const line of GUIDANCE) assert.ok(!skillsSnapshot.prompt.includes(line));
+    }
+    const savedSnapshot = JSON.stringify(skillsSnapshot);
     const { t: run } = await native("embedded-agent-BaH7wGBd.mjs");
     const { a: createRun, c: prepare } = await native("admitted-run-context-BNasoszr.mjs");
     const runId = randomUUID();
@@ -181,9 +198,11 @@ async function runScenario(source, scenario) {
       provider: "cetirun", model: "gpt-4.1-mini", trigger: "user", messageProvider: "webchat",
       prompt: "Use the installed example-probe skill. Read its instructions, run its bundled scripts/probe.sh with /bin/sh, and report stdout.",
       timeoutMs: 55000, abortSignal: controller.signal,
+      skillsSnapshot, promptMode: scenario === "minimal" ? "minimal" : "full",
     });
     if (assertionFailure) throw assertionFailure;
     assert.equal(requests.length, expectedRequests);
+    assert.equal(JSON.stringify(skillsSnapshot), savedSnapshot, "The retained snapshot must not be rewritten");
     const text = result.payloads?.map(payload => payload.text ?? "").join("\n") ?? "";
     assert.equal(text, scenario === "read-denied" ? "READ_UNAVAILABLE" : scenario === "missing-subdirectory" ? failure : success);
     console.log(JSON.stringify({ scenario, status: "PASS", scriptedRequests: requests.length, realModelRequests: 0 }));
@@ -213,9 +232,14 @@ if (process.argv[2] === "--scenario") {
     for (const name of await readdir(path.dirname(source))) {
       if (name !== "openclaw") await symlink(path.join(path.dirname(source), name), path.join(directory, "node_modules", name));
     }
-    for (const name of ["apply-workload-mcp.mjs", "apply-gateway-budget.mjs"]) {
+    for (const name of ["apply-workload-mcp.mjs", "apply-gateway-budget.mjs", "apply-skill-paths.mjs"]) {
       await execute(process.execPath, [path.join(repository, "app/cetirun-chart/agents/openclaw/compat", name), host]);
     }
+    const patchedPrompt = await readFile(path.join(host, "dist/system-prompt-params-DdCWVctq.mjs"), "utf8");
+    const installer = path.join(repository, "app/cetirun-chart/agents/openclaw/compat/apply-skill-paths.mjs");
+    await execute(process.execPath, [installer, host]);
+    await execute(process.execPath, [installer, host, "--check"]);
+    assert.equal(await readFile(path.join(host, "dist/system-prompt-params-DdCWVctq.mjs"), "utf8"), patchedPrompt);
     await execute("python3", [path.join(repository, "app/cetirun-chart/configs/apply-memory-skills.py"), "--runtime", "openclaw", "--root", host]);
   });
   after(async () => { if (directory) await rm(directory, { recursive: true, force: true }); });
