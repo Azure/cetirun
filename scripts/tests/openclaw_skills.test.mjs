@@ -331,7 +331,7 @@ if (process.argv[2] === "--scenario") {
   });
   after(async () => { if (directory) await rm(directory, { recursive: true, force: true }); });
   test("copying a symlinked native package isolates patches and cleanup", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "cetirun-package-copy-"));
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "cetirun-package-copy-")));
     try {
       const installed = path.join(root, "installed/node_modules/openclaw");
       const dependency = path.join(root, "installed/node_modules/example-dependency");
