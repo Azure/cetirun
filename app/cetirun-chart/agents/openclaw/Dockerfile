@@ -145,12 +145,14 @@ RUN --mount=from=openclaw-source,source=/home/vibe/openclaw-pack/openclaw.tgz,ta
 
 # CetiRun's changes to the pinned OpenClaw package, after its last install:
 # workload authentication for the platform MCP, and the texts and the key
-# cooldown for a spent AI Gateway budget, and complete bundled-skill paths in
-# each run's prompt. Each refuses an OpenClaw source it does not know.
+# cooldown for a spent AI Gateway budget, complete bundled-skill paths, and
+# authorized loading of explicitly selected skills. Each refuses an OpenClaw
+# source it does not know.
 COPY --chown=vibe:vibe agents/openclaw/compat/ /tmp/cetirun-openclaw-compat/
 RUN node /tmp/cetirun-openclaw-compat/apply-workload-mcp.mjs /usr/local/share/npm-global/lib/node_modules/openclaw && \
     node /tmp/cetirun-openclaw-compat/apply-gateway-budget.mjs /usr/local/share/npm-global/lib/node_modules/openclaw && \
     node /tmp/cetirun-openclaw-compat/apply-skill-paths.mjs /usr/local/share/npm-global/lib/node_modules/openclaw && \
+    node /tmp/cetirun-openclaw-compat/apply-skill-activation.mjs /usr/local/share/npm-global/lib/node_modules/openclaw && \
     rm -r /tmp/cetirun-openclaw-compat
 COPY --chown=vibe:vibe configs/apply-memory-skills.py /tmp/apply-memory-skills.py
 RUN python3 /tmp/apply-memory-skills.py --runtime openclaw --root /usr/local/share/npm-global/lib/node_modules/openclaw && rm /tmp/apply-memory-skills.py

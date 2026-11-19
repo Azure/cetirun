@@ -103,6 +103,23 @@ also tells the model to read the selected `SKILL.md` before using its files.
 This guidance does not rewrite commands, change tool permissions, or replace
 checking the execution result.
 
+For explicit OpenClaw selections, such as `$release-notes` or
+`/skill release-notes`, CetiRun also loads the complete selected `SKILL.md`
+through the authorized native `read` tool before the model runs. The
+instructions are runtime context; they do not appear as a model-issued
+`read` call. Runtime activation records distinguish a complete read from
+verification that the instructions remain in the context passed to the
+model transport. Neither record proves that a script or model request
+succeeded.
+
+This loading applies to local skills in the current catalog with an
+available native `read` tool. A denied or redirected read, missing file,
+oversized document, or loss of the complete instructions after compaction
+stops the selected-skill request. Remote and hidden skills, and tool modes
+without the concrete reader, are not supported by this loading path.
+Mentioning a skill in ordinary prose still relies on the model to read its
+instructions; use an explicit selection when you need runtime loading.
+
 If a skill fails, inspect the tool call and its result before repeating the
 task. Check whether the Agent read the intended `SKILL.md`, used the complete
 path, and received successful script output. A matching answer alone does

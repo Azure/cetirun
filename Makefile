@@ -51,7 +51,7 @@ memory-native-test:
 
 .PHONY: openclaw-skills-test
 openclaw-skills-test:
-	node --test scripts/tests/openclaw_skills_patch.test.mjs scripts/tests/openclaw_skills.test.mjs
+	node --test scripts/tests/openclaw_skills_patch.test.mjs scripts/tests/openclaw_skill_activation.test.mjs scripts/tests/openclaw_skills.test.mjs
 
 lint: version-check artifact-check license-check python-check go-lint portal-lint chart-check bicep-check shell-check workflow-check
 

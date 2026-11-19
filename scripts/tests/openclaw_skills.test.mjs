@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -20,7 +20,7 @@ const filename = fileURLToPath(import.meta.url);
 const repository = path.resolve(path.dirname(filename), "../..");
 const success = "CETIRUN_SKILL_SCRIPT_OK";
 const failure = "CETIRUN_SKILL_SCRIPT_FAILED";
-const scenarios = ["relative", "absolute", "retained-snapshot", "compact-catalog", "minimal", "missing-subdirectory", "read-denied"];
+const scenarios = ["relative", "absolute", "retained-snapshot", "compact-catalog", "minimal", "missing-subdirectory", "read-denied", "selected-direct-exec", "selected-symlink", "selected-context-lost", "selected-prompt-denied", "selected-hook-veto", "selected-hook-redirect", "selected-allowlist", "selected-retained", "selected-read-denied", "selected-missing", "selected-overbudget"];
 
 function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
@@ -34,6 +34,9 @@ function messageText(content) {
 async function runScenario(source, scenario) {
   assert.ok(scenarios.includes(scenario));
   const root = await mkdtemp(path.join(os.tmpdir(), "cetirun-native-skill-"));
+  const selected = scenario.startsWith("selected-");
+  const blocked = ["selected-read-denied", "selected-missing", "selected-overbudget", "selected-context-lost", "selected-prompt-denied", "selected-hook-veto", "selected-hook-redirect"].includes(scenario);
+  const instructionCanary = `FULL_SKILL_${randomUUID()}`;
   const workspace = path.join(root, "workspace");
   const skillDirectory = path.join(root, "skills with spaces", "example-probe");
   const skillFile = path.join(skillDirectory, "SKILL.md");
@@ -52,10 +55,25 @@ async function runScenario(source, scenario) {
   process.env.OPENCLAW_CONFIG_PATH = path.join(root, "config.json");
   process.env.OPENCLAW_LOG_LEVEL = "error";
   assert.equal(os.homedir(), root);
+  if (scenario === "selected-context-lost") {
+    // Fault injection in a disposable host only: simulate removal of the
+    // carrier by a context transform immediately before the production guard.
+    const shadow = path.join(root, "node_modules/openclaw");
+    await cp(source, shadow, { recursive: true });
+    for (const name of await readdir(path.dirname(source))) {
+      if (name !== "openclaw") await symlink(path.join(path.dirname(source), name), path.join(root, "node_modules", name));
+    }
+    const bundle = path.join(shadow, "dist/builtin-openclaw-q1hiFm14.mjs");
+    const contents = await readFile(bundle, "utf8");
+    const anchor = "if (!activeSession.isCompacting) await input.verifySelectedSkillContext?.(context);";
+    assert.equal(contents.split(anchor).length, 2);
+    await writeFile(bundle, contents.replace(anchor, 'context = { ...context, messages: context.messages.filter(message => !message.runtimeContextCarrier) };\n' + anchor));
+    source = shadow;
+  }
   const native = name => import(pathToFileURL(path.join(source, "dist", name)).href);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error("Native skill check timed out")), 60000);
-  const expectedRequests = scenario === "read-denied" ? 1 : scenario === "missing-subdirectory" ? 2 : 3;
+  const expectedRequests = blocked ? 0 : selected ? 2 : scenario === "read-denied" ? 1 : scenario === "missing-subdirectory" ? 2 : 3;
   const requests = [];
   let assertionFailure, admission;
   const originalFetch = globalThis.fetch;
@@ -81,7 +99,19 @@ async function runScenario(source, scenario) {
         index: 0, id: `call_${requests.length}`, type: "function",
         function: { name, arguments: JSON.stringify(args) },
       }] });
-      if (requests.length === 1) {
+      if (selected) {
+        assert.ok(raw.includes(instructionCanary), "The complete selected document must already reach the provider");
+        assert.ok(raw.includes("runtime-skill-activation") || raw.includes("Runtime skill activation"));
+        assert.ok(!body.messages.some(message => message.role === "assistant" && message.tool_calls?.some(call => call.function.name === "read")), "Runtime activation must not fabricate a model read");
+        if (requests.length === 1) {
+          delta = toolCall("exec", { command: "/bin/sh scripts/probe.sh", workdir: skillDirectory });
+          finishReason = "tool_calls";
+        } else {
+          assert.ok(toolResults.includes(success));
+          delta = { role: "assistant", content: success };
+          finishReason = "stop";
+        }
+      } else if (requests.length === 1) {
         assert.ok(!raw.includes(success), "The expected output must not be in the initial request");
         if (scenario === "read-denied") {
           assert.ok(!tools.includes("read"));
@@ -147,8 +177,13 @@ async function runScenario(source, scenario) {
     await mkdir(workspace, { recursive: true });
     await mkdir(path.dirname(scriptFile), { recursive: true });
     await writeFile(skillFile, "---\nname: example-probe\ndescription: Print a synthetic marker with the bundled script.\n---\n"
-      + "Read this skill before acting. Run `/bin/sh scripts/probe.sh` from this skill directory. Report stdout verbatim.\n", { mode: 0o444 });
+      + "Read this skill before acting. Run `/bin/sh scripts/probe.sh` from this skill directory. Report stdout verbatim.\n" + instructionCanary + "\n", { mode: 0o444 });
     await writeFile(scriptFile, `#!/bin/sh\nprintf '%s\\n' '${success}'\n`, { mode: 0o444 });
+    if (scenario === "selected-symlink") {
+      const realSkills = path.join(root, "actual-skills");
+      await rename(path.dirname(skillDirectory), realSkills);
+      await symlink(realSkills, path.dirname(skillDirectory));
+    }
     await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
     const origin = `http://127.0.0.1:${server.address().port}`;
     globalThis.fetch = (input, init) => {
@@ -160,7 +195,7 @@ async function runScenario(source, scenario) {
       agents: { entries: { main: { workspace } }, defaults: {
         workspace, skipBootstrap: true, model: { primary: "cetirun/gpt-4.1-mini" },
       } },
-      tools: { profile: "full", ...(scenario === "read-denied" ? { deny: ["read"] } : {}),
+      tools: { profile: "full", ...(["read-denied", "selected-read-denied"].includes(scenario) ? { deny: ["read"] } : {}),
         exec: { host: "gateway", security: "full", ask: "off" } },
       skills: { load: { extraDirs: [path.dirname(skillDirectory)], watch: false } },
       plugins: { enabled: false },
@@ -171,9 +206,29 @@ async function runScenario(source, scenario) {
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
       } } },
     };
+    const hookFixture = ["selected-prompt-denied", "selected-hook-veto", "selected-hook-redirect"].includes(scenario);
+    const hookMarker = path.join(root, "hook-ran");
+    if (hookFixture) {
+      const pluginDir = path.join(root, "synthetic-plugin");
+      await mkdir(pluginDir);
+      await writeFile(path.join(pluginDir, "openclaw.plugin.json"), JSON.stringify({ id: "synthetic", configSchema: { type: "object", additionalProperties: false } }));
+      const hook = scenario === "selected-prompt-denied" ? "before_prompt_build" : "before_tool_call";
+      const result = scenario === "selected-prompt-denied" ? '{ toolsAllow: ["exec"] }' : scenario === "selected-hook-veto" ? '{ block: true, blockReason: "Synthetic veto" }' : `{ params: { ...event.params, path: ${JSON.stringify(scriptFile)} } }`;
+      await writeFile(path.join(pluginDir, "index.mjs"), `import { writeFileSync } from "node:fs";
+export default { id: "synthetic", register(api) { api.on(${JSON.stringify(hook)}, event => {
+${hook === "before_tool_call" ? 'if (event.toolName !== "read") return;' : ''}
+writeFileSync(${JSON.stringify(hookMarker)}, "ran"); return ${result}; }); } };
+`);
+      config.plugins = { enabled: true, allow: ["synthetic"], load: { paths: [pluginDir] }, entries: { synthetic: { enabled: true, hooks: { allowConversationAccess: true, allowPromptInjection: true } } }, slots: { memory: "none" } };
+    }
     await writeFile(process.env.OPENCLAW_CONFIG_PATH, JSON.stringify(config));
+    if (hookFixture) {
+      const { t: loadPlugins } = await native("loader-BaZWJ2oT.mjs");
+      const registry = loadPlugins({ config, workspaceDir: workspace, onlyPluginIds: ["synthetic"], throwOnLoadError: true });
+      assert.ok(registry.typedHooks.length > 0, JSON.stringify({ message: "Synthetic policy hook must be loaded", plugins: registry.plugins, diagnostics: registry.diagnostics }));
+    }
     let skillsSnapshot;
-    if (["retained-snapshot", "compact-catalog"].includes(scenario)) {
+    if (["retained-snapshot", "compact-catalog", "selected-retained", "selected-missing", "selected-overbudget"].includes(scenario)) {
       const { t: snapshot } = await native("workspace-skill-prompt-BuT-L5LS.mjs");
       skillsSnapshot = await snapshot(workspace, { config, agentId: "main" });
       assert.ok(skillsSnapshot.prompt.includes("example-probe"));
@@ -184,6 +239,8 @@ async function runScenario(source, scenario) {
       // Old catalog text does not need to be rewritten in retained HOME.
       for (const line of GUIDANCE) assert.ok(!skillsSnapshot.prompt.includes(line));
     }
+    if (scenario === "selected-missing") await rm(skillFile);
+    if (scenario === "selected-overbudget") { await rm(skillFile); await writeFile(skillFile, "long instructions ".repeat(11000)); }
     const savedSnapshot = JSON.stringify(skillsSnapshot);
     const { t: run } = await native("embedded-agent-BaH7wGBd.mjs");
     const { a: createRun, c: prepare } = await native("admitted-run-context-BNasoszr.mjs");
@@ -191,6 +248,14 @@ async function runScenario(source, scenario) {
     admission = prepare({ cfg: config, operationalRunInstance: createRun(runId), facts: {
       runId, agentId: "main", ingress: { kind: "cli", boundary: "local", rawSourceRef: "synthetic", state: "present" },
     } });
+    let explicitInvocation;
+    if (selected) {
+      const { n: expand, s: selections } = await native("chat-command-invocation-C0R0TlWd.mjs");
+      const expanded = expand({ text: "$example-probe Run the bundled script and report stdout.", skillCommands: [{ name: "example_probe", skillName: "example-probe", skillFile: scenario === "selected-symlink" ? await realpath(skillFile) : skillFile }] });
+      explicitInvocation = { prompt: expanded.body, explicitSkillSelections: selections(expanded.skills) };
+      assert.equal(explicitInvocation.explicitSkillSelections.length, 1);
+    }
+    let runError;
     const result = await run({
       preparedRunAdmission: admission, sessionPersistence: "detached", sessionId: randomUUID(),
       sessionKey: "agent:main:synthetic", agentId: "main", runId, workspaceDir: workspace, cwd: workspace,
@@ -198,13 +263,26 @@ async function runScenario(source, scenario) {
       provider: "cetirun", model: "gpt-4.1-mini", trigger: "user", messageProvider: "webchat",
       prompt: "Use the installed example-probe skill. Read its instructions, run its bundled scripts/probe.sh with /bin/sh, and report stdout.",
       timeoutMs: 55000, abortSignal: controller.signal,
+      ...(scenario === "selected-allowlist" ? { toolsAllow: ["read", "exec"] } : {}),
+      ...explicitInvocation,
       skillsSnapshot, promptMode: scenario === "minimal" ? "minimal" : "full",
-    });
+    }).catch(error => { if (!blocked) throw error; runError = error; return {}; });
     if (assertionFailure) throw assertionFailure;
     assert.equal(requests.length, expectedRequests);
     assert.equal(JSON.stringify(skillsSnapshot), savedSnapshot, "The retained snapshot must not be rewritten");
     const text = result.payloads?.map(payload => payload.text ?? "").join("\n") ?? "";
-    assert.equal(text, scenario === "read-denied" ? "READ_UNAVAILABLE" : scenario === "missing-subdirectory" ? failure : success);
+    if (hookFixture) assert.equal(await readFile(hookMarker, "utf8"), "ran", "Native hook must actually run");
+    if (blocked) {
+      if (scenario === "selected-context-lost") {
+        assert.ok(result.payloads.some(payload => payload.isError === true));
+        assert.equal(result.meta.error.kind, "incomplete_turn");
+        assert.match(result.meta.error.message, /complete current instructions are missing from the provider context/);
+      } else {
+        assert.ok(runError, "Expected explicit activation failure before any provider request");
+        assert.match(runError.message, scenario === "selected-missing" ? /File not found/ : /Selected skill activation failed/);
+      }
+      assert.ok(!text.includes(success), "Blocked activation must not report successful execution");
+    } else assert.equal(text, scenario === "read-denied" ? "READ_UNAVAILABLE" : scenario === "missing-subdirectory" ? failure : success);
     console.log(JSON.stringify({ scenario, status: "PASS", scriptedRequests: requests.length, realModelRequests: 0 }));
   } finally {
     admission?.close();
@@ -232,9 +310,14 @@ if (process.argv[2] === "--scenario") {
     for (const name of await readdir(path.dirname(source))) {
       if (name !== "openclaw") await symlink(path.join(path.dirname(source), name), path.join(directory, "node_modules", name));
     }
-    for (const name of ["apply-workload-mcp.mjs", "apply-gateway-budget.mjs", "apply-skill-paths.mjs"]) {
+    for (const name of ["apply-workload-mcp.mjs", "apply-gateway-budget.mjs", "apply-skill-paths.mjs", "apply-skill-activation.mjs"]) {
       await execute(process.execPath, [path.join(repository, "app/cetirun-chart/agents/openclaw/compat", name), host]);
     }
+    const activationInstaller = path.join(repository, "app/cetirun-chart/agents/openclaw/compat/apply-skill-activation.mjs");
+    const activationSource = await readFile(path.join(host, "dist/builtin-openclaw-q1hiFm14.mjs"), "utf8");
+    await execute(process.execPath, [activationInstaller, host]);
+    await execute(process.execPath, [activationInstaller, host, "--check"]);
+    assert.equal(await readFile(path.join(host, "dist/builtin-openclaw-q1hiFm14.mjs"), "utf8"), activationSource);
     const patchedPrompt = await readFile(path.join(host, "dist/system-prompt-params-DdCWVctq.mjs"), "utf8");
     const installer = path.join(repository, "app/cetirun-chart/agents/openclaw/compat/apply-skill-paths.mjs");
     await execute(process.execPath, [installer, host]);

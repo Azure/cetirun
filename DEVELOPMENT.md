@@ -894,7 +894,19 @@ synthetic files. Cases cover relative and absolute bundled-script paths,
 paths containing spaces, retained and compact skill catalogs, minimal
 prompts, an omitted script subdirectory, and a denied `read` tool. The
 complete-path guidance must reach the provider without rewriting a saved
-skill snapshot. No real model, cluster, credentials, or shared HOME is used. It does not
+skill snapshot. Explicit-selection cases let the scripted provider execute
+immediately: the complete selected instructions must already be in its
+first request, without a fabricated model `read` call. They cover fresh and
+retained catalogs, symlink locations, read allowlists, denied reads, missing
+files, whole-document read budgets, and native plugin hooks that deny or
+redirect the read. A disposable-host fault injection removes the runtime
+carrier before the provider guard and requires zero endpoint requests.
+Helper tests cover authority
+changes, stale or concurrent delivery receipts, and missing or altered
+runtime context. The runtime fails closed if compaction removes that context;
+these checks do not claim a successful live compaction recovery.
+
+No real model, cluster, credentials, or shared HOME is used. It does not
 test model instruction adherence, browser behavior, Memory plugin hooks, or
 the deployed Marketplace delivery path. A pass cannot establish that a real
 model will choose the correct command. CI runs these checks using the native
