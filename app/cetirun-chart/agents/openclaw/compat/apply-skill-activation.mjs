@@ -23,28 +23,38 @@ const LOAD_AFTER = `\t\tconst recordSkillActivation = async (receipts) => {
 \t\t\t\tfor (const receipt of receipts) sessionManager.appendCustomEntry("cetirun.skill-activation", receipt);
 \t\t\t}));
 \t\t};
-\t\tconst selectedSkillActivation = await activateSelectedSkills({
-\t\t\tselections: attempt.explicitSkillSelections,
-\t\t\trunId: attempt.runId,
-\t\t\tgetState: () => ({
-\t\t\t\ttools: promptToolPolicy.current.effectiveTools,
-\t\t\t\tcallableToolNames: promptToolPolicy.current.callableToolNames,
-\t\t\t\tcatalog: prepared.toolBase.selectedSkillCatalog,
-\t\t\t\tcache: prepared.toolBase.skillInstructionDeliveryCache,
-\t\t\t\tsignal: prepared.toolBase.toolAbortSignal
-\t\t\t}),
-\t\t\twithValidation: runWithToolExecutionValidation,
-\t\t\tescapeText: escapeInternalRuntimeContextDelimiters,
-\t\t\tprojectFragments: (fragments) => usesEscapedRuntimeContext(sessionManager.getHeader()?.version)
-\t\t\t\t? projectRuntimeContextFragments(fragments) : fragments.map((fragment) => fragment.text).join("\\n\\n")
-\t\t});
-\t\tif (selectedSkillActivation) await recordSkillActivation(selectedSkillActivation.receipts);
-\t\tconst promptContext = await prepareEmbeddedAttemptPromptContext({
+\t\tlet selectedSkillActivation;
+\t\tconst prepareSkillPromptContext = (activation) => prepareEmbeddedAttemptPromptContext({
 \t\t\tsessionVersion: sessionManager.getHeader()?.version,
-\t\t\tattempt: selectedSkillActivation ? {
+\t\t\tattempt: activation ? {
 \t\t\t\t...attempt,
-\t\t\t\truntimeContextFragments: [...attempt.runtimeContextFragments ?? [], ...selectedSkillActivation.fragments]
+\t\t\t\truntimeContextFragments: [...attempt.runtimeContextFragments ?? [], ...activation.fragments]
 \t\t\t} : attempt,
+`;
+const CONTEXT_BEFORE = "\t\t\ttoolResultPromptProjectionState\n\t\t});\n\t\tif (runAbortController.signal.aborted) throw createAbortableError(runAbortController.signal);\n";
+const CONTEXT_AFTER = "\t\t\ttoolResultPromptProjectionState\n\t\t});\n\t\tlet promptContext = await prepareSkillPromptContext();\n\t\tif (runAbortController.signal.aborted) throw createAbortableError(runAbortController.signal);\n";
+const ADMITTED_BEFORE = "\t\tif (!skipPromptSubmission) {\n\t\t\tconst { resolvedApiKey } = attempt;\n";
+const ADMITTED_AFTER = `\t\tif (!skipPromptSubmission) {
+\t\t\tselectedSkillActivation = await activateSelectedSkills({
+\t\t\t\tselections: attempt.explicitSkillSelections,
+\t\t\t\trunId: attempt.runId,
+\t\t\t\tgetState: () => ({
+\t\t\t\t\ttools: promptToolPolicy.current.effectiveTools,
+\t\t\t\t\tcallableToolNames: promptToolPolicy.current.callableToolNames,
+\t\t\t\t\tcatalog: prepared.toolBase.selectedSkillCatalog,
+\t\t\t\t\tcache: prepared.toolBase.skillInstructionDeliveryCache,
+\t\t\t\t\tsignal: prepared.toolBase.toolAbortSignal
+\t\t\t\t}),
+\t\t\t\twithValidation: runWithToolExecutionValidation,
+\t\t\t\tescapeText: escapeInternalRuntimeContextDelimiters,
+\t\t\t\tprojectFragments: (fragments) => usesEscapedRuntimeContext(sessionManager.getHeader()?.version)
+\t\t\t\t\t? projectRuntimeContextFragments(fragments) : fragments.map((fragment) => fragment.text).join("\\n\\n")
+\t\t\t});
+\t\t\tif (selectedSkillActivation) {
+\t\t\t\tawait recordSkillActivation(selectedSkillActivation.receipts);
+\t\t\t\tpromptContext = await prepareSkillPromptContext(selectedSkillActivation);
+\t\t\t}
+\t\t\tconst { resolvedApiKey } = attempt;
 `;
 const SUBMIT_BEFORE = "\t\tif (!state.skipPromptSubmission) await submitEmbeddedAttemptPrompt({\n";
 const SUBMIT_AFTER = SUBMIT_BEFORE + `\t\t\tverifySelectedSkillContext: selectedSkillActivation ? async (context) => {
@@ -57,7 +67,13 @@ const VERIFY_AFTER = "\t\t\tassertSteeringCurrent();\n"
   + "\t\t\tif (!activeSession.isCompacting) await input.verifySelectedSkillContext?.(context);\n"
   + "\t\t\tif (!activeSession.isCompacting) input.checkSelectedSkillAuthority?.();\n"
   + "\t\t\tconst stream = await baseStreamFn(model, context, options);\n";
-export const EDITS = [[RESOURCES_BEFORE, RESOURCES_AFTER], [CATALOG_BEFORE, CATALOG_AFTER], [LOAD_BEFORE, LOAD_AFTER], [SUBMIT_BEFORE, SUBMIT_AFTER], [VERIFY_BEFORE, VERIFY_AFTER]];
+// The isolated finalizer has neither the selected catalog nor an authorized
+// reader. Let its existing no-model fallback preserve completed tool work.
+const FINALIZE_BEFORE = "\t\tfinalizeSettledTurn: async ({ attempt }) => {\n\t\t\tconst result = await runEmbeddedAttempt(buildRestrictedFinalizationAttempt(attempt));\n";
+const FINALIZE_AFTER = "\t\tfinalizeSettledTurn: async ({ attempt }) => {\n"
+  + '\t\t\tif (attempt.explicitSkillSelections?.length) throw new Error("Selected skill activation cannot be verified in tool-free finalization");\n'
+  + "\t\t\tconst result = await runEmbeddedAttempt(buildRestrictedFinalizationAttempt(attempt));\n";
+export const EDITS = [[RESOURCES_BEFORE, RESOURCES_AFTER], [CATALOG_BEFORE, CATALOG_AFTER], [LOAD_BEFORE, LOAD_AFTER], [CONTEXT_BEFORE, CONTEXT_AFTER], [ADMITTED_BEFORE, ADMITTED_AFTER], [SUBMIT_BEFORE, SUBMIT_AFTER], [VERIFY_BEFORE, VERIFY_AFTER], [FINALIZE_BEFORE, FINALIZE_AFTER]];
 const count = (text, part) => text.split(part).length - 1;
 
 export function original(source) {

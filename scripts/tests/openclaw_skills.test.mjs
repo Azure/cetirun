@@ -20,7 +20,8 @@ const filename = fileURLToPath(import.meta.url);
 const repository = path.resolve(path.dirname(filename), "../..");
 const success = "CETIRUN_SKILL_SCRIPT_OK";
 const failure = "CETIRUN_SKILL_SCRIPT_FAILED";
-const scenarios = ["relative", "absolute", "retained-snapshot", "compact-catalog", "minimal", "missing-subdirectory", "read-denied", "selected-direct-exec", "selected-symlink", "selected-context-lost", "selected-prompt-denied", "selected-hook-veto", "selected-hook-redirect", "selected-allowlist", "selected-retained", "selected-read-denied", "selected-missing", "selected-overbudget"];
+const noModelFallback = "The tool run finished, but no final summary was produced. I did not repeat any completed actions.";
+const scenarios = ["relative", "absolute", "retained-snapshot", "compact-catalog", "minimal", "missing-subdirectory", "read-denied", "selected-direct-exec", "selected-symlink", "selected-context-lost", "selected-prompt-denied", "selected-hook-veto", "selected-hook-redirect", "selected-allowlist", "selected-retained", "selected-read-denied", "selected-missing", "selected-overbudget", "selected-run-veto", "selected-run-throw", "selected-run-allowed", "selected-empty-stop", "unselected-empty-stop"];
 
 function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
@@ -45,7 +46,10 @@ async function runScenario(source, scenario) {
   assert.ok(scenarios.includes(scenario));
   const root = await mkdtemp(path.join(os.tmpdir(), "cetirun-native-skill-"));
   const selected = scenario.startsWith("selected-");
-  const blocked = ["selected-read-denied", "selected-missing", "selected-overbudget", "selected-context-lost", "selected-prompt-denied", "selected-hook-veto", "selected-hook-redirect"].includes(scenario);
+  const emptyStop = scenario.endsWith("-empty-stop");
+  const runHook = scenario.startsWith("selected-run-");
+  const runBlocked = runHook && scenario !== "selected-run-allowed";
+  const blocked = runBlocked || ["selected-read-denied", "selected-missing", "selected-overbudget", "selected-context-lost", "selected-prompt-denied", "selected-hook-veto", "selected-hook-redirect"].includes(scenario);
   const instructionCanary = `FULL_SKILL_${randomUUID()}`;
   const workspace = path.join(root, "workspace");
   const skillDirectory = path.join(root, "skills with spaces", "example-probe");
@@ -78,9 +82,16 @@ async function runScenario(source, scenario) {
     source = shadow;
   }
   const native = name => import(pathToFileURL(path.join(source, "dist", name)).href);
+  const activationReceipts = [];
+  const { t: SessionManager } = await native("session-manager-DjC09C_X.mjs");
+  const appendCustomEntry = SessionManager.prototype.appendCustomEntry;
+  SessionManager.prototype.appendCustomEntry = function (type, data) {
+    if (type === "cetirun.skill-activation") activationReceipts.push(data);
+    return appendCustomEntry.call(this, type, data);
+  };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error("Native skill check timed out")), 60000);
-  const expectedRequests = blocked ? 0 : selected ? 2 : scenario === "read-denied" ? 1 : scenario === "missing-subdirectory" ? 2 : 3;
+  const expectedRequests = blocked ? 0 : selected ? 2 : emptyStop ? 4 : scenario === "read-denied" ? 1 : scenario === "missing-subdirectory" ? 2 : 3;
   const requests = [];
   let assertionFailure, admission;
   const originalFetch = globalThis.fetch;
@@ -98,7 +109,7 @@ async function runScenario(source, scenario) {
       assert.ok(requests.length <= expectedRequests, "Unexpected retry or extra model request");
       const system = body.messages.filter(message => ["system", "developer"].includes(message.role))
         .map(message => messageText(message.content)).join("\n");
-      const tools = body.tools.map(tool => tool.function.name);
+      const tools = (body.tools ?? []).map(tool => tool.function.name);
       const toolResults = body.messages.filter(message => message.role === "tool")
         .map(message => JSON.stringify(message.content)).join("\n");
       let delta, finishReason;
@@ -115,7 +126,7 @@ async function runScenario(source, scenario) {
           finishReason = "tool_calls";
         } else {
           assert.ok(toolResults.includes(success));
-          delta = { role: "assistant", content: success };
+          delta = { role: "assistant", content: emptyStop ? "" : success };
           finishReason = "stop";
         }
       } else if (requests.length === 1) {
@@ -167,6 +178,12 @@ async function runScenario(source, scenario) {
         delta = { role: "assistant", content: success };
         finishReason = "stop";
       }
+      if (emptyStop && !selected && requests.length === 3) delta = { role: "assistant", content: "" };
+      if (emptyStop && !selected && requests.length === 4) {
+        assert.deepEqual(tools, [], "The unselected finalizer remains tool-free and usable");
+        delta = { role: "assistant", content: success };
+        finishReason = "stop";
+      }
       response.writeHead(200, { "Content-Type": "text/event-stream" });
       const frame = (value, reason) => `data: ${JSON.stringify({
         id: `fixture-${requests.length}`, object: "chat.completion.chunk", created: 1,
@@ -213,7 +230,7 @@ async function runScenario(source, scenario) {
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
       } } },
     };
-    const hookFixture = ["selected-prompt-denied", "selected-hook-veto", "selected-hook-redirect"].includes(scenario);
+    const hookFixture = runHook || ["selected-prompt-denied", "selected-hook-veto", "selected-hook-redirect"].includes(scenario);
     const hookMarker = path.join(root, "hook-ran");
     if (hookFixture) {
       const pluginDir = path.join(root, "synthetic-plugin");
@@ -221,7 +238,17 @@ async function runScenario(source, scenario) {
       await writeFile(path.join(pluginDir, "openclaw.plugin.json"), JSON.stringify({ id: "synthetic", configSchema: { type: "object", additionalProperties: false } }));
       const hook = scenario === "selected-prompt-denied" ? "before_prompt_build" : "before_tool_call";
       const result = scenario === "selected-prompt-denied" ? '{ toolsAllow: ["exec"] }' : scenario === "selected-hook-veto" ? '{ block: true, blockReason: "Synthetic veto" }' : `{ params: { ...event.params, path: ${JSON.stringify(scriptFile)} } }`;
-      await writeFile(path.join(pluginDir, "index.mjs"), `import { writeFileSync } from "node:fs";
+      await writeFile(path.join(pluginDir, "index.mjs"), runHook ? `import { appendFileSync } from "node:fs";
+export default { id: "synthetic", register(api) {
+api.on("before_agent_run", () => {
+  appendFileSync(${JSON.stringify(hookMarker)}, "admission\\n");
+  ${scenario === "selected-run-throw" ? 'throw new Error("Synthetic admission failure");' : scenario === "selected-run-veto" ? 'return { decision: { outcome: "block", reason: "Synthetic admission veto" } };' : ''}
+});
+api.on("before_tool_call", event => {
+  if (event.toolName === "read") appendFileSync(${JSON.stringify(hookMarker)}, "read\\n");
+});
+} };
+` : `import { writeFileSync } from "node:fs";
 export default { id: "synthetic", register(api) { api.on(${JSON.stringify(hook)}, event => {
 ${hook === "before_tool_call" ? 'if (event.toolName !== "read") return;' : ''}
 writeFileSync(${JSON.stringify(hookMarker)}, "ran"); return ${result}; }); } };
@@ -263,8 +290,16 @@ writeFileSync(${JSON.stringify(hookMarker)}, "ran"); return ${result}; }); } };
       assert.equal(explicitInvocation.explicitSkillSelections.length, 1);
     }
     let runError;
+    const sessionId = randomUUID();
+    if (emptyStop) {
+      // The finalizer opens the durable transcript. A detached fixture could
+      // fall back due to missing storage and conceal an unguarded model call.
+      const { upsertSessionEntry } = await native("plugin-sdk/session-store-runtime.js");
+      await upsertSessionEntry({ agentId: "main", sessionKey: "agent:main:synthetic", env: process.env,
+        entry: { sessionId, updatedAt: Date.now(), lifecycleRevision: randomUUID() } });
+    }
     const result = await run({
-      preparedRunAdmission: admission, sessionPersistence: "detached", sessionId: randomUUID(),
+      preparedRunAdmission: admission, ...(emptyStop ? { terminalReplyExpectation: "required" } : { sessionPersistence: "detached" }), sessionId,
       sessionKey: "agent:main:synthetic", agentId: "main", runId, workspaceDir: workspace, cwd: workspace,
       agentDir: path.join(root, ".openclaw/agents/main/agent"), config,
       provider: "cetirun", model: "gpt-4.1-mini", trigger: "user", messageProvider: "webchat",
@@ -278,9 +313,16 @@ writeFileSync(${JSON.stringify(hookMarker)}, "ran"); return ${result}; }); } };
     assert.equal(requests.length, expectedRequests);
     assert.equal(JSON.stringify(skillsSnapshot), savedSnapshot, "The retained snapshot must not be rewritten");
     const text = result.payloads?.map(payload => payload.text ?? "").join("\n") ?? "";
-    if (hookFixture) assert.equal(await readFile(hookMarker, "utf8"), "ran", "Native hook must actually run");
+    if (runHook) {
+      assert.equal(await readFile(hookMarker, "utf8"), runBlocked ? "admission\n" : "admission\nread\n",
+        "Run admission must precede the selected skill read");
+      if (runBlocked) assert.deepEqual(activationReceipts, [], "A blocked run must not write activation receipts");
+      else assert.deepEqual(activationReceipts.map(receipt => receipt.phase), ["loaded", "provider_context_verified", "provider_context_verified"]);
+    } else if (hookFixture) assert.equal(await readFile(hookMarker, "utf8"), "ran", "Native hook must actually run");
     if (blocked) {
-      if (scenario === "selected-context-lost") {
+      if (runBlocked) {
+        assert.ok(!runError, "Native run admission should produce its normal blocked result");
+      } else if (scenario === "selected-context-lost") {
         assert.ok(result.payloads.some(payload => payload.isError === true));
         assert.equal(result.meta.error.kind, "incomplete_turn");
         assert.match(result.meta.error.message, /complete current instructions are missing from the provider context/);
@@ -289,15 +331,17 @@ writeFileSync(${JSON.stringify(hookMarker)}, "ran"); return ${result}; }); } };
         assert.match(runError.message, scenario === "selected-missing" ? /File not found/ : /Selected skill activation failed/);
       }
       assert.ok(!text.includes(success), "Blocked activation must not report successful execution");
-    } else assert.equal(text, scenario === "read-denied" ? "READ_UNAVAILABLE" : scenario === "missing-subdirectory" ? failure : success);
+    } else assert.equal(text, selected && emptyStop ? noModelFallback : scenario === "read-denied" ? "READ_UNAVAILABLE" : scenario === "missing-subdirectory" ? failure : success);
     console.log(JSON.stringify({ scenario, status: "PASS", scriptedRequests: requests.length, realModelRequests: 0 }));
   } finally {
     admission?.close();
     clearTimeout(timer);
     globalThis.fetch = originalFetch;
+    const { closeOpenClawAgentDatabasesAsync } = await native("openclaw-agent-db-BrZi20Hq.mjs");
+    await closeOpenClawAgentDatabasesAsync();
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 3 });
   }
 }
 

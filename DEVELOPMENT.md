@@ -901,6 +901,12 @@ retained catalogs, symlink locations, read allowlists, denied reads, missing
 files, whole-document read budgets, and native plugin hooks that deny or
 redirect the read. A disposable-host fault injection removes the runtime
 carrier before the provider guard and requires zero endpoint requests.
+Run-admission hook cases verify that a veto or exception causes no skill
+read, activation receipt, or provider call, and that an allowed run reads
+only after admission. Durable transcript cases finish tools with an empty
+answer: selected-skill runs use the existing no-model fallback without an
+unchecked finalizer request, while the unselected tool-free finalizer
+continues to work. These cases do not replay completed tools.
 Helper tests cover authority
 changes, stale or concurrent delivery receipts, and missing or altered
 runtime context. The runtime fails closed if compaction removes that context;

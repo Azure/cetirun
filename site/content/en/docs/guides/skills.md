@@ -105,7 +105,9 @@ checking the execution result.
 
 For explicit OpenClaw selections, such as `$release-notes` or
 `/skill release-notes`, CetiRun also loads the complete selected `SKILL.md`
-through the authorized native `read` tool before the model runs. The
+through the authorized native `read` tool after run admission and before
+the model runs. A run-admission veto prevents both the read and its
+activation record. The
 instructions are runtime context; they do not appear as a model-issued
 `read` call. Runtime activation records distinguish a complete read from
 verification that the instructions remain in the context passed to the
@@ -119,6 +121,12 @@ stops the selected-skill request. Remote and hidden skills, and tool modes
 without the concrete reader, are not supported by this loading path.
 Mentioning a skill in ordinary prose still relies on the model to read its
 instructions; use an explicit selection when you need runtime loading.
+
+If the tools finish but the model produces no final answer, a selected-skill
+run uses the existing no-model fallback. The isolated tool-free finalizer
+cannot re-establish authorized skill loading, so it does not make another
+model request. The fallback reports that no final summary was produced;
+it does not repeat completed actions.
 
 If a skill fails, inspect the tool call and its result before repeating the
 task. Check whether the Agent read the intended `SKILL.md`, used the complete
