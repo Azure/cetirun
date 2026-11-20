@@ -18,11 +18,11 @@ one version for all CetiRun images and charts:
   `--version <version>`
 
 Pulls need no login, but the workstation, the Operator, and the nodes need
-network access. These commands check two artifacts of `0.2.0` after publication:
+network access. These commands check two artifacts of `0.2.1` after publication:
 
 ```bash
-helm show chart oci://mcr.microsoft.com/aks/ai-runtime/cetirun/helm/cetirun-platform --version 0.2.0
-docker buildx imagetools inspect mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-operator:0.2.0
+helm show chart oci://mcr.microsoft.com/aks/ai-runtime/cetirun/helm/cetirun-platform --version 0.2.1
+docker buildx imagetools inspect mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-operator:0.2.1
 ```
 
 [`scripts/release-artifacts.json`]({{< repo "scripts/release-artifacts.json" >}})
@@ -57,7 +57,7 @@ Check each artifact path, for MCR or a custom registry:
 ## Publish the images and charts
 
 Use this optional procedure for a custom build or private registry. MCR is not
-a push destination. Use a writable registry and an unused version; `0.2.0`
+a push destination. Use a writable registry and an unused version; `0.2.1`
 below is an example.
 
 Use a machine with Docker Buildx, Helm, Python 3, and Bash. On this machine,
@@ -65,7 +65,7 @@ sign in to the registry with `docker login` and `helm registry login`. Then
 run this command from a clone of the repository:
 
 ```bash
-make publish REGISTRY=registry.example.com VERSION=0.2.0 \
+make publish REGISTRY=registry.example.com VERSION=0.2.1 \
   GIT_SHA="$(git rev-parse HEAD)"
 ```
 
@@ -88,7 +88,7 @@ release CLI and exclude the declared optional VS Code image explicitly:
 
 ```bash
 python3 -B scripts/cetirun-release.py publish \
-  --registry registry.example.com --version 0.2.0 \
+  --registry registry.example.com --version 0.2.1 \
   --git-sha "$(git rev-parse HEAD)" \
   --exclude-image cetirun-vscode
 ```
@@ -163,8 +163,8 @@ Read the digests of the Custom images that you approve, for example Pi and
 VS Code Server:
 
 ```bash
-docker buildx imagetools inspect mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-pi-agent:0.2.0
-docker buildx imagetools inspect mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-vscode:0.2.0
+docker buildx imagetools inspect mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-pi-agent:0.2.1
+docker buildx imagetools inspect mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-vscode:0.2.1
 ```
 
 For a custom build, use your registry and version. Put the full references,
@@ -185,7 +185,7 @@ chart is `helm/cetirun` in the registry. First, replace the example values.
 ACR_NAME=exampleregistry
 CLUSTER_RESOURCE_GROUP=example-rg
 CLUSTER_NAME=example-aks
-CHART_VERSION=0.2.0
+CHART_VERSION=0.2.1
 ```
 
 The registry's host is its login server. This is `<registry>.azurecr.io`, or a

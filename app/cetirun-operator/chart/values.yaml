@@ -62,7 +62,7 @@ cetirun:
     # -- OCI registry URL.
     repoURL: oci://mcr.microsoft.com/aks/ai-runtime/cetirun/helm/cetirun
     # -- Chart version to deploy.
-    version: "0.2.0"
+    version: "0.2.1"
   # -- Operator-level Helm value overrides applied to every CetiRun instance.
   # Merged on top of the operator's hardcoded defaults but beneath
   # per-instance spec.helm.values, so instances can still override them.
