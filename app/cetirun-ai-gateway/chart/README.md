@@ -745,7 +745,7 @@ and ran against mock deployments in place of separate Azure OpenAI resources.
 The clients were an OpenClaw-like client and OpenClaw itself. Where noted, the
 tests also ran against Azure OpenAI. The figures in tables were measured on
 LiteLLM 1.101.0, and the text gives the changes in 1.105.1 where they apply.
-The image now runs 1.108.3. Measurements that name an earlier release were not
+The image now runs 1.110.1. Measurements that name an earlier release were not
 repeated for this upgrade, unless the text says so.
 
 ### Choosing a deployment
@@ -3325,16 +3325,23 @@ is applicable only to a single replica.
 
 The AI Gateway runs `cetirun-ai-gateway`. This image is built from
 `app/cetirun-ai-gateway` and published with the other CetiRun images. It is
-open-source LiteLLM, 1.108.3, installed as pinned packages on the Azure Linux
+open-source LiteLLM, 1.110.1, installed as pinned packages on the Azure Linux
 Python base from MCR. It runs as the non-root user 65532.
+
+LiteLLM 1.110.1 includes Entra ID authentication for Azure AI decision models
+on `/v1/decisions` and `/v1/systemone`. With
+`enable_azure_ad_token_refresh: true`, these models can use the Gateway's
+Azure identity without an upstream API key. Model access groups and the
+Decisions-only guard still apply.
 
 - `requirements.txt` pins the upstream release's frozen `uv.lock` for the
   AI Gateway's existing runtime extras. It is installed with `--no-deps`, so
   nothing else is added. `litellm-enterprise`, which carries the BerriAI
-  Enterprise License, and the optional Admin MCP group are omitted. The two
-  Python 3.12 backports keep their existing CetiRun pins.
+  Enterprise License, the optional Admin MCP group, and the opt-in Rust
+  forwarding server are omitted. The two Python 3.12 backports keep their
+  existing CetiRun pins.
 
-  LiteLLM 1.108.3 permits filelock 4.x; the lockfile selects 4.2.4, which includes
+  LiteLLM 1.110.1 permits filelock 4.x; the lockfile selects 4.2.4, which includes
   the security fixes released in 4.2.1. The build fails if the enterprise
   package is present or if `pip check` finds an unmet dependency.
 
@@ -3352,7 +3359,7 @@ Python base from MCR. It runs as the non-root user 65532.
   also registered.
 
 To move to a new LiteLLM release, export its frozen `uv.lock` with the uv version
-used by its Dockerfile. For 1.108.3 this is uv 0.11.7, with the `proxy`,
+used by its Dockerfile. For 1.110.1 this is uv 0.11.7, with the `proxy`,
 `proxy-runtime`, `extra_proxy`, `semantic-router`, `saml` and `bedrock-realtime`
 extras and no default groups. Select Linux/Python 3.12 entries, pin the LiteLLM
 and proxy-extras workspace packages to their release versions, and keep the
