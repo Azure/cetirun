@@ -4,9 +4,26 @@
 """Omit build/debug metadata from the pinned managed ACPX runtime project."""
 
 import json
+import hashlib
 from pathlib import Path
 import re
 import sys
+
+
+# Qualified with OpenClaw/ACPX 2026.9.6 on linux/amd64, after the image's
+# existing optional-platform pruning. Dependency drift requires a new review
+# of runtime file references and a full doctor/Gateway/ACP qualification.
+REVIEWED_LOCK_SHA256 = "630412acc3827bab1bf79f46944b247ce8e758221ae800e20db9948f9d5733c9"
+REVIEWED_METADATA_PATHS_SHA256 = "e830e9c275eaadc55a6c3ae149557a73173eddbfcc53f0154903cbf7cbceffb0"
+
+
+def direct_manifest(project):
+    current = project
+    for part in ("node_modules", "@openclaw", "acpx", "package.json"):
+        current = current / part
+        if current.is_symlink():
+            raise ValueError("Managed ACPX identity path must not contain symlinks")
+    return current
 
 
 def is_metadata(name):
@@ -29,11 +46,11 @@ def prune(projects, version):
     projects = Path(projects)
     candidates = [p for p in projects.iterdir()
                   if p.is_dir() and not p.is_symlink()
-                  and (p / "node_modules/@openclaw/acpx/package.json").is_file()]
+                  and direct_manifest(p).is_file()]
     if len(candidates) != 1:
         raise ValueError("Expected exactly one managed ACPX project")
     project = candidates[0]
-    manifest = json.loads((project / "node_modules/@openclaw/acpx/package.json").read_text())
+    manifest = json.loads(direct_manifest(project).read_text())
     if manifest.get("name") != "@openclaw/acpx" or manifest.get("version") != version:
         raise ValueError("Managed ACPX does not match the pinned OpenClaw version")
 
@@ -56,6 +73,13 @@ def prune(projects, version):
                         if any(is_metadata(target) for target in runtime_targets(package.get(field))):
                             raise ValueError("A package runtime entry point needs build/debug metadata")
     removed = [entry for entry in files if is_metadata(entry.name)]
+    lock = project / "package-lock.json"
+    if lock.is_symlink() or hashlib.sha256(lock.read_bytes()).hexdigest() != REVIEWED_LOCK_SHA256:
+        raise ValueError("Unreviewed ACPX dependency lock; qualify the new runtime project")
+    if removed:
+        paths = "\n".join(sorted(entry.relative_to(project).as_posix() for entry in removed)) + "\n"
+        if hashlib.sha256(paths.encode()).hexdigest() != REVIEWED_METADATA_PATHS_SHA256:
+            raise ValueError("Unreviewed ACPX metadata inventory; qualify the new runtime project")
     for entry in removed:
         entry.unlink()
     return len(removed)

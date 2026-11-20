@@ -247,6 +247,9 @@ that work without changing executable code or snapshot validation. JavaScript,
 implementation TypeScript, native modules, agent binaries, package manifests,
 and licenses remain present. Debugging and type-checking the internal dependency
 project require the original pinned npm packages, which retain these files.
+The build checks the reviewed dependency lock and removal inventory before
+pruning. When either changes, review runtime file references and repeat the
+doctor, Gateway, and ACP checks before updating the recorded checksums.
 
 The native OpenClaw MVP reuses the protected renderer and the OpenClaw image
 that already exists. It does not add an alternative image, an Istio sidecar, or
