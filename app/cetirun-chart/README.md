@@ -263,6 +263,8 @@ For a dependency upgrade, regenerate both inputs with the pinned OpenClaw/npm
 installer in a disposable project, review the dependency and removal inventories,
 and requalify them together. The managed project path in the Dockerfile is part
 of this pinned installation contract.
+The reviewed ACPX inputs include a Zod 4.6.6 override for
+[GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5).
 
 The native OpenClaw MVP reuses the protected renderer and the OpenClaw image
 that already exists. It does not add an alternative image, an Istio sidecar, or

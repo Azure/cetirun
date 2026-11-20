@@ -80,7 +80,10 @@ class RuntimeMetadataTests(unittest.TestCase):
         self.assertEqual(manifest["dependencies"]["@openclaw/acpx"], "2026.9.6")
         self.assertEqual(set(manifest["openclaw"]["managedPeerDependencies"]),
                          set(manifest["dependencies"]) - {"@openclaw/acpx"})
-        self.assertEqual(set(manifest["openclaw"]["managedOverrides"]), set(manifest["overrides"]))
+        self.assertEqual(set(manifest["openclaw"]["managedOverrides"]) | {"zod@4"}, set(manifest["overrides"]))
+        self.assertEqual(manifest["dependencies"]["zod"], "4.6.6")
+        self.assertEqual(manifest["overrides"]["zod@4"], "4.6.6")
+        self.assertEqual(lock["packages"]["node_modules/zod"]["version"], "4.6.6")
         dockerfile = (SCRIPT.parent / "Dockerfile").read_text()
         seed = "COPY --chown=vibe:vibe agents/openclaw/acpx-runtime/ /usr/local/share/openclaw-npm/projects/openclaw-acpx-052d680d6d/"
         self.assertLess(dockerfile.index(seed), dockerfile.index('openclaw plugins install "npm:@openclaw/acpx'))

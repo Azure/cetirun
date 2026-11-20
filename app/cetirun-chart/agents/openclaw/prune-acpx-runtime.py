@@ -13,7 +13,7 @@ import sys
 # Qualified with OpenClaw/ACPX 2026.9.6 on linux/amd64, after the image's
 # existing optional-platform pruning. Dependency drift requires a new review
 # of runtime file references and a full doctor/Gateway/ACP qualification.
-REVIEWED_LOCK_SHA256 = "e69097f63d3c2f28b7f97fc3babbecd0cef2e52db8df1717dd8d5da54961436d"
+REVIEWED_LOCK_SHA256 = "862e2149caf308e8d6ae1920a727b8b569e0f71263e24252ced017b51e29a35a"
 REVIEWED_METADATA_PATHS_SHA256 = "e830e9c275eaadc55a6c3ae149557a73173eddbfcc53f0154903cbf7cbceffb0"
 
 
