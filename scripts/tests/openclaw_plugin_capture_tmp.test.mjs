@@ -13,13 +13,26 @@ import { pluginCaptureDirectory } from "../../app/cetirun-chart/agents/openclaw/
 function temporary(run) {
   const root = mkdtempSync(path.join(os.tmpdir(), "cetirun-capture-test-"));
   const previous = process.env.TMPDIR;
+  const previousEnabled = process.env.CETIRUN_OPENCLAW_LOCAL_PLUGIN_SNAPSHOTS;
   process.env.TMPDIR = root;
+  process.env.CETIRUN_OPENCLAW_LOCAL_PLUGIN_SNAPSHOTS = "1";
   return Promise.resolve().then(() => run(root)).finally(() => {
     if (previous === undefined) delete process.env.TMPDIR;
     else process.env.TMPDIR = previous;
+    if (previousEnabled === undefined) delete process.env.CETIRUN_OPENCLAW_LOCAL_PLUGIN_SNAPSHOTS;
+    else process.env.CETIRUN_OPENCLAW_LOCAL_PLUGIN_SNAPSHOTS = previousEnabled;
     rmSync(root, { recursive: true, force: true });
   });
 }
+
+test("existing deployments keep the upstream HOME path unless explicitly enabled", () => temporary(root => {
+  for (const value of [undefined, "", "0", "true"]) {
+    if (value === undefined) delete process.env.CETIRUN_OPENCLAW_LOCAL_PLUGIN_SNAPSHOTS;
+    else process.env.CETIRUN_OPENCLAW_LOCAL_PLUGIN_SNAPSHOTS = value;
+    assert.equal(pluginCaptureDirectory("/state"), "/state/tmp/plugin-captures");
+    assert.equal(existsSync(path.join(root, `cetirun-openclaw-captures-${process.getuid()}`)), false);
+  }
+}));
 
 test("capture storage is local, private, stable, and separated by state directory", () => temporary(root => {
   const first = pluginCaptureDirectory("/synthetic/home-one/.openclaw");

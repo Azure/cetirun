@@ -326,6 +326,11 @@ openclaw:
   # -- Run `openclaw doctor --fix` as an init container on every pod start.
   doctor:
     enabled: true
+  # -- Keep temporary plugin source snapshots on local /tmp instead of HOME.
+  # Requires a matching runtime image and separately qualified scratch capacity.
+  # The default 1Gi Sandbox scratch allocation is too small for ACPX snapshots.
+  localPluginSnapshots:
+    enabled: false
   # -- Sign the owner in to the Control UI with their Portal sign-in, and approve
   # their browsers without `openclaw devices approve`. OpenClaw's trusted-proxy
   # mode: the ingress passes only the owner, with the email of their sign-in,

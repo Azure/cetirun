@@ -24,6 +24,11 @@ function ensurePrivateDirectory(root, uid) {
 }
 
 export function pluginCaptureDirectory(stateDir) {
+  // Existing Sandbox scratch limits can be smaller than a plugin generation.
+  // Keep the upstream location unless this deployment explicitly opts in.
+  if (process.env.CETIRUN_OPENCLAW_LOCAL_PLUGIN_SNAPSHOTS !== "1") {
+    return path.join(stateDir, "tmp", "plugin-captures");
+  }
   const uid = process.getuid();
   const root = ensurePrivateDirectory(path.join(tmpdir(), `cetirun-openclaw-captures-${uid}`), uid);
   const stateKey = createHash("sha256").update(path.resolve(stateDir)).digest("hex");

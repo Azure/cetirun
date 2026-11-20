@@ -189,6 +189,18 @@ class NativeGatewayChartTests(unittest.TestCase):
                     else:
                         self.assertNotIn("NODE_DISABLE_COMPILE_CACHE", env)
 
+    def test_local_plugin_snapshots_are_opt_in_for_both_openclaw_processes(self):
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                values = native_values()
+                values["openclaw"] = {"localPluginSnapshots": {"enabled": enabled}}
+                values["sandboxWorkload"]["scratchSizeLimit"] = "4Gi"
+                pod = object_of_kind(render(RUNTIME_CHART, values), "StatefulSet")["spec"]["template"]["spec"]
+                doctor = next(container for container in pod["initContainers"] if container["name"] == "doctor")
+                for container in (pod["containers"][0], doctor):
+                    env = {item["name"]: item.get("value") for item in container.get("env", [])}
+                    self.assertEqual(env.get("CETIRUN_OPENCLAW_LOCAL_PLUGIN_SNAPSHOTS"), "1" if enabled else None)
+
     def test_hermes_webapp_receives_the_explicit_public_url(self):
         values = native_values()
         values["agentType"] = "hermes"

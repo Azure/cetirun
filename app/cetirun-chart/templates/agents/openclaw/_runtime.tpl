@@ -138,6 +138,10 @@ OpenClaw init containers
       value: "/home/vibe/.openclaw"
     - name: OPENCLAW_CONFIG_PATH
       value: "/home/vibe/.openclaw/openclaw.json"
+    {{- if .Values.openclaw.localPluginSnapshots.enabled }}
+    - name: CETIRUN_OPENCLAW_LOCAL_PLUGIN_SNAPSHOTS
+      value: "1"
+    {{- end }}
     {{- if .Values.sandboxWorkload }}
     - name: NODE_DISABLE_COMPILE_CACHE
       value: "1"
@@ -185,6 +189,10 @@ OpenClaw container env vars (agent-specific only)
 {{- define "cetirun.agent.openclaw.envVars" -}}
 - name: OPENCLAW_STATE_DIR
   value: "/home/vibe/.openclaw"
+{{- if .Values.openclaw.localPluginSnapshots.enabled }}
+- name: CETIRUN_OPENCLAW_LOCAL_PLUGIN_SNAPSHOTS
+  value: "1"
+{{- end }}
 {{- if .Values.skills.shared }}
 - name: CHOKIDAR_USEPOLLING
   value: "true"

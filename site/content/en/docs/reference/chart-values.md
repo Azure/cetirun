@@ -152,6 +152,8 @@ Source: [app/cetirun-chart/values.yaml]({{< repo "app/cetirun-chart/values.yaml"
 | `openclaw.image.digest` | `""` |  |
 | `openclaw.doctor` |  | Run `openclaw doctor --fix` as an init container on every pod start. |
 | `openclaw.doctor.enabled` | `true` |  |
+| `openclaw.localPluginSnapshots` |  | Keep temporary plugin source snapshots on local /tmp instead of HOME. Requires a matching runtime image and separately qualified scratch capacity. The default 1Gi Sandbox scratch allocation is too small for ACPX snapshots. |
+| `openclaw.localPluginSnapshots.enabled` | `false` |  |
 | `openclaw.portalSignIn` |  | Sign the owner in to the Control UI with their Portal sign-in, and approve their browsers without `openclaw devices approve`. OpenClaw's trusted-proxy mode: the ingress passes only the owner, with the email of their sign-in, through the Istio sidecar or the registered in-Pod mTLS endpoint for a common-executor Sandbox with AgentPolicy ingress.requireMTLS. The gateway token is then the password of loopback clients, such as the Terminal CLI. Plain Sandbox ingress and Tailscale keep token authentication. |
 | `openclaw.portalSignIn.enabled` | `false` |  |
 | `openclaw.config` | Keys: `gateway`, `logging`, `update`, `memory`, and 2 more | OpenClaw gateway configuration (openclaw.json content) |

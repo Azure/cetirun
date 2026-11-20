@@ -814,6 +814,17 @@
                         }
                     }
                 },
+                "localPluginSnapshots": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "Opt in to Pod-local plugin source snapshots after qualifying scratch capacity and the runtime image",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "default": false
+                        }
+                    }
+                },
                 "config": {
                     "type": "object",
                     "description": "OpenClaw gateway configuration (openclaw.json content)",

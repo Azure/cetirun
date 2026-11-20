@@ -240,6 +240,20 @@ protected contract is absent, legacy chart defaults stay unchanged.
 
 ### Native OpenClaw Gateway packaging
 
+`openclaw.localPluginSnapshots.enabled` defaults to `false`. With a matching
+runtime image, enabling it moves process-owned plugin source snapshots from
+HOME to the existing `/tmp` volume. This avoids thousands of small writes to
+network-backed HOME during doctor and Gateway startup. Source validation,
+plugin generation isolation, worker leases, and cleanup remain enabled.
+
+Qualify scratch capacity before enabling it: the default 1 GiB allocation is
+too small for ACPX. Configure the selected Sandbox's scratch and ephemeral
+storage limits through its normal API; this option does not raise them. Include
+the configured plugins, temporary tools, and retained captures after an abrupt
+exit in capacity testing. Check plugin load failures and ACP readiness as well
+as Pod readiness. Disable the option to restore the upstream HOME location;
+durable state is unchanged, and old captures are not migrated or deleted.
+
 The native OpenClaw MVP reuses the protected renderer and the OpenClaw image
 that already exists. It does not add an alternative image, an Istio sidecar, or
 a Helm value that authorizes execution. The controller owns Sandbox and

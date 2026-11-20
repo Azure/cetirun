@@ -202,8 +202,10 @@ them, run `python3 -B scripts/ci/validate.py --help`. `version-check`,
 | `make artifact-check` | The release inventory against the repository charts and build scripts |
 | `make docs-check` | `make -C site check` in offline mode. Run `make -C site build` one time with network access first. |
 
-The OpenClaw image keeps temporary plugin source snapshots in the existing
-container temporary directory, separated by user and state directory. These
+With `openclaw.localPluginSnapshots.enabled: true`, a matching OpenClaw image
+keeps temporary plugin source snapshots in the existing container temporary
+directory, separated by user and state directory. The default remains disabled
+because a 1 GiB scratch allocation cannot hold the ACPX snapshots. These
 process-owned copies retain upstream source validation, leases, and cleanup;
 configuration and durable Agent state remain in HOME. They consume the Pod's
 scratch allocation, so include large external plugins when qualifying its
