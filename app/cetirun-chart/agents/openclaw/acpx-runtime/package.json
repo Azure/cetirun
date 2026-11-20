@@ -1,7 +1,7 @@
 {
   "private": true,
   "dependencies": {
-    "@openclaw/acpx": "2026.9.6",
+    "@openclaw/acpx": "2026.11.6",
     "@anthropic-ai/sdk": "0.125.0",
     "@modelcontextprotocol/sdk": "1.32.2",
     "ajv": "8.20.0",
