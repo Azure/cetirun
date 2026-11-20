@@ -78,6 +78,11 @@ jobs:
         working-directory: .
         run: |
           "$RUNNER_TEMP/cetirun-memory-native/hermes/.venv/bin/python" -B scripts/tests/hermes_mcp_host.py --source "$RUNNER_TEMP/cetirun-memory-native/hermes"
+      - name: Qualify OpenClaw skill context and bundled script execution
+        working-directory: .
+        env:
+          CETIRUN_OPENCLAW_SOURCE: ${{ runner.temp }}/cetirun-memory-native/openclaw/node_modules/openclaw
+        run: make openclaw-skills-test
       - name: Build both supported architectures
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/cetirun-memory-amd64 ./cmd/cetirun-memory

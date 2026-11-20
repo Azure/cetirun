@@ -5,8 +5,11 @@ weight: 55
 ---
 
 A skill is a set of instructions and files that teaches your Agent a task.
-To use a skill, describe the task to the Agent. The Agent finds the skill that
-matches the task and reads it. You do not start a skill yourself.
+To use a skill, describe the task to the Agent. You can name the skill and ask
+the Agent to read its instructions first. The runtime makes eligible skills
+available to the model; the model decides which instructions to read and
+which tools to call. A published or discovered skill does not prove that the
+model read it or ran its scripts successfully.
 
 A Hermes or OpenClaw Agent can have three types of skills:
 
@@ -68,8 +71,9 @@ agent type:
 | Hermes | `~/.hermes/skills` |
 | OpenClaw | `~/.openclaw/skills` |
 
-The Agent always reads the skills in this directory. The directory is in your
-home directory, so your skills are kept when the Agent restarts.
+The runtime discovers eligible skills in this directory. Discovery makes a
+skill available; it does not run the skill. The directory is in your home
+directory, so your skills are kept when the Agent restarts.
 
 1. Open **Terminal**.
 2. Make a directory for the skill, for example
@@ -83,6 +87,52 @@ home directory, so your skills are kept when the Agent restarts.
 For the file format, refer to the skill documentation of
 [OpenClaw](https://docs.openclaw.ai/tools/skills) or
 [Hermes](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills).
+
+## Check a bundled script invocation
+
+Keep the directory structure of the skill intact. For example, a skill can
+contain `SKILL.md` and `scripts/probe.sh`. After reading `SKILL.md`, the Agent
+must use the complete script path. From the skill directory, the command is
+`/bin/sh scripts/probe.sh`; `/bin/sh probe.sh` names a different file. An
+absolute path to the same script also works. Changing to the skill directory
+does not remove the `scripts/` component.
+
+The CetiRun OpenClaw image includes this complete-path rule in each run's
+system instructions, including runs that reuse a saved skill catalog. It
+also tells the model to read the selected `SKILL.md` before using its files.
+This guidance does not rewrite commands, change tool permissions, or replace
+checking the execution result.
+
+For explicit OpenClaw selections, such as `$release-notes` or
+`/skill release-notes`, CetiRun also loads the complete selected `SKILL.md`
+through the authorized native `read` tool after run admission and before
+the model runs. A run-admission veto prevents both the read and its
+activation record. The
+instructions are runtime context; they do not appear as a model-issued
+`read` call. Runtime activation records distinguish a complete read from
+verification that the instructions remain in the context passed to the
+model transport. Neither record proves that a script or model request
+succeeded.
+
+This loading applies to local skills in the current catalog with an
+available native `read` tool. A denied or redirected read, missing file,
+oversized document, or loss of the complete instructions after compaction
+stops the selected-skill request. Remote and hidden skills, and tool modes
+without the concrete reader, are not supported by this loading path.
+Mentioning a skill in ordinary prose still relies on the model to read its
+instructions; use an explicit selection when you need runtime loading.
+
+If the tools finish but the model produces no final answer, a selected-skill
+run uses the existing no-model fallback. The isolated tool-free finalizer
+cannot re-establish authorized skill loading, so it does not make another
+model request. The fallback reports that no final summary was produced;
+it does not repeat completed actions.
+
+If a skill fails, inspect the tool call and its result before repeating the
+task. Check whether the Agent read the intended `SKILL.md`, used the complete
+path, and received successful script output. A matching answer alone does
+not establish that a tool ran. Keep the failed result when testing a changed
+skill or runtime.
 
 > **Warning:** A skill can tell the Agent to run commands and to use your
 > connected services. Add only skills that you trust. Do not put passwords,
