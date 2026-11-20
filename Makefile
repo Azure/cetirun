@@ -43,7 +43,11 @@ help:
 
 check: lint test
 
-test: ci-test python-test go-test portal-test memory-native-test openclaw-skills-test
+test: ci-test python-test go-test portal-test memory-native-test openclaw-skills-test openclaw-startup-test
+
+.PHONY: openclaw-startup-test
+openclaw-startup-test:
+	node --test scripts/tests/openclaw_plugin_capture_tmp.test.mjs
 
 .PHONY: memory-native-test
 memory-native-test:

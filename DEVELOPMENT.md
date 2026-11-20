@@ -181,7 +181,7 @@ them, run `python3 -B scripts/ci/validate.py --help`. `version-check`,
 
 | Command | What it runs |
 | --- | --- |
-| `make test` | `ci-test`, `python-test`, `go-test`, `portal-test`, `memory-native-test`, and `openclaw-skills-test` |
+| `make test` | `ci-test`, `python-test`, `go-test`, `portal-test`, `memory-native-test`, `openclaw-skills-test`, and `openclaw-startup-test` |
 | `make lint` | `version-check`, `artifact-check`, `license-check`, `python-check`, `go-lint`, `portal-lint`, `chart-check`, `bicep-check`, `shell-check`, and `workflow-check` |
 | `make ci-test` | Python `unittest` suites in `scripts/ci/tests`, `scripts/tests`, and `app/cetirun-operator/internal/cetiadmin/tests`. Needs PyYAML. |
 | `make python-test` | `pytest` suites in `app/cetirun-chart/tests`. Needs all packages in `scripts/ci/requirements.txt`. |
@@ -191,6 +191,7 @@ them, run `python3 -B scripts/ci/validate.py --help`. `version-check`,
 | `make portal-lint` | The TypeScript project check (`tsc -b`) in `app/cetirun-portal/web` |
 | `make memory-native-test` | `node --test app/cetirun-memory-context/tests/native.test.mjs`. It builds the Memory helper offline with Go. |
 | `make openclaw-skills-test` | Skill prompt patch checks and native OpenClaw file/shell tools against a scripted loopback model. Native cases require a separately installed pinned host; otherwise they report skips. |
+| `make openclaw-startup-test` | Temporary plugin snapshot isolation and patch guards. Set `CETIRUN_OPENCLAW_SOURCE` to the pinned package for source checks; set `CETIRUN_OPENCLAW_CAPTURE_NATIVE=1` with the patched package and its dependencies for native snapshot validation and cleanup tests. Otherwise native cases report skips. |
 | `make chart-check` | `helm lint --strict` and `helm template` for every chart in `CHARTS` of the validation runner, with synthetic values. Then the render regression scripts of the charts. Needs PyYAML. |
 | `make bicep-check` | `bicep build --no-restore` for every Bicep file |
 | `make shell-check` | `bash -n` and `shellcheck --severity=error` for every shell script |
@@ -200,6 +201,14 @@ them, run `python3 -B scripts/ci/validate.py --help`. `version-check`,
 | `make version-check` | The consistency of the release version fields |
 | `make artifact-check` | The release inventory against the repository charts and build scripts |
 | `make docs-check` | `make -C site check` in offline mode. Run `make -C site build` one time with network access first. |
+
+The OpenClaw image keeps temporary plugin source snapshots in the existing
+container temporary directory, separated by user and state directory. These
+process-owned copies retain upstream source validation, leases, and cleanup;
+configuration and durable Agent state remain in HOME. They consume the Pod's
+scratch allocation, so include large external plugins when qualifying its
+capacity. The patch covers the Gateway, doctor, and local workers; standalone
+cloud worker bundles are unchanged.
 
 `chart-check` runs `helm dependency build --skip-refresh` for the platform
 chart before it renders. This command uses the local subcharts and writes the
