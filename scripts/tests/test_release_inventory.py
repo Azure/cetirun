@@ -20,7 +20,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/cetirun-release.py"
 IMAGES = {"cetirun-base", "openclaw-gateway", "hermes-gateway", "cetirun-desktop", "cetirun-operator",
           "cetirun-ai-gateway", "cetirun-agent-broker", "cetirun-connections-mcp", "cetirun-terminal",
-          "cetirun-portal", "cetirun-vscode", "cetirun-pi-agent", "cetirun-memory-context"}
+          "cetirun-portal", "cetirun-vscode", "cetirun-pi-agent", "cetirun-memory-context",
+          "cetirun-copilot", "cetirun-claude", "cetirun-codex"}
 CHARTS = {"cetirun", "cetirun-istio", "cetirun-operator", "cetirun-portal", "cetirun-platform",
           "cetirun-ai-gateway", "cetirun-agent-broker", "cetirun-connections-mcp", "cetirun-observability"}
 DOCKER = r'''
@@ -112,6 +113,16 @@ class ReleaseInventoryTests(unittest.TestCase):
 
     def image(self, name):
         return f"{self.env['REGISTRY']}/{name}:{self.env['VERSION']}"
+
+    def assert_coding_builds(self, builds):
+        for runtime in ("copilot", "claude", "codex"):
+            command = next(c for c in builds if self.image(f"cetirun-{runtime}") in c)
+            self.assertIn(f"CODING_RUNTIME={runtime}", command)
+            self.assertIn(f"BASE_IMAGE={self.image('cetirun-base')}", command)
+            self.assertIn(f"org.opencontainers.image.version={self.env['VERSION']}", command)
+            self.assertIn(f"org.opencontainers.image.revision={self.env['GIT_SHA']}", command)
+            self.assertEqual(command[command.index("--platform") + 1], "linux/amd64")
+            self.assertTrue(command[-1].endswith("/examples/coding-agents/app"))
 
     def fake_registry(self):
         real = shutil.which("helm")
@@ -328,6 +339,34 @@ class ReleaseInventoryTests(unittest.TestCase):
                     self.assertIn(f"{registry}/cetirun-{component}:{version}", command)
                     self.assertIn(f"VERSION={version}", command)
 
+    def test_coding_builder_rejects_invalid_inputs_before_docker(self):
+        for key, value in (("CODING_RUNTIME", ""), ("CODING_RUNTIME", "mock"),
+                           ("REGISTRY", "https://registry.example.com"), ("IMAGE_TAG", "bad tag"),
+                           ("BASE_IMAGE", "bad image"), ("PUSH", "yes")):
+            with self.subTest(key=key, value=value):
+                result = subprocess.run(
+                    ["bash", "scripts/coding-agent-docker-build.sh"],
+                    env={**self.env, "CODING_RUNTIME": "copilot", key: value},
+                    cwd=ROOT, capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn(key, result.stderr)
+                self.assertEqual(self.commands(), [])
+
+    def test_coding_builder_preserves_explicit_base_and_image_tag(self):
+        base = "registry.example.com/bases/coding@sha256:" + "b" * 64
+        result = subprocess.run(
+            ["bash", "scripts/coding-agent-docker-build.sh"],
+            env={**self.env, "CODING_RUNTIME": "codex", "BASE_IMAGE": base,
+                 "IMAGE_TAG": "candidate", "PUSH": "false"},
+            cwd=ROOT, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        command = self.commands()[-1]
+        self.assertIn(f"{self.env['REGISTRY']}/cetirun-codex:candidate", command)
+        self.assertIn(f"BASE_IMAGE={base}", command)
+        self.assertIn("org.opencontainers.image.version=candidate", command)
+
     def test_nonbuild_make_targets_do_not_evaluate_release_metadata(self):
         python = self.root / "python3"
         python.write_text("#!/bin/sh\necho 'unexpected metadata lookup' >&2\nexit 97\n")
@@ -478,7 +517,7 @@ class ReleaseInventoryTests(unittest.TestCase):
         result = subprocess.run(["make", "build-images"], env=self.env, cwd=ROOT, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         builds = [command for command in self.commands() if command[:2] == ["buildx", "build"]]
-        self.assertEqual(len(builds), 13)
+        self.assertEqual(len(builds), len(IMAGES))
         tags = {command[command.index("-t") + 1] if "-t" in command else command[command.index("--tag") + 1] for command in builds}
         self.assertEqual(tags, {self.image(name) for name in IMAGES})
         for command in builds:
@@ -488,6 +527,7 @@ class ReleaseInventoryTests(unittest.TestCase):
         self.assertIn(self.image("cetirun-base"), builds[0])
         vscode = next(command for command in builds if self.image("cetirun-vscode") in command)
         self.assertIn("ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true", vscode)
+        self.assert_coding_builds(builds)
 
     def test_release_cli_defaults_to_license_acceptance(self):
         self.env.pop("ACCEPT_VSCODE_SERVER_LICENSE_TERMS")
@@ -525,10 +565,10 @@ class ReleaseInventoryTests(unittest.TestCase):
         attested = {
             "cetirun-base", "openclaw-gateway", "hermes-gateway", "cetirun-desktop",
             "cetirun-operator", "cetirun-ai-gateway", "cetirun-agent-broker",
-            "cetirun-portal", "cetirun-pi-agent",
+            "cetirun-portal", "cetirun-pi-agent", "cetirun-copilot", "cetirun-claude", "cetirun-codex",
         }
         builds = [command for command in self.commands() if command[:2] == ["buildx", "build"]]
-        self.assertEqual(len(builds), 13)
+        self.assertEqual(len(builds), len(IMAGES))
         for image in attested:
             command = next(command for command in builds if self.image(image) in command)
             self.assertIn("--provenance=true", command)
@@ -541,7 +581,7 @@ class ReleaseInventoryTests(unittest.TestCase):
         builds = [command for command in self.commands() if command[:2] == ["buildx", "build"]]
         for image in ("cetirun-base", "openclaw-gateway", "hermes-gateway", "cetirun-desktop",
                       "cetirun-operator", "cetirun-ai-gateway", "cetirun-agent-broker",
-                      "cetirun-portal", "cetirun-pi-agent"):
+                      "cetirun-portal", "cetirun-pi-agent", "cetirun-copilot", "cetirun-claude", "cetirun-codex"):
             command = next(command for command in builds if self.image(image) in command)
             self.assertIn("--provenance=true", command)
             self.assertIn("--sbom=true", command)
@@ -559,13 +599,14 @@ class ReleaseInventoryTests(unittest.TestCase):
             "scripts/cetirun-docker-build.sh", "scripts/ai-gateway-docker-build.sh",
             "scripts/operator-docker-build.sh", "scripts/portal-docker-build.sh",
             "scripts/agent-broker-docker-build.sh", "scripts/pi-agent-docker-build.sh",
+            "scripts/coding-agent-docker-build.sh",
         ):
             with self.subTest(script=script):
                 result = subprocess.run(
                     ["bash", script],
                     env={**self.env, "SBOM_GENERATOR": generator, "PUSH": "false",
                          "BUILD_BASE": "false", "BUILD_IMAGE": "false",
-                         "BUILD_HERMES": "false", "BUILD_DESKTOP": "false"},
+                         "BUILD_HERMES": "false", "BUILD_DESKTOP": "false", "CODING_RUNTIME": "copilot"},
                     cwd=ROOT, capture_output=True, text=True, timeout=30,
                 )
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
@@ -582,6 +623,7 @@ class ReleaseInventoryTests(unittest.TestCase):
             "scripts/cetirun-docker-build.sh", "scripts/ai-gateway-docker-build.sh",
             "scripts/operator-docker-build.sh", "scripts/portal-docker-build.sh",
             "scripts/agent-broker-docker-build.sh", "scripts/pi-agent-docker-build.sh",
+            "scripts/coding-agent-docker-build.sh",
         ):
             with self.subTest(script=script):
                 result = subprocess.run(
@@ -609,7 +651,7 @@ class ReleaseInventoryTests(unittest.TestCase):
         self.assertNotIn("cetirun-vscode", {entry["name"] for entry in plan["images"]})
         self.run_release("build-images", "--exclude-image", "cetirun-vscode")
         builds = [command for command in self.commands() if command[:2] == ["buildx", "build"]]
-        self.assertEqual(len(builds), 12)
+        self.assertEqual(len(builds), len(IMAGES) - 1)
         self.assertFalse(any(self.image("cetirun-vscode") in command for command in builds))
 
     def test_invalid_image_exclusions_fail_before_docker(self):
@@ -637,8 +679,9 @@ class ReleaseInventoryTests(unittest.TestCase):
         self.assertIn("new immutable registry prefix", result.stderr)
         self.assertEqual(self.commands(), [])
 
-    def test_existing_broker_or_vscode_or_chart_stops_before_any_build(self):
-        for artifact in ("cetirun-agent-broker", "cetirun-vscode", "helm/cetirun-agent-broker"):
+    def test_existing_image_or_chart_stops_before_any_build(self):
+        for artifact in ("cetirun-agent-broker", "cetirun-vscode", "cetirun-copilot",
+                         "cetirun-claude", "cetirun-codex", "helm/cetirun-agent-broker"):
             with self.subTest(artifact=artifact):
                 self.env["ARTIFACT_EXISTS"] = self.image(artifact)
                 self.run_release("publish", success=False)
@@ -653,23 +696,27 @@ class ReleaseInventoryTests(unittest.TestCase):
                 self.assertFalse(any(command[:2] == ["buildx", "build"] for command in self.commands()))
 
     def test_publish_checks_each_image_and_failure_stops_the_sequence(self):
-        self.env["ARTIFACT_FAIL_BUILD"] = self.image("cetirun-agent-broker")
-        self.run_release("publish-images", success=False)
-        commands = self.commands()
-        builds = [command for command in commands if command[:2] == ["buildx", "build"]]
-        self.assertIn(self.image("cetirun-agent-broker"), builds[-1])
-        self.assertFalse(any(self.image("cetirun-vscode") in command for command in builds))
-        for command in builds:
-            self.assertIn("--push", command)
-            self.assertNotIn("--load", command)
+        for failed, skipped in (("cetirun-agent-broker", "cetirun-vscode"), ("cetirun-claude", "cetirun-codex")):
+            with self.subTest(failed=failed):
+                self.env["ARTIFACT_FAIL_BUILD"] = self.image(failed)
+                self.log.unlink(missing_ok=True)
+                self.run_release("publish-images", success=False)
+                commands = self.commands()
+                builds = [command for command in commands if command[:2] == ["buildx", "build"]]
+                self.assertIn(self.image(failed), builds[-1])
+                self.assertFalse(any(self.image(skipped) in command for command in builds))
+                for command in builds:
+                    self.assertIn("--push", command)
+                    self.assertNotIn("--load", command)
 
-    def test_successful_publish_verifies_all_thirteen_images(self):
+    def test_successful_publish_verifies_all_images(self):
         self.run_release("publish-images")
         commands = self.commands()
         builds = [command for command in commands if command[:2] == ["buildx", "build"]]
-        self.assertEqual(len(builds), 13)
+        self.assertEqual(len(builds), len(IMAGES))
         last_build = max(index for index, command in enumerate(commands) if command[:2] == ["buildx", "build"])
-        self.assertEqual(commands[last_build + 1], ["buildx", "imagetools", "inspect", self.image("cetirun-pi-agent")])
+        self.assertEqual(commands[last_build + 1], ["buildx", "imagetools", "inspect", self.image("cetirun-codex")])
+        self.assert_coding_builds(builds)
         for name in IMAGES:
             inspect = ["buildx", "imagetools", "inspect", self.image(name)]
             self.assertEqual(commands.count(inspect), 2, "expected one absence check and one post-push inspection")

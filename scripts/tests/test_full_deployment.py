@@ -390,13 +390,16 @@ class DeploymentInputTests(DeploymentFixture, unittest.TestCase):
         ]
         deployment = self.deployment(config, "optional-image")
         artifacts = deployment.plan()["artifacts"]
-        self.assertEqual(len(artifacts["images"]), 12)
+        expected = {entry["name"] for entry in json.loads((ROOT / "scripts/release-artifacts.json").read_text())["images"]}
+        expected.remove("cetirun-vscode")
+        self.assertEqual(set(artifacts["images"]), expected)
         self.assertNotIn("cetirun-vscode", artifacts["images"])
         deployment.preflight()
         inspected = [command[-1] for command in deployment.commands if command[:4] == ["docker", "buildx", "imagetools", "inspect"]]
         excluded = f"{config['release']['registry']}/cetirun-vscode:{config['release']['version']}"
         self.assertNotIn(excluded, inspected)
-        self.assertEqual(sum(reference.endswith(":" + config["release"]["version"]) for reference in inspected), 12)
+        self.assertEqual({reference for reference in inspected if reference.endswith(":" + config["release"]["version"])},
+                         {f"{config['release']['registry']}/{name}:{config['release']['version']}" for name in expected})
         self.assertFalse(any(command[4:6] == ["get", "agents.cetirun.microsoft.com"] for command in deployment.commands))
 
     def test_optional_image_exclusion_rejects_referenced_image_before_tools(self):
@@ -727,7 +730,8 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
     def test_default_plan_covers_all_releases_and_supported_components(self):
         deployment = self.deployment()
         plan = deployment.plan()
-        self.assertEqual(len(plan["artifacts"]["images"]), 13)
+        self.assertEqual(set(plan["artifacts"]["images"]),
+                         {entry["name"] for entry in json.loads((ROOT / "scripts/release-artifacts.json").read_text())["images"]})
         self.assertNotIn("cetirun-observability", plan["artifacts"]["images"])
         self.assertEqual(len(plan["artifacts"]["charts"]), 9)
         self.assertEqual(set(plan["releases"]["istio"]["workloads"]), {"oauth2-proxy", "oauth2-proxy-sessions"})

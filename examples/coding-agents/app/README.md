@@ -171,6 +171,25 @@ make build
 `make build` builds all three local images. Building may require network access to
 fetch the pinned base image and official runtime artifacts.
 
+The root `make build-images`, `make publish-images`, and `make publish` targets
+include `cetirun-copilot`, `cetirun-claude`, and `cetirun-codex`. The MCR release
+pipeline uses the same inventory. These builds use the release's `cetirun-base`
+image and stamp its version and source commit on each coding image. The runtime
+versions and checksums remain pinned in `artifacts.json`; the offline mock is
+not part of the release.
+
+To build one runtime separately from the repository root:
+
+```bash
+CODING_RUNTIME=claude REGISTRY=registry.example.com/team VERSION=0.2.0 \
+  bash scripts/coding-agent-docker-build.sh
+```
+
+The matching base image must already exist, or be selected with `BASE_IMAGE`.
+The script loads the image locally by default. Set `PUSH=true` only for an
+authorized publication to a writable registry. Inclusion in the release
+inventory does not make these images available in earlier MCR releases.
+
 ### Cached official artifacts
 
 If direct downloads fail, such as with HTTP 504, use an approved official release
