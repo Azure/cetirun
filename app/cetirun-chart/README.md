@@ -240,6 +240,14 @@ protected contract is absent, legacy chart defaults stay unchanged.
 
 ### Native OpenClaw Gateway packaging
 
+The OpenClaw image omits source maps and TypeScript declaration files from the
+internal managed ACPX project and its dependencies. OpenClaw captures and
+validates plugin source repeatedly during startup; omitting these files reduces
+that work without changing executable code or snapshot validation. JavaScript,
+implementation TypeScript, native modules, agent binaries, package manifests,
+and licenses remain present. Debugging and type-checking the internal dependency
+project require the original pinned npm packages, which retain these files.
+
 The native OpenClaw MVP reuses the protected renderer and the OpenClaw image
 that already exists. It does not add an alternative image, an Istio sidecar, or
 a Helm value that authorizes execution. The controller owns Sandbox and
