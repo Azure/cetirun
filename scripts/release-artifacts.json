@@ -13,7 +13,10 @@
     {"name": "cetirun-memory-context", "script": "scripts/memory-context-docker-build.sh"},
     {"name": "cetirun-portal", "script": "scripts/portal-docker-build.sh"},
     {"name": "cetirun-vscode", "script": "scripts/vscode-docker-build.sh", "optional": true},
-    {"name": "cetirun-pi-agent", "script": "scripts/pi-agent-docker-build.sh"}
+    {"name": "cetirun-pi-agent", "script": "scripts/pi-agent-docker-build.sh"},
+    {"name": "cetirun-copilot", "script": "scripts/coding-agent-docker-build.sh", "env": {"CODING_RUNTIME": "copilot"}},
+    {"name": "cetirun-claude", "script": "scripts/coding-agent-docker-build.sh", "env": {"CODING_RUNTIME": "claude"}},
+    {"name": "cetirun-codex", "script": "scripts/coding-agent-docker-build.sh", "env": {"CODING_RUNTIME": "codex"}}
   ],
   "charts": [
     {"name": "cetirun", "path": "app/cetirun-chart", "lintValues": {"secrets.openclawGatewayToken": "lint-token", "secrets.model": "lint-model", "aiGateway.keySecretName": "lint-model-key", "secrets.apiBase": "http://gateway.example.com/v1", "hermes.env.HERMES_WEBAPP_PUBLIC_URL": "https://agents.example.com/ui/validation"}},

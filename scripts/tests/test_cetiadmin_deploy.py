@@ -656,7 +656,8 @@ class CetiAdminDeploymentTests(full.DeploymentFixture, unittest.TestCase):
         self.assertEqual(config["kubernetes"]["apiEgressCIDRs"], admin["kubernetes"]["apiEgressCIDRs"])
         self.assertFalse(any(doc["kind"] in ("Agent", "Team") for doc in docs))
         plan = deployment.plan()
-        self.assertEqual(len(plan["artifacts"]["images"]), 13)
+        self.assertEqual(set(plan["artifacts"]["images"]),
+                         {entry["name"] for entry in json.loads((full.ROOT / "scripts/release-artifacts.json").read_text())["images"]})
         self.assertEqual(len(plan["artifacts"]["charts"]), 9)
         self.assertEqual(plan["cetiadmin"], {"enabled": True, "operatorRemovalRequested": False, "stopConfirmed": False})
         encoded = json.dumps(plan)

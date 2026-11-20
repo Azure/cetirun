@@ -1185,7 +1185,8 @@ also push to the registry in the `E2E_ACR_REGISTRY` secret.
 [`scripts/release-artifacts.json`](scripts/release-artifacts.json) lists the
 images and charts for the root Make targets and the MCR release pipeline. These
 include the Broker, the Pi demo (`cetirun-pi-agent`), VS Code Server
-(`cetirun-vscode`), Memory Context, and the ADX-Mon chart
+(`cetirun-vscode`), the native coding examples (`cetirun-copilot`,
+`cetirun-claude`, and `cetirun-codex`), Memory Context, and the ADX-Mon chart
 (`cetirun-observability`). The ADX-Mon images are not in the inventory: the
 chart pins their MCR images. `make artifact-check` checks the source
 paths and the chart coverage, and prints the number of images and charts. The

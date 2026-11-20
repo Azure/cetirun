@@ -69,10 +69,11 @@ make publish REGISTRY=registry.example.com VERSION=0.2.0 \
   GIT_SHA="$(git rev-parse HEAD)"
 ```
 
-The command builds and pushes the 13 images and 9 charts of
+The command builds and pushes all images and charts in
 [`scripts/release-artifacts.json`]({{< repo "scripts/release-artifacts.json" >}}).
 These include the operator, Portal, AI Gateway, Agent Identity Broker,
-OpenClaw, Hermes, and VS Code Server images, and the platform, Istio, and agent
+OpenClaw, Hermes, VS Code Server, and native Copilot, Claude Code, and Codex
+example images, and the platform, Istio, and agent
 (`helm/cetirun`) charts. Then the command pulls each chart back to examine it.
 Refer to the
 [unified release inventory]({{< repo "DEVELOPMENT.md" >}}#unified-release-inventory).
