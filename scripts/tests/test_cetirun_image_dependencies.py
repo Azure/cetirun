@@ -451,19 +451,29 @@ class ImageDependencyTests(unittest.TestCase):
         )
         self.assertIsNotNone(match)
         install = match[1]
+        self.assertIn(
+            'python3 /tmp/prune-acpx-runtime.py /usr/local/share/openclaw-npm/projects "${OPENCLAW_VERSION}"',
+            install,
+        )
         self.assertIn("rm -rf /home/vibe/.openclaw/identity", install)
         self.assertIn("rm -f /home/vibe/.openclaw/openclaw.json", install)
         self.assertNotIn("\nRUN openclaw doctor", content)
         plugin_count = len(expected_plugins)
-        cases = [(fail_at, 0) for fail_at in range(plugin_count + 1)] + [(0, 1), (plugin_count, 1)]
-        for fail_at, cleanup_exit in cases:
-            with self.subTest(fail_at=fail_at, cleanup_exit=cleanup_exit):
+        cases = [(fail_at, 0, 0) for fail_at in range(plugin_count + 1)] + [
+            (0, 1, 0), (plugin_count, 1, 0), (0, 0, 1),
+        ]
+        for fail_at, cleanup_exit, prune_exit in cases:
+            with self.subTest(fail_at=fail_at, cleanup_exit=cleanup_exit, prune_exit=prune_exit):
                 mocks = (
                     "calls=0\n"
+                    "OPENCLAW_VERSION=2026.9.6\n"
                     "openclaw() { calls=$((calls + 1)); "
                     f'[ "$calls" -ne {fail_at} ]; }}\n'
                     "npm() { return 0; }\n"
                     "find() { return 0; }\n"
+                    "python3() { "
+                    '[ "$*" = "/tmp/prune-acpx-runtime.py /usr/local/share/openclaw-npm/projects 2026.9.6" ] || return 82; '
+                    f"printf '%s\\n' metadata-prune; return {prune_exit}; }}\n"
                     f'rm() {{ printf "%s\\n" "$*"; return {cleanup_exit}; }}\n'
                 )
                 result = subprocess.run(
@@ -472,12 +482,17 @@ class ImageDependencyTests(unittest.TestCase):
                     text=True,
                     check=False,
                 )
-                if fail_at or cleanup_exit:
+                if fail_at or cleanup_exit or prune_exit:
                     self.assertNotEqual(result.returncode, 0, result.stderr)
                 else:
                     self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("metadata-prune", result.stdout)
                     self.assertIn("-rf /home/vibe/.openclaw/identity", result.stdout)
                     self.assertIn("-f /home/vibe/.openclaw/openclaw.json", result.stdout)
+                if prune_exit:
+                    self.assertIn("metadata-prune", result.stdout)
+                    self.assertNotIn("-rf /home/vibe/.openclaw/identity", result.stdout)
+                    self.assertNotIn("-f /home/vibe/.openclaw/openclaw.json", result.stdout)
 
     def test_runtime_build_receives_the_configured_python_index(self):
         index = "https://packages.example.invalid/simple/"
