@@ -3,7 +3,7 @@ module github.com/Azure/CetiRun/app/internal
 go 1.27.4
 
 require (
-	github.com/Azure/CetiRun/app/cetirun-operator v0.2.0
+	github.com/Azure/CetiRun/app/cetirun-operator v0.2.1
 	golang.org/x/sync v0.25.0
 	k8s.io/api v0.37.2
 	k8s.io/apimachinery v0.37.2
