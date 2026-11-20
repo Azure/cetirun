@@ -2,7 +2,9 @@
 # Licensed under the MIT License.
 
 import importlib.util
+import base64
 import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
 import os
@@ -11,8 +13,10 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
+from urllib.parse import unquote
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / "app/cetirun-chart/agents/openclaw/prune-acpx-runtime.py"
@@ -61,6 +65,25 @@ class RuntimeMetadataTests(unittest.TestCase):
 
     def write_package(self):
         (self.plugin / "package.json").write_text(json.dumps(self.package))
+
+    def test_reviewed_install_inputs_match_the_guard_and_preserve_managed_policy(self):
+        source = SCRIPT.parent / "acpx-runtime"
+        manifest = json.loads((source / "package.json").read_text())
+        lock_bytes = (source / "package-lock.json").read_bytes()
+        lock = json.loads(lock_bytes)
+        # setUp replaces the digest for synthetic fixtures; read the actual
+        # reviewed constant here to keep the checked-in inputs tied to it.
+        actual = importlib.util.module_from_spec(SPEC)
+        SPEC.loader.exec_module(actual)
+        self.assertEqual(actual.dependency_lock_digest(lock_bytes), actual.REVIEWED_LOCK_SHA256)
+        self.assertEqual(manifest["dependencies"], lock["packages"][""]["dependencies"])
+        self.assertEqual(manifest["dependencies"]["@openclaw/acpx"], "2026.9.6")
+        self.assertEqual(set(manifest["openclaw"]["managedPeerDependencies"]),
+                         set(manifest["dependencies"]) - {"@openclaw/acpx"})
+        self.assertEqual(set(manifest["openclaw"]["managedOverrides"]), set(manifest["overrides"]))
+        dockerfile = (SCRIPT.parent / "Dockerfile").read_text()
+        seed = "COPY --chown=vibe:vibe agents/openclaw/acpx-runtime/ /usr/local/share/openclaw-npm/projects/openclaw-acpx-052d680d6d/"
+        self.assertLess(dockerfile.index(seed), dockerfile.index('openclaw plugins install "npm:@openclaw/acpx'))
 
     def test_only_build_metadata_is_removed_from_the_selected_project(self):
         keep = ["index.js", "implementation.ts", "implementation.mts", "implementation.cts",
@@ -206,6 +229,111 @@ class RuntimeMetadataTests(unittest.TestCase):
             self.assertTrue((project / "node_modules/@openclaw/acpx/index.js").is_file())
         self.assertNotEqual(hashlib.sha256(locks[0]).digest(), hashlib.sha256(locks[1]).digest())
         self.assertEqual(MODULE.dependency_lock_digest(locks[0]), MODULE.dependency_lock_digest(locks[1]))
+
+    @unittest.skipUnless(shutil.which("npm"), "requires npm for fresh loopback-only installations")
+    def test_seeded_lock_preserves_reviewed_transitive_version_after_new_release(self):
+        packages = {}
+        archives = {}
+        for name, version in (("@openclaw/acpx", "2026.9.6"),
+                              ("cetirun-fixture-dependency", "1.0.0"),
+                              ("cetirun-fixture-dependency", "1.0.1")):
+            manifest = {"name": name, "version": version, "main": "index.js", "types": "index.d.ts"}
+            if name == "@openclaw/acpx":
+                manifest["dependencies"] = {"cetirun-fixture-dependency": "^1.0.0"}
+            buffer = io.BytesIO()
+            with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+                for filename, content in {"package.json": json.dumps(manifest),
+                                          "index.js": "exports.fixture = true;\n",
+                                          "index.d.ts": "export declare const fixture: boolean;\n"}.items():
+                    data = content.encode()
+                    info = tarfile.TarInfo("package/" + filename)
+                    info.size = len(data)
+                    archive.addfile(info, io.BytesIO(data))
+            route = "/tarballs/" + name.replace("/", "-") + "-" + version + ".tgz"
+            archives[route] = buffer.getvalue()
+            packages[(name, version)] = {**manifest, "route": route}
+        published = ["1.0.0"]
+
+        class Registry(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                route = unquote(self.path)
+                if route in archives:
+                    data = archives[route]
+                else:
+                    name = route.removeprefix("/")
+                    versions = {}
+                    for (package, version), item in packages.items():
+                        if package != name or (name != "@openclaw/acpx" and version not in published):
+                            continue
+                        metadata = {k: v for k, v in item.items() if k != "route"}
+                        metadata["dist"] = {
+                            "tarball": f"http://127.0.0.1:{self.server.server_port}" + item["route"],
+                            "integrity": "sha512-" + base64.b64encode(
+                                hashlib.sha512(archives[item["route"]]).digest()).decode(),
+                        }
+                        versions[version] = metadata
+                    if not versions:
+                        self.send_error(404)
+                        return
+                    data = json.dumps({"name": name, "dist-tags": {"latest": max(versions)},
+                                       "versions": versions}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Registry)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join, 2)
+        self.addCleanup(server.shutdown)
+        for name in ("user.npmrc", "global.npmrc"):
+            (self.root / name).write_text("")
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.root / "npm-home"),
+               "NPM_CONFIG_USERCONFIG": str(self.root / "user.npmrc"),
+               "NPM_CONFIG_GLOBALCONFIG": str(self.root / "global.npmrc"),
+               "NPM_CONFIG_CACHE": str(self.root / "npm-cache")}
+
+        def install(label, seed=None):
+            projects = self.root / label
+            project = projects / (".openclaw-install-stage-" + label)
+            project.mkdir(parents=True)
+            if seed:
+                for name in ("package.json", "package-lock.json"):
+                    shutil.copyfile(seed / name, project / name)
+            else:
+                (project / "package.json").write_text(json.dumps({
+                    "private": True, "dependencies": {"@openclaw/acpx": "2026.9.6"}}))
+            result = subprocess.run(
+                ["npm", "install", "--ignore-scripts", "--no-audit", "--no-fund",
+                 "--omit=dev", "--omit=peer", "--legacy-peer-deps", "--prefer-online",
+                 "--registry", f"http://127.0.0.1:{server.server_port}"],
+                cwd=project, env=env, capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return project
+
+        reviewed = install("reviewed")
+        digest = MODULE.dependency_lock_digest((reviewed / "package-lock.json").read_bytes())
+        patch.object(MODULE, "REVIEWED_LOCK_SHA256", digest).start()
+        paths = sorted(p.relative_to(reviewed).as_posix() for p in reviewed.rglob("*.d.ts"))
+        patch.object(MODULE, "REVIEWED_METADATA_PATHS_SHA256",
+                     hashlib.sha256(("\n".join(paths) + "\n").encode()).hexdigest()).start()
+        published.append("1.0.1")
+        unseeded = install("unseeded")
+        package = "node_modules/cetirun-fixture-dependency/package.json"
+        self.assertEqual(json.loads((unseeded / package).read_text())["version"], "1.0.1")
+        with self.assertRaisesRegex(ValueError, "dependency lock"):
+            MODULE.prune(unseeded.parent, "2026.9.6")
+        self.assertTrue((unseeded / "node_modules/@openclaw/acpx/index.d.ts").exists())
+        seeded = install("seeded", reviewed)
+        self.assertEqual(json.loads((seeded / package).read_text())["version"], "1.0.0")
+        self.assertEqual(MODULE.dependency_lock_digest((seeded / "package-lock.json").read_bytes()), digest)
+        self.assertEqual(MODULE.prune(seeded.parent, "2026.9.6"), 2)
 
     def test_symlinked_identity_manifest_and_package_directory_are_rejected(self):
         anchor = self.plugin / "package.json"

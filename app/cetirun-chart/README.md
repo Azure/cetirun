@@ -248,11 +248,21 @@ implementation TypeScript, native modules, agent binaries, package manifests,
 and licenses remain present. Debugging and type-checking the internal dependency
 project require the original pinned npm packages, which retain these files.
 The build checks the reviewed dependency lock and removal inventory before
-pruning. The lock fingerprint uses canonical JSON and excludes only the
-top-level name, which must match npm's expected random installation staging name.
+pruning. It seeds the managed ACPX project with the reviewed manifest and lock
+in `agents/openclaw/acpx-runtime/`, then uses OpenClaw's normal installer. The
+installer carries those inputs into staging and retains its peer linking and
+validation. This preserves the qualified transitive versions even when newer
+versions satisfy their ranges. The manifest also retains OpenClaw's managed
+peer and override metadata. The lock fingerprint uses canonical JSON and
+excludes only the top-level name, which must match npm's expected random
+installation staging name.
 All dependency fields, including resolved sources and integrity values, remain
 covered. When either fingerprint changes, review runtime file references and
 repeat the doctor, Gateway, and ACP checks before updating the recorded checksums.
+For a dependency upgrade, regenerate both inputs with the pinned OpenClaw/npm
+installer in a disposable project, review the dependency and removal inventories,
+and requalify them together. The managed project path in the Dockerfile is part
+of this pinned installation contract.
 
 The native OpenClaw MVP reuses the protected renderer and the OpenClaw image
 that already exists. It does not add an alternative image, an Istio sidecar, or

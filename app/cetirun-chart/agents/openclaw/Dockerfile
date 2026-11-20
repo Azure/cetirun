@@ -85,6 +85,10 @@ RUN mkdir -p /usr/local/share/openclaw-extensions /usr/local/share/openclaw-npm 
 # required linux/amd64 image under QEMU can exceed it even while npm is healthy.
 COPY --chown=vibe:vibe agents/openclaw/check-openat2.py /tmp/check-openat2.py
 COPY --chown=vibe:vibe agents/openclaw/prune-acpx-runtime.py /tmp/prune-acpx-runtime.py
+# The normal managed installer copies these reviewed inputs into its staging
+# directory. Preserve its peer linking and validation while keeping the ACPX
+# dependency graph reproducible when transitive packages publish new versions.
+COPY --chown=vibe:vibe agents/openclaw/acpx-runtime/ /usr/local/share/openclaw-npm/projects/openclaw-acpx-052d680d6d/
 RUN python3 /tmp/check-openat2.py && rm /tmp/check-openat2.py
 RUN npm --min-release-age=0 install \
       --prefix /tmp/openclaw-plugin-prefetch \
