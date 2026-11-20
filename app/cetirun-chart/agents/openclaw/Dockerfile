@@ -84,6 +84,11 @@ RUN mkdir -p /usr/local/share/openclaw-extensions /usr/local/share/openclaw-npm 
 # five-minute work timeout with no CLI override; an ARM host building the
 # required linux/amd64 image under QEMU can exceed it even while npm is healthy.
 COPY --chown=vibe:vibe agents/openclaw/check-openat2.py /tmp/check-openat2.py
+COPY --chown=vibe:vibe agents/openclaw/prune-acpx-runtime.py /tmp/prune-acpx-runtime.py
+# The normal managed installer copies these reviewed inputs into its staging
+# directory. Preserve its peer linking and validation while keeping the ACPX
+# dependency graph reproducible when transitive packages publish new versions.
+COPY --chown=vibe:vibe agents/openclaw/acpx-runtime/ /usr/local/share/openclaw-npm/projects/openclaw-acpx-052d680d6d/
 RUN python3 /tmp/check-openat2.py && rm /tmp/check-openat2.py
 RUN npm --min-release-age=0 install \
       --prefix /tmp/openclaw-plugin-prefetch \
@@ -113,6 +118,8 @@ RUN npm --min-release-age=0 install \
       -o -name "*-linux-arm64" -o -name "*-linux-arm64-musl" \
       -o -name "*-linux-x64-musl" \
     \) -prune -exec rm -rf {} + && \
+    python3 /tmp/prune-acpx-runtime.py /usr/local/share/openclaw-npm/projects "${OPENCLAW_VERSION}" && \
+    rm /tmp/prune-acpx-runtime.py && \
     rm -rf /home/vibe/.openclaw/identity && \
     rm -f /home/vibe/.openclaw/openclaw.json && \
     npm cache clean --force

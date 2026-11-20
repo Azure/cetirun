@@ -240,6 +240,32 @@ protected contract is absent, legacy chart defaults stay unchanged.
 
 ### Native OpenClaw Gateway packaging
 
+The OpenClaw image omits source maps and TypeScript declaration files from the
+internal managed ACPX project and its dependencies. OpenClaw captures and
+validates plugin source repeatedly during startup; omitting these files reduces
+that work without changing executable code or snapshot validation. JavaScript,
+implementation TypeScript, native modules, agent binaries, package manifests,
+and licenses remain present. Debugging and type-checking the internal dependency
+project require the original pinned npm packages, which retain these files.
+The build checks the reviewed dependency lock and removal inventory before
+pruning. It seeds the managed ACPX project with the reviewed manifest and lock
+in `agents/openclaw/acpx-runtime/`, then uses OpenClaw's normal installer. The
+installer carries those inputs into staging and retains its peer linking and
+validation. This preserves the qualified transitive versions even when newer
+versions satisfy their ranges. The manifest also retains OpenClaw's managed
+peer and override metadata. The lock fingerprint uses canonical JSON and
+excludes only the top-level name, which must match npm's expected random
+installation staging name.
+All dependency fields, including resolved sources and integrity values, remain
+covered. When either fingerprint changes, review runtime file references and
+repeat the doctor, Gateway, and ACP checks before updating the recorded checksums.
+For a dependency upgrade, regenerate both inputs with the pinned OpenClaw/npm
+installer in a disposable project, review the dependency and removal inventories,
+and requalify them together. The managed project path in the Dockerfile is part
+of this pinned installation contract.
+The reviewed ACPX inputs include a Zod 4.6.6 override for
+[GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5).
+
 The native OpenClaw MVP reuses the protected renderer and the OpenClaw image
 that already exists. It does not add an alternative image, an Istio sidecar, or
 a Helm value that authorizes execution. The controller owns Sandbox and
