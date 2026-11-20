@@ -248,8 +248,11 @@ implementation TypeScript, native modules, agent binaries, package manifests,
 and licenses remain present. Debugging and type-checking the internal dependency
 project require the original pinned npm packages, which retain these files.
 The build checks the reviewed dependency lock and removal inventory before
-pruning. When either changes, review runtime file references and repeat the
-doctor, Gateway, and ACP checks before updating the recorded checksums.
+pruning. The lock fingerprint uses canonical JSON and excludes only the
+top-level name, which must match npm's expected random installation staging name.
+All dependency fields, including resolved sources and integrity values, remain
+covered. When either fingerprint changes, review runtime file references and
+repeat the doctor, Gateway, and ACP checks before updating the recorded checksums.
 
 The native OpenClaw MVP reuses the protected renderer and the OpenClaw image
 that already exists. It does not add an alternative image, an Istio sidecar, or

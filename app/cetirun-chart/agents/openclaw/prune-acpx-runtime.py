@@ -13,7 +13,7 @@ import sys
 # Qualified with OpenClaw/ACPX 2026.9.6 on linux/amd64, after the image's
 # existing optional-platform pruning. Dependency drift requires a new review
 # of runtime file references and a full doctor/Gateway/ACP qualification.
-REVIEWED_LOCK_SHA256 = "630412acc3827bab1bf79f46944b247ce8e758221ae800e20db9948f9d5733c9"
+REVIEWED_LOCK_SHA256 = "e69097f63d3c2f28b7f97fc3babbecd0cef2e52db8df1717dd8d5da54961436d"
 REVIEWED_METADATA_PATHS_SHA256 = "e830e9c275eaadc55a6c3ae149557a73173eddbfcc53f0154903cbf7cbceffb0"
 
 
@@ -28,6 +28,21 @@ def direct_manifest(project):
 
 def is_metadata(name):
     return name.endswith(".map") or re.search(r"\.d\.[cm]?ts$", name) is not None
+
+
+def dependency_lock_digest(contents):
+    lock = json.loads(contents)
+    # The managed installer writes an unnamed root manifest in a random
+    # .openclaw-install-stage-* directory. npm copies that directory into only
+    # the top-level lock name. Keep every other field, including package names,
+    # versions, resolved sources, integrity values, and the root dependencies.
+    if not isinstance(lock, dict) or not isinstance(lock.get("name"), str) or not re.fullmatch(
+        r"\.openclaw-install-stage-[A-Za-z0-9_-]+", lock["name"]
+    ):
+        raise ValueError("Unexpected ACPX dependency lock root name; qualify the new runtime project")
+    del lock["name"]
+    canonical = json.dumps(lock, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def runtime_targets(value):
@@ -74,7 +89,7 @@ def prune(projects, version):
                             raise ValueError("A package runtime entry point needs build/debug metadata")
     removed = [entry for entry in files if is_metadata(entry.name)]
     lock = project / "package-lock.json"
-    if lock.is_symlink() or hashlib.sha256(lock.read_bytes()).hexdigest() != REVIEWED_LOCK_SHA256:
+    if lock.is_symlink() or dependency_lock_digest(lock.read_bytes()) != REVIEWED_LOCK_SHA256:
         raise ValueError("Unreviewed ACPX dependency lock; qualify the new runtime project")
     if removed:
         paths = "\n".join(sorted(entry.relative_to(project).as_posix() for entry in removed)) + "\n"
