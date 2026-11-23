@@ -166,6 +166,7 @@ class PublishedIntegrationTests(unittest.TestCase):
                             if doc.get("kind") == "Deployment" and doc["metadata"]["name"] == "cetirun-operator")
             self.assertIn("--chart-digest=" + self.lock["charts"]["cetirun"]["digest"],
                           operator["spec"]["template"]["spec"]["containers"][0]["args"])
+            self.assertIn("--memory-context-image=", operator["spec"]["template"]["spec"]["containers"][0]["args"])
             self.assertEqual(deployment.charts["platform"], Path(self.lock["charts"]["cetirun-platform"]["path"]))
             deployment.expected_release_revision = 7
             with patch.object(deployment, "helm") as helm:
@@ -212,13 +213,57 @@ class PublishedIntegrationTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in result["images"]], ["future-image"])
         self.assertEqual([item["name"] for item in result["charts"]], ["future-chart"])
 
-    def test_memory_override_must_use_published_repository(self):
-        config = self.configuration()
-        config["platform"].setdefault("values", {}).setdefault("global", {})["memoryContext"] = {
-            "image": "other.example/cetirun-memory-context:custom"
-        }
-        with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(ValueError, "published cetirun-memory-context repository"):
-            DEPLOY.published_configuration(config, self.lock, Path(temporary))
+    def test_published_memory_overrides_are_rejected_before_rewriting(self):
+        image = self.lock["images"]["cetirun-memory-context"]
+        for path in ("global.memoryContext.image", "cetirun-operator.memoryContext.image"):
+            for reference in (image["reference"], f"{self.registry}/cetirun-memory-context@{image['digest']}",
+                              "other.example/cetirun-memory-context@" + image["digest"],
+                              f"{self.registry}/cetirun-memory-context@sha256:" + "f" * 64):
+                config = self.configuration()
+                DEPLOY.set_value(config["platform"]["values"], path, reference)
+                with self.subTest(path=path, reference=reference), tempfile.TemporaryDirectory() as temporary, \
+                     patch.object(DEPLOY, "_pin_published_images") as pin, \
+                     self.assertRaisesRegex(ValueError, "unsupported in published deployments"):
+                    DEPLOY.published_configuration(config, self.lock, Path(temporary))
+                pin.assert_not_called()
+
+    def test_republished_memory_digest_never_becomes_a_global_operator_override(self):
+        changed = copy.deepcopy(self.lock)
+        image = changed["images"]["cetirun-memory-context"]
+        image["digest"] = "sha256:" + "f" * 64
+        image["reference"] = f"{self.registry}/cetirun-memory-context:{self.version}@{image['digest']}"
+        for lock in (self.lock, changed):
+            with tempfile.TemporaryDirectory() as temporary:
+                _, values, _ = DEPLOY.published_configuration(self.configuration(), lock, Path(temporary))
+                self.assertEqual(values["platform"]["global"]["memoryContext"]["image"], "")
+                self.assertEqual(values["platform"]["cetirun-operator"]["memoryContext"]["image"], "")
+
+    def test_published_preflight_requires_existing_namespace_and_revision(self):
+        # Exercise the real preflight/execute entry points against synthetic
+        # Kubernetes responses; no namespace write may precede the Helm guard.
+        from scripts.tests.test_full_deployment import SyntheticCluster
+        for name in ("broker", "platform"):
+            for state in ("missing", "unlabeled", "different"):
+                with self.subTest(component=name, state=state), tempfile.TemporaryDirectory() as temporary:
+                    config, values, roots = DEPLOY.published_configuration(self.configuration(), self.lock, Path(temporary))
+                    driver = SyntheticCluster(config, values, Path(temporary) / "deployment")
+                    driver.published_artifacts = self.lock
+                    driver.documents = {component: [] for component in DEPLOY.CHARTS}
+                    for component in DEPLOY.CHARTS:
+                        ns = config[component]["namespace"]
+                        driver.objects[("namespace", "", ns)] = {"name": ns, "uid": "ns-uid", "labels": {
+                            "istio.io/rev": config["istio"]["revision"]}}
+                    key = ("namespace", "", config[name]["namespace"])
+                    if state == "missing":
+                        del driver.objects[key]
+                    else:
+                        driver.objects[key]["labels"] = {} if state == "unlabeled" else {"istio.io/rev": "other"}
+                    # The unrelated probes are tested by the full deployment
+                    # suite; stop here at the namespace prerequisite.
+                    with patch.object(driver, "check_kubectl_version"), \
+                         self.assertRaisesRegex(ValueError, "must already|another Istio revision"):
+                        driver.execute_platform()
+                    self.assertFalse(driver.writes)
 
 
 if __name__ == "__main__":

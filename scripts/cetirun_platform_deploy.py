@@ -923,7 +923,9 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
                    "agentIdentity.redirectUri": f"https://{domain}/api/v1/connections/callback"},
         "platform": {"global.registry": registry, "global.version": version,
                      "global.portalChat.enabled": operator_enabled, "global.portalChat.identityRealm": config["identityRealm"],
-                     "global.memoryContext.image": f"{registry}/cetirun-memory-context:{version}",
+                     **({} if published_artifacts else {
+                         "global.memoryContext.image": f"{registry}/cetirun-memory-context:{version}"
+                     }),
                      "istio.enabled": True, "istio.oauth2Proxy.namespace": ins,
                      "cetirun-operator.namespace": pns, "cetirun-operator.domainSuffix": domain,
                      "cetirun-operator.istioRevision": revision, "cetirun-operator.istioGateway": gateway,
@@ -967,9 +969,6 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
         for field, value in fields.items():
             supplied = get_value(config[name].get("values", {}), field)
             if field == "global.memoryContext.image" and supplied:
-                expected_repository = f"{registry}/cetirun-memory-context"
-                if published_artifacts and _image_repository(supplied) != expected_repository:
-                    raise ValueError("global.memoryContext.image must use the published cetirun-memory-context repository")
                 value = supplied
             elif supplied is not None and supplied != value:
                 raise ValueError(f"{name}.values.{field} conflicts with the complete deployment inputs")
@@ -1092,6 +1091,12 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
         images = published_artifacts.get("images", {})
         if not isinstance(images, dict) or not images:
             raise ValueError("published artifact lock has no images")
+        # Published runtime charts own their Memory pin. A platform-wide
+        # override would affect Agents on other chart versions too. Reject it
+        # before image rewriting, regardless of repository, digest or spelling.
+        for path in ("global.memoryContext.image", "cetirun-operator.memoryContext.image"):
+            if get_value(values["platform"], path):
+                raise ValueError(f"{path} is unsupported in published deployments; use the runtime chart's Memory pin")
         approved = get_value(values["platform"], "cetirun-operator.customRuntime.approvedImages")
         original_approved = copy.deepcopy(approved) if isinstance(approved, list) else None
         if isinstance(approved, list):
@@ -1997,8 +2002,14 @@ class Deployment:
             metadata = self.resource("namespace", section["namespace"])
             self.namespaces[section["namespace"]] = metadata
             label = (metadata or {}).get("labels", {}).get("istio.io/rev")
-            if name != "istio" and label and label != c["istio"]["revision"]:
-                raise ValueError(f"{section['namespace']} uses another Istio revision; refusing to replace it")
+            if self.published_artifacts and metadata is None:
+                raise ValueError(f"{section['namespace']} must already exist for a published deployment")
+            if name != "istio" and metadata is not None:
+                if label and label != c["istio"]["revision"]:
+                    raise ValueError(f"{section['namespace']} uses another Istio revision; refusing to replace it")
+                if self.published_artifacts and label != c["istio"]["revision"]:
+                    raise ValueError(f"{section['namespace']} must already be labeled with Istio revision "
+                                     f"{c['istio']['revision']}; refusing an implicit namespace mutation")
             releases = json.loads(self.helm("list", "--deployed", "--failed", "--pending", "--uninstalling", "--uninstalled", "--superseded",
                                             "--namespace", section["namespace"], "--filter", f"^{section['release']}$", "-o", "json"))
             if releases:

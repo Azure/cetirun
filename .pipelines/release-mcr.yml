@@ -267,6 +267,7 @@ jobs:
             # same-version chart replacement cannot pass deployment provenance
             # checks without changing the operator config digest as well.
             chart_digest_json="$(python3 -c 'import hashlib, json, pathlib, sys; directory=pathlib.Path(sys.argv[1]); version=sys.argv[-1]; names=sys.argv[2:-1]; values={name: "sha256:" + hashlib.sha256((directory / (name + "-" + version + ".tgz")).read_bytes()).hexdigest() for name in names}; print(json.dumps(values, sort_keys=True, separators=(",", ":")))' "${package_dir}" "${chart_artifacts[@]}" "${RELEASE_VERSION}")"
+            image_digest_json="$(python3 -c 'import json, sys; names=sys.argv[1:-1]; values=dict(item.split("@", 1) for item in names if item.split("@", 1)[0] != "cetirun-operator"); print(json.dumps(values, sort_keys=True, separators=(",", ":")))' "${staged_images[@]}" "${RELEASE_VERSION}")"
             operator_staged_image="${registry}/${REPOSITORY_PREFIX}/staging/${BUILD_ID}/cetirun-operator:${RELEASE_VERSION}"
             operator_staged_digest="$(az acr repository show --name "${ACR_NAME}" --image "${REPOSITORY_PREFIX}/staging/${BUILD_ID}/cetirun-operator:${RELEASE_VERSION}" --query digest --output tsv)"
             if [[ ! "${operator_staged_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
@@ -276,8 +277,8 @@ jobs:
             wrapper_dir="${verify_dir}/operator-provenance"
             mkdir -p "${wrapper_dir}"
             wrapper_file="${wrapper_dir}/Dockerfile"
-            python3 -c 'import json, pathlib, sys; base, labels = sys.argv[2], sys.argv[3]; pathlib.Path(sys.argv[1]).write_text("FROM " + base + "\nLABEL io.cetirun.release.chart-digests=" + json.dumps(labels) + "\n", encoding="utf-8")' \
-              "${wrapper_file}" "${operator_staged_image}@${operator_staged_digest}" "${chart_digest_json}"
+            python3 -c 'import json, pathlib, sys; base, charts, images = sys.argv[2:]; pathlib.Path(sys.argv[1]).write_text("FROM " + base + "\nLABEL io.cetirun.release.chart-digests=" + json.dumps(charts) + "\n" + "LABEL io.cetirun.release.image-digests=" + json.dumps(images) + "\n", encoding="utf-8")' \
+              "${wrapper_file}" "${operator_staged_image}@${operator_staged_digest}" "${chart_digest_json}" "${image_digest_json}"
             operator_wrapper_image="${registry}/${REPOSITORY_PREFIX}/staging/${BUILD_ID}/cetirun-operator:${RELEASE_VERSION}-provenance"
             docker buildx build --platform linux/amd64 --provenance=false --file "${wrapper_file}" --tag "${operator_wrapper_image}" --push "${wrapper_dir}"
             docker buildx imagetools inspect "${operator_wrapper_image}" > /dev/null

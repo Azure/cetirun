@@ -40,7 +40,7 @@ def baseline(image="mcr.microsoft.com/aks/ai-runtime/cetirun/hermes-gateway@sha2
 
 
 class EnvironmentTests(unittest.TestCase):
-    def capture_driver(self, *, ready=False, pod_uid="pod-uid", pvc_items=None, manifest=""):
+    def capture_driver(self, *, ready=False, pod_uid="pod-uid", pvc_items=None, manifest="", namespace_metadata=None):
         agent = {"metadata": {"name": "agent", "namespace": "", "uid": "agent-uid", "generation": 1},
                  "spec": {"agent": {"type": "hermes", "image": "mcr.example/hermes"}, "suspended": False},
                  "status": {}}
@@ -52,10 +52,13 @@ class EnvironmentTests(unittest.TestCase):
                                    "annotations": {"cetirun.microsoft.com/agent-uid": "agent-uid"},
                                    "ownerReferences": [{"apiVersion": "cetirun.microsoft.com/v1alpha1",
                                                          "kind": "Agent", "uid": "agent-uid"}]}}
+        if namespace_metadata is not None:
+            namespace["metadata"] = namespace_metadata
         pvc_items = pvc_items if pvc_items is not None else []
 
         class Driver:
             config = {name: {"namespace": name, "release": name} for name in deploy.platform.CHARTS}
+            documents = {name: [] for name in deploy.platform.CHARTS}
             helm_manifest = manifest
 
             def kubectl(self, *args):
@@ -87,6 +90,50 @@ class EnvironmentTests(unittest.TestCase):
         self.assertIn("pods/cetirun-agent/gateway", before["objects"])
         self.assertIn("pods/cetirun-agent/gateway", after["objects"])
         deploy.preservation(before, after)
+
+    def test_capture_rejects_unattributed_candidate_namespace(self):
+        # Portal may create the Agent but fail to patch namespace ownership.
+        # A running Pod and Bound HOME must not disappear from the baseline.
+        pvc = {"metadata": {"name": "home", "namespace": "cetirun-agent", "uid": "home-uid"},
+               "spec": {}, "status": {"phase": "Bound"}}
+        for ready in (False, True):
+            for binding in ({}, {"ownerReferences": [{"apiVersion": "cetirun.microsoft.com/v1alpha1",
+                                                      "kind": "Agent", "uid": "different-agent"}]}):
+                with self.subTest(status_namespace=ready, binding=binding):
+                    driver = self.capture_driver(ready=ready, pvc_items=[pvc], namespace_metadata={
+                        "name": "cetirun-agent", "uid": "namespace-uid", **binding})
+                    with self.assertRaisesRegex(deploy.Blocked, "agent_namespace_unattributed"):
+                        deploy.capture(driver)
+
+    def test_capture_rejects_conflicting_owner_and_annotation(self):
+        driver = self.capture_driver(namespace_metadata={
+            "name": "cetirun-agent", "uid": "namespace-uid",
+            "annotations": {"cetirun.microsoft.com/agent-uid": "different-agent"},
+            "ownerReferences": [{"apiVersion": "cetirun.microsoft.com/v1alpha1", "kind": "Agent", "uid": "agent-uid"}]})
+        with self.assertRaisesRegex(deploy.Blocked, "agent_namespace_ownership_conflict"):
+            deploy.capture(driver)
+
+    def test_capture_does_not_adopt_unrelated_namespace(self):
+        driver = self.capture_driver(namespace_metadata={"name": "unrelated", "uid": "other"})
+        snapshot = deploy.capture(driver)
+        self.assertFalse(any(key.startswith("pods/") for key in snapshot["objects"]))
+
+    def test_capture_rejects_ambiguous_candidate_namespace_in_either_order(self):
+        driver = self.capture_driver()
+        kubectl = driver.kubectl
+        first = json.loads(kubectl("get", "agents.cetirun.microsoft.com"))["items"][0]
+        other = copy.deepcopy(first)
+        other["metadata"].update(name="other-agent", uid="other-uid")
+        other["status"]["namespace"] = "cetirun-agent"
+        for agents in ([first, other], [other, first]):
+            def read(*args):
+                if args[:2] == ("get", "agents.cetirun.microsoft.com"):
+                    return json.dumps({"items": agents})
+                return kubectl(*args)
+            driver.kubectl = read
+            with self.subTest(order=[agent["metadata"]["name"] for agent in agents]):
+                with self.assertRaisesRegex(deploy.Blocked, "agent_namespace_unattributed"):
+                    deploy.capture(driver)
 
     def test_capture_detects_replaced_pod_and_scoped_pvc_drift(self):
         pvc = {"metadata": {"name": "home", "namespace": "cetirun-agent", "uid": "pvc-uid"},
@@ -145,6 +192,108 @@ class EnvironmentTests(unittest.TestCase):
                 changed.pop(index)
                 with self.assertRaisesRegex(deploy.Blocked, "resource_set_changed"):
                     deploy.preservation(snapshot, deploy.capture(self.capture_driver(pvc_items=changed, manifest=manifest)))
+
+    def test_planned_pvc_addition_passes_but_existing_claims_remain_protected(self):
+        claim = {"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+                 "metadata": {"name": "oauth2-proxy-sessions", "namespace": "istio", "uid": "sessions-uid"},
+                 "spec": {"storageClassName": "test"}, "status": {"phase": "Bound"}}
+        driver = self.capture_driver()
+        driver.documents["istio"] = [claim]
+        planned = deploy.planned_claim_keys(driver)
+        self.assertEqual(planned, {"pvc/istio/oauth2-proxy-sessions"})
+        before = deploy.capture(driver)
+        after_driver = self.capture_driver(pvc_items=[claim], manifest=yaml.safe_dump(claim))
+        after_driver.documents["istio"] = [claim]
+        after = deploy.capture(after_driver)
+        with self.assertRaisesRegex(deploy.Blocked, "resource_set_changed"):
+            deploy.preservation(before, after)
+        deploy.preservation(before, after, allowed_additions=planned)
+        # A candidate claim that already exists is preserved before Helm runs.
+        existing_driver = self.capture_driver(pvc_items=[claim])
+        existing_driver.documents["istio"] = [claim]
+        existing = deploy.capture(existing_driver)
+        self.assertIn("pvc/istio/oauth2-proxy-sessions", existing["objects"])
+        changed = copy.deepcopy(after)
+        changed["objects"]["pvc/istio/oauth2-proxy-sessions"]["uid"] = "replacement"
+        with self.assertRaisesRegex(deploy.Blocked, "resource_changed"):
+            deploy.preservation(existing, changed, allowed_additions=planned)
+        with self.assertRaisesRegex(deploy.Blocked, "resource_set_changed"):
+            deploy.preservation(existing, before, allowed_additions=planned)
+        changed = copy.deepcopy(after)
+        changed["objects"]["pvc/istio/unplanned"] = changed["objects"]["pvc/istio/oauth2-proxy-sessions"]
+        with self.assertRaisesRegex(deploy.Blocked, "resource_set_changed"):
+            deploy.preservation(before, changed, allowed_additions=planned)
+
+    def test_planned_claims_exclude_external_references_hooks_and_unplanned_ordinals(self):
+        driver = self.capture_driver()
+        driver.documents["platform"] = [
+            {"apiVersion": "apps/v1", "kind": "StatefulSet", "metadata": {"name": "db"},
+             "spec": {"replicas": 2, "ordinals": {"start": 3},
+                      "volumeClaimTemplates": [{"metadata": {"name": "data"}}]}},
+            {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "external"},
+             "spec": {"template": {"spec": {"volumes": [{"persistentVolumeClaim": {"claimName": "external"}}]}}}},
+            {"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+             "metadata": {"name": "hook", "annotations": {"helm.sh/hook": "post-upgrade"}}},
+        ]
+        self.assertEqual(deploy.planned_claim_keys(driver), {"pvc/platform/data-db-3", "pvc/platform/data-db-4"})
+        driver.config["istio"]["mode"] = "external"
+        driver.documents["istio"] = [{"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": {"name": "external"}}]
+        self.assertEqual(deploy.planned_claim_keys(driver), {"pvc/platform/data-db-3", "pvc/platform/data-db-4"})
+
+    def test_stability_pins_first_identity_of_planned_claim(self):
+        old = baseline()
+        added = copy.deepcopy(old)
+        key = "pvc/istio/oauth2-proxy-sessions"
+        added["objects"][key] = {"uid": "claim-uid", "specHash": "claim-spec", "generation": None,
+                                 "deleting": False, "ready": False, "bound": True}
+        replaced = copy.deepcopy(added)
+        replaced["objects"][key]["uid"] = "replacement"
+        ticks = iter(range(100))
+        with patch.object(deploy, "capture", side_effect=[old, added, replaced]), \
+             patch.object(deploy, "verify_control_readiness"), \
+             patch.object(deploy.time, "monotonic", side_effect=lambda: next(ticks)), \
+             patch.object(deploy.time, "sleep"), self.assertRaisesRegex(deploy.Blocked, "resource_changed"):
+            deploy.stable_acceptance(Mock(), old, allowed_additions={key})
+        ticks = iter(range(100))
+        with patch.object(deploy, "capture", return_value=added), \
+             patch.object(deploy, "verify_control_readiness"), \
+             patch.object(deploy.time, "monotonic", side_effect=lambda: next(ticks)), \
+             patch.object(deploy.time, "sleep"):
+            self.assertEqual(deploy.stable_acceptance(Mock(), old, allowed_additions={key}, window=3), added)
+
+    def test_planned_claim_can_bind_but_not_change_its_storage_contract(self):
+        key = "pvc/istio/oauth2-proxy-sessions"
+        claim = {"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+                 "metadata": {"name": "oauth2-proxy-sessions", "namespace": "istio", "uid": "claim-uid"},
+                 "spec": {"storageClassName": "test", "accessModes": ["ReadWriteOnce"]}, "status": {"phase": "Pending"}}
+        driver = self.capture_driver()
+        driver.documents["istio"] = [claim]
+        old = deploy.capture(driver)
+        pending = deploy.capture(self.capture_driver(pvc_items=[claim], manifest=yaml.safe_dump(claim)))
+        bound_claim = copy.deepcopy(claim)
+        bound_claim["spec"]["volumeName"] = "pv-uid"
+        bound_claim["status"]["phase"] = "Bound"
+        bound = deploy.capture(self.capture_driver(pvc_items=[bound_claim], manifest=yaml.safe_dump(claim)))
+        ticks = iter(range(100))
+        with patch.object(deploy, "capture", side_effect=[pending] + [bound] * 10), \
+             patch.object(deploy, "verify_control_readiness"), \
+             patch.object(deploy.time, "monotonic", side_effect=lambda: next(ticks)), \
+             patch.object(deploy.time, "sleep"):
+            self.assertEqual(deploy.stable_acceptance(Mock(), old, allowed_additions={key}, window=3), bound)
+        for mutate in (
+            lambda value: value["metadata"].update(uid="replacement"),
+            lambda value: value["spec"].update(storageClassName="changed"),
+            lambda value: value["spec"].update(accessModes=["ReadWriteMany"]),
+        ):
+            changed_claim = copy.deepcopy(bound_claim)
+            mutate(changed_claim)
+            changed = deploy.capture(self.capture_driver(pvc_items=[changed_claim], manifest=yaml.safe_dump(claim)))
+            ticks = iter(range(100))
+            with patch.object(deploy, "capture", side_effect=[pending, changed]), \
+                 patch.object(deploy, "verify_control_readiness"), \
+                 patch.object(deploy.time, "monotonic", side_effect=lambda: next(ticks)), \
+                 patch.object(deploy.time, "sleep"), self.assertRaisesRegex(deploy.Blocked, "resource_changed"):
+                deploy.stable_acceptance(Mock(), old, allowed_additions={key})
 
     def test_embedded_credentials_are_private_and_unrelated_context_removed(self):
         config, kube = inputs()
@@ -344,6 +493,8 @@ class EnvironmentTests(unittest.TestCase):
                 lock = {"sourceSHA": "a" * 40, "version": "0.2.1", "registry": "mcr.microsoft.com/aks/ai-runtime/cetirun",
                         "images": {}, "charts": {}}
                 driver = Mock()
+                driver.config = {name: {"namespace": name, "release": name} for name in deploy.platform.CHARTS}
+                driver.documents = {name: [] for name in deploy.platform.CHARTS}
                 driver.scratch = root / "private" / "deployment"
                 driver.resource.return_value = {"uid": "synthetic-cluster"}
                 live_releases = copy.deepcopy(baseline()["releases"])

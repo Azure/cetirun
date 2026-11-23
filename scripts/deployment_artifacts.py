@@ -31,6 +31,7 @@ _MAX_CONFIG = 16 * 1024 * 1024
 _MAX_CHART = 100 * 1024 * 1024
 _MAX_UNCOMPRESSED_CHART = 400 * 1024 * 1024
 CHART_DIGEST_LABEL = "io.cetirun.release.chart-digests"
+IMAGE_DIGEST_LABEL = "io.cetirun.release.image-digests"
 
 
 class ArtifactError(ValueError):
@@ -144,6 +145,7 @@ def _image(repository, version, source_sha):
     if declared_version != version:
         raise ArtifactError(f"{repository}:{version} version label does not match the release")
     chart_digests = None
+    image_digests = None
     if CHART_DIGEST_LABEL in labels:
         try:
             chart_digests = json.loads(labels[CHART_DIGEST_LABEL])
@@ -153,11 +155,20 @@ def _image(repository, version, source_sha):
                 any(not _NAME.fullmatch(name) or not isinstance(pin, str) or not _DIGEST.fullmatch(pin)
                     for name, pin in chart_digests.items())):
             raise ArtifactError("image chart digest receipt is invalid")
+    if IMAGE_DIGEST_LABEL in labels:
+        try:
+            image_digests = json.loads(labels[IMAGE_DIGEST_LABEL])
+        except (ValueError, TypeError):
+            raise ArtifactError("image digest receipt is not valid JSON") from None
+        if (not isinstance(image_digests, dict) or not image_digests or
+                any(not _NAME.fullmatch(name) or not isinstance(pin, str) or not _DIGEST.fullmatch(pin)
+                    for name, pin in image_digests.items())):
+            raise ArtifactError("image digest receipt is invalid")
     return {"reference": f"{REGISTRY}/{repository}:{version}@{digest}", "digest": digest,
             "platformDigest": platform_digest, "configDigest": config_digest,
             "revision": declared_sha or None,
             "revisionVerified": bool(declared_sha), "versionVerified": bool(declared_version),
-            "chartDigests": chart_digests}
+            "chartDigests": chart_digests, "imageDigests": image_digests}
 
 
 def _safe_chart_members(path):
@@ -315,6 +326,11 @@ def resolve(source: Path, work: Path, release_tag: str):
     expected_chart_digests = images.get("cetirun-operator", {}).get("chartDigests")
     if not isinstance(expected_chart_digests, dict) or set(expected_chart_digests) != {entry["name"] for entry in data["charts"]}:
         raise ArtifactError("source-verified Operator image is missing the complete chart digest receipt")
+    expected_image_digests = images.get("cetirun-operator", {}).get("imageDigests")
+    non_operator = {entry["name"] for entry in data["images"] if entry["name"] != "cetirun-operator"}
+    if (not isinstance(expected_image_digests, dict) or set(expected_image_digests) != non_operator or
+            any(expected_image_digests[name] != images[name]["digest"] for name in non_operator)):
+        raise ArtifactError("source-verified Operator image is missing the complete image digest receipt")
     charts = {}
     for entry in data["charts"]:
         try:

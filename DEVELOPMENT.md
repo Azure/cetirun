@@ -1278,13 +1278,23 @@ For an official MCR release, use the Azure Pipelines release. It pushes to the
 backing ACR, which synchronizes to MCR. The pipeline uses
 `REGISTRY=mcr.microsoft.com/...` only to package the charts with public pull
 coordinates. It stages and promotes images and pushes charts to the backing
-ACR. It promotes `latest` only after all versioned images and charts succeed.
-After promoting versioned images, it packages the charts with their collected
-digests through `RELEASE_IMAGE_DIGESTS_FILE`. The Agent chart locks OpenClaw,
-Hermes, Desktop, Terminal, and Memory images before publication. Earlier release
-charts are not rewritten; use a new version for this publication contract.
+ACR. It packages the charts with verified staging image digests through
+`RELEASE_IMAGE_DIGESTS_FILE`, then embeds receipts for the chart archives and all
+other first-party images in the Operator image. The environment deployment
+workflow requires those receipts and rejects partial synchronization or mixed
+builds, including rebuilds of the same version and source commit. Versioned
+images are promoted only after packaging succeeds; `latest` is promoted only
+after all versioned images and charts succeed. The Agent chart locks OpenClaw,
+Hermes, Desktop, Terminal, and Memory images before publication. Earlier releases
+without these receipts are unsupported by the environment workflow; use a new
+release for this publication contract.
 It passes `ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true` to the shared driver, the
 same value as the local default. Only a manual run can set `forcePublish`.
+
+The environment workflow uses each selected runtime chart's Memory image pin
+and rejects global or Operator Memory image overrides. Existing release
+namespaces and the configured Broker/platform `istio.io/rev` labels are
+prerequisites; the workflow does not create or relabel them during an upgrade.
 
 Offline release and deployment tests use synthetic APIs and local Helm:
 

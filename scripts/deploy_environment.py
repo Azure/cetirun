@@ -185,12 +185,35 @@ def installation_claim_keys(deployment):
     return claims, tuple(prefixes)
 
 
+def planned_claim_keys(deployment):
+    """Only claims explicitly created by managed rendered resources may appear.
+
+    Volume references to external claims are not permission to create claims.
+    StatefulSet additions use the rendered ordinal range, never a name prefix.
+    """
+    claims = set()
+    for name in managed_release_names(deployment):
+        namespace = deployment.config[name]["namespace"]
+        for document in managed_documents(deployment.documents[name]):
+            meta, spec = document.get("metadata", {}), document.get("spec", {})
+            ns = meta.get("namespace", namespace)
+            if document.get("kind") == "PersistentVolumeClaim":
+                claims.add("pvc/" + ns + "/" + meta["name"])
+            elif document.get("kind") == "StatefulSet":
+                start = spec.get("ordinals", {}).get("start", 0)
+                for claim in spec.get("volumeClaimTemplates", []):
+                    for ordinal in range(start, start + spec.get("replicas", 1)):
+                        claims.add(f"pvc/{ns}/{claim['metadata']['name']}-{meta['name']}-{ordinal}")
+    return claims
+
+
 def capture(deployment, *, require_deployed=True):
     """Read exact identities and spec hashes; do not save credentials or HOME."""
     snapshot = {"objects": {}, "releases": {}}
     runtime_namespaces = set()
     agent_uids = set()
     agent_namespaces = set()
+    candidate_namespaces = {}
     for resource in PRESERVED:
         rows = json.loads(deployment.kubectl("get", resource, "--all-namespaces", "-o", "json"))["items"]
         for row in rows:
@@ -200,6 +223,9 @@ def capture(deployment, *, require_deployed=True):
                 agent_namespaces.add(status["namespace"])
             if resource == "agents.cetirun.microsoft.com":
                 agent_uids.add(meta.get("uid"))
+                candidate_namespaces.setdefault("cetirun-" + meta["name"], set()).add(meta["uid"])
+                if status.get("namespace"):
+                    candidate_namespaces.setdefault(status["namespace"], set()).add(meta["uid"])
             key = "/".join((resource, meta.get("namespace", ""), meta["name"]))
             snapshot["objects"][key] = {
                 "uid": meta["uid"], "specHash": digest(spec), "generation": meta.get("generation"),
@@ -209,6 +235,10 @@ def capture(deployment, *, require_deployed=True):
                 "image": spec.get("agent", {}).get("image", ""),
                 "suspended": spec.get("suspended", False),
             }
+            if resource == "pvc":
+                snapshot["objects"][key].update(
+                    claimContractHash=digest({field: value for field, value in spec.items() if field != "volumeName"}),
+                    volumeName=spec.get("volumeName", ""))
     # status.namespace is written only after the runtime becomes ready. Resolve
     # an already-created namespace from the immutable Agent ownership metadata
     # so a Pod cannot be missed during that interval.
@@ -218,27 +248,36 @@ def capture(deployment, *, require_deployed=True):
             meta = namespace.get("metadata", {})
             owners = meta.get("ownerReferences", [])
             annotations = meta.get("annotations", {})
-            owner_match = any(owner.get("apiVersion") == "cetirun.microsoft.com/v1alpha1" and
-                              owner.get("kind") == "Agent" and owner.get("uid") in agent_uids for owner in owners)
-            annotation_match = annotations.get("cetirun.microsoft.com/agent-uid") in agent_uids
-            # An annotation is accepted for legacy custom runtimes only when
-            # no conflicting owner reference is present.
-            conflicting_owner = bool(owners) and not owner_match
-            if annotation_match and conflicting_owner:
+            owner_uids = {owner.get("uid") for owner in owners
+                          if owner.get("apiVersion") == "cetirun.microsoft.com/v1alpha1" and
+                          owner.get("kind") == "Agent" and owner.get("uid") in agent_uids}
+            annotation_uid = annotations.get("cetirun.microsoft.com/agent-uid")
+            annotation_match = annotation_uid in agent_uids
+            conflicting_owner = bool(owners) and (len(owners) != 1 or len(owner_uids) != 1)
+            if ((owner_uids or annotation_match) and conflicting_owner or
+                    owner_uids and annotation_uid and annotation_uid not in owner_uids):
                 raise Blocked("agent_namespace_ownership_conflict")
-            if owner_match or (annotation_match and not conflicting_owner):
+            attributed_uid = next(iter(owner_uids), annotation_uid if annotation_match else None)
+            candidate_uids = candidate_namespaces.get(meta.get("name"), set())
+            # Portal creates the namespace before it binds Agent ownership. A
+            # failed binding patch must not hide an already running workload.
+            # Do not adopt or repair that namespace during platform deployment.
+            if candidate_uids and candidate_uids != {attributed_uid}:
+                raise Blocked("agent_namespace_unattributed")
+            if attributed_uid:
                 runtime_namespaces.add(meta.get("name"))
                 agent_namespaces.add(meta.get("name"))
     # PVCs from unrelated workloads must not make an otherwise safe upgrade
     # fail. Retain only claims referenced by installed manifests and claims in
     # Agent-owned namespaces.
     installation_claims, claim_prefixes = installation_claim_keys(deployment)
+    planned_claims = planned_claim_keys(deployment)
     pvc_prefix = "pvc/"
     for key in list(snapshot["objects"]):
         if key.startswith(pvc_prefix):
             namespace = key.split("/", 2)[1]
             name = key.split("/", 2)[2]
-            scoped = namespace in agent_namespaces or (namespace, name) in installation_claims or any(
+            scoped = key in planned_claims or namespace in agent_namespaces or (namespace, name) in installation_claims or any(
                 namespace == prefix_namespace and name.startswith(prefix) and name[len(prefix):].isdigit()
                 for prefix_namespace, prefix in claim_prefixes)
             if not scoped:
@@ -283,8 +322,9 @@ def reject_downgrade(releases, candidate, names=None):
             raise Blocked("release_downgrade_out_of_scope")
 
 
-def preservation(before, after, *, readiness=True):
-    if set(before["objects"]) != set(after["objects"]):
+def preservation(before, after, *, readiness=True, allowed_additions=frozenset()):
+    old_keys, new_keys = set(before["objects"]), set(after["objects"])
+    if old_keys - new_keys or (new_keys - old_keys) - set(allowed_additions):
         raise Blocked("preserved_resource_set_changed")
     for key, old in before["objects"].items():
         new = after["objects"][key]
@@ -294,17 +334,40 @@ def preservation(before, after, *, readiness=True):
             raise Blocked("preserved_resource_not_ready")
 
 
-def stable_acceptance(deployment, baseline, *, expected_releases=None, window=60, timeout=300, interval=15):
+def stable_acceptance(deployment, baseline, *, expected_releases=None, allowed_additions=frozenset(),
+                      window=60, timeout=300, interval=15):
     """Observe several reconciles; never excuse UID/spec drift during settling."""
     start = time.monotonic()
     stable_since = None
+    observed = copy.deepcopy(baseline)
     while time.monotonic() - start <= timeout:
         current = capture(deployment)
-        preservation(baseline, current, readiness=False)
+        for key in observed["objects"].keys() & current["objects"].keys() & set(allowed_additions):
+            previous, latest = observed["objects"][key], current["objects"][key]
+            if key not in baseline["objects"] and not previous["bound"]:
+                # Kubernetes may bind a newly planned claim after Helm returns.
+                # Permit only its initial volumeName assignment; preserve UID,
+                # the remaining storage contract and any assigned volume.
+                if (previous.get("claimContractHash") and
+                        previous["claimContractHash"] == latest.get("claimContractHash") and
+                        previous.get("volumeName", "") in ("", latest.get("volumeName", ""))):
+                    previous["specHash"] = latest["specHash"]
+                    previous["volumeName"] = latest.get("volumeName", "")
+        preservation(observed, current, readiness=False, allowed_additions=allowed_additions)
+        # Pin the first observed identity of a newly created planned claim too.
+        # Its replacement or loss during the stability window is still drift.
+        for key in current["objects"].keys() - observed["objects"].keys():
+            observed["objects"][key] = copy.deepcopy(current["objects"][key])
+        for key in set(allowed_additions) & current["objects"].keys():
+            if current["objects"][key]["bound"]:
+                observed["objects"][key]["bound"] = True
         if expected_releases is not None and current["releases"] != expected_releases:
             raise Blocked("helm_revision_changed_during_acceptance")
         try:
-            preservation(baseline, current)
+            preservation(observed, current)
+            if any(key not in current["objects"] or not current["objects"][key]["bound"] or
+                   current["objects"][key]["deleting"] for key in allowed_additions):
+                raise Blocked("planned_claim_not_ready")
             verify_control_readiness(deployment)
         except Blocked:
             stable_since = None
@@ -518,6 +581,7 @@ def run(args):
                                                 "Marketplace publication", "ADX ingestion", "provider background request count"]}
     stage = "inputs"
     deployment, baseline = None, None
+    allowed_additions = set()
     try:
         if not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", args.release_tag):
             raise Blocked("invalid_release_tag")
@@ -562,6 +626,8 @@ def run(args):
             stage = "preflight"
             deployment.preflight()
             summary["changes"] = compare_manifests(deployment)
+            allowed_additions = planned_claim_keys(deployment) - baseline["objects"].keys()
+            summary["plannedPVCAdditions"] = len(allowed_additions)
             summary["entryBefore"] = verify_entry(config["domain"])
             summary["stages"].append({"stage": "preflight", "status": "PASS"})
             private_write(output, json.dumps(summary, indent=2) + "\n")
@@ -604,7 +670,8 @@ def run(args):
                 deployment.execute()
                 summary["stages"].append({"stage": "deploy", "status": "PASS"})
                 stage = "acceptance"
-                after = stable_acceptance(deployment, baseline, expected_releases=expected_releases)
+                after = stable_acceptance(deployment, baseline, expected_releases=expected_releases,
+                                          allowed_additions=allowed_additions)
                 summary["afterReleases"] = after["releases"]
                 summary["verifiedContainers"] = verify_images(deployment, lock)
                 summary["entryAfter"] = verify_entry(config["domain"])
@@ -627,7 +694,7 @@ def run(args):
             try:
                 summary["afterReleases"] = release_snapshot(deployment, require_deployed=False)
                 current = capture(deployment, require_deployed=False)
-                preservation(baseline, current)
+                preservation(baseline, current, allowed_additions=allowed_additions)
                 summary["preservationAfterFailure"] = "PASS"
             except Exception:
                 summary["preservationAfterFailure"] = "UNVERIFIED"

@@ -51,7 +51,7 @@ class DeploymentArtifactTests(unittest.TestCase):
             image = {"reference": "mcr.example/one:0.2.1@sha256:" + "a" * 64,
                      "digest": "sha256:" + "a" * 64, "platformDigest": "sha256:" + "b" * 64,
                      "configDigest": "sha256:" + "c" * 64, "revision": "d" * 40,
-                     "chartDigests": {"chart": "sha256:" + "e" * 64}}
+                     "chartDigests": {"chart": "sha256:" + "e" * 64}, "imageDigests": {}}
             with patch.object(subprocess, "check_output", side_effect=["", ("d" * 40) + "\n"]), \
                  patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout=("d" * 40) + "\n")), \
                  patch.object(ARTIFACTS, "_image", return_value=image), \
@@ -93,6 +93,65 @@ class DeploymentArtifactTests(unittest.TestCase):
                 ARTIFACTS._chart("repo/cetirun-platform", "0.2.1", Path(temporary), "sha256:" + "d" * 64)
             fetch.assert_not_called()
 
+    def test_image_receipt_is_read_from_source_verified_image_config(self):
+        receipt = {"portal": "sha256:" + "f" * 64}
+        labels = {"org.opencontainers.image.version": "0.2.1", "org.opencontainers.image.revision": "d" * 40,
+                  ARTIFACTS.IMAGE_DIGEST_LABEL: json.dumps(receipt)}
+        config = json.dumps({"os": "linux", "architecture": "amd64", "config": {"Labels": labels}}).encode()
+        config_digest = "sha256:" + hashlib.sha256(config).hexdigest()
+        manifest = {"config": {"digest": config_digest, "size": len(config), "mediaType": "application/vnd.oci.image.config.v1+json"}}
+        with patch.object(ARTIFACTS, "_manifest", return_value=("sha256:" + "a" * 64, manifest, b"{}")), \
+             patch.object(ARTIFACTS, "_request", return_value=({}, config)):
+            result = ARTIFACTS._image("repo/cetirun-operator", "0.2.1", "d" * 40)
+        self.assertEqual(result["imageDigests"], receipt)
+
+    def test_resolver_rejects_mixed_same_version_image_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "scripts").mkdir()
+            (source / "app/cetirun-chart").mkdir(parents=True)
+            (source / "app/cetirun-chart/Chart.yaml").write_text("version: 0.2.1\n")
+            (source / "scripts/release-artifacts.json").write_text(json.dumps({
+                "schemaVersion": 1,
+                "images": [{"name": "cetirun-operator"}, {"name": "portal"}],
+                "charts": [{"name": "cetirun", "path": "app/cetirun-chart"}]}))
+            operator = {"digest": "sha256:" + "a" * 64,
+                        "chartDigests": {"cetirun": "sha256:" + "c" * 64},
+                        "imageDigests": {"portal": "sha256:" + "b" * 64}}
+            portal = {"digest": "sha256:" + "d" * 64}
+            for receipt in ({}, {"portal": operator["imageDigests"]["portal"], "extra": "sha256:" + "e" * 64},
+                            operator["imageDigests"]):
+                with self.subTest(receipt=receipt), \
+                     patch.object(subprocess, "check_output", side_effect=["", "d" * 40]), \
+                     patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout="d" * 40)), \
+                     patch.object(ARTIFACTS, "_image", side_effect=[{**operator, "imageDigests": receipt}, portal]), \
+                     patch.object(ARTIFACTS, "_chart") as chart_download:
+                    with self.assertRaisesRegex(ARTIFACTS.ArtifactError, "complete image digest receipt"):
+                        ARTIFACTS.resolve(source, source / "work", "v0.2.1")
+                    chart_download.assert_not_called()
+
+    def test_resolver_accepts_exact_image_digest_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "scripts").mkdir()
+            (source / "app/cetirun-chart").mkdir(parents=True)
+            (source / "app/cetirun-chart/Chart.yaml").write_text("version: 0.2.1\n")
+            (source / "scripts/release-artifacts.json").write_text(json.dumps({
+                "schemaVersion": 1,
+                "images": [{"name": "cetirun-operator"}, {"name": "portal"}],
+                "charts": [{"name": "cetirun", "path": "app/cetirun-chart"}]}))
+            operator = {"digest": "sha256:" + "a" * 64,
+                        "chartDigests": {"cetirun": "sha256:" + "c" * 64},
+                        "imageDigests": {"portal": "sha256:" + "d" * 64}}
+            portal = {"digest": "sha256:" + "d" * 64}
+            chart = {"path": str(source / "work/cetirun-0.2.1.tgz"), "dependencies": []}
+            with patch.object(subprocess, "check_output", side_effect=["", "d" * 40]), \
+                 patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout="d" * 40)), \
+                 patch.object(ARTIFACTS, "_image", side_effect=[operator, portal]), \
+                 patch.object(ARTIFACTS, "_chart", return_value=chart):
+                result = ARTIFACTS.resolve(source, source / "work", "v0.2.1")
+            self.assertEqual(result["images"]["portal"]["digest"], portal["digest"])
+
     def test_resolver_rejects_missing_or_incomplete_chart_receipt(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)
@@ -106,7 +165,7 @@ class DeploymentArtifactTests(unittest.TestCase):
                 with self.subTest(receipt=receipt), \
                      patch.object(subprocess, "check_output", side_effect=["", "d" * 40]), \
                      patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout="d" * 40)), \
-                     patch.object(ARTIFACTS, "_image", return_value={"chartDigests": receipt}), \
+                     patch.object(ARTIFACTS, "_image", return_value={"chartDigests": receipt, "imageDigests": {}}), \
                      patch.object(ARTIFACTS, "_chart") as chart_download:
                     with self.assertRaisesRegex(ARTIFACTS.ArtifactError, "complete chart digest receipt"):
                         ARTIFACTS.resolve(source, source / "work", "v0.2.1")
