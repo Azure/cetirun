@@ -265,6 +265,10 @@ and requalify them together. The managed project path in the Dockerfile is part
 of this pinned installation contract.
 The reviewed ACPX inputs include a Zod 4.6.6 override for
 [GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5).
+The image installs ACPX at the OpenClaw host version; changing only the seed
+does not upgrade the plugin. For the 2026.9.6 pair, a project override replaces
+`smol-toml@1.8.0` with `1.9.1`. Remove it when a qualified host and plugin
+upgrade no longer needs it.
 
 The native OpenClaw MVP reuses the protected renderer and the OpenClaw image
 that already exists. It does not add an alternative image, an Istio sidecar, or
