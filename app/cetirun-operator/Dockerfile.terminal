@@ -33,7 +33,7 @@ RUN case "${TARGETARCH}" in \
       "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.${terminal_arch}" -o /ttyd && \
     echo "${terminal_sha}  /ttyd" | sha256sum --check && chmod 755 /ttyd
 
-FROM mcr.microsoft.com/azurelinux/distroless/base:3.0@sha256:370fb2c55e7f0474fed019623cce6a8db65a4d70dedfca9219fc69d6c7627f89
+FROM mcr.microsoft.com/azurelinux/distroless/base:3.0@sha256:11ecd8f7cd1cad0e4fbb565ab98768f1a2ce35cb2730c867217baac011ae8645
 ARG VERSION
 ARG GIT_SHA
 LABEL org.opencontainers.image.source="https://github.com/Azure/CetiRun" \
