@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
@@ -124,6 +125,28 @@ func setAgentIdentityReady(instance *cetirunv1alpha1.Agent, identity *azure.Serv
 	status.CreationAttempted = false
 	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentIdentityReady,
 		metav1.ConditionTrue, "AgentIdentityReady", "Agent Identity is ready")
+}
+
+// Publish verification without exposing the tentative workload phase: the
+// Broker still serves the running Pod while Gateway or Helm is updating.
+func (r *AgentReconciler) persistVerifiedAgentIdentity(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
+	ready := meta.FindStatusCondition(instance.Status.Conditions, cetirunv1alpha1.ConditionAgentIdentityReady)
+	if ready == nil || ready.Status != metav1.ConditionTrue {
+		return fmt.Errorf("verified Agent Identity has no ready condition")
+	}
+	current, err := r.readAgentForStatusPatch(ctx, instance)
+	if err != nil {
+		return err
+	}
+	checkpoint := current.DeepCopy()
+	checkpoint.Status.AgentIdentity = instance.Status.AgentIdentity.DeepCopy()
+	meta.SetStatusCondition(&checkpoint.Status.Conditions, *ready)
+	if err := r.patchStatusFrom(ctx, current, checkpoint); err != nil {
+		return err
+	}
+	// Later reconciliation must retain its pending status, but use the new revision.
+	instance.ResourceVersion = checkpoint.ResourceVersion
+	return nil
 }
 
 func verifyAgentIdentityBinding(status *cetirunv1alpha1.AgentIdentityStatus, identity *azure.ServicePrincipal, blueprintClientID, displayName string) error {

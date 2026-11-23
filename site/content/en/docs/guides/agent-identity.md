@@ -49,7 +49,8 @@ turn it on only when you create the Agent, with
   find the `AgentIdentityReady` row. While the platform creates the identity,
   the page can show **Waiting for governance**. If the identity has a problem,
   the page shows **Identity not ready**. During an Agent upgrade, the identity
-  can already be ready while the runtime is still updating, even without a Team.
+  can already be ready while the runtime is still updating. For an Agent without
+  a Team, verifying its identity does not change the reported workload phase.
 
 ## Independent Azure access
 

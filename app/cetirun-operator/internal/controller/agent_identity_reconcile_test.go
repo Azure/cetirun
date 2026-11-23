@@ -91,7 +91,8 @@ func TestNoTeamAgentIdentityIsReadyDuringHelmUpgrade(t *testing.T) {
 			break
 		}
 	}
-	if agent.Status.AgentIdentity == nil || agent.Status.AgentIdentity.Phase != cetirunv1alpha1.AgentIdentityPhaseReady ||
+	if agent.Status.Phase != cetirunv1alpha1.PhaseReady || agent.Status.ObservedGeneration != agent.Generation ||
+		agent.Status.AgentIdentity == nil || agent.Status.AgentIdentity.Phase != cetirunv1alpha1.AgentIdentityPhaseReady ||
 		agent.Status.Policy != nil || directory.createCalls != 1 {
 		t.Fatal("expected a deployed no-Team Agent with an existing identity")
 	}
@@ -114,6 +115,9 @@ func TestNoTeamAgentIdentityIsReadyDuringHelmUpgrade(t *testing.T) {
 	f.chart.onInstall = func() {
 		// Read the persisted CR while Helm is on the stack, before any post-upgrade status write.
 		stored := f.agent(t)
+		if stored.Status.Phase != cetirunv1alpha1.PhaseReady {
+			t.Fatalf("identity verification changed the running workload's phase to %q during Helm upgrade", stored.Status.Phase)
+		}
 		identity := stored.Status.AgentIdentity
 		if stored.Status.ObservedGeneration == agent.Generation || identity == nil ||
 			identity.Phase != cetirunv1alpha1.AgentIdentityPhaseReady || identity.ObservedGeneration != agent.Generation ||
