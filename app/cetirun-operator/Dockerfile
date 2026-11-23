@@ -5,7 +5,7 @@ ARG VERSION=dev
 ARG GIT_SHA=unknown
 
 # Package the target Helm CLI using the shared tool lock.
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/azurelinux/base/core:3.0@sha256:bfb630450e9c3d7428d59f25ce6df95ba5634d664d96b06017aa56f87da5ec0e AS cetiadmin-tools
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/azurelinux/base/core:3.0@sha256:a333b3233076d8b47d63237760e7b36576c0fe47fbf670d5d3517d2fd6fe5030 AS cetiadmin-tools
 ARG TARGETARCH
 RUN tdnf install -y ca-certificates python3 && tdnf clean all
 COPY scripts/ci/install_tools.py scripts/ci/tools.json /tools/
