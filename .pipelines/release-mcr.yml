@@ -136,8 +136,6 @@ jobs:
       - bash: |
           set -euo pipefail
           export PATH="${HELM_BIN}:${PATH}"
-          package_dir="${AGENT_TEMPDIRECTORY}/cetirun-chart-packages"
-          mkdir -p "${package_dir}"
 
           bash scripts/cetirun-helm-lint.sh
           bash scripts/cetirun-helm-test.sh
@@ -145,11 +143,7 @@ jobs:
           bash scripts/cetirun-ai-gateway-helm-test.sh
           bash scripts/cetirun-agent-broker-helm-test.sh
 
-          # Local packaging only: embed public pull URLs, not backing ACR URLs.
-          # All image/chart pushes below still target the backing ACR for MCR sync.
-          REGISTRY=mcr.microsoft.com/aks/ai-runtime/cetirun VERSION="${RELEASE_VERSION}" \
-            python3 -B scripts/cetirun-release.py package-charts --package-dir "${package_dir}"
-        displayName: Lint, template, and package all charts
+        displayName: Lint and template all charts
         env:
           AGENT_TEMPDIRECTORY: $(Agent.TempDirectory)
           HELM_BIN: $(helmBin)
@@ -245,9 +239,6 @@ jobs:
             mkdir -p "${verify_dir}"
             trap 'rm -rf "${verify_dir}"' EXIT
 
-            for chart in "${chart_artifacts[@]}"; do
-              test -f "${package_dir}/${chart}-${RELEASE_VERSION}.tgz" || { echo "ERROR: missing chart package ${chart}" >&2; exit 1; }
-            done
             published_images=()
             # Promote every staged image before publishing charts that reference them.
             for artifact in "${image_artifacts[@]}"; do
@@ -263,6 +254,15 @@ jobs:
               fi
               published_images+=("${artifact}@${digest}")
             done
+
+            # Package only after promotion supplies immutable runtime identities.
+            # Embed public pull coordinates; pushes still use the backing ACR.
+            image_digest_file="${verify_dir}/release-image-digests.json"
+            python3 -c 'import json, sys; json.dump(dict(item.split("@", 1) for item in sys.argv[2:]), open(sys.argv[1], "w", encoding="utf-8"))' \
+              "${image_digest_file}" "${published_images[@]}"
+            REGISTRY=mcr.microsoft.com/aks/ai-runtime/cetirun VERSION="${RELEASE_VERSION}" \
+              RELEASE_IMAGE_DIGESTS_FILE="${image_digest_file}" \
+              python3 -B scripts/cetirun-release.py package-charts --package-dir "${package_dir}"
 
             chart_destination="oci://${registry}/${REPOSITORY_PREFIX}/helm"
             for chart in "${chart_artifacts[@]}"; do

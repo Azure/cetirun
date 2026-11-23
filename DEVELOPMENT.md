@@ -1153,6 +1153,12 @@ Other rules for checked-in files:
 
 ## Release and publication
 
+For manual deployment of an existing MCR release through GitHub Actions, see
+[Environment deployment pipeline](site/content/en/docs/operations/environment-pipeline.md).
+Its artifact and deployment regression suites are part of `make ci-test`, and
+the workflow is included in `make workflow-check`. The deployment workflow never
+builds or publishes release artifacts.
+
 This section is for maintainers. Contributors do not publish artifacts.
 
 ### Release steps
@@ -1279,6 +1285,10 @@ backing ACR, which synchronizes to MCR. The pipeline uses
 `REGISTRY=mcr.microsoft.com/...` only to package the charts with public pull
 coordinates. It stages and promotes images and pushes charts to the backing
 ACR. It promotes `latest` only after all versioned images and charts succeed.
+After promoting versioned images, it packages the charts with their collected
+digests through `RELEASE_IMAGE_DIGESTS_FILE`. The Agent chart locks OpenClaw,
+Hermes, Desktop, Terminal, and Memory images before publication. Earlier release
+charts are not rewritten; use a new version for this publication contract.
 It passes `ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true` to the shared driver, the
 same value as the local default. Only a manual run can set `forcePublish`.
 

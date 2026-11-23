@@ -5,8 +5,8 @@
 """Copy a Runtime Chart and lock its built-in runtime image digests.
 
 The source Chart is never modified. The resulting private copy retains the
-Chart identity and receives only paired OpenClaw/Hermes digest pins plus exact
-profile allow-list entries for the supplied registry prefix.
+Chart identity and receives exact built-in runtime digest pins plus profile
+allow-list entries for the supplied registry prefix.
 """
 
 import argparse
@@ -142,8 +142,37 @@ def lock_digest(path: Path, runtime: str, digest: str) -> None:
     path.write_text("".join(lines))
 
 
+def lock_memory_image(path: Path, registry: str, version: str, digest: str) -> None:
+    lines = path.read_text().splitlines(keepends=True)
+    start = next((i for i, value in enumerate(lines) if re.fullmatch(r"memoryContext:\s*\n?", value)), None)
+    if start is None:
+        fail(f"{path}: missing memoryContext values")
+    end = block_end(lines, start, 0)
+    line = next((i for i in range(start + 1, end) if re.fullmatch(r"  image:\s*.*\n?", lines[i])), None)
+    if line is None:
+        fail(f"{path}: missing memoryContext.image")
+    existing = lines[line].split(":", 1)[1].strip().strip("\"'")
+    if existing not in ("", f"{registry}/cetirun-memory-context:{version}@{digest}"):
+        fail(f"{path}: refusing to replace existing memoryContext.image")
+    lines[line] = f'  image: "{registry}/cetirun-memory-context:{version}@{digest}"\n'
+    path.write_text("".join(lines))
+
+
+def memory_image_value(path: Path) -> str:
+    lines = path.read_text().splitlines(keepends=True)
+    start = next((i for i, value in enumerate(lines) if re.fullmatch(r"memoryContext:\s*\n?", value)), None)
+    if start is None:
+        fail(f"{path}: missing memoryContext values")
+    end = block_end(lines, start, 0)
+    line = next((i for i in range(start + 1, end) if re.fullmatch(r"  image:\s*.*\n?", lines[i])), None)
+    if line is None:
+        fail(f"{path}: missing memoryContext.image")
+    return lines[line].split(":", 1)[1].strip().strip("\"'")
+
+
 def lock_chart(source: Path, output: Path, registry: str, version: str,
-               openclaw_digest: str, hermes_digest: str) -> dict[str, str]:
+               openclaw_digest: str, hermes_digest: str,
+               desktop_digest: str = "", terminal_digest: str = "", memory_digest: str = "") -> dict[str, str]:
     if not source.is_dir() or not (source / "Chart.yaml").is_file():
         fail(f"{source}: expected a Helm chart directory")
     if output.exists():
@@ -155,7 +184,13 @@ def lock_chart(source: Path, output: Path, registry: str, version: str,
         fail("registry must be a lowercase OCI registry hostname with an optional repository prefix")
     if not TAG.fullmatch(version) or version == "latest":
         fail("version must be a non-latest OCI image tag")
-    for name, digest in (("openclaw", openclaw_digest), ("hermes", hermes_digest)):
+    trio = (desktop_digest, terminal_digest, memory_digest)
+    if any(trio) and not all(trio):
+        fail("desktop, terminal and memory image digests must be supplied together")
+    for name, digest in (("openclaw", openclaw_digest), ("hermes", hermes_digest),
+                         ("desktop", desktop_digest), ("terminal", terminal_digest), ("memory", memory_digest)):
+        if not digest and name in ("desktop", "terminal", "memory"):
+            continue
         if not DIGEST.fullmatch(digest):
             fail(f"{name} image digest must be sha256 followed by 64 lowercase hexadecimal characters")
 
@@ -168,6 +203,15 @@ def lock_chart(source: Path, output: Path, registry: str, version: str,
         if existing not in ('""', "''", digest):
             fail(f"{source_values}: refusing to replace existing {runtime}.image.digest")
         parse_qualified_images(source / "agents" / runtime / "profile.yaml")
+    if all(trio):
+        for section, digest in (("desktop", desktop_digest), ("ttyd", terminal_digest)):
+            _, _, existing = digest_location(source_values, section)
+            if existing not in ('""', "''", digest):
+                fail(f"{source_values}: refusing to replace existing {section}.image.digest")
+        existing = memory_image_value(source_values)
+        expected = f"{registry}/cetirun-memory-context:{version}@{memory_digest}"
+        if existing not in ("", expected):
+            fail(f"{source_values}: refusing to replace existing memoryContext.image")
 
     # Keep the same source boundary as ordinary release packaging. Stale
     # dependency charts and Python caches are not inputs to a runtime lock.
@@ -176,11 +220,19 @@ def lock_chart(source: Path, output: Path, registry: str, version: str,
         lock_digest(output / "values.yaml", runtime, digest)
         write_profile(output / "agents" / runtime / "profile.yaml",
                       f"{registry}/{runtime}-gateway@{digest}")
-    lock_inputs = "\n".join((registry, version, openclaw_digest, hermes_digest)).encode()
+    if all(trio):
+        lock_digest(output / "values.yaml", "desktop", desktop_digest)
+        lock_digest(output / "values.yaml", "ttyd", terminal_digest)
+        lock_memory_image(output / "values.yaml", registry, version, memory_digest)
+    lock_values = (registry, version, openclaw_digest, hermes_digest, *trio) if all(trio) else (registry, version, openclaw_digest, hermes_digest)
+    lock_inputs = "\n".join(lock_values).encode()
     return {
         "hermesImage": f"{registry}/hermes-gateway@{hermes_digest}",
         "lockHash": hashlib.sha256(lock_inputs).hexdigest(),
         "openclawImage": f"{registry}/openclaw-gateway@{openclaw_digest}",
+        "desktopImage": f"{registry}/cetirun-desktop@{desktop_digest}" if desktop_digest else "",
+        "terminalImage": f"{registry}/cetirun-terminal@{terminal_digest}" if terminal_digest else "",
+        "memoryImage": f"{registry}/cetirun-memory-context@{memory_digest}" if memory_digest else "",
         "version": version,
     }
 
@@ -193,10 +245,14 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--version", required=True)
     parser.add_argument("--openclaw-image-digest", required=True)
     parser.add_argument("--hermes-image-digest", required=True)
+    parser.add_argument("--desktop-image-digest", default="")
+    parser.add_argument("--terminal-image-digest", default="")
+    parser.add_argument("--memory-image-digest", default="")
     args = parser.parse_args(argv)
     try:
         result = lock_chart(args.source_chart, args.output_chart, args.registry, args.version,
-                            args.openclaw_image_digest, args.hermes_image_digest)
+                            args.openclaw_image_digest, args.hermes_image_digest,
+                            args.desktop_image_digest, args.terminal_image_digest, args.memory_image_digest)
     except ValueError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2

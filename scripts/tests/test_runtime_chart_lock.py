@@ -13,6 +13,8 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import importlib.util
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -43,11 +45,16 @@ class RuntimeChartLockTests(unittest.TestCase):
         self.source_digest = tree_digest(self.source)
 
     def lock(self, output: Path, *, registry=REGISTRY, version=VERSION,
-             openclaw=OPENCLAW_DIGEST, hermes=HERMES_DIGEST):
+             openclaw=OPENCLAW_DIGEST, hermes=HERMES_DIGEST,
+             desktop="", terminal="", memory=""):
+        optional = []
+        for name, value in (("desktop", desktop), ("terminal", terminal), ("memory", memory)):
+            if value:
+                optional.extend((f"--{name}-image-digest", value))
         return subprocess.run(
             [sys.executable, "-B", str(HELPER), "--source-chart", str(self.source),
              "--output-chart", str(output), "--registry", registry, "--version", version,
-             "--openclaw-image-digest", openclaw, "--hermes-image-digest", hermes],
+             "--openclaw-image-digest", openclaw, "--hermes-image-digest", hermes, *optional],
             capture_output=True, text=True, timeout=20,
         )
 
@@ -167,6 +174,79 @@ class RuntimeChartLockTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("must be supplied together", result.stderr)
         self.assertNotIn("Linting Helm chart", result.stdout)
+
+    def test_locks_complete_desktop_terminal_and_memory_set(self):
+        digests = {name: "sha256:" + letter * 64 for name, letter in
+                   (("desktop", "c"), ("terminal", "d"), ("memory", "e"))}
+        output = self.work / "locked-complete"
+        result = self.lock(output, **digests)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values = (output / "values.yaml").read_text()
+        self.assertIn(f"digest: {digests['desktop']}\n", values)
+        self.assertIn(f"digest: {digests['terminal']}\n", values)
+        self.assertIn(f"image: \"{REGISTRY}/cetirun-memory-context:{VERSION}@{digests['memory']}\"", values)
+
+    def test_rejects_partial_complete_runtime_set(self):
+        result = self.lock(self.work / "partial", desktop="sha256:" + "c" * 64)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must be supplied together", result.stderr)
+
+    def test_digest_file_requires_complete_inventory(self):
+        spec = importlib.util.spec_from_file_location("cetirun_release_inputs", ROOT / "scripts/cetirun-release.py")
+        release = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(release)
+        path = self.work / "digests.json"
+        path.write_text(json.dumps({"openclaw-gateway": OPENCLAW_DIGEST}))
+        with patch.dict(os.environ, {"RELEASE_IMAGE_DIGESTS_FILE": str(path),
+                                     "OPENCLAW_IMAGE_DIGEST": "", "HERMES_IMAGE_DIGEST": ""}, clear=False):
+            with self.assertRaisesRegex(ValueError, "every release image"):
+                release.runtime_chart_lock_inputs()
+
+    def test_digest_file_rejects_duplicate_json_keys(self):
+        spec = importlib.util.spec_from_file_location("cetirun_release_duplicates", ROOT / "scripts/cetirun-release.py")
+        release = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(release)
+        path = self.work / "duplicate-digests.json"
+        path.write_text('{"openclaw-gateway":"' + OPENCLAW_DIGEST + '","openclaw-gateway":"' + OPENCLAW_DIGEST + '"}')
+        with patch.dict(os.environ, {"RELEASE_IMAGE_DIGESTS_FILE": str(path),
+                                     "OPENCLAW_IMAGE_DIGEST": "", "HERMES_IMAGE_DIGEST": ""}, clear=False):
+            with self.assertRaisesRegex(ValueError, "duplicate digest entry"):
+                release.runtime_chart_lock_inputs()
+
+    def test_digest_file_rejects_invalid_digest_and_conflicting_paired_inputs(self):
+        spec = importlib.util.spec_from_file_location("cetirun_release_conflicts", ROOT / "scripts/cetirun-release.py")
+        release = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(release)
+        expected = {entry["name"]: OPENCLAW_DIGEST for entry in release.inventory()["images"]}
+        path = self.work / "conflicting-digests.json"
+        for invalid, paired in ((True, False), (False, True)):
+            values = dict(expected)
+            if invalid:
+                values["cetirun-desktop"] = "latest"
+            path.write_text(json.dumps(values))
+            with self.subTest(invalid=invalid, paired=paired), patch.dict(os.environ, {
+                    "RELEASE_IMAGE_DIGESTS_FILE": str(path),
+                    "OPENCLAW_IMAGE_DIGEST": HERMES_DIGEST if paired else "",
+                    "HERMES_IMAGE_DIGEST": HERMES_DIGEST if paired else ""}):
+                with self.assertRaisesRegex(ValueError, "invalid image digest|conflicts with"):
+                    release.runtime_chart_lock_inputs()
+
+    def test_conflicting_helper_pin_leaves_no_partial_output(self):
+        values = self.source / "values.yaml"
+        content = values.read_text()
+        start = content.index("desktop:\n")
+        content = content[:start] + content[start:].replace('digest: ""', 'digest: sha256:' + "f" * 64, 1)
+        values.write_text(content)
+        source_digest = tree_digest(self.source)
+        output = self.work / "invalid-helper-pin"
+        result = self.lock(output, desktop="sha256:" + "c" * 64,
+                           terminal="sha256:" + "d" * 64, memory="sha256:" + "e" * 64)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("refusing to replace existing desktop.image.digest", result.stderr)
+        self.assertFalse(output.exists())
+        self.assertEqual(tree_digest(self.source), source_digest)
 
 
 if __name__ == "__main__":

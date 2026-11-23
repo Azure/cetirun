@@ -1,0 +1,121 @@
+name: Deploy CetiRun environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub Environment containing the target deployment configuration
+        type: environment
+        required: true
+      release_tag:
+        description: Published MCR release tag (vX.Y.Z)
+        type: string
+        required: true
+      plan_only:
+        description: Read-only preflight and deployment preview
+        type: boolean
+        default: true
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cetirun-deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout deployment tooling from the dispatched default-branch commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: tooling
+
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          if not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", os.environ["RELEASE_TAG"]):
+              raise SystemExit("release_tag must be vX.Y.Z")
+          PY
+
+      - name: Checkout release metadata (never execute its scripts)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release_tag }}
+          persist-credentials: false
+          path: release-source
+
+      - name: Install pinned deployment tools
+        working-directory: tooling
+        run: |
+          python3 -m venv "$RUNNER_TEMP/cetirun-venv"
+          "$RUNNER_TEMP/cetirun-venv/bin/pip" install --disable-pip-version-check PyYAML==6.0.3
+          python3 scripts/ci/install_tools.py --bin-dir "$RUNNER_TEMP/cetirun-tools" helm envtest
+          echo "$RUNNER_TEMP/cetirun-tools" >> "$GITHUB_PATH"
+
+      - name: Validate deployment helpers offline
+        working-directory: tooling
+        run: |
+          "$RUNNER_TEMP/cetirun-venv/bin/python" -B -m unittest \
+            scripts.tests.test_deployment_artifacts \
+            scripts.tests.test_published_deployment \
+            scripts.tests.test_deploy_environment
+
+      - name: Preflight and optionally deploy
+        env:
+          DEPLOY_CONFIG_YAML: ${{ secrets.DEPLOY_CONFIG_YAML }}
+          E2E_KUBE_CONFIG: ${{ secrets.E2E_KUBE_CONFIG }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          PLAN_ONLY: ${{ inputs.plan_only }}
+          HELM_PLUGINS: ${{ runner.temp }}/cetirun-empty-plugins
+          HELM_REGISTRY_CONFIG: ${{ runner.temp }}/cetirun-registry.json
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$HELM_PLUGINS" "$RUNNER_TEMP/cetirun-report"
+          apply_args=()
+          if [ "$PLAN_ONLY" = false ]; then apply_args+=(--apply); fi
+          "$RUNNER_TEMP/cetirun-venv/bin/python" -B tooling/scripts/deploy_environment.py \
+            --source "$GITHUB_WORKSPACE/release-source" \
+            --release-tag "$RELEASE_TAG" \
+            --work "$RUNNER_TEMP/cetirun-deployment-private" \
+            --report "$RUNNER_TEMP/cetirun-report/report.json" \
+            "${apply_args[@]}"
+
+      - name: Write sanitized deployment summary
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/cetirun-report/report.json" ]; then
+            {
+              printf '```json\n'
+              cat "$RUNNER_TEMP/cetirun-report/report.json"
+              printf '\n```\n'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf 'Deployment did not reach preflight. No deployment command was run.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload only the sanitized report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: deployment-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cetirun-report/report.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Remove private deployment inputs and diagnostics
+        if: always()
+        run: |
+          rm -rf -- "$RUNNER_TEMP/cetirun-deployment-private" "$RUNNER_TEMP/cetirun-empty-plugins"
+          rm -f -- "$RUNNER_TEMP/cetirun-registry.json"
