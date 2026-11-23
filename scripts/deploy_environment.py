@@ -218,7 +218,7 @@ def capture(deployment, *, require_deployed=True):
             meta = namespace.get("metadata", {})
             owners = meta.get("ownerReferences", [])
             annotations = meta.get("annotations", {})
-            owner_match = any(owner.get("apiVersion", "").startswith("cetirun.microsoft.com/") and
+            owner_match = any(owner.get("apiVersion") == "cetirun.microsoft.com/v1alpha1" and
                               owner.get("kind") == "Agent" and owner.get("uid") in agent_uids for owner in owners)
             annotation_match = annotations.get("cetirun.microsoft.com/agent-uid") in agent_uids
             # An annotation is accepted for legacy custom runtimes only when
