@@ -21,7 +21,7 @@ DIGEST = "sha256:" + "a" * 64
 CHART = f"app/{COMPONENT}/chart"
 BUILD_SCRIPT = f"scripts/{COMPONENT}-docker-build.sh"
 PREFLIGHT = "Authenticate and preflight MCR release artifacts"
-PACKAGE = "Lint, template, and package all charts"
+LINT = "Lint and template all charts"
 BUILD = "Build, push, and verify Linux AMD64 release images"
 PUBLISH = "Publish charts and promote latest MCR images"
 CLEANUP = "Clean staging MCR image repositories"
@@ -36,10 +36,17 @@ with open(os.environ["MCP_RELEASE_LOG"], "a") as log:
 component, version = "cetirun-connections-mcp", os.environ["RELEASE_VERSION"]
 if tool == "python3" and args[:1] == ["-B"]:
     args = args[1:]
+if tool == "python3" and args[:1] == ["-c"]:
+    # Execute the pipeline's inline digest-file writer with real Python. Azure,
+    # Docker, Helm and provider verification remain intercepted below.
+    sys.exit(subprocess.run([sys.executable, *args], env=os.environ).returncode)
 if tool == "python3" and args[:1] == ["scripts/cetirun-release.py"]:
     if args[1] == "publish-images":
         with open(os.environ["MCP_RELEASE_LOG"] + ".driver-env", "a") as output:
             output.write(json.dumps({"license": os.environ.get("ACCEPT_VSCODE_SERVER_LICENSE_TERMS")}) + "\n")
+    if args[1] == "package-charts":
+        digests = json.loads(pathlib.Path(os.environ["RELEASE_IMAGE_DIGESTS_FILE"]).read_text())
+        pathlib.Path(os.environ["MCP_RELEASE_LOG"] + ".digests").write_text(json.dumps(digests))
     sys.exit(subprocess.run([sys.executable, *args], env=os.environ).returncode)
 if tool == "bash" and args[0].endswith("-docker-build.sh") and os.environ.get("IMAGE_NAME"):
     marker = pathlib.Path(os.environ["MCP_RELEASE_LOG"] + ".published")
@@ -52,7 +59,7 @@ if tool == "az" and args[:3] == ["acr", "repository", "show-tags"]:
     if repository == os.environ.get("MCP_EXISTING_REPOSITORY"):
         print(version)
 elif tool == "az" and args[:3] == ["acr", "repository", "show"]:
-    print("sha256:" + "a" * 64)
+    print(os.environ.get("MCP_IMAGE_DIGEST", "sha256:" + "a" * 64))
 elif tool == "helm" and args[0] == "package":
     name = next(line.split(":", 1)[1].strip() for line in
                 (pathlib.Path(args[1]) / "Chart.yaml").read_text().splitlines()
@@ -114,10 +121,18 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
             shutil.copyfile(source.parent / "values.yaml", target.parent / "values.yaml")
         (self.root / "scripts").mkdir()
         inventory = json.loads((ROOT / "scripts/release-artifacts.json").read_text())
-        for path in [entry["script"] for entry in inventory["images"]] + ["scripts/release-artifacts.json", "scripts/cetirun-release.py", "scripts/cetirun-release-metadata.sh"]:
+        for path in [entry["script"] for entry in inventory["images"]] + [
+            "scripts/release-artifacts.json", "scripts/cetirun-release.py",
+            "scripts/cetirun-release-metadata.sh", "scripts/cetirun-runtime-chart-lock.py",
+        ]:
             shutil.copy2(ROOT / path, self.root / path)
+        for runtime in ("openclaw", "hermes"):
+            relative = Path("app/cetirun-chart/agents") / runtime / "profile.yaml"
+            (self.root / relative).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / relative, self.root / relative)
         # Use the real transformation helpers. Full source consistency is
-        # exercised separately; this fixture contains only chart metadata.
+        # exercised separately; this fixture uses minimal metadata, values and
+        # runtime profiles rather than the complete chart source.
         (self.root / "scripts/cetirun-version.py").write_text(
             (ROOT / "scripts/cetirun-version.py").read_text().partition('if __name__ == "__main__":')[0])
         subprocess.run([shutil.which("git"), "-c", "init.defaultBranch=main", "init", "--quiet"], cwd=self.root, check=True)
@@ -169,7 +184,11 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
         self.assertIn("match tag version", result.stderr)
 
     def test_mcp_follows_the_complete_release_lifecycle(self):
-        for name in ("Validate all chart versions", PACKAGE, PREFLIGHT, BUILD, PUBLISH, CLEANUP):
+        for name in ("Validate all chart versions", LINT, PREFLIGHT, BUILD):
+            self.run_step(name)
+        self.assertFalse(self.archive.exists(), "charts must wait for promoted image digests")
+        self.assertFalse(any(c[:2] == ["helm", "package"] for c in self.commands()))
+        for name in (PUBLISH, CLEANUP):
             self.run_step(name)
         commands = self.commands()
         self.assertTrue(self.archive.is_file(), "MCP chart was not packaged")
@@ -182,6 +201,17 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
         # on the backing ACR, including all inventory images and chart pushes.
         built = Path(str(self.log) + ".published").read_text().splitlines()
         inventory = json.loads((ROOT / "scripts/release-artifacts.json").read_text())
+        digests = json.loads(Path(str(self.log) + ".digests").read_text())
+        self.assertEqual(digests, {entry["name"]: DIGEST for entry in inventory["images"]})
+        runtime_values = yaml.safe_load(next(item["values"] for item in packages if item["name"] == "cetirun"))
+        for runtime in ("openclaw", "hermes", "desktop", "ttyd"):
+            self.assertEqual(runtime_values[runtime]["image"]["digest"], DIGEST)
+        self.assertEqual(runtime_values["memoryContext"]["image"],
+                         f"mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-memory-context:{VERSION}@{DIGEST}")
+        first_package = next(i for i, c in enumerate(commands) if c[:2] == ["helm", "package"])
+        digest_reads = [i for i, c in enumerate(commands) if c[:4] == ["az", "acr", "repository", "show"]]
+        self.assertEqual(len(digest_reads), len(inventory["images"]))
+        self.assertLess(max(digest_reads), first_package)
         self.assertEqual(set(built), {
             f"synthetic.azurecr.io/{self.env['REPOSITORY_PREFIX']}/staging/42/{entry['name']}:{VERSION}"
             for entry in inventory["images"]
@@ -250,23 +280,36 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
                 self.assertIn(f"{repository}:{VERSION} already exists", result.stderr)
 
     def test_missing_mcp_package_fails_packaging(self):
+        for name in (LINT, PREFLIGHT, BUILD):
+            self.run_step(name)
         self.env["MCP_SKIP_PACKAGE"] = "1"
-        self.run_step(PACKAGE, success=False)
+        result = self.run_step(PUBLISH, success=False)
+        self.assertIn(f"Missing packaged chart: {COMPONENT}", result.stderr)
+        self.assertFalse(any(c[:2] == ["helm", "push"] for c in self.commands()))
+        self.assertFalse(any(argument.endswith(":latest")
+                             for command in self.commands() for argument in command))
 
-    def test_missing_package_or_failed_mcr_verification_blocks_latest(self):
-        self.run_step(PACKAGE)
+    def test_failed_mcr_verification_blocks_latest(self):
+        for name in (LINT, PREFLIGHT, BUILD):
+            self.run_step(name)
+        self.env["MCP_FAIL_VERIFY"] = "1"
+        self.run_step(PUBLISH, success=False)
         self.assertTrue(self.archive.is_file())
-        for failure in ("package", "verification"):
-            with self.subTest(failure=failure):
-                self.log.write_text("")
-                if failure == "package":
-                    self.archive.unlink()
-                else:
-                    self.archive.touch()
-                    self.env["MCP_FAIL_VERIFY"] = "1"
-                self.run_step(PUBLISH, success=False)
-                self.assertFalse(any(argument.endswith(":latest")
-                                     for command in self.commands() for argument in command))
+        self.assertIn(["python3", "scripts/verify-mcr-image.py", "--image",
+                       f"mcr.microsoft.com/aks/ai-runtime/cetirun/{COMPONENT}:{VERSION}", "--digest", DIGEST], self.commands())
+        self.assertFalse(any(argument.endswith(":latest")
+                             for command in self.commands() for argument in command))
+
+    def test_invalid_promoted_digest_prevents_packaging_and_latest(self):
+        for name in (LINT, PREFLIGHT, BUILD):
+            self.run_step(name)
+        self.env["MCP_IMAGE_DIGEST"] = "invalid"
+        result = self.run_step(PUBLISH, success=False)
+        self.assertIn("invalid digest", result.stderr)
+        commands = self.commands()
+        self.assertFalse(any(c[:2] in (["helm", "package"], ["helm", "push"]) for c in commands))
+        self.assertFalse(any(argument.endswith(":latest")
+                             for command in commands for argument in command))
 
 
 if __name__ == "__main__":
