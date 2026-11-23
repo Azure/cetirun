@@ -30,6 +30,7 @@ _MAX_MANIFEST = 2 * 1024 * 1024
 _MAX_CONFIG = 16 * 1024 * 1024
 _MAX_CHART = 100 * 1024 * 1024
 _MAX_UNCOMPRESSED_CHART = 400 * 1024 * 1024
+CHART_DIGEST_LABEL = "io.cetirun.release.chart-digests"
 
 
 class ArtifactError(ValueError):
@@ -142,10 +143,21 @@ def _image(repository, version, source_sha):
         raise ArtifactError(f"{repository}:{version} revision label does not match the selected source")
     if declared_version != version:
         raise ArtifactError(f"{repository}:{version} version label does not match the release")
+    chart_digests = None
+    if CHART_DIGEST_LABEL in labels:
+        try:
+            chart_digests = json.loads(labels[CHART_DIGEST_LABEL])
+        except (ValueError, TypeError):
+            raise ArtifactError("image chart digest receipt is not valid JSON") from None
+        if (not isinstance(chart_digests, dict) or not chart_digests or
+                any(not _NAME.fullmatch(name) or not isinstance(pin, str) or not _DIGEST.fullmatch(pin)
+                    for name, pin in chart_digests.items())):
+            raise ArtifactError("image chart digest receipt is invalid")
     return {"reference": f"{REGISTRY}/{repository}:{version}@{digest}", "digest": digest,
             "platformDigest": platform_digest, "configDigest": config_digest,
             "revision": declared_sha or None,
-            "revisionVerified": bool(declared_sha), "versionVerified": bool(declared_version)}
+            "revisionVerified": bool(declared_sha), "versionVerified": bool(declared_version),
+            "chartDigests": chart_digests}
 
 
 def _safe_chart_members(path):
@@ -171,7 +183,7 @@ def _safe_chart_members(path):
         raise ArtifactError(f"invalid chart archive: {path.name}") from exc
 
 
-def _chart(repository, version, work):
+def _chart(repository, version, work, expected_archive_digest):
     digest, manifest, _ = _manifest(repository, version, "chart")
     chart_config = manifest.get("config", {})
     _descriptor(chart_config, f"{repository} chart config")
@@ -182,6 +194,8 @@ def _chart(repository, version, work):
         raise ArtifactError(f"{repository}:{version} does not contain exactly one Helm chart layer")
     layer = layers[0]
     _descriptor(layer, f"{repository} chart layer")
+    if layer.get("digest") != expected_archive_digest:
+        raise ArtifactError(f"chart archive differs from the source-verified release receipt: {repository}")
     if not _DIGEST.fullmatch(layer.get("digest", "")):
         raise ArtifactError(f"{repository}:{version} has no valid chart layer digest")
     _, body = _request(f"https://{REGISTRY}/v2/{repository}/blobs/{layer['digest']}",
@@ -295,10 +309,16 @@ def resolve(source: Path, work: Path, release_tag: str):
         except ArtifactError as error:
             error.artifact, error.artifact_kind = entry["name"], "image"
             raise
+    # This receipt is part of the Operator image config whose SHA256, source
+    # revision and version were checked above. A tag replacement or partial MCR
+    # synchronization cannot substitute an older chart with the same version.
+    expected_chart_digests = images.get("cetirun-operator", {}).get("chartDigests")
+    if not isinstance(expected_chart_digests, dict) or set(expected_chart_digests) != {entry["name"] for entry in data["charts"]}:
+        raise ArtifactError("source-verified Operator image is missing the complete chart digest receipt")
     charts = {}
     for entry in data["charts"]:
         try:
-            charts[entry["name"]] = _chart(f"{PREFIX}/helm/{entry['name']}", tag, work)
+            charts[entry["name"]] = _chart(f"{PREFIX}/helm/{entry['name']}", tag, work, expected_chart_digests[entry["name"]])
         except ArtifactError as error:
             error.artifact, error.artifact_kind = entry["name"], "chart"
             raise

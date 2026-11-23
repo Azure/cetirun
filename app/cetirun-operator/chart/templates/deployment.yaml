@@ -55,6 +55,9 @@ spec:
             - --leader-elect={{ .Values.leaderElection }}
             - --chart-repo-url={{ include "cetirun-operator.chartRepoURL" . }}
             - --chart-version={{ include "cetirun-operator.chartVersion" . }}
+            {{- if .Values.cetirun.chart.digest }}
+            - --chart-digest={{ .Values.cetirun.chart.digest }}
+            {{- end }}
             - --domain-suffix={{ .Values.domainSuffix }}
             - {{ printf "--istio-gateway=%s" .Values.istioGateway | quote }}
             - {{ printf "--default-model=%s" .Values.cetirun.defaultModel | quote }}

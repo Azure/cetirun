@@ -43,22 +43,74 @@ class DeploymentArtifactTests(unittest.TestCase):
             (source / "scripts").mkdir()
             (source / "app/cetirun-chart").mkdir(parents=True)
             (source / "app/cetirun-chart/Chart.yaml").write_text("version: 0.2.1\n")
-            inventory = {"schemaVersion": 1, "images": [{"name": "one"}],
+            inventory = {"schemaVersion": 1, "images": [{"name": "cetirun-operator"}],
                          "charts": [{"name": "chart", "path": "app/cetirun-chart"}]}
             (source / "scripts/release-artifacts.json").write_text(json.dumps(inventory))
             chart_file = Path(directory) / "chart-0.2.1.tgz"
             chart_file.write_bytes(b"immutable chart")
             image = {"reference": "mcr.example/one:0.2.1@sha256:" + "a" * 64,
                      "digest": "sha256:" + "a" * 64, "platformDigest": "sha256:" + "b" * 64,
-                     "configDigest": "sha256:" + "c" * 64, "revision": None}
+                     "configDigest": "sha256:" + "c" * 64, "revision": "d" * 40,
+                     "chartDigests": {"chart": "sha256:" + "e" * 64}}
             with patch.object(subprocess, "check_output", side_effect=["", ("d" * 40) + "\n"]), \
                  patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout=("d" * 40) + "\n")), \
                  patch.object(ARTIFACTS, "_image", return_value=image), \
-                 patch.object(ARTIFACTS, "_chart", return_value={"path": str(chart_file), "digest": "sha256:" + "d" * 64, "sha256": "sha256:" + "e" * 64}):
+                 patch.object(ARTIFACTS, "_chart", return_value={"path": str(chart_file), "digest": "sha256:" + "d" * 64, "sha256": "sha256:" + "e" * 64}) as chart_download:
                 result = ARTIFACTS.resolve(source, Path(directory) / "work", "v0.2.1")
+                chart_download.assert_called_once_with(ARTIFACTS.PREFIX + "/helm/chart", "0.2.1",
+                                                       Path(directory) / "work", "sha256:" + "e" * 64)
             self.assertEqual(result["sourceSHA"], "d" * 40)
             self.assertEqual(result["charts"]["chart"]["path"], str(chart_file))
             self.assertEqual(result["version"], "0.2.1")
+
+    def test_receipt_is_read_from_source_verified_image_config(self):
+        receipt = {"cetirun-platform": "sha256:" + "e" * 64}
+        for value in (json.dumps(receipt), "not-json", "[]", '{"chart":"not-a-digest"}'):
+            labels = {"org.opencontainers.image.version": "0.2.1", "org.opencontainers.image.revision": "d" * 40,
+                      ARTIFACTS.CHART_DIGEST_LABEL: value}
+            config = json.dumps({"os": "linux", "architecture": "amd64", "config": {"Labels": labels}}).encode()
+            config_digest = "sha256:" + hashlib.sha256(config).hexdigest()
+            manifest = {"config": {"digest": config_digest, "size": len(config), "mediaType": "application/vnd.oci.image.config.v1+json"}}
+            with self.subTest(value=value), patch.object(ARTIFACTS, "_manifest", return_value=("sha256:" + "a" * 64, manifest, b"{}")), \
+                 patch.object(ARTIFACTS, "_request", return_value=({}, config)):
+                if value == json.dumps(receipt):
+                    result = ARTIFACTS._image("repo/cetirun-operator", "0.2.1", "d" * 40)
+                    self.assertEqual(result["chartDigests"], receipt)
+                    self.assertEqual(result["configDigest"], config_digest)
+                else:
+                    with self.assertRaisesRegex(ARTIFACTS.ArtifactError, "chart digest receipt"):
+                        ARTIFACTS._image("repo/cetirun-operator", "0.2.1", "d" * 40)
+
+    def test_same_version_chart_replacement_fails_before_download(self):
+        manifest = {"config": {"digest": "sha256:" + "a" * 64, "size": 2,
+                               "mediaType": "application/vnd.cncf.helm.config.v1+json"},
+                    "layers": [{"digest": "sha256:" + "b" * 64, "size": 100,
+                                "mediaType": "application/vnd.cncf.helm.chart.content.v1.tar+gzip"}]}
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.object(ARTIFACTS, "_manifest", return_value=("sha256:" + "c" * 64, manifest, b"{}")), \
+             patch.object(ARTIFACTS, "_request") as fetch:
+            with self.assertRaisesRegex(ARTIFACTS.ArtifactError, "differs from the source-verified"):
+                ARTIFACTS._chart("repo/cetirun-platform", "0.2.1", Path(temporary), "sha256:" + "d" * 64)
+            fetch.assert_not_called()
+
+    def test_resolver_rejects_missing_or_incomplete_chart_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "scripts").mkdir()
+            (source / "app/cetirun-chart").mkdir(parents=True)
+            (source / "app/cetirun-chart/Chart.yaml").write_text("version: 0.2.1\n")
+            (source / "scripts/release-artifacts.json").write_text(json.dumps({
+                "schemaVersion": 1, "images": [{"name": "cetirun-operator"}],
+                "charts": [{"name": "cetirun", "path": "app/cetirun-chart"}]}))
+            for receipt in (None, {}, {"other": "sha256:" + "a" * 64}):
+                with self.subTest(receipt=receipt), \
+                     patch.object(subprocess, "check_output", side_effect=["", "d" * 40]), \
+                     patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout="d" * 40)), \
+                     patch.object(ARTIFACTS, "_image", return_value={"chartDigests": receipt}), \
+                     patch.object(ARTIFACTS, "_chart") as chart_download:
+                    with self.assertRaisesRegex(ARTIFACTS.ArtifactError, "complete chart digest receipt"):
+                        ARTIFACTS.resolve(source, source / "work", "v0.2.1")
+                    chart_download.assert_not_called()
 
     def test_strict_v_prefix(self):
         with tempfile.TemporaryDirectory() as directory:

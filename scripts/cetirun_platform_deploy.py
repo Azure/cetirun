@@ -759,6 +759,30 @@ def _pin_published_images(value, images):
     return value
 
 
+def _repository_digest(reference):
+    """Return an image's full repository and digest, ignoring an optional tag."""
+    if not isinstance(reference, str) or "@" not in reference:
+        return None
+    repository, digest = reference.rsplit("@", 1)
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        return None
+    last = repository.rsplit("/", 1)[-1]
+    if ":" in last:
+        repository = repository.rsplit(":", 1)[0]
+    return repository, digest
+
+
+def _image_repository(reference):
+    """Return an image repository after removing an optional tag or digest."""
+    if not isinstance(reference, str) or not reference.strip() or any(char.isspace() for char in reference):
+        return None
+    repository = reference.split("@", 1)[0]
+    last = repository.rsplit("/", 1)[-1]
+    if ":" in last:
+        repository = repository.rsplit(":", 1)[0]
+    return repository
+
+
 def configuration(path, *, domain=None, registry=None, version=None, coordinate_origins=None,
                   chart_roots=None, published_artifacts=None):
     config = copy.deepcopy(path) if isinstance(path, dict) else yaml_file(path)
@@ -943,6 +967,9 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
         for field, value in fields.items():
             supplied = get_value(config[name].get("values", {}), field)
             if field == "global.memoryContext.image" and supplied:
+                expected_repository = f"{registry}/cetirun-memory-context"
+                if published_artifacts and _image_repository(supplied) != expected_repository:
+                    raise ValueError("global.memoryContext.image must use the published cetirun-memory-context repository")
                 value = supplied
             elif supplied is not None and supplied != value:
                 raise ValueError(f"{name}.values.{field} conflicts with the complete deployment inputs")
@@ -1055,19 +1082,33 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
         values["istio"]["gateway"]["includeWildcardHost"] = False
     config["_source"] = source
     if published_artifacts:
+        runtime_digest = published_artifacts.get("charts", {}).get("cetirun", {}).get("digest")
+        if not isinstance(runtime_digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", runtime_digest):
+            raise ValueError("published runtime chart has no immutable manifest digest")
+        supplied_digest = get_value(config["platform"].get("values", {}), "cetirun-operator.cetirun.chart.digest")
+        if supplied_digest not in (None, "", runtime_digest):
+            raise ValueError("runtime chart digest override conflicts with the artifact lock")
+        set_value(values["platform"], "cetirun-operator.cetirun.chart.digest", runtime_digest)
         images = published_artifacts.get("images", {})
         if not isinstance(images, dict) or not images:
             raise ValueError("published artifact lock has no images")
         approved = get_value(values["platform"], "cetirun-operator.customRuntime.approvedImages")
+        original_approved = copy.deepcopy(approved) if isinstance(approved, list) else None
         if isinstance(approved, list):
             for supplied in approved:
                 if not isinstance(supplied, str) or "@sha256:" not in supplied:
                     raise ValueError("published custom runtime images must be qualified by digest")
                 basename = supplied.rsplit("/", 1)[-1].split("@", 1)[0].split(":", 1)[0]
                 locked = images.get(basename)
-                if locked and supplied.startswith(published_artifacts["registry"] + "/") and supplied != locked.get("reference"):
-                    raise ValueError(f"custom runtime image {basename} conflicts with the published artifact lock")
+                if locked and supplied.startswith(published_artifacts["registry"] + "/"):
+                    if _repository_digest(supplied) != _repository_digest(locked.get("reference")):
+                        raise ValueError(f"custom runtime image {basename} conflicts with the published artifact lock")
         values = _pin_published_images(values, images)
+        # Preserve the approved image spelling supplied by the environment. The
+        # repository and digest were checked above; an optional tag is not part
+        # of the approval identity and must not be invented here.
+        if original_approved is not None:
+            set_value(values, "platform.cetirun-operator.customRuntime.approvedImages", original_approved)
     return config, values
 
 
@@ -1091,6 +1132,8 @@ def validate_excluded_images(config):
     excluded = set(config["release"].get("excludeImages", []))
     references = copy.deepcopy(config)
     references["release"].pop("excludeImages", None)
+    # This is availability metadata, not a configured image consumer.
+    references.pop("_publishedInventory", None)
     for name in excluded:
         if image_references(references, name):
             raise ValueError(f"release.excludeImages excludes image still referenced by the deployment: {name}")
@@ -1113,6 +1156,10 @@ class Deployment:
         # Only immutable references can reuse a successful registry inspection.
         # Tags and chart versions are mutable and are checked on every preflight.
         self.verified_image_digests = set()
+        # Set by the published-environment coordinator immediately before an
+        # upgrade. The post-renderer checks this revision after Helm has
+        # rendered the chart and before Helm writes the pending revision.
+        self.expected_release_revision = None
 
     def run(self, command, *, env=None, input_text=None, allowed_exits=()):
         if env is None and self.config["target"].get("kubeconfig"):
@@ -2119,8 +2166,22 @@ class Deployment:
         timeout = "10m"
         if name == "platform":
             timeout = str(max(600, self.values["platform"]["cetirun-operator"]["cetiadmin"]["hookTimeoutSeconds"] + 60)) + "s"
-        args = ["upgrade", "--install", section["release"], str(self.charts[name]), "--namespace", section["namespace"],
+        args = ["upgrade"]
+        # Published deployments only target the three pre-existing releases.
+        # Omitting --install prevents a missing release from becoming an
+        # unexpected bootstrap during an upgrade. Source-based make deploy
+        # retains its existing bootstrap behavior.
+        if not self.published_artifacts:
+            args.append("--install")
+        args += [section["release"], str(self.charts[name]), "--namespace", section["namespace"],
                 "--values", str(self.files[values or name]), "--timeout", timeout]
+        if self.published_artifacts and self.expected_release_revision is not None:
+            guard = ROOT / "scripts" / "helm_revision_guard.py"
+            args += ["--post-renderer", str(guard)]
+            guard_args = ["--expected-revision", str(self.expected_release_revision), "--release", section["release"],
+                          "--namespace", section["namespace"], "--context", self.config["target"]["context"]]
+            for argument in guard_args:
+                args.append("--post-renderer-args=" + argument)
         if name == "istio" and section.get("tlsMode") == "retain":
             args.append("--reuse-values")
         else:

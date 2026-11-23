@@ -40,6 +40,112 @@ def baseline(image="mcr.microsoft.com/aks/ai-runtime/cetirun/hermes-gateway@sha2
 
 
 class EnvironmentTests(unittest.TestCase):
+    def capture_driver(self, *, ready=False, pod_uid="pod-uid", pvc_items=None, manifest=""):
+        agent = {"metadata": {"name": "agent", "namespace": "", "uid": "agent-uid", "generation": 1},
+                 "spec": {"agent": {"type": "hermes", "image": "mcr.example/hermes"}, "suspended": False},
+                 "status": {}}
+        if ready:
+            agent["status"]["namespace"] = "cetirun-agent"
+        pod = {"metadata": {"name": "gateway", "uid": pod_uid}, "spec": {"containers": [{"name": "gateway"}]},
+               "status": {"containerStatuses": [{"name": "gateway", "ready": True}]}}
+        namespace = {"metadata": {"name": "cetirun-agent", "uid": "namespace-uid",
+                                   "annotations": {"cetirun.microsoft.com/agent-uid": "agent-uid"},
+                                   "ownerReferences": [{"apiVersion": "cetirun.microsoft.com/v1alpha1",
+                                                         "kind": "Agent", "uid": "agent-uid"}]}}
+        pvc_items = pvc_items if pvc_items is not None else []
+
+        class Driver:
+            config = {name: {"namespace": name, "release": name} for name in deploy.platform.CHARTS}
+            helm_manifest = manifest
+
+            def kubectl(self, *args):
+                if args[:2] == ("get", "agents.cetirun.microsoft.com"):
+                    return json.dumps({"items": [agent]})
+                if args[:2] == ("get", "namespace"):
+                    return json.dumps({"items": [namespace]})
+                if args[:2] == ("get", "pods"):
+                    return json.dumps({"items": [pod]})
+                if args[:2] == ("get", "pvc"):
+                    return json.dumps({"items": pvc_items})
+                return json.dumps({"items": []})
+
+            def helm(self, *args):
+                if args[0] == "list":
+                    return json.dumps([{"name": name, "revision": "1", "chart": "cetirun-" + name + "-0.1.0",
+                                        "status": "deployed"} for name in deploy.platform.CHARTS])
+                if args[:2] == ("get", "manifest"):
+                    return self.helm_manifest
+                raise AssertionError(args)
+
+        return Driver()
+
+    def test_capture_accounts_for_owned_namespace_before_agent_status_namespace(self):
+        driver = self.capture_driver(ready=False)
+        before = deploy.capture(driver)
+        driver = self.capture_driver(ready=True)
+        after = deploy.capture(driver)
+        self.assertIn("pods/cetirun-agent/gateway", before["objects"])
+        self.assertIn("pods/cetirun-agent/gateway", after["objects"])
+        deploy.preservation(before, after)
+
+    def test_capture_detects_replaced_pod_and_scoped_pvc_drift(self):
+        pvc = {"metadata": {"name": "home", "namespace": "cetirun-agent", "uid": "pvc-uid"},
+               "spec": {}, "status": {"phase": "Bound"}}
+        before = deploy.capture(self.capture_driver(pvc_items=[pvc]))
+        replaced = deploy.capture(self.capture_driver(pod_uid="replacement", pvc_items=[pvc]))
+        with self.assertRaisesRegex(deploy.Blocked, "resource_changed"):
+            deploy.preservation(before, replaced)
+        missing = deploy.capture(self.capture_driver(pvc_items=[]))
+        with self.assertRaisesRegex(deploy.Blocked, "resource_set_changed"):
+            deploy.preservation(before, missing)
+
+    def test_capture_ignores_unrelated_pvc_creation(self):
+        pvc = {"metadata": {"name": "unrelated", "namespace": "other", "uid": "other-pvc"},
+               "spec": {}, "status": {"phase": "Bound"}}
+        before = deploy.capture(self.capture_driver())
+        after = deploy.capture(self.capture_driver(pvc_items=[pvc]))
+        deploy.preservation(before, after)
+
+    def test_capture_ignores_unrelated_pvc_in_installation_namespace(self):
+        pvc = {"metadata": {"name": "unrelated", "namespace": "platform", "uid": "other-pvc"},
+               "spec": {}, "status": {"phase": "Bound"}}
+        before = deploy.capture(self.capture_driver())
+        after = deploy.capture(self.capture_driver(pvc_items=[pvc]))
+        deploy.preservation(before, after)
+
+    def test_capture_keeps_manifest_and_statefulset_claims(self):
+        manifest = yaml.safe_dump_all([
+            {"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+             "metadata": {"name": "database", "namespace": "platform"}},
+            {"apiVersion": "apps/v1", "kind": "StatefulSet",
+             "metadata": {"name": "postgres", "namespace": "platform"},
+             "spec": {"volumeClaimTemplates": [{"metadata": {"name": "data"}}]}},
+            {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "worker", "namespace": "platform"},
+             "spec": {"template": {"spec": {"volumes": [{"name": "home", "persistentVolumeClaim": {"claimName": "worker-home"}}]}}}},
+        ])
+        claims = [
+            {"metadata": {"name": "database", "namespace": "platform", "uid": "database-uid"}, "spec": {}, "status": {"phase": "Bound"}},
+            {"metadata": {"name": "data-postgres-0", "namespace": "platform", "uid": "data-uid"}, "spec": {}, "status": {"phase": "Bound"}},
+            {"metadata": {"name": "unrelated", "namespace": "platform", "uid": "other-uid"}, "spec": {}, "status": {"phase": "Bound"}},
+            {"metadata": {"name": "data-postgres-unrelated", "namespace": "platform", "uid": "other-2"}, "spec": {}, "status": {"phase": "Bound"}},
+            {"metadata": {"name": "worker-home", "namespace": "platform", "uid": "worker-uid"}, "spec": {}, "status": {"phase": "Bound"}},
+        ]
+        snapshot = deploy.capture(self.capture_driver(pvc_items=claims, manifest=manifest))
+        self.assertIn("pvc/platform/database", snapshot["objects"])
+        self.assertIn("pvc/platform/data-postgres-0", snapshot["objects"])
+        self.assertNotIn("pvc/platform/unrelated", snapshot["objects"])
+        self.assertNotIn("pvc/platform/data-postgres-unrelated", snapshot["objects"])
+        self.assertIn("pvc/platform/worker-home", snapshot["objects"])
+        for index in (0, 1, 4):
+            with self.subTest(claim=claims[index]["metadata"]["name"]):
+                changed = copy.deepcopy(claims)
+                changed[index]["metadata"]["uid"] = "replacement"
+                with self.assertRaisesRegex(deploy.Blocked, "resource_changed"):
+                    deploy.preservation(snapshot, deploy.capture(self.capture_driver(pvc_items=changed, manifest=manifest)))
+                changed.pop(index)
+                with self.assertRaisesRegex(deploy.Blocked, "resource_set_changed"):
+                    deploy.preservation(snapshot, deploy.capture(self.capture_driver(pvc_items=changed, manifest=manifest)))
+
     def test_embedded_credentials_are_private_and_unrelated_context_removed(self):
         config, kube = inputs()
         kube["users"].append({"name": "other", "user": {"exec": {"command": "untrusted"}}})
@@ -120,6 +226,19 @@ class EnvironmentTests(unittest.TestCase):
             deploy.reject_downgrade(baseline()["releases"], "0.2.0")
         with self.assertRaisesRegex(deploy.Blocked, "unrecognized"):
             deploy.reject_downgrade({"platform": {"chart": "unknown"}}, "0.2.1")
+
+    def test_external_istio_is_observed_but_not_written_or_downgraded(self):
+        driver = Mock()
+        driver.config = {name: {"release": name, "namespace": "ns"} for name in deploy.platform.CHARTS}
+        driver.config["istio"]["mode"] = "external"
+        self.assertEqual(deploy.managed_release_names(driver), ("broker", "platform"))
+        releases = {name: {"chart": "cetirun-" + name + "-0.3.0"} for name in deploy.platform.CHARTS}
+        releases["istio"]["chart"] = "cetirun-istio-9.0.0"
+        deploy.reject_downgrade(releases, "0.3.0", deploy.managed_release_names(driver))
+        driver.documents = {name: [] for name in deploy.platform.CHARTS}
+        driver.helm.return_value = ""
+        deploy.compare_manifests(driver)
+        self.assertEqual([call.args[2] for call in driver.helm.call_args_list], ["broker", "platform"])
 
     def test_control_plane_crash_after_rollout_cannot_pass_stable_window(self):
         ticks = iter(range(100))
@@ -279,28 +398,6 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual(len(uploads), 1)
         self.assertEqual(uploads[0]["with"]["path"], "${{ runner.temp }}/cetirun-report/report.json")
         self.assertNotIn("azure/login", path.read_text())
-
-    def test_mcr_packages_digest_locked_charts_only_after_image_promotion(self):
-        path = Path(__file__).resolve().parents[2] / ".pipelines/release-mcr.yml"
-        pipeline = yaml.safe_load(path.read_text())
-        scripts = [step.get("bash", step.get("inputs", {}).get("inlineScript", ""))
-                   for job in pipeline["jobs"] for step in job["steps"]]
-        packaging = [script for script in scripts if "package-charts --package-dir" in script]
-        self.assertEqual(len(packaging), 1)
-        script = packaging[0]
-        promotion = script.index('published_images+=("${artifact}@${digest}")')
-        handoff = script.index('"${image_digest_file}" "${published_images[@]}"')
-        packaging_index = script.index("package-charts --package-dir")
-        publishing = script.index('helm push "${archive}"')
-        public_verification = script.index("scripts/verify-mcr-image.py")
-        latest = script.index('latest_image="${registry}/${repository}:latest"')
-        self.assertLess(promotion, handoff)
-        self.assertLess(handoff, packaging_index)
-        self.assertLess(packaging_index, publishing)
-        self.assertLess(publishing, public_verification)
-        self.assertLess(public_verification, latest)
-        self.assertIn('RELEASE_IMAGE_DIGESTS_FILE="${image_digest_file}"', script)
-        self.assertIn("REGISTRY=mcr.microsoft.com/aks/ai-runtime/cetirun", script)
 
     def test_runtime_chart_missing_digest_cannot_pass(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -62,6 +62,25 @@ class PublishedDeploymentTests(unittest.TestCase):
         self.assertEqual(result["args"][0], "thirdparty/thing:1.0")
         self.assertEqual(result["args"][1], "cetirun-portal-sidecar:0.2.1")
 
+    def test_image_identity_ignores_optional_tag_but_keeps_repository(self):
+        digest = "sha256:" + "a" * 64
+        self.assertEqual(
+            DEPLOY._repository_digest("mcr.example/cetirun-pi-agent@" + digest),
+            DEPLOY._repository_digest("mcr.example/cetirun-pi-agent:0.2.1@" + digest),
+        )
+        self.assertNotEqual(
+            DEPLOY._repository_digest("other.example/cetirun-pi-agent:0.2.1@" + digest),
+            DEPLOY._repository_digest("mcr.example/cetirun-pi-agent:0.2.1@" + digest),
+        )
+
+    def test_excluded_published_inventory_is_availability_metadata(self):
+        config = {"release": {"excludeImages": ["cetirun-vscode"]},
+                  "_publishedInventory": {"images": ["cetirun-vscode"], "charts": []}}
+        DEPLOY.validate_excluded_images(config)
+        config["platform"] = {"values": {"image": "mcr.example/cetirun-vscode:1"}}
+        with self.assertRaisesRegex(ValueError, "still referenced"):
+            DEPLOY.validate_excluded_images(config)
+
     def test_real_helm_renders_original_archive(self):
         helm = shutil.which("helm")
         if not helm:
@@ -143,10 +162,36 @@ class PublishedIntegrationTests(unittest.TestCase):
                 deployment.render()
             self.assertFalse(any(call.args[0][0:2] == ["helm", "dependency"] for call in commands.call_args_list))
             self.assertGreaterEqual(audit_rendered_images(deployment, self.lock), 5)
+            operator = next(doc for doc in deployment.documents["platform"]
+                            if doc.get("kind") == "Deployment" and doc["metadata"]["name"] == "cetirun-operator")
+            self.assertIn("--chart-digest=" + self.lock["charts"]["cetirun"]["digest"],
+                          operator["spec"]["template"]["spec"]["containers"][0]["args"])
             self.assertEqual(deployment.charts["platform"], Path(self.lock["charts"]["cetirun-platform"]["path"]))
+            deployment.expected_release_revision = 7
             with patch.object(deployment, "helm") as helm:
                 deployment.upgrade("broker")
-            self.assertEqual(helm.call_args.args[3], self.lock["charts"]["cetirun-agent-broker"]["path"])
+            self.assertIn(self.lock["charts"]["cetirun-agent-broker"]["path"], helm.call_args.args)
+            self.assertNotIn("--install", helm.call_args.args)
+            guard_args = [arg.split("=", 1)[1] for arg in helm.call_args.args if arg.startswith("--post-renderer-args=")]
+            self.assertEqual(guard_args, ["--expected-revision", "7", "--release", config["broker"]["release"],
+                                         "--namespace", config["broker"]["namespace"], "--context", config["target"]["context"]])
+
+    def test_tagless_approved_image_matches_locked_digest_and_is_preserved(self):
+        config = self.configuration()
+        digest = self.lock["images"]["cetirun-pi-agent"]["digest"]
+        config["platform"]["values"]["cetirun-operator"]["customRuntime"]["approvedImages"][0] = (
+            f"{self.registry}/cetirun-pi-agent@{digest}")
+        with tempfile.TemporaryDirectory() as temporary:
+            values = DEPLOY.published_configuration(config, self.lock, Path(temporary))[1]
+        self.assertEqual(values["platform"]["cetirun-operator"]["customRuntime"]["approvedImages"][0],
+                         f"{self.registry}/cetirun-pi-agent@{digest}")
+
+    def test_conflicting_runtime_chart_digest_is_rejected(self):
+        config = self.configuration()
+        config["platform"]["values"]["cetirun-operator"].setdefault("cetirun", {})["chart"] = {
+            "digest": "sha256:" + "f" * 64}
+        with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(ValueError, "runtime chart digest override"):
+            DEPLOY.published_configuration(config, self.lock, Path(temporary))
 
     def test_refuses_changed_chart_before_render_and_apply(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -166,6 +211,14 @@ class PublishedIntegrationTests(unittest.TestCase):
         result = DEPLOY.release_inventory({"_publishedInventory": {"images": ["future-image"], "charts": ["future-chart"]}})
         self.assertEqual([item["name"] for item in result["images"]], ["future-image"])
         self.assertEqual([item["name"] for item in result["charts"]], ["future-chart"])
+
+    def test_memory_override_must_use_published_repository(self):
+        config = self.configuration()
+        config["platform"].setdefault("values", {}).setdefault("global", {})["memoryContext"] = {
+            "image": "other.example/cetirun-memory-context:custom"
+        }
+        with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(ValueError, "published cetirun-memory-context repository"):
+            DEPLOY.published_configuration(config, self.lock, Path(temporary))
 
 
 if __name__ == "__main__":

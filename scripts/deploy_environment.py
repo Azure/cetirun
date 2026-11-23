@@ -135,16 +135,71 @@ def release_snapshot(deployment, *, require_deployed=True):
     return result
 
 
+def managed_release_names(deployment):
+    """Return releases this invocation can write.
+
+    An externally managed Istio release is still observed and included in the
+    preservation snapshot, but this deployment never renders or upgrades it.
+    """
+    istio = deployment.config.get("istio", {})
+    return tuple(name for name in platform.CHARTS
+                 if name != "istio" or istio.get("mode", "manage") == "manage")
+
+
+def installation_claim_keys(deployment):
+    """Return PVC identities referenced by the installed Helm manifests.
+
+    Namespace membership alone is not an ownership boundary: unrelated
+    workloads can legitimately use an installation namespace. StatefulSet
+    claim-template prefixes are retained so existing ordinal claims remain in
+    the preservation set even when a chart manifest contains only the template.
+    """
+    claims, prefixes = set(), []
+    for name in platform.CHARTS:
+        section = deployment.config[name]
+        raw = deployment.helm("get", "manifest", section["release"], "--namespace", section["namespace"])
+        for document in yaml.safe_load_all(raw or ""):
+            if not isinstance(document, dict):
+                continue
+            metadata = document.get("metadata", {})
+            namespace = metadata.get("namespace", section["namespace"])
+            kind = document.get("kind")
+            if kind == "PersistentVolumeClaim":
+                claims.add((namespace, metadata.get("name", "")))
+            spec = document.get("spec", {})
+            template = spec.get("template", {}).get("spec", {})
+            if kind == "Pod":
+                template = spec
+            elif kind == "CronJob":
+                template = spec.get("jobTemplate", {}).get("spec", {}).get("template", {}).get("spec", {})
+            for volume in template.get("volumes", []):
+                claim = volume.get("persistentVolumeClaim", {}).get("claimName")
+                if claim:
+                    claims.add((namespace, claim))
+            if kind == "StatefulSet":
+                statefulset = metadata.get("name", "")
+                for template_claim in spec.get("volumeClaimTemplates", []):
+                    claim_name = template_claim.get("metadata", {}).get("name", "")
+                    if claim_name and statefulset:
+                        prefixes.append((namespace, claim_name + "-" + statefulset + "-"))
+    return claims, tuple(prefixes)
+
+
 def capture(deployment, *, require_deployed=True):
     """Read exact identities and spec hashes; do not save credentials or HOME."""
     snapshot = {"objects": {}, "releases": {}}
     runtime_namespaces = set()
+    agent_uids = set()
+    agent_namespaces = set()
     for resource in PRESERVED:
         rows = json.loads(deployment.kubectl("get", resource, "--all-namespaces", "-o", "json"))["items"]
         for row in rows:
             meta, spec, status = row["metadata"], row.get("spec", {}), row.get("status", {})
             if resource == "agents.cetirun.microsoft.com" and status.get("namespace"):
                 runtime_namespaces.add(status["namespace"])
+                agent_namespaces.add(status["namespace"])
+            if resource == "agents.cetirun.microsoft.com":
+                agent_uids.add(meta.get("uid"))
             key = "/".join((resource, meta.get("namespace", ""), meta["name"]))
             snapshot["objects"][key] = {
                 "uid": meta["uid"], "specHash": digest(spec), "generation": meta.get("generation"),
@@ -154,6 +209,40 @@ def capture(deployment, *, require_deployed=True):
                 "image": spec.get("agent", {}).get("image", ""),
                 "suspended": spec.get("suspended", False),
             }
+    # status.namespace is written only after the runtime becomes ready. Resolve
+    # an already-created namespace from the immutable Agent ownership metadata
+    # so a Pod cannot be missed during that interval.
+    if agent_uids:
+        namespaces = json.loads(deployment.kubectl("get", "namespace", "-o", "json"))["items"]
+        for namespace in namespaces:
+            meta = namespace.get("metadata", {})
+            owners = meta.get("ownerReferences", [])
+            annotations = meta.get("annotations", {})
+            owner_match = any(owner.get("apiVersion", "").startswith("cetirun.microsoft.com/") and
+                              owner.get("kind") == "Agent" and owner.get("uid") in agent_uids for owner in owners)
+            annotation_match = annotations.get("cetirun.microsoft.com/agent-uid") in agent_uids
+            # An annotation is accepted for legacy custom runtimes only when
+            # no conflicting owner reference is present.
+            conflicting_owner = bool(owners) and not owner_match
+            if annotation_match and conflicting_owner:
+                raise Blocked("agent_namespace_ownership_conflict")
+            if owner_match or (annotation_match and not conflicting_owner):
+                runtime_namespaces.add(meta.get("name"))
+                agent_namespaces.add(meta.get("name"))
+    # PVCs from unrelated workloads must not make an otherwise safe upgrade
+    # fail. Retain only claims referenced by installed manifests and claims in
+    # Agent-owned namespaces.
+    installation_claims, claim_prefixes = installation_claim_keys(deployment)
+    pvc_prefix = "pvc/"
+    for key in list(snapshot["objects"]):
+        if key.startswith(pvc_prefix):
+            namespace = key.split("/", 2)[1]
+            name = key.split("/", 2)[2]
+            scoped = namespace in agent_namespaces or (namespace, name) in installation_claims or any(
+                namespace == prefix_namespace and name.startswith(prefix) and name[len(prefix):].isdigit()
+                for prefix_namespace, prefix in claim_prefixes)
+            if not scoped:
+                del snapshot["objects"][key]
     # A controller can replace runtime workloads without changing Agent specs.
     # Include them so a sidecar/default rollout cannot masquerade as preservation.
     for namespace in sorted(runtime_namespaces):
@@ -183,9 +272,10 @@ def registry_conflicts(snapshot, registry):
                (not item["image"] or not item["image"].startswith(registry + "/")))
 
 
-def reject_downgrade(releases, candidate):
+def reject_downgrade(releases, candidate, names=None):
     requested = tuple(int(part) for part in candidate.split("."))
-    for release in releases.values():
+    selected = releases if names is None else {name: releases[name] for name in names}
+    for release in selected.values():
         current = re.search(r"-(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$", release.get("chart", ""))
         if current is None:
             raise Blocked("existing_release_version_unrecognized")
@@ -274,7 +364,7 @@ def managed_documents(documents):
 def compare_manifests(deployment):
     """Reject resource removals and storage changes; publish counts, not values."""
     changes = {}
-    for name in platform.CHARTS:
+    for name in managed_release_names(deployment):
         section = deployment.config[name]
         previous = list(yaml.safe_load_all(deployment.helm("get", "manifest", section["release"], "--namespace", section["namespace"])))
         old = {object_key(doc, section["namespace"]): doc for doc in managed_documents(previous)}
@@ -463,7 +553,7 @@ def run(args):
             private_write(work / "baseline.json", json.dumps(baseline, indent=2))
             summary["beforeReleases"] = baseline["releases"]
             summary["preservedResourceCount"] = len(baseline["objects"])
-            reject_downgrade(baseline["releases"], lock["version"])
+            reject_downgrade(baseline["releases"], lock["version"], managed_release_names(deployment))
             stage = "existing_agents"
             conflicts = registry_conflicts(baseline, lock["registry"])
             summary["registryConflictCount"] = conflicts
@@ -492,7 +582,14 @@ def run(args):
                     private_write(work / "intent.json", json.dumps({"action": stage, "before": baseline["releases"]}))
                     if release_snapshot(deployment) != expected_releases:
                         raise Blocked("helm_revision_changed_before_upgrade")
-                    upgrade(name, values)
+                    # The post-renderer repeats this check after Helm has
+                    # rendered the chart, immediately before Helm writes its
+                    # pending revision. This closes the check-then-act gap.
+                    deployment.expected_release_revision = int(expected_releases[name]["revision"])
+                    try:
+                        upgrade(name, values)
+                    finally:
+                        deployment.expected_release_revision = None
                     chart_names = {"istio": "cetirun-istio", "broker": "cetirun-agent-broker", "platform": "cetirun-platform"}
                     expected_releases[name] = {"revision": str(int(expected_releases[name]["revision"]) + 1),
                                                "chart": chart_names[name] + "-" + lock["version"], "status": "deployed"}
