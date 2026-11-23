@@ -887,6 +887,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// The Broker reads only the canonical binding persisted in CR status.
 	var agentIdentityRequeueAfter time.Duration
 	if identityReconcileRequired && (instance.Spec.AgentIdentity != nil || instance.Status.AgentIdentity != nil) {
+		wasIdentityReady := isConditionTrue(instance.Status.Conditions, cetirunv1alpha1.ConditionAgentIdentityReady)
 		logger.Info("Reconciling Agent Identity", "instance", instance.Name)
 		if err := r.reconcileAgentIdentity(ctx, instance); err != nil {
 			logger.Error(err, "Agent Identity reconciliation failed", "instance", instance.Name)
@@ -905,14 +906,14 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			// ingress, while retaining the identity error for a separate retry.
 			agentIdentityRequeueAfter = 30 * time.Second
 		}
-		if agentIdentityRequested(instance) && instance.Status.AgentIdentity != nil && instance.Status.AgentIdentity.Phase == cetirunv1alpha1.AgentIdentityPhaseReady &&
-			agentIdentityVerificationDue(instance, time.Now()) {
+		identityReady := agentIdentityRequested(instance) && instance.Status.AgentIdentity != nil && instance.Status.AgentIdentity.Phase == cetirunv1alpha1.AgentIdentityPhaseReady
+		if identityReady && agentIdentityVerificationDue(instance, time.Now()) {
 			now := metav1.Now()
 			instance.Status.AgentIdentity.LastVerifiedTime = &now
 		}
-		if instance.Status.Policy != nil {
-			// Broker readback uses the persisted canonical identity, never the
-			// in-memory result of a directory request.
+		if instance.Status.Policy != nil || (identityReady && !wasIdentityReady) {
+			// The Broker needs the persisted binding for governed Agents. Also
+			// publish a newly verified identity before Gateway or Helm can block.
 			if err := r.updateStatus(ctx, instance); err != nil {
 				return ctrl.Result{}, err
 			}

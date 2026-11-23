@@ -60,6 +60,78 @@ func (*suspensionHelmClient) CustomApplied(string, string, *helm.PreparedRelease
 
 func (*suspensionHelmClient) Uninstall(string, string) error { return nil }
 
+func TestNoTeamAgentIdentityIsReadyDuringHelmUpgrade(t *testing.T) {
+	ctx := t.Context()
+	f := newDeployedAgent(t)
+	agent := f.agent(t)
+	agent.Spec.Team, agent.Spec.User.Team = "", ""
+	agent.Spec.AgentIdentity = &cetirunv1alpha1.AgentIdentitySpec{Enabled: true}
+	if agent.Annotations == nil {
+		agent.Annotations = map[string]string{}
+	}
+	agent.Annotations[cetirunv1alpha1.AnnotationOwnerTenantID] = testAgentIdentityTenantID
+	agent.Annotations[cetirunv1alpha1.AnnotationOwnerObjectID] = testAgentIdentityOwnerObject
+	agent.Generation++
+	if err := f.r.Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	f.r.AgentIdentityEnabled = true
+	f.r.AgentIdentityTenantID = testAgentIdentityTenantID
+	f.r.AgentIdentityBlueprintClientID = testAgentIdentityBlueprintID
+	principal := &azure.ServicePrincipal{ID: testAgentIdentityObjectID, AppID: testAgentIdentityClientID,
+		DisplayName: f.r.agentIdentityDisplayName(agent), AgentIdentityBlueprintID: testAgentIdentityBlueprintID}
+	directory := &fakeAgentIdentityDirectory{byObject: principal, createResult: principal}
+	f.r.agentIdentityGraphClientFactory = func() (agentIdentityDirectoryClient, error) { return directory, nil }
+	for range 4 {
+		if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+			t.Fatal(err)
+		}
+		agent = f.agent(t)
+		if agent.Status.Phase == cetirunv1alpha1.PhaseReady && agent.Status.ObservedGeneration == agent.Generation {
+			break
+		}
+	}
+	if agent.Status.AgentIdentity == nil || agent.Status.AgentIdentity.Phase != cetirunv1alpha1.AgentIdentityPhaseReady ||
+		agent.Status.Policy != nil || directory.createCalls != 1 {
+		t.Fatal("expected a deployed no-Team Agent with an existing identity")
+	}
+
+	agent.Spec.User.DisplayName = "Updated name"
+	agent.Generation++
+	if err := f.r.Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := f.r.Reconcile(ctx, f.req); err != nil || !result.Requeue {
+		t.Fatalf("record provisioning intent: result=%+v err=%v", result, err)
+	}
+	pending := f.agent(t).Status.AgentIdentity
+	if pending.Phase != cetirunv1alpha1.AgentIdentityPhaseProvisioning || pending.ObservedGeneration != agent.Generation {
+		t.Fatalf("missing current-generation identity intent: %+v", pending)
+	}
+
+	reads := directory.getObjectCalls
+	installs := f.chart.installs
+	f.chart.onInstall = func() {
+		// Read the persisted CR while Helm is on the stack, before any post-upgrade status write.
+		stored := f.agent(t)
+		identity := stored.Status.AgentIdentity
+		if stored.Status.ObservedGeneration == agent.Generation || identity == nil ||
+			identity.Phase != cetirunv1alpha1.AgentIdentityPhaseReady || identity.ObservedGeneration != agent.Generation ||
+			!isConditionTrue(stored.Status.Conditions, cetirunv1alpha1.ConditionAgentIdentityReady) {
+			t.Fatalf("during Helm upgrade: workload generation=%d, identity=%+v", stored.Status.ObservedGeneration, identity)
+		}
+		if identity.ObjectID != principal.ID || identity.ClientID != principal.AppID || identity.DisplayName != principal.DisplayName {
+			t.Fatalf("canonical binding changed during upgrade: %+v", identity)
+		}
+	}
+	if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+		t.Fatal(err)
+	}
+	if f.chart.installs != installs+1 || directory.getObjectCalls != reads+1 || directory.createCalls != 1 {
+		t.Fatal("expected one Helm upgrade and verification, not replacement, of the existing identity")
+	}
+}
+
 func TestPolicyDeniedSuspensionStopsOwnedRouteBeforeIdentityLookup(t *testing.T) {
 	const name = "suspended-identity"
 	instance := &cetirunv1alpha1.Agent{

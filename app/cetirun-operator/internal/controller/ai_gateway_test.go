@@ -2211,6 +2211,7 @@ type chartHelm struct {
 	installs   int
 	lastValues map[string]any
 	uninstalls int
+	onInstall  func()
 }
 
 func (h *chartHelm) ResolveImageUpgrade(_, _, _, _, image, _ string) (string, error) {
@@ -2231,6 +2232,9 @@ func (h *chartHelm) Refresh(prepared *helm.PreparedRelease, values map[string]an
 }
 
 func (h *chartHelm) InstallOrUpgrade(_, _ string, prepared *helm.PreparedRelease) error {
+	if h.onInstall != nil {
+		h.onInstall()
+	}
 	h.installs++
 	h.lastValues = prepared.Values
 	return nil
