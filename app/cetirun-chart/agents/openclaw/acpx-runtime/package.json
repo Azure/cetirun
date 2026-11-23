@@ -1,7 +1,7 @@
 {
   "private": true,
   "dependencies": {
-    "@openclaw/acpx": "2026.11.6",
+    "@openclaw/acpx": "2026.9.6",
     "@anthropic-ai/sdk": "0.125.0",
     "@modelcontextprotocol/sdk": "1.32.2",
     "ajv": "8.20.0",
@@ -12,6 +12,7 @@
     "zod": "4.6.6"
   },
   "overrides": {
+    "smol-toml@1.8.0": "1.9.1",
     "zod@4": "4.6.6",
     "@anthropic-ai/sdk": "0.125.0",
     "@opentelemetry/core": "2.11.0",

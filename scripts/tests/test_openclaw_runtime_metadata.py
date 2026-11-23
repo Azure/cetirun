@@ -75,16 +75,23 @@ class RuntimeMetadataTests(unittest.TestCase):
         # reviewed constant here to keep the checked-in inputs tied to it.
         actual = importlib.util.module_from_spec(SPEC)
         SPEC.loader.exec_module(actual)
+        dockerfile = (SCRIPT.parent / "Dockerfile").read_text()
+        plugin_version = manifest["dependencies"]["@openclaw/acpx"]
+        self.assertIn(f"ARG OPENCLAW_VERSION={plugin_version}", dockerfile.splitlines(),
+                      "the managed installer selects the plugin at the image's pinned host version")
+        self.assertEqual(lock["packages"]["node_modules/@openclaw/acpx"]["version"], plugin_version)
         self.assertEqual(actual.dependency_lock_digest(lock_bytes), actual.REVIEWED_LOCK_SHA256)
         self.assertEqual(manifest["dependencies"], lock["packages"][""]["dependencies"])
-        self.assertEqual(manifest["dependencies"]["@openclaw/acpx"], "2026.9.6")
         self.assertEqual(set(manifest["openclaw"]["managedPeerDependencies"]),
                          set(manifest["dependencies"]) - {"@openclaw/acpx"})
-        self.assertEqual(set(manifest["openclaw"]["managedOverrides"]) | {"zod@4"}, set(manifest["overrides"]))
+        self.assertEqual(set(manifest["openclaw"]["managedOverrides"]),
+                         set(manifest["overrides"]) - {"zod@4", "smol-toml@1.8.0"})
         self.assertEqual(manifest["dependencies"]["zod"], "4.6.6")
         self.assertEqual(manifest["overrides"]["zod@4"], "4.6.6")
         self.assertEqual(lock["packages"]["node_modules/zod"]["version"], "4.6.6")
-        dockerfile = (SCRIPT.parent / "Dockerfile").read_text()
+        self.assertEqual(manifest["overrides"]["smol-toml@1.8.0"], "1.9.1")
+        self.assertEqual(lock["packages"]["node_modules/smol-toml"]["version"],
+                         manifest["overrides"]["smol-toml@1.8.0"])
         seed = "COPY --chown=vibe:vibe agents/openclaw/acpx-runtime/ /usr/local/share/openclaw-npm/projects/openclaw-acpx-052d680d6d/"
         self.assertLess(dockerfile.index(seed), dockerfile.index('openclaw plugins install "npm:@openclaw/acpx'))
 
