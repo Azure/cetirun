@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-FROM mcr.microsoft.com/oss/go/microsoft/golang:1.27.4-1@sha256:beab7184dddd56cb4fb652a2e9affb25ce377d85f30a7c14eed0e65a7b315c4e AS builder
+FROM mcr.microsoft.com/oss/go/microsoft/golang:1.27.4-1@sha256:b11f7596b22e3e95d0105c8bbd9e173e21a9f812e112713971330bc21d0248b4 AS builder
 WORKDIR /src
 COPY app/internal/ ./app/internal/
 COPY app/cetirun-operator/go.mod ./app/cetirun-operator/go.mod
