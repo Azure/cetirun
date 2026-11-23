@@ -1295,6 +1295,18 @@ The environment workflow uses each selected runtime chart's Memory image pin
 and rejects global or Operator Memory image overrides. Existing release
 namespaces and the configured Broker/platform `istio.io/rev` labels are
 prerequisites; the workflow does not create or relabel them during an upgrade.
+The existing mesh ConfigMap must already contain the configured OAuth provider
+and required headers; published deployments do not patch it. Custom image
+approvals remain independent of the release images. Every retained Custom
+Agent must keep its exact approved pin. Built-in Agents selecting the candidate
+chart version must have an image qualified by that chart, including when
+suspended or when a version was republished.
+
+The workflow blocks changes that would restart a retained CetiAdmin installation
+or replace an existing Copilot proxy Pod. A disabled CetiAdmin installation must
+have a verified stop record and no remaining writers. These checks run before
+deployment and before each Helm upgrade. The workflow does not migrate runtime
+pins or relax Agent, Pod, or HOME preservation to accommodate these changes.
 
 Offline release and deployment tests use synthetic APIs and local Helm:
 

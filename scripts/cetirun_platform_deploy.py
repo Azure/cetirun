@@ -783,6 +783,19 @@ def _image_repository(reference):
     return repository
 
 
+def validate_mesh_configmap(document, service, *, published=False):
+    """Validate the existing mesh contract without changing the cluster."""
+    try:
+        patch, changed = MESH.configmap_patch(document, service)
+    except RuntimeError as error:
+        if published:
+            raise ValueError("Istio mesh ConfigMap does not already contain the required OAuth2 provider and headers") from error
+        raise
+    if published and changed:
+        raise ValueError("Istio mesh ConfigMap does not already contain the required OAuth2 provider and headers")
+    return patch, changed
+
+
 def configuration(path, *, domain=None, registry=None, version=None, coordinate_origins=None,
                   chart_roots=None, published_artifacts=None):
     config = copy.deepcopy(path) if isinstance(path, dict) else yaml_file(path)
@@ -1091,6 +1104,16 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
         images = published_artifacts.get("images", {})
         if not isinstance(images, dict) or not images:
             raise ValueError("published artifact lock has no images")
+        # CetiAdmin is a separately retained workload. Preserve its explicit
+        # qualified pin; basename matching must not silently replace it with
+        # the platform release image.
+        cetiadmin_image = get_value(config.get("platform", {}).get("values", {}),
+                                    "cetirun-operator.cetiadmin.runtime.image")
+        if cetiadmin_image:
+            basename = cetiadmin_image.rsplit("/", 1)[-1].split("@", 1)[0].split(":", 1)[0]
+            locked = images.get(basename)
+            if locked and _repository_digest(cetiadmin_image) != _repository_digest(locked.get("reference")):
+                raise ValueError("cetirun-operator.cetiadmin.runtime.image conflicts with the published artifact lock")
         # Published runtime charts own their Memory pin. A platform-wide
         # override would affect Agents on other chart versions too. Reject it
         # before image rewriting, regardless of repository, digest or spelling.
@@ -1101,19 +1124,15 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
         original_approved = copy.deepcopy(approved) if isinstance(approved, list) else None
         if isinstance(approved, list):
             for supplied in approved:
-                if not isinstance(supplied, str) or "@sha256:" not in supplied:
+                if not isinstance(supplied, str) or not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", supplied):
                     raise ValueError("published custom runtime images must be qualified by digest")
-                basename = supplied.rsplit("/", 1)[-1].split("@", 1)[0].split(":", 1)[0]
-                locked = images.get(basename)
-                if locked and supplied.startswith(published_artifacts["registry"] + "/"):
-                    if _repository_digest(supplied) != _repository_digest(locked.get("reference")):
-                        raise ValueError(f"custom runtime image {basename} conflicts with the published artifact lock")
         values = _pin_published_images(values, images)
-        # Preserve the approved image spelling supplied by the environment. The
-        # repository and digest were checked above; an optional tag is not part
-        # of the approval identity and must not be invented here.
+        # Approvals authorize Agent images independently from rollout artifacts.
+        # The Operator uses exact membership, so keep every supplied spelling.
         if original_approved is not None:
             set_value(values, "platform.cetirun-operator.customRuntime.approvedImages", original_approved)
+        if cetiadmin_image:
+            set_value(values, "platform.cetirun-operator.cetiadmin.runtime.image", cetiadmin_image)
     return config, values
 
 
@@ -1305,9 +1324,10 @@ class Deployment:
             self.check_cetiadmin_grants({"name": account, "namespace": namespace["name"]})
             self.cetiadmin_migration_receipt = metadata
 
-    def check_cetiadmin_stopped(self):
+    def check_cetiadmin_stopped(self, *, configuration=None):
         source, checkpoint, current, state = self.cetiadmin_binding()
-        desired = copy.deepcopy(self.values["platform"]["cetirun-operator"]["cetiadmin"])
+        desired = copy.deepcopy(configuration if configuration is not None else
+                                self.values["platform"]["cetirun-operator"]["cetiadmin"])
         desired["runtime"]["version"] = desired["runtime"].get("version") or self.config["release"]["version"]
         if (current.get("enabled") is not False or state.get("phase") != "Disabled" or state.get("hold") is not True
                 or state.get("pendingCreate") or state.get("creation") or state.get("bootstrapReleasePending")
@@ -2086,23 +2106,7 @@ class Deployment:
                 raise ValueError("The admission coordination ConfigMap UID does not match the configured authority")
             if kind == "Secret" and key and key not in self.secret_keys(namespace, name):
                 raise ValueError(f"Required Secret key is missing: {namespace}/{name}:{key}")
-        mesh = self.kubectl("get", "configmap", c["istio"]["meshConfigMap"], "--namespace", c["istio"]["controlPlaneNamespace"], "--ignore-not-found", "-o", "json")
-        if mesh.strip():
-            document = json.loads(mesh)
-            self.mesh_uid = document["metadata"]["uid"]
-            _, changed = MESH.configmap_patch(document, self.oauth_service())
-            if changed and c["istio"].get("mode", "manage") == "external":
-                raise ValueError("External Istio has no matching OAuth2 provider/header configuration")
-        else:
-            # The helper creates a missing ConfigMap. AKS managed Istio reads only
-            # istio-shared-configmap-<revision>, so another name leaves the OAuth2
-            # provider out of the mesh.
-            shared = f"istio-shared-configmap-{c['istio']['revision']}"
-            if shared != c["istio"]["meshConfigMap"] and self.resource("configmap", shared, c["istio"]["controlPlaneNamespace"]):
-                raise ValueError(f"The configured istio.meshConfigMap {c['istio']['controlPlaneNamespace']}/{c['istio']['meshConfigMap']} "
-                                 f"does not exist, and AKS managed Istio reads {shared}, which exists")
-            if c["istio"].get("mode", "manage") == "external":
-                raise ValueError("External Istio requires the existing OAuth2 mesh provider")
+        self.check_mesh_configuration()
         if c["istio"].get("mode", "manage") == "external" and "istio" not in self.existing_releases:
             raise ValueError("istio.mode=external requires the named existing CetiRun Istio release")
         tls = self.resource("Secret", "cetirun-tls", c["istio"]["ingressNamespace"])
@@ -2154,6 +2158,28 @@ class Deployment:
 
     def oauth_service(self):
         return f"oauth2-proxy.{self.config['istio']['namespace']}.svc.cluster.local"
+
+    def check_mesh_configuration(self):
+        c = self.config
+        mesh = self.kubectl("get", "configmap", c["istio"]["meshConfigMap"], "--namespace", c["istio"]["controlPlaneNamespace"], "--ignore-not-found", "-o", "json")
+        if mesh.strip():
+            document = json.loads(mesh)
+            self.mesh_uid = document["metadata"]["uid"]
+            _, changed = validate_mesh_configmap(document, self.oauth_service(), published=bool(self.published_artifacts))
+            if changed and c["istio"].get("mode", "manage") == "external":
+                raise ValueError("External Istio has no matching OAuth2 provider/header configuration")
+        else:
+            if self.published_artifacts:
+                raise ValueError("Published deployment requires the existing OAuth2 mesh ConfigMap")
+            # The helper creates a missing ConfigMap. AKS managed Istio reads only
+            # istio-shared-configmap-<revision>, so another name leaves the OAuth2
+            # provider out of the mesh.
+            shared = f"istio-shared-configmap-{c['istio']['revision']}"
+            if shared != c["istio"]["meshConfigMap"] and self.resource("configmap", shared, c["istio"]["controlPlaneNamespace"]):
+                raise ValueError(f"The configured istio.meshConfigMap {c['istio']['controlPlaneNamespace']}/{c['istio']['meshConfigMap']} "
+                                 f"does not exist, and AKS managed Istio reads {shared}, which exists")
+            if c["istio"].get("mode", "manage") == "external":
+                raise ValueError("External Istio requires the existing OAuth2 mesh provider")
 
     def upgrade(self, name, values=None):
         section = self.config[name]
@@ -2260,7 +2286,7 @@ class Deployment:
                    "--name", c["istio"]["meshConfigMap"], "--service", self.oauth_service()]
         if self.mesh_uid:
             command += ["--uid", self.mesh_uid]
-        if c["istio"].get("mode", "manage") == "manage":
+        if c["istio"].get("mode", "manage") == "manage" and not self.published_artifacts:
             self.run(command)
         self.upgrade("broker")
         self.ready("broker")

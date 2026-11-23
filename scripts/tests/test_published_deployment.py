@@ -187,6 +187,89 @@ class PublishedIntegrationTests(unittest.TestCase):
         self.assertEqual(values["platform"]["cetirun-operator"]["customRuntime"]["approvedImages"][0],
                          f"{self.registry}/cetirun-pi-agent@{digest}")
 
+    def test_published_custom_allowlist_keeps_multiple_approved_digests(self):
+        config = self.configuration()
+        custom = config["platform"]["values"]["cetirun-operator"]["customRuntime"]
+        old = self.registry + "/cetirun-pi-agent@sha256:" + "f" * 64
+        current = self.lock["images"]["cetirun-pi-agent"]["reference"]
+        custom["approvedImages"] = [old, current]
+        with tempfile.TemporaryDirectory() as temporary:
+            values = DEPLOY.published_configuration(config, self.lock, Path(temporary))[1]
+        self.assertEqual(values["platform"]["cetirun-operator"]["customRuntime"]["approvedImages"], [old, current])
+
+    def test_published_cetiadmin_runtime_pin_is_preserved_or_rejected(self):
+        config = self.configuration()
+        admin = config["platform"]["values"]["cetirun-operator"]["cetiadmin"]
+        admin["enabled"] = True
+        admin["runtime"] = {"version": self.version, "image": "", "port": 8642}
+        locked = self.lock["images"]["hermes-gateway"]["reference"]
+        admin["runtime"]["image"] = locked
+        with tempfile.TemporaryDirectory() as temporary:
+            values = DEPLOY.published_configuration(config, self.lock, Path(temporary))[1]
+        self.assertEqual(values["platform"]["cetirun-operator"]["cetiadmin"]["runtime"]["image"], locked)
+        for image in (
+            "other.example/hermes-gateway@sha256:" + "a" * 64,
+            self.registry + "/hermes-gateway@sha256:" + "f" * 64,
+        ):
+            config = self.configuration()
+            candidate = config["platform"]["values"]["cetirun-operator"]["cetiadmin"]
+            candidate["enabled"] = True
+            candidate["runtime"] = {"version": self.version, "image": image, "port": 8642}
+            with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(ValueError, "cetiadmin.runtime.image conflicts"):
+                DEPLOY.published_configuration(config, self.lock, Path(temporary))
+
+    def test_published_mesh_requires_an_already_matching_provider(self):
+        document = {"metadata": {"uid": "mesh-uid", "resourceVersion": "1"},
+                    "data": {"mesh": yaml.safe_dump({"extensionProviders": [DEPLOY.MESH._oauth2_proxy_provider("oauth2-proxy.example") ]})}}
+        with self.assertRaisesRegex(ValueError, "mesh ConfigMap"):
+            DEPLOY.validate_mesh_configmap(document, "oauth2-proxy.expected", published=True)
+        patch, changed = DEPLOY.validate_mesh_configmap(document, "oauth2-proxy.example", published=True)
+        self.assertFalse(changed)
+        self.assertEqual(patch["metadata"]["resourceVersion"], "1")
+
+    def test_published_mesh_rejects_missing_provider_headers_or_configmap(self):
+        from scripts.tests.test_full_deployment import SyntheticCluster
+        for missing in ("configmap", "provider", "authorization", "set-cookie"):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as temporary:
+                config, values, _ = DEPLOY.published_configuration(self.configuration(), self.lock, Path(temporary))
+                driver = SyntheticCluster(config, values, Path(temporary) / "deployment")
+                driver.published_artifacts = self.lock
+                mesh = yaml.safe_load(driver.mesh["data"]["mesh"])
+                if missing == "configmap":
+                    driver.mesh = None
+                elif missing == "provider":
+                    mesh["extensionProviders"] = []
+                else:
+                    header = "headersToUpstreamOnAllow" if missing == "authorization" else "headersToDownstreamOnAllow"
+                    mesh["extensionProviders"][0]["envoyExtAuthzHttp"][header].remove(missing)
+                if driver.mesh:
+                    driver.mesh["data"]["mesh"] = yaml.safe_dump(mesh)
+                with self.assertRaisesRegex(ValueError, "mesh ConfigMap"):
+                    driver.check_mesh_configuration()
+                self.assertFalse(driver.writes)
+
+    def test_published_broker_conflict_does_not_patch_mesh(self):
+        from scripts.tests.test_full_deployment import SyntheticCluster
+        with tempfile.TemporaryDirectory() as temporary:
+            config, values, _ = DEPLOY.published_configuration(self.configuration(), self.lock, Path(temporary))
+            driver = SyntheticCluster(config, values, Path(temporary) / "deployment")
+            driver.published_artifacts = self.lock
+            driver.namespaces = {config[name]["namespace"]: {"labels": {"istio.io/rev": config["istio"]["revision"]}}
+                                 for name in DEPLOY.CHARTS}
+            before = copy.deepcopy(driver.mesh)
+            def upgrade(name):
+                if name == "broker":
+                    raise ValueError("broker revision changed")
+            # Namespace, certificate and artifact probes have separate coverage.
+            # Keep the real mesh prerequisite and execute ordering here.
+            with patch.object(driver, "preflight", side_effect=driver.check_mesh_configuration), \
+                 patch.object(driver, "upgrade", side_effect=upgrade) as upgrades, \
+                 patch.object(driver, "ready"), self.assertRaisesRegex(ValueError, "broker revision changed"):
+                driver.execute_platform()
+            self.assertEqual([call.args[0] for call in upgrades.call_args_list], ["istio", "broker"])
+            self.assertEqual(driver.mesh, before)
+            self.assertFalse(driver.writes)
+
     def test_conflicting_runtime_chart_digest_is_rejected(self):
         config = self.configuration()
         config["platform"]["values"]["cetirun-operator"].setdefault("cetirun", {})["chart"] = {

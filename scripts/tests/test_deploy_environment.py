@@ -341,6 +341,127 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual(deploy.registry_conflicts(baseline("registry.example.com/hermes-gateway:old"), registry), 1)
         self.assertEqual(deploy.registry_conflicts(baseline(""), registry), 1)
 
+    def test_republished_builtin_profile_checks_suspended_and_default_version_agents(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            driver = Mock()
+            driver.values = {"platform": {"cetirun-operator": {"customRuntime": {"approvedImages": []}}}}
+            old = baseline()
+            agent = old["objects"]["agents/fixture"]
+            new_image = agent["image"].replace("a" * 64, "b" * 64)
+            lock = {"version": "0.2.1", "images": {"hermes-gateway": {"reference": new_image}}}
+            profile = root / "agents/hermes/profile.yaml"
+            profile.parent.mkdir(parents=True)
+            profile.write_text("qualifiedImages: []\n")
+            for version in ("", "0.2.1"):
+                for suspended in (False, True):
+                    agent.update(chartVersion=version, suspended=suspended)
+                    with self.subTest(version=version, suspended=suspended), \
+                         self.assertRaisesRegex(deploy.Blocked, "existing_agent_image_not_qualified"):
+                        deploy.verify_existing_agent_images(driver, old, {"cetirun": root}, lock)
+            # Another explicit version continues to use its own profile.
+            agent["chartVersion"] = "0.2.0"
+            deploy.verify_existing_agent_images(driver, old, {}, lock)
+            agent["chartVersion"] = "0.2.1"
+            profile.write_text(yaml.safe_dump({"qualifiedImages": [agent["image"]]}))
+            deploy.verify_existing_agent_images(driver, old, {"cetirun": root}, lock)
+            # Match the Operator's exact approval semantics, not digest aliases.
+            agent["image"] = agent["image"].replace("@", ":0.2.1@")
+            with self.assertRaisesRegex(deploy.Blocked, "existing_agent_image_not_qualified"):
+                deploy.verify_existing_agent_images(driver, old, {"cetirun": root}, lock)
+            agent["image"] = new_image
+            deploy.verify_existing_agent_images(driver, old, {"cetirun": root}, lock)
+
+    def test_existing_custom_approval_is_independent_from_candidate_digest(self):
+        old = baseline()
+        agent = old["objects"]["agents/fixture"]
+        agent.update(agentType="custom", image="registry.example.com/pi@sha256:" + "a" * 64)
+        next_image = agent["image"].replace("a" * 64, "b" * 64)
+        driver = Mock()
+        approved = [agent["image"], next_image]
+        driver.values = {"platform": {"cetirun-operator": {"customRuntime": {"approvedImages": approved}}}}
+        deploy.verify_existing_agent_images(driver, old, {}, {})
+        approved.remove(agent["image"])
+        with self.assertRaisesRegex(deploy.Blocked, "existing_custom_image_not_approved"):
+            deploy.verify_existing_agent_images(driver, old, {}, {})
+
+    def test_copilot_proxy_rollout_is_blocked_for_any_runtime_chart(self):
+        old = baseline()
+        old["objects"]["agents/fixture"]["chartVersion"] = "0.1.0"
+        image = "registry.example.com/cetirun-ai-gateway@sha256:" + "a" * 64
+        old["objects"]["pods/cetirun-agent/proxy"] = {"agentType": "", "copilotProxyImage": image}
+        driver = Mock()
+        driver.values = {"platform": {"cetirun-operator": {"customRuntime": {"approvedImages": []}}}}
+        operator = {"name": "manager", "image": "operator:2", "env": []}
+        driver.documents = {"platform": [{"kind": "Deployment", "metadata": {"name": "cetirun-operator"},
+                                          "spec": {"template": {"spec": {"containers": [operator]}}}}]}
+        with patch.object(deploy, "verify_cetiadmin_transition"):
+            for candidate in ("", image.replace("a" * 64, "b" * 64), image):
+                operator["env"] = [{"name": "AI_GATEWAY_COPILOT_PROXY_IMAGE", "value": candidate}]
+                if candidate == image:
+                    deploy.verify_runtime_preservation(driver, old, {}, {"version": "0.2.1"})
+                else:
+                    with self.assertRaisesRegex(deploy.Blocked, "copilot_proxy_rollout_out_of_scope"):
+                        deploy.verify_runtime_preservation(driver, old, {}, {"version": "0.2.1"})
+
+    def test_capture_reads_native_and_custom_copilot_pods_without_agent_owner_reference(self):
+        driver = self.capture_driver()
+        read = driver.kubectl
+        image = "registry.example.com/proxy@sha256:" + "a" * 64
+        def kubectl(*args):
+            if args[:2] == ("get", "pods"):
+                return json.dumps({"items": [{"metadata": {"name": "proxy", "uid": "proxy-uid", "labels": {
+                    "app.kubernetes.io/component": "copilot-proxy", "app.kubernetes.io/name": "cetirun-copilot-proxy"}},
+                    "spec": {"containers": [{"name": "proxy", "image": image}]}}]})
+            return read(*args)
+        driver.kubectl = kubectl
+        snapshot = deploy.capture(driver)
+        self.assertEqual(snapshot["objects"]["pods/cetirun-agent/proxy"]["copilotProxyImage"], image)
+
+    def test_cetiadmin_coordinates_block_transitions_even_when_agent_is_suspended(self):
+        driver = Mock()
+        driver.config = {"platform": {"namespace": "platform"}}
+        current = {"enabled": True, "instanceName": "synthetic-admin"}
+        document = {"kind": "ConfigMap", "metadata": {"name": deploy.platform.CETIADMIN_SOURCE},
+                    "data": {"config.json": json.dumps(current)}}
+        driver.documents = {"platform": [document]}
+        driver.resource.return_value = {"uid": "source-uid"}
+        state = {"operatorImage": "operator:old", "runtimeVersion": "0.2.1",
+                 "configHash": deploy.platform.cetiadmin_config_hash(current)}
+        driver.cetiadmin_binding.return_value = ({}, {}, current, state)
+        for phase in ("Active", "Ready", "Installing", "Disabled"):
+            state["phase"] = phase
+            with self.subTest(phase=phase), self.assertRaisesRegex(deploy.Blocked, "cetiadmin_installation_transition"):
+                deploy.verify_cetiadmin_transition(driver, {"image": "operator:new"}, {"version": "0.2.1"})
+        deploy.verify_cetiadmin_transition(driver, {"image": "operator:old"}, {"version": "0.2.1"})
+        with self.assertRaisesRegex(deploy.Blocked, "cetiadmin_installation_transition"):
+            deploy.verify_cetiadmin_transition(driver, {"image": "operator:old"}, {"version": "0.2.2"})
+        document["data"]["config.json"] = json.dumps({**current, "platformReadNamespaces": ["other"]})
+        with self.assertRaisesRegex(deploy.Blocked, "cetiadmin_installation_transition"):
+            deploy.verify_cetiadmin_transition(driver, {"image": "operator:old"}, {"version": "0.2.1"})
+        # Disable must already be verified; this check never performs it.
+        document["data"]["config.json"] = json.dumps({**current, "enabled": False})
+        deploy.verify_cetiadmin_transition(driver, {"image": "operator:new"}, {"version": "0.2.2"})
+        driver.check_cetiadmin_stopped.assert_called_once_with(configuration=current)
+        driver.check_cetiadmin_stopped.side_effect = ValueError("writers are running")
+        with self.assertRaisesRegex(deploy.Blocked, "cetiadmin_stop_unverified"):
+            deploy.verify_cetiadmin_transition(driver, {"image": "operator:new"}, {"version": "0.2.2"})
+
+    def test_new_cetiadmin_installation_is_not_an_unplanned_agent_addition(self):
+        driver = Mock()
+        driver.config = {"platform": {"namespace": "platform"}}
+        driver.resource.return_value = None
+        document = {"kind": "ConfigMap", "metadata": {"name": deploy.platform.CETIADMIN_SOURCE},
+                    "data": {"config.json": '{"enabled":true}'}}
+        driver.documents = {"platform": [document]}
+        with self.assertRaisesRegex(deploy.Blocked, "cetiadmin_installation_transition"):
+            deploy.verify_cetiadmin_transition(driver, {}, {})
+        document["data"]["config.json"] = '{"enabled":false}'
+        deploy.verify_cetiadmin_transition(driver, {}, {})
+        driver.resource.side_effect = [None, {"uid": "checkpoint-without-source"}]
+        with self.assertRaisesRegex(deploy.Blocked, "cetiadmin_stop_unverified"):
+            deploy.verify_cetiadmin_transition(driver, {}, {})
+
     def test_preservation_rejects_replacement_drift_loss_and_new_resources(self):
         old = baseline()
         for field, value in (("uid", "replacement"), ("generation", 4), ("specHash", "changed"), ("ready", False)):
@@ -481,8 +602,13 @@ class EnvironmentTests(unittest.TestCase):
             deploy.compare_manifests(driver)
 
     def test_plan_never_executes_and_apply_fails_before_write_on_conflict(self):
-        for apply, conflict, failure in ((False, False, False), (True, True, False), (True, False, False), (True, False, True)):
-            with self.subTest(apply=apply, conflict=conflict, failure=failure), tempfile.TemporaryDirectory() as directory:
+        cases = [(False, False, False, None), (True, True, False, None),
+                 (True, False, False, None), (True, False, True, None)]
+        cases += [(True, False, False, code) for code in (
+            "existing_agent_image_not_qualified", "existing_copilot_proxy_rollout_out_of_scope",
+            "cetiadmin_installation_transition_out_of_scope")]
+        for apply, conflict, failure, runtime_block in cases:
+            with self.subTest(apply=apply, conflict=conflict, failure=failure, runtime_block=runtime_block), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 config, kube = inputs()
                 config["domain"] = "portal.example.invalid"
@@ -506,6 +632,8 @@ class EnvironmentTests(unittest.TestCase):
                         driver.upgrade("istio")
                         raise ValueError("private-upgrade-log")
                     driver.execute.side_effect = partial_execute
+                else:
+                    driver.execute.side_effect = lambda: [driver.upgrade(name) for name in deploy.platform.CHARTS]
                 snap = baseline("registry.example.com/hermes-gateway:old") if conflict else baseline()
                 with patch.object(deploy.artifacts, "resolve", return_value=lock), \
                      patch.object(deploy.platform, "published_configuration", return_value=(config, {}, {})), \
@@ -516,11 +644,14 @@ class EnvironmentTests(unittest.TestCase):
                      patch.object(deploy, "compare_manifests", return_value={}), \
                      patch.object(deploy, "audit_rendered_images", return_value=5), \
                      patch.object(deploy, "verify_runtime_chart", return_value="PASS"), \
+                     patch.object(deploy, "verify_runtime_preservation", side_effect=deploy.Blocked(runtime_block) if runtime_block else None) as runtime_check, \
                      patch.object(deploy, "verify_images", return_value=3), \
                      patch.object(deploy, "verify_entry", return_value={"tls": "PASS"}), redirect_stdout(io.StringIO()):
                     code = deploy.run(args)
-                self.assertEqual(code, 1 if conflict or failure else 0)
-                self.assertEqual(driver.execute.call_count, int(apply and not conflict))
+                self.assertEqual(code, 1 if conflict or failure or runtime_block else 0)
+                self.assertEqual(driver.execute.call_count, int(apply and not conflict and not runtime_block))
+                if apply and not (conflict or failure or runtime_block):
+                    self.assertEqual(runtime_check.call_count, 2 + len(deploy.platform.CHARTS))
                 report = (root / "report.json").read_text()
                 for secret in ("synthetic-secret", "synthetic-cluster", "sensitive-spec-hash", "agents/fixture", "portal.example.invalid", "private-upgrade-log"):
                     self.assertNotIn(secret, report)

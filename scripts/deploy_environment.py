@@ -233,6 +233,7 @@ def capture(deployment, *, require_deployed=True):
                 "bound": status.get("phase") == "Bound" if resource == "pvc" else None,
                 "agentType": spec.get("agent", {}).get("type", ""),
                 "image": spec.get("agent", {}).get("image", ""),
+                "chartVersion": spec.get("helm", {}).get("version", ""),
                 "suspended": spec.get("suspended", False),
             }
             if resource == "pvc":
@@ -289,11 +290,19 @@ def capture(deployment, *, require_deployed=True):
         for row in rows:
             meta = row["metadata"]
             statuses = row.get("status", {}).get("containerStatuses", [])
+            labels = meta.get("labels", {})
+            is_proxy = (labels.get("app.kubernetes.io/component") == "copilot-proxy" or
+                        labels.get("app.kubernetes.io/name") == "cetirun-copilot-proxy")
+            proxies = [container.get("image", "") for container in row["spec"].get("containers", [])
+                       if container.get("name") == "proxy"]
+            if is_proxy and (len(proxies) != 1 or not proxies[0]):
+                raise Blocked("copilot_proxy_image_unavailable")
             snapshot["objects"]["pods/" + namespace + "/" + meta["name"]] = {
                 "uid": meta["uid"], "specHash": digest(row["spec"]), "generation": meta.get("generation"),
                 "deleting": bool(meta.get("deletionTimestamp")),
                 "ready": bool(statuses) and all(item.get("ready") for item in statuses), "bound": None,
                 "agentType": "", "image": "", "suspended": False,
+                "copilotProxyImage": proxies[0] if is_proxy else None,
             }
     snapshot["releases"] = release_snapshot(deployment, require_deployed=require_deployed)
     return snapshot
@@ -309,6 +318,81 @@ def registry_conflicts(snapshot, registry):
     return sum(1 for item in snapshot["objects"].values()
                if item["agentType"] in ("openclaw", "hermes") and
                (not item["image"] or not item["image"].startswith(registry + "/")))
+
+
+def verify_existing_agent_images(deployment, snapshot, roots, lock):
+    """Match the Operator's exact image approvals without migrating any pin."""
+    profiles = {}
+    approved = platform.get_value(deployment.values["platform"], "cetirun-operator.customRuntime.approvedImages") or []
+    for item in snapshot["objects"].values():
+        runtime = item.get("agentType")
+        if runtime == "custom" and item["image"] not in approved:
+            raise Blocked("existing_custom_image_not_approved")
+        if runtime not in ("openclaw", "hermes") or item.get("chartVersion", "") not in ("", lock["version"]):
+            continue
+        if runtime not in profiles:
+            profile = yaml.safe_load((roots["cetirun"] / "agents" / runtime / "profile.yaml").read_text())
+            qualified = profile.get("qualifiedImages", [])
+            if not isinstance(qualified, list) or not all(isinstance(image, str) for image in qualified):
+                raise Blocked("runtime_chart_profile_invalid")
+            # verify_runtime_chart already requires the same repository, tag,
+            # digest and appVersion as this lock. Go accepts the exact default
+            # spelling or exact qualifiedImages entries, not digest aliases.
+            profiles[runtime] = {lock["images"][runtime + "-gateway"]["reference"], *qualified}
+        if item["image"] not in profiles[runtime]:
+            raise Blocked("existing_agent_image_not_qualified")
+
+
+def rendered_operator(deployment):
+    for document in deployment.documents["platform"]:
+        if document.get("kind") == "Deployment" and document.get("metadata", {}).get("name") == "cetirun-operator":
+            return next((container for container in document["spec"]["template"]["spec"]["containers"]
+                         if container.get("name") == "manager"), {})
+    return {}
+
+
+def verify_cetiadmin_transition(deployment, operator, lock):
+    """A platform upgrade cannot implicitly restart a preserved installation."""
+    namespace = deployment.config["platform"]["namespace"]
+    source = deployment.resource("configmap", platform.CETIADMIN_SOURCE, namespace)
+    desired = next((json.loads(document["data"]["config.json"]) for document in deployment.documents["platform"]
+                    if document.get("kind") == "ConfigMap" and
+                    document.get("metadata", {}).get("name") == platform.CETIADMIN_SOURCE), None)
+    if source is None:
+        binding_name = "cetiadmin-binding-" + hashlib.sha256((namespace + "/" + platform.CETIADMIN_SOURCE).encode()).hexdigest()[:24]
+        if deployment.resource("configmap", binding_name, namespace) is not None:
+            raise Blocked("cetiadmin_stop_unverified")
+        if desired and desired.get("enabled"):
+            raise Blocked("cetiadmin_installation_transition_out_of_scope")
+        return
+    try:
+        _, _, current, state = deployment.cetiadmin_binding()
+        if desired is None:
+            raise Blocked("cetiadmin_installation_transition_out_of_scope")
+        if not desired.get("enabled"):
+            # Verify the current disabled installation, not the next release's
+            # coordinates. This is a read-only stop check, not a disable action.
+            deployment.check_cetiadmin_stopped(configuration=current)
+        elif (platform.cetiadmin_config_hash(desired) != state.get("configHash") or
+              operator.get("image") != state.get("operatorImage") or
+              lock["version"] != state.get("runtimeVersion")):
+            raise Blocked("cetiadmin_installation_transition_out_of_scope")
+    except ValueError as error:
+        if isinstance(error, Blocked):
+            raise
+        raise Blocked("cetiadmin_stop_unverified") from error
+
+
+def verify_runtime_preservation(deployment, snapshot, roots, lock):
+    verify_existing_agent_images(deployment, snapshot, roots, lock)
+    operator = rendered_operator(deployment)
+    proxy_image = next((item.get("value", "") for item in operator.get("env", [])
+                        if item.get("name") == "AI_GATEWAY_COPILOT_PROXY_IMAGE"), "")
+    for item in snapshot["objects"].values():
+        image = item.get("copilotProxyImage")
+        if image is not None and (not proxy_image or image != proxy_image):
+            raise Blocked("existing_copilot_proxy_rollout_out_of_scope")
+    verify_cetiadmin_transition(deployment, operator, lock)
 
 
 def reject_downgrade(releases, candidate, names=None):
@@ -623,6 +707,8 @@ def run(args):
             summary["registryConflictCount"] = conflicts
             if conflicts:
                 raise Blocked("existing_agent_registry_conflict")
+            verify_runtime_preservation(deployment, baseline, roots, lock)
+            summary["runtimePreservation"] = "PASS"
             stage = "preflight"
             deployment.preflight()
             summary["changes"] = compare_manifests(deployment)
@@ -635,6 +721,7 @@ def run(args):
                 stage = "deploy"
                 current = capture(deployment)
                 preservation(baseline, current)
+                verify_runtime_preservation(deployment, current, roots, lock)
                 if current["releases"] != baseline["releases"]:
                     raise Blocked("helm_revision_changed_before_deploy")
                 private_write(work / "intent.json", json.dumps({"action": "deploy", "release": lock["version"], "before": baseline["releases"]}))
@@ -648,6 +735,9 @@ def run(args):
                     private_write(work / "intent.json", json.dumps({"action": stage, "before": baseline["releases"]}))
                     if release_snapshot(deployment) != expected_releases:
                         raise Blocked("helm_revision_changed_before_upgrade")
+                    current = capture(deployment)
+                    preservation(baseline, current, allowed_additions=allowed_additions)
+                    verify_runtime_preservation(deployment, current, roots, lock)
                     # The post-renderer repeats this check after Helm has
                     # rendered the chart, immediately before Helm writes its
                     # pending revision. This closes the check-then-act gap.

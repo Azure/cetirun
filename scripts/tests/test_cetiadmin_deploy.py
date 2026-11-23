@@ -411,6 +411,18 @@ class CetiAdminStopTests(full.DeploymentFixture, unittest.TestCase):
         d.check_cetiadmin_stopped()
         self.assertIs(d.agent["spec"]["suspended"], False)
 
+    def test_current_stop_check_is_independent_of_candidate_coordinates(self):
+        d = self.deployment
+        current = copy.deepcopy(d.state["configuration"])
+        d.values["platform"]["cetirun-operator"]["cetiadmin"]["runtime"]["version"] = "9.9.9"
+        with self.assertRaisesRegex(ValueError, "unchanged configuration"):
+            d.check_cetiadmin_stopped()
+        d.check_cetiadmin_stopped(configuration=current)
+        d.lists["pods"] = [{"metadata": {"uid": "writer-uid"}, "status": {"phase": "Running"}}]
+        with self.assertRaisesRegex(ValueError, "writers"):
+            d.check_cetiadmin_stopped(configuration=current)
+        self.assertEqual(d.writes, [])
+
     def test_missing_source_checkpoint_or_operator_is_not_confirmation(self):
         for kind, namespace, name in (("configmap", self.deployment.namespace, self.deployment.source_name),
                                       ("configmap", self.deployment.namespace, self.deployment.binding_name),
