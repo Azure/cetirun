@@ -1153,12 +1153,6 @@ Other rules for checked-in files:
 
 ## Release and publication
 
-For manual deployment of an existing MCR release through GitHub Actions, see
-[Environment deployment pipeline](site/content/en/docs/operations/environment-pipeline.md).
-Its artifact and deployment regression suites are part of `make ci-test`, and
-the workflow is included in `make workflow-check`. The deployment workflow never
-builds or publishes release artifacts.
-
 This section is for maintainers. Contributors do not publish artifacts.
 
 ### Release steps
