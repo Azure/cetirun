@@ -98,6 +98,23 @@ FLAG_OPTIONS = {"--install", "--ignore-not-found", "--reuse-values", "--skip-ref
 CHART_REFUSAL = re.compile(r"execution error at \(([^)\n]+)\): ([^\n]+)")
 
 
+class DeploymentCommandError(ValueError):
+    """Keep detailed context private while exposing a fixed command category."""
+
+    def __init__(self, message, command):
+        super().__init__(message)
+        words = list(map(str, command))
+        tool, rest = Path(words[0]).name, words[1:]
+        if rest[:1] in (["--context"], ["--kube-context"]):
+            rest = rest[2:]
+        if rest and rest[0].startswith("--request-timeout="):
+            rest = rest[1:]
+        allowed = {"helm": {"list", "get", "show", "template", "upgrade"},
+                   "kubectl": {"get", "rollout", "create", "apply", "patch", "config", "version"}}
+        self.public_code = (tool + "_" + rest[0] + "_failed" if rest and rest[0] in allowed.get(tool, set())
+                            else "deployment_command_failed")
+
+
 def step(command):
     """Name a command for an error message, without its output, local files or templates."""
     words = [str(word) for word in command]
@@ -1405,7 +1422,8 @@ class Deployment:
             # Only the offline render reports the chart's own refusal.
             refusals = CHART_REFUSAL.findall(result.stderr or "") if list(map(str, command[:2])) == ["helm", "template"] else []
             reason = "".join(f"; {template}: {message.strip()}" for template, message in refusals)
-            raise ValueError(f"{step(command)} failed with exit {result.returncode}{reason}; deployment did not complete")
+            raise DeploymentCommandError(
+                f"{step(command)} failed with exit {result.returncode}{reason}; deployment did not complete", command)
         return result.stdout
 
     def kubectl(self, *args, input_text=None):
@@ -2284,8 +2302,13 @@ class Deployment:
                 if self.published_artifacts and label != c["istio"]["revision"]:
                     raise ValueError(f"{section['namespace']} must already be labeled with Istio revision "
                                      f"{c['istio']['revision']}; refusing an implicit namespace mutation")
+            # Helm's --filter is client-side. Limit Secret reads at the API;
+            # infrastructure preflight uses the same active-revision query as
+            # its preservation guard, retaining pending/failed operations.
             releases = json.loads(self.helm("list", "--deployed", "--failed", "--pending", "--uninstalling", "--uninstalled", "--superseded",
-                                            "--namespace", section["namespace"], "--filter", f"^{section['release']}$", "-o", "json"))
+                                            "--namespace", section["namespace"], "--filter", f"^{section['release']}$",
+                                            "--selector", "owner=helm,name=" + section["release"] +
+                                            (",status!=superseded" if c.get("_infrastructureOnly") else ""), "-o", "json"))
             if releases:
                 if releases[0]["status"].startswith("pending-"):
                     raise ValueError(f"Release {section['release']} has an unfinished operation")

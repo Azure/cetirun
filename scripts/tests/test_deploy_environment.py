@@ -46,6 +46,53 @@ def operator_args(version="0.2.1", image="", chart_digest="sha256:" + "a" * 64):
 
 
 class EnvironmentTests(unittest.TestCase):
+    def test_command_failure_category_never_contains_operands_or_output(self):
+        for command, code in ((["helm", "--kube-context", "private-context", "list", "--namespace", "private-ns"], "helm_list_failed"),
+                              (["kubectl", "--context", "private-context", "--request-timeout=15s", "get", "secret", "private-secret"], "kubectl_get_failed"),
+                              (["helm", "private-operation"], "deployment_command_failed")):
+            error = deploy.platform.DeploymentCommandError("private failure details", command)
+            self.assertEqual(error.public_code, code)
+            self.assertNotIn("private", error.public_code)
+
+    def test_release_snapshot_selects_one_release_without_hiding_failed_or_pending(self):
+        driver = Mock()
+        driver.config = {name: {"release": name, "namespace": "shared"} for name in deploy.platform.CHARTS}
+        for status in ("deployed", "failed", "pending-upgrade", "pending-rollback", "uninstalling", "uninstalled"):
+            def helm(*args):
+                selector = args[args.index("--selector") + 1]
+                release = selector.split("name=", 1)[1].split(",", 1)[0]
+                self.assertEqual(selector, "owner=helm,name=" + release + ",status!=superseded")
+                self.assertIn("--all", args)
+                return json.dumps([{"name": release, "status": status, "revision": "8", "chart": "chart-0.2.2"}])
+            driver.helm.side_effect = helm
+            with self.subTest(status=status):
+                rows = deploy.release_snapshot(driver, require_deployed=False)
+                self.assertTrue(all(row["status"] == status for row in rows.values()))
+                if status == "deployed":
+                    deploy.release_snapshot(driver)
+                else:
+                    with self.assertRaisesRegex(deploy.Blocked, "existing_helm_release_not_deployed"):
+                        deploy.release_snapshot(driver)
+
+    def test_infrastructure_preflight_still_rejects_current_pending_revision(self):
+        config = {"_infrastructureOnly": True,
+                  "target": {"cluster": "fixture", "server": "https://cluster.example.com", "clusterUID": "cluster-uid"},
+                  "istio": {"revision": "test", "controlPlaneNamespace": "mesh", "controlPlaneDeployment": "control",
+                            "ingressNamespace": "mesh", "ingressDeployment": "ingress", "ingressServiceAccount": "ingress"},
+                  "platform": {"release": "platform", "namespace": "platform"}}
+        driver = deploy.platform.Deployment(config, {}, Path("unused"))
+        driver.chart_specs = {"platform": Path("unused")}
+        driver.resource = Mock(return_value={"uid": "cluster-uid", "labels": {"istio.io/rev": "test"}})
+        driver.kubectl = Mock(return_value="fixture\nhttps://cluster.example.com")
+        driver.check_kubectl_version = Mock()
+        driver.helm = Mock(return_value=json.dumps([{"status": "pending-upgrade", "revision": "8"}]))
+        with self.assertRaisesRegex(ValueError, "unfinished operation"):
+            driver.preflight()
+        args = driver.helm.call_args.args
+        self.assertEqual(args[args.index("--selector") + 1], "owner=helm,name=platform,status!=superseded")
+        self.assertIn("--pending", args)
+        self.assertFalse(any(call.args[0] in ("apply", "patch", "delete", "create") for call in driver.kubectl.call_args_list))
+
     def infrastructure_driver(self, arguments=None, env=None):
         driver = self.runtime_driver(arguments)
         driver.config["_infrastructureOnly"] = True

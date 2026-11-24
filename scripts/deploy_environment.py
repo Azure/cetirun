@@ -128,7 +128,8 @@ def release_snapshot(deployment, *, require_deployed=True):
     for name in platform.deployment_charts(deployment.config):
         section = deployment.config[name]
         rows = json.loads(deployment.helm("list", "--namespace", section["namespace"], "--all",
-                                          "--selector", "status!=superseded", "-o", "json"))
+                                          "--selector", "owner=helm,name=" + section["release"] +
+                                          ",status!=superseded", "-o", "json"))
         row = next((row for row in rows if row["name"] == section["release"]), None)
         if not row or (require_deployed and row["status"] != "deployed"):
             raise Blocked("existing_helm_release_not_deployed")
@@ -1420,7 +1421,8 @@ def run(args):
     except Exception as error:
         summary["status"] = "BLOCKED" if isinstance(error, Blocked) else "FAIL"
         summary["stages"].append({"stage": stage, "status": summary["status"],
-                                  "code": str(error) if isinstance(error, Blocked) else "stage_failed"})
+                                  "code": (str(error) if isinstance(error, Blocked) else error.public_code
+                                           if isinstance(error, platform.DeploymentCommandError) else "stage_failed")})
         if isinstance(error, artifacts.ArtifactError) and error.artifact:
             summary["artifactFailure"] = {"kind": error.artifact_kind, "name": error.artifact}
         private_write(work / "failure.txt", type(error).__name__ + ": " + str(error) + "\n")
