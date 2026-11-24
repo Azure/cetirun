@@ -34,7 +34,7 @@ except ImportError:  # Direct script invocation.
 
 
 CONFIG_KEYS = {"target", "release", "domain", "identityRealm", "ownerAlias", "identity",
-               "istio", "broker", "platform", "sharedSkills", "skillMarketplace",
+               "istio", "broker", "platform", "portal", "sharedSkills", "skillMarketplace",
                "observability", "modelRouting", "publicTLS"}
 PRESERVED = ("agents.cetirun.microsoft.com", "teams.cetirun.microsoft.com",
              "agentpolicies.cetirun.microsoft.com", "sandboxes.cetirun.microsoft.com", "pvc")
@@ -125,7 +125,7 @@ def reject_inline_credentials(value, path=()):
 
 def release_snapshot(deployment, *, require_deployed=True):
     result = {}
-    for name in platform.CHARTS:
+    for name in platform.deployment_charts(deployment.config):
         section = deployment.config[name]
         rows = json.loads(deployment.helm("list", "--namespace", section["namespace"], "--all",
                                           "--selector", "status!=superseded", "-o", "json"))
@@ -143,7 +143,7 @@ def managed_release_names(deployment):
     preservation snapshot, but this deployment never renders or upgrades it.
     """
     istio = deployment.config.get("istio", {})
-    return tuple(name for name in platform.CHARTS
+    return tuple(name for name in platform.deployment_charts(deployment.config)
                  if name != "istio" or istio.get("mode", "manage") == "manage")
 
 
@@ -156,7 +156,7 @@ def installation_claim_keys(deployment):
     the preservation set even when a chart manifest contains only the template.
     """
     claims, prefixes = set(), []
-    for name in platform.CHARTS:
+    for name in platform.deployment_charts(deployment.config):
         section = deployment.config[name]
         raw = deployment.helm("get", "manifest", section["release"], "--namespace", section["namespace"])
         for document in yaml.safe_load_all(raw or ""):
@@ -354,12 +354,6 @@ def agent_ready(row):
             any(c.get("type") == "Ready" and c.get("status") == "True" for c in status.get("conditions", [])))
 
 
-def registry_conflicts(snapshot, registry):
-    return sum(1 for item in snapshot["objects"].values()
-               if item["agentType"] in ("openclaw", "hermes") and
-               (not item["image"] or not item["image"].startswith(registry + "/")))
-
-
 def verify_existing_agent_images(deployment, snapshot, roots, lock):
     """Match the Operator's exact image approvals without migrating any pin."""
     profiles = {}
@@ -368,6 +362,12 @@ def verify_existing_agent_images(deployment, snapshot, roots, lock):
         runtime = item.get("agentType")
         if runtime == "custom" and item["image"] not in approved:
             raise Blocked("existing_custom_image_not_approved")
+        if deployment.config.get("_infrastructureOnly"):
+            # An unchanged runtime is qualified by its retained chart, not by
+            # the unrelated runtime chart bundled with this control-plane
+            # release. Exact runtime configuration and live objects are
+            # checked separately before every write and during acceptance.
+            continue
         if runtime not in ("openclaw", "hermes") or item.get("chartVersion", "") not in ("", lock["version"]):
             continue
         if runtime not in profiles:
@@ -393,7 +393,8 @@ def rendered_operator(deployment):
 
 def runtime_arguments(arguments):
     """Read only the runtime controls, without disclosing other arguments."""
-    names = {"chart-repo-url", "chart-version", "chart-digest", "memory-context-image", "memory-context-enabled"}
+    names = {"chart-repo-url", "chart-version", "chart-digest", "memory-context-image", "memory-context-enabled",
+             "domain-suffix", "istio-gateway", "default-model"}
     if not isinstance(arguments, list) or not all(isinstance(value, str) for value in arguments):
         raise Blocked("operator_runtime_arguments_unavailable")
     result = {}
@@ -452,9 +453,65 @@ def runtime_helm_values(entries):
     return result
 
 
+def runtime_environment(entries):
+    """Compare accepted runtime settings without recording their private values."""
+    if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+        raise Blocked("operator_runtime_environment_unavailable")
+    result = {}
+    json_values = {"CETIRUN_HELM_VALUES", "CETIRUN_CHAT_ACCESS", "CETIRUN_CUSTOM_RUNTIME",
+                   "CETIRUN_SANDBOX_SOURCES", "CETIRUN_SKILL_MARKETPLACE"}
+    # These settings feed Agent reconciliation. Process settings, logging and
+    # the Operator binary identity may change with a control-plane release.
+    protected = json_values | {
+        "ISTIO_REVISION", "AI_GATEWAY_COPILOT_PROXY_IMAGE", "AI_GATEWAY_COPILOT_HEALTH_CHECKS",
+        "AI_GATEWAY_DEFAULT_BUDGET", "AI_GATEWAY_DEFAULT_MODEL", "AI_GATEWAY_ENABLED",
+        "AI_GATEWAY_MASTER_KEY_SECRET", "AI_GATEWAY_MASTER_KEY_SECRET_KEY", "AI_GATEWAY_URL",
+        "AGENT_ID_BLUEPRINT_CLIENT_ID", "AGENT_ID_BROKER_URL", "AGENT_ID_ENABLED",
+        "AGENT_ID_NAME_PREFIX", "AGENT_ID_TENANT_ID", "AGENT_ID_CLEANUP_ENABLED",
+        "CONNECTIONS_MCP_BROKER_NAMESPACE", "CONNECTIONS_MCP_BROKER_SERVICE_ACCOUNT",
+        "CONNECTIONS_MCP_CA_SECRET_NAME", "CONNECTIONS_MCP_NATIVE_ENABLED",
+        "CONNECTIONS_MCP_RUNTIME_TYPES", "CONNECTIONS_MCP_URL", "WORKLOAD_TOKEN_AUDIENCE",
+        "REGISTRY_CREDENTIAL_NAMESPACE",
+    }
+    seen = set()
+    for entry in entries:
+        name = entry.get("name")
+        if not isinstance(name, str) or not name or name in seen:
+            raise Blocked("operator_runtime_environment_unavailable")
+        seen.add(name)
+        if name not in protected:
+            continue
+        value = {key: copy.deepcopy(item) for key, item in entry.items() if key != "name"}
+        if name in json_values and "value" in value:
+            try:
+                value["value"] = json.loads(value["value"])
+            except (ValueError, TypeError):
+                raise Blocked("operator_runtime_environment_unavailable") from None
+        result[name] = value
+    return result
+
+
+def verify_runtime_environment(deployment, operator):
+    namespace = deployment.config["platform"]["namespace"]
+    before = deployment.resource("deployment", "cetirun-operator", namespace)
+    if not before or not before.get("uid") or before.get("deletionTimestamp"):
+        raise Blocked("operator_runtime_environment_unavailable")
+    raw = deployment.kubectl("get", "deployment", "cetirun-operator", "--namespace", namespace,
+                             "-o", 'jsonpath-as-json={.spec.template.spec.containers[?(@.name=="manager")].env[*]}')
+    try:
+        current = runtime_environment(json.loads(raw))
+    except (ValueError, TypeError):
+        raise Blocked("operator_runtime_environment_unavailable") from None
+    after = deployment.resource("deployment", "cetirun-operator", namespace)
+    if not after or any(before.get(key) != after.get(key) for key in ("uid", "resourceVersion")):
+        raise Blocked("operator_runtime_environment_changed")
+    if digest(current) != digest(runtime_environment(operator.get("env", []))):
+        raise Blocked("existing_runtime_environment_transition_out_of_scope")
+
+
 def verify_operator_runtime_transition(deployment, snapshot, operator):
     agents = [item for item in snapshot["objects"].values() if item.get("agentType")]
-    if not agents:
+    if not agents and not deployment.config.get("_infrastructureOnly"):
         return
     current = current_operator_arguments(deployment)
     candidate = runtime_arguments(operator.get("args", []))
@@ -468,6 +525,14 @@ def verify_operator_runtime_transition(deployment, snapshot, operator):
     if current["chart-repo-url"] != candidate["chart-repo-url"]:
         raise Blocked("existing_chart_repository_transition_out_of_scope")
     old_version, new_version = current["chart-version"], candidate["chart-version"]
+    if deployment.config.get("_infrastructureOnly"):
+        if old_version != new_version or current.get("chart-digest", "") != candidate.get("chart-digest", ""):
+            raise Blocked("existing_runtime_chart_transition_out_of_scope")
+        if any(current.get(field, "") != candidate.get(field, "")
+               for field in ("domain-suffix", "istio-gateway", "default-model")):
+            raise Blocked("existing_runtime_arguments_transition_out_of_scope")
+        verify_runtime_environment(deployment, operator)
+        return
     if old_version == new_version:
         return
     if any(not item.get("chartVersion") for item in agents):
@@ -624,7 +689,8 @@ def verify_runtime_preservation(deployment, snapshot, roots, lock):
     verify_existing_agent_images(deployment, snapshot, roots, lock)
     operator = rendered_operator(deployment)
     verify_operator_runtime_transition(deployment, snapshot, operator)
-    verify_memory_runtime_images(snapshot, operator, roots, lock)
+    if not deployment.config.get("_infrastructureOnly"):
+        verify_memory_runtime_images(snapshot, operator, roots, lock)
     verify_custom_home_preservation(deployment, snapshot)
     proxy_image = next((item.get("value", "") for item in operator.get("env", [])
                         if item.get("name") == "AI_GATEWAY_COPILOT_PROXY_IMAGE"), "")
@@ -750,6 +816,23 @@ def managed_documents(documents):
     return [doc for doc in documents if doc and "helm.sh/hook" not in doc.get("metadata", {}).get("annotations", {})]
 
 
+CONTROL_PLANE_IMAGES = {"cetirun-operator", "cetirun-portal", "cetirun-ai-gateway",
+                        "cetirun-agent-broker", "cetirun-connections-mcp"}
+
+
+def published_workload_image(deployment, image, lock):
+    basename = image.split("@")[0].rsplit("/", 1)[-1].split(":")[0]
+    if deployment.config.get("_infrastructureOnly") is True and basename not in CONTROL_PLANE_IMAGES:
+        return None
+    return lock["images"].get(basename)
+
+
+def workload_images(document):
+    template = document.get("spec", {}).get("template", {}).get("spec", {})
+    return {(field, container["name"]): container.get("image", "")
+            for field in ("containers", "initContainers") for container in template.get(field, [])}
+
+
 def compare_manifests(deployment):
     """Reject resource removals and storage changes; publish counts, not values."""
     changes = {}
@@ -765,6 +848,13 @@ def compare_manifests(deployment):
                 raise Blocked("statefulset_storage_contract_changed")
             if key[1] in ("PersistentVolumeClaim", "PersistentVolume", "StorageClass") and old[key].get("spec") != new[key].get("spec"):
                 raise Blocked("storage_contract_changed")
+        if deployment.config.get("_infrastructureOnly") is True:
+            for key, document in new.items():
+                previous = workload_images(old.get(key, {}))
+                for container, image in workload_images(document).items():
+                    basename = image.split("@")[0].rsplit("/", 1)[-1].split(":")[0]
+                    if basename not in CONTROL_PLANE_IMAGES and image != previous.get(container):
+                        raise Blocked("auxiliary_image_transition_out_of_scope")
         changes[name] = {"added": len(new.keys() - old.keys()), "changed": sum(old[key] != new[key] for key in old.keys() & new.keys()),
                          "removed": 0}
     return changes
@@ -782,11 +872,11 @@ def audit_rendered_images(deployment, lock):
                         name = image.split("@")[0].rsplit("/", 1)[-1].split(":")[0]
                         if image.startswith(lock["registry"] + "/") and name not in lock["images"]:
                             raise Blocked("rendered_image_missing_from_inventory")
-                        if name in lock["images"]:
+                        if published_workload_image(deployment, image, lock):
                             if image != lock["images"][name]["reference"]:
                                 raise Blocked("rendered_image_not_locked")
                             observed.add(name)
-    required = {"cetirun-operator", "cetirun-portal", "cetirun-ai-gateway", "cetirun-agent-broker", "cetirun-connections-mcp"}
+    required = CONTROL_PLANE_IMAGES
     if not required <= observed:
         raise Blocked("required_control_plane_images_missing")
     return len(observed)
@@ -854,7 +944,7 @@ def verify_entry(domain):
 
 def verify_images(deployment, lock):
     count = 0
-    for name in platform.CHARTS:
+    for name in platform.deployment_charts(deployment.config):
         section = deployment.config[name]
         rows = json.loads(deployment.kubectl("get", "pods", "--namespace", section["namespace"], "-o", "json"))["items"]
         for document in deployment.documents[name]:
@@ -865,11 +955,10 @@ def verify_images(deployment, lock):
             containers = template["spec"].get("containers", []) + template["spec"].get("initContainers", [])
             for container in containers:
                 image = container["image"]
-                basename = image.split("@")[0].rsplit("/", 1)[-1].split(":")[0]
-                item = lock["images"].get(basename)
-                if not item:
+                item = published_workload_image(deployment, image, lock)
+                if not item and deployment.config.get("_infrastructureOnly") is not True:
                     continue
-                if image != item["reference"]:
+                if item and image != item["reference"]:
                     raise Blocked("workload_image_pin_mismatch")
                 matching = [pod for pod in rows if selector and all(pod["metadata"].get("labels", {}).get(k) == v for k, v in selector.items())
                             and not pod["metadata"].get("deletionTimestamp")]
@@ -881,9 +970,11 @@ def verify_images(deployment, lock):
                         raise Blocked("workload_image_pin_mismatch")
                     statuses = {c["name"]: c for field in ("containerStatuses", "initContainerStatuses") for c in pod.get("status", {}).get(field, [])}
                     actual = statuses.get(container["name"], {}).get("imageID", "")
-                    if not any(actual.endswith(value) for value in (item["digest"], item["platformDigest"])):
+                    digests = (item["digest"], item["platformDigest"]) if item else ((image.split("@", 1)[1],) if "@" in image else ())
+                    if digests and not any(actual.endswith(value) for value in digests):
                         raise Blocked("workload_image_identity_mismatch")
-                    count += 1
+                    if item:
+                        count += 1
     if not count:
         raise Blocked("no_published_workload_images_observed")
     return count
@@ -902,9 +993,11 @@ def run(args):
     work.mkdir(parents=True, mode=0o700, exist_ok=False)
     summary = {"schemaVersion": 1, "startedAt": datetime.now(timezone.utc).isoformat(),
                "status": "RUNNING", "planOnly": not args.apply, "completionSubmissions": 0,
+               "deploymentScope": "infrastructure-only",
                "stabilityWindowSeconds": 60,
                "stages": [], "notQualified": ["browser OAuth", "native runtime chat", "model inference",
-                                                "Marketplace publication", "ADX ingestion", "provider background request count"]}
+                                                "Marketplace publication", "ADX ingestion", "provider background request count",
+                                                "retained runtime qualification against the new Operator binary"]}
     stage = "inputs"
     deployment, baseline, observed = None, None, None
     allowed_additions = set()
@@ -927,7 +1020,7 @@ def run(args):
         stage = "configuration"
         # The published mode renders and upgrades the same downloaded packages.
         with open(work / "diagnostics.log", "w", opener=lambda name, flags: os.open(name, flags, 0o600)) as log, redirect_stdout(log), redirect_stderr(log):
-            config, values, roots = platform.published_configuration(config, lock, work / "charts")
+            config, values, roots = platform.infrastructure_configuration(config, lock, work / "charts")
             deployment = platform.Deployment(config, values, work / "deployment", published_artifacts=lock, chart_roots=roots)
             deployment.scratch.mkdir(mode=0o700)
             deployment.render()
@@ -947,10 +1040,7 @@ def run(args):
             summary["preservedResourceCount"] = len(baseline["objects"])
             reject_downgrade(baseline["releases"], lock["version"], managed_release_names(deployment))
             stage = "existing_agents"
-            conflicts = registry_conflicts(baseline, lock["registry"])
-            summary["registryConflictCount"] = conflicts
-            if conflicts:
-                raise Blocked("existing_agent_registry_conflict")
+            summary["runtimePolicy"] = "preserve-existing"
             verify_runtime_preservation(deployment, baseline, roots, lock)
             summary["runtimePreservation"] = "PASS"
             stage = "preflight"
@@ -1009,6 +1099,7 @@ def run(args):
                 stage = "acceptance"
                 after = stable_acceptance(deployment, baseline, expected_releases=expected_releases,
                                           allowed_additions=allowed_additions, observed=observed)
+                verify_runtime_preservation(deployment, after, roots, lock)
                 summary["afterReleases"] = after["releases"]
                 summary["verifiedContainers"] = verify_images(deployment, lock)
                 summary["entryAfter"] = verify_entry(config["domain"])

@@ -405,11 +405,87 @@ class EnvironmentTests(unittest.TestCase):
                                           "models": [{"api_key": "os.environ/AZURE_KEY"}],
                                           "tls": {"secretName": "existing-tls"}})
 
-    def test_existing_agent_registry_conflict_including_missing_pin(self):
-        registry = "mcr.microsoft.com/aks/ai-runtime/cetirun"
-        self.assertEqual(deploy.registry_conflicts(baseline(), registry), 0)
-        self.assertEqual(deploy.registry_conflicts(baseline("registry.example.com/hermes-gateway:old"), registry), 1)
-        self.assertEqual(deploy.registry_conflicts(baseline(""), registry), 1)
+    def test_infrastructure_does_not_apply_new_runtime_profiles_to_retained_agents(self):
+        driver = self.runtime_driver()
+        driver.config["_infrastructureOnly"] = True
+        driver.values["platform"]["cetirun-operator"] = {"customRuntime": {"approvedImages": []}}
+        snap = baseline("registry.example.com/hermes-gateway@sha256:" + "b" * 64)
+        snap["objects"]["agents/fixture"]["chartVersion"] = "0.1.7"
+        before = copy.deepcopy(snap)
+        deploy.verify_existing_agent_images(driver, snap, {}, {"version": "0.2.1"})
+        self.assertEqual(snap, before)
+        driver.kubectl.assert_not_called()
+        snap["objects"]["agents/fixture"]["agentType"] = "custom"
+        with self.assertRaisesRegex(deploy.Blocked, "existing_custom_image_not_approved"):
+            deploy.verify_existing_agent_images(driver, snap, {}, {"version": "0.2.1"})
+
+    def test_infrastructure_preserves_external_runtime_chart_and_memory_exactly(self):
+        arguments = operator_args(version="0.1.7", image="registry.example.com/memory@sha256:" + "b" * 64)
+        arguments[0] = "--chart-repo-url=oci://registry.example.com/runtime/cetirun"
+        driver = self.runtime_driver(arguments)
+        driver.config["_infrastructureOnly"] = True
+        candidate = {"args": arguments.copy(), "env": []}
+        with patch.object(deploy.artifacts, "_manifest") as manifest:
+            deploy.verify_operator_runtime_transition(driver, baseline(), candidate)
+            manifest.assert_not_called()
+        for field, replacement in (("chart-version", "0.2.1"), ("chart-digest", "sha256:" + "f" * 64)):
+            changed = copy.deepcopy(candidate)
+            changed["args"] = ["--" + field + "=" + replacement if arg.startswith("--" + field + "=") else arg
+                               for arg in changed["args"]]
+            with self.subTest(field=field), self.assertRaisesRegex(deploy.Blocked, "runtime_chart_transition"):
+                deploy.verify_operator_runtime_transition(driver, baseline(), changed)
+            with self.subTest(field=field, agents=0), self.assertRaisesRegex(deploy.Blocked, "runtime_chart_transition"):
+                deploy.verify_operator_runtime_transition(driver, {"objects": {}}, changed)
+
+    def test_runtime_environment_checks_proxy_and_custom_settings_without_logging_values(self):
+        driver = self.runtime_driver()
+        current = [{"name": "CETIRUN_OPERATOR_IMAGE", "value": "old-control-plane"},
+                   {"name": "AI_GATEWAY_COPILOT_PROXY_IMAGE", "value": "registry.example.com/proxy@sha256:" + "c" * 64},
+                   {"name": "CETIRUN_CUSTOM_RUNTIME", "value": '{"enabled":true,"fsGroup":1024}'}]
+        driver.kubectl.return_value = json.dumps(current)
+        candidate = copy.deepcopy(current)
+        candidate[0]["value"] = "new-control-plane"
+        candidate[2]["value"] = '{"fsGroup":1024,"enabled":true}'
+        candidate.append({"name": "KUBE_FEATURE_WatchListClient", "value": "true"})
+        deploy.verify_runtime_environment(driver, {"env": candidate})
+        for index in (1, 2):
+            changed = copy.deepcopy(candidate)
+            changed[index]["value"] = "changed-private-value" if index == 1 else '{"enabled":false,"fsGroup":1024}'
+            with self.subTest(index=index), self.assertRaisesRegex(deploy.Blocked, "existing_runtime_environment_transition") as error:
+                deploy.verify_runtime_environment(driver, {"env": changed})
+            self.assertNotIn("changed-private-value", str(error.exception))
+        driver.resource.side_effect = [{"uid": "operator", "resourceVersion": "1"},
+                                       {"uid": "replacement", "resourceVersion": "2"}]
+        with self.assertRaisesRegex(deploy.Blocked, "operator_runtime_environment_changed"):
+            deploy.verify_runtime_environment(driver, {"env": candidate})
+
+    def test_infrastructure_preserves_auxiliary_workload_images(self):
+        document = {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "cache"},
+                    "spec": {"template": {"spec": {"containers": [{"name": "cache", "image": "cache.example/valkey:8"}]}}}}
+        driver = Mock()
+        driver.config = {"_infrastructureOnly": True,
+                         **{name: {"release": name, "namespace": name} for name in ("istio", "broker", "platform")}}
+        driver.documents = {name: [copy.deepcopy(document)] for name in ("istio", "broker", "platform")}
+        driver.helm.return_value = yaml.safe_dump(document)
+        deploy.compare_manifests(driver)
+        driver.documents["platform"][0]["spec"]["template"]["spec"]["containers"][0]["image"] = "cache.example/valkey:9"
+        with self.assertRaisesRegex(deploy.Blocked, "auxiliary_image_transition_out_of_scope"):
+            deploy.compare_manifests(driver)
+
+    def test_infrastructure_verifies_retained_auxiliary_digest(self):
+        image = "cache.example/valkey@sha256:" + "a" * 64
+        document = {"kind": "Deployment", "metadata": {"name": "cache"},
+                    "spec": {"selector": {"matchLabels": {"app": "cache"}},
+                             "template": {"spec": {"containers": [{"name": "cache", "image": image}]}}}}
+        driver = Mock()
+        driver.config = {"_infrastructureOnly": True,
+                         **{name: {"release": name, "namespace": name} for name in ("istio", "broker", "platform")}}
+        driver.documents = {name: [document] for name in ("istio", "broker", "platform")}
+        driver.kubectl.return_value = json.dumps({"items": [{"metadata": {"labels": {"app": "cache"}},
+            "spec": {"containers": [{"name": "cache", "image": image}]},
+            "status": {"containerStatuses": [{"name": "cache", "imageID": "cache.example/valkey@sha256:" + "b" * 64}]}}]})
+        with self.assertRaisesRegex(deploy.Blocked, "workload_image_identity_mismatch"):
+            deploy.verify_images(driver, {"images": {}})
 
     def test_current_operator_projection_reads_runtime_args_and_rejects_drift(self):
         driver = self.runtime_driver()
@@ -516,6 +592,7 @@ class EnvironmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             driver = Mock()
+            driver.config = {}
             driver.values = {"platform": {"cetirun-operator": {"customRuntime": {"approvedImages": []}}}}
             old = baseline()
             agent = old["objects"]["agents/fixture"]
@@ -883,14 +960,14 @@ class EnvironmentTests(unittest.TestCase):
         with self.assertRaisesRegex(deploy.Blocked, "storage_contract"):
             deploy.compare_manifests(driver)
 
-    def test_plan_never_executes_and_apply_fails_before_write_on_conflict(self):
+    def test_plan_never_executes_and_runtime_guards_still_block_infrastructure_writes(self):
         cases = [(False, False, False, None), (True, True, False, None),
                  (True, False, False, None), (True, False, True, None)]
         cases += [(True, False, False, code) for code in (
             "existing_agent_image_not_qualified", "existing_copilot_proxy_rollout_out_of_scope",
             "cetiadmin_installation_transition_out_of_scope", "existing_memory_override_transition_out_of_scope",
             "existing_memory_init_rollout_out_of_scope", "existing_custom_home_transition_out_of_scope",
-            "retained_chart_tag_changed", "tag_changed_after_plan")]
+            "retained_chart_tag_changed", "tag_changed_after_plan", "final_runtime_drift")]
         for apply, conflict, failure, runtime_block in cases:
             with self.subTest(apply=apply, conflict=conflict, failure=failure, runtime_block=runtime_block), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -926,8 +1003,11 @@ class EnvironmentTests(unittest.TestCase):
                 runtime_effect = deploy.Blocked(runtime_block) if runtime_block else None
                 if runtime_block == "tag_changed_after_plan":
                     runtime_effect = [None, deploy.Blocked("retained_chart_tag_changed")]
+                if runtime_block == "final_runtime_drift":
+                    runtime_effect = [None] * (2 + len(deploy.platform.CHARTS)) + [
+                        deploy.Blocked("existing_runtime_environment_transition_out_of_scope")]
                 with patch.object(deploy.artifacts, "resolve", return_value=lock), \
-                     patch.object(deploy.platform, "published_configuration", return_value=(config, {}, {})), \
+                     patch.object(deploy.platform, "infrastructure_configuration", return_value=(config, {}, {})), \
                      patch.object(deploy.platform, "Deployment", return_value=driver), \
                      patch.object(deploy, "capture", return_value=snap), \
                      patch.object(deploy, "release_snapshot", side_effect=lambda *args, **kwargs: copy.deepcopy(live_releases)), \
@@ -939,10 +1019,10 @@ class EnvironmentTests(unittest.TestCase):
                      patch.object(deploy, "verify_images", return_value=3), \
                      patch.object(deploy, "verify_entry", return_value={"tls": "PASS"}), redirect_stdout(io.StringIO()):
                     code = deploy.run(args)
-                self.assertEqual(code, 1 if conflict or failure or runtime_block else 0)
-                self.assertEqual(driver.execute.call_count, int(apply and not conflict and not runtime_block))
-                if apply and not (conflict or failure or runtime_block):
-                    self.assertEqual(runtime_check.call_count, 2 + len(deploy.platform.CHARTS))
+                self.assertEqual(code, 1 if failure or runtime_block else 0)
+                self.assertEqual(driver.execute.call_count, int(apply and (not runtime_block or runtime_block == "final_runtime_drift")))
+                if apply and not (failure or runtime_block):
+                    self.assertEqual(runtime_check.call_count, 3 + len(deploy.platform.CHARTS))
                 report = (root / "report.json").read_text()
                 for secret in ("synthetic-secret", "synthetic-cluster", "sensitive-spec-hash", "agents/fixture", "portal.example.invalid", "private-upgrade-log"):
                     self.assertNotIn(secret, report)
@@ -1022,7 +1102,7 @@ class EnvironmentTests(unittest.TestCase):
                 # Kubernetes or the stability interval. All external APIs are doubles.
                 acceptance = deploy.stable_acceptance
                 with patch.object(deploy.artifacts, "resolve", return_value=lock), \
-                     patch.object(deploy.platform, "published_configuration", return_value=(config, {}, {})), \
+                     patch.object(deploy.platform, "infrastructure_configuration", return_value=(config, {}, {})), \
                      patch.object(deploy.platform, "Deployment", return_value=driver), \
                      patch.object(deploy, "capture", side_effect=capture), \
                      patch.object(deploy, "release_snapshot", side_effect=lambda *a, **k: copy.deepcopy(live["releases"])), \

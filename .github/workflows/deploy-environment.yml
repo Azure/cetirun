@@ -1,4 +1,4 @@
-name: Deploy CetiRun environment
+name: Deploy CetiRun infrastructure
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         type: environment
         required: true
       release_tag:
-        description: Published MCR release tag (vX.Y.Z)
+        description: Published MCR control-plane release tag (vX.Y.Z); instance runtimes are retained
         type: string
         required: true
       plan_only:
@@ -69,6 +69,7 @@ jobs:
           "$RUNNER_TEMP/cetirun-venv/bin/python" -B -m unittest \
             scripts.tests.test_deployment_artifacts \
             scripts.tests.test_published_deployment \
+            scripts.tests.test_infrastructure_configuration \
             scripts.tests.test_deploy_environment
 
       - name: Preflight and optionally deploy

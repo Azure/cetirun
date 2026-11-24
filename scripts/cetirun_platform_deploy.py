@@ -42,6 +42,8 @@ CHART_PACKAGES = {"istio": "cetirun-istio", "broker": "cetirun-agent-broker", "p
 
 
 def chart_package(name):
+    if name == "portal":
+        return "cetirun-portal"
     try:
         return CHART_PACKAGES[name]
     except KeyError as exc:
@@ -739,6 +741,143 @@ def published_configuration(path, artifacts, scratch, *, domain=None, registry=N
     return config, values, logical_roots
 
 
+def deployment_charts(config):
+    """Infrastructure may own the original standalone Portal release."""
+    return {**CHARTS, **({"portal": "app/cetirun-portal/chart"} if "portal" in config else {})}
+
+
+def infrastructure_configuration(path, artifacts, scratch):
+    """Compile existing-installation values without selecting Agent runtimes.
+
+    Unlike bootstrap configuration, this consumes the installation's explicit
+    topology and runtime settings. Only control-plane image fields are replaced
+    by published artifacts. Live guards must still compare the effective
+    runtime contract, resource ownership, storage and admission authority.
+    """
+    config = copy.deepcopy(path) if isinstance(path, dict) else yaml_file(path)
+    roots = prepare_published_charts(artifacts, scratch)
+    components = ("cetirun-operator", "cetirun-portal", "cetirun-ai-gateway",
+                  "cetirun-connections-mcp", "cetirun-observability")
+    if not {"cetirun", *CHART_PACKAGES.values(), *components} <= roots.keys():
+        raise ValueError("published release is missing required chart defaults; no source fallback is permitted")
+    release = config.setdefault("release", {})
+    for field, lock_field in (("registry", "registry"), ("version", "version"), ("gitSHA", "sourceSHA")):
+        expected = required(artifacts, lock_field)
+        if release.get(field) not in (None, "", expected):
+            raise ValueError(f"environment release.{field} conflicts with artifact lock")
+        release[field] = expected
+    RELEASE.coordinates(argparse.Namespace(registry=release["registry"], version=release["version"],
+                                           git_sha=release["gitSHA"], chart_namespace="helm"))
+    if type(release.get("clientOpenAPIValidation", True)) is not bool:
+        raise ValueError("release.clientOpenAPIValidation must be a boolean")
+    config["_releaseOrigins"] = {key: "verified artifact lock" for key in ("registry", "version")}
+    config["_infrastructureOnly"] = True
+    config["_publishedInventory"] = {
+        "images": [{"name": name, "optional": entry.get("optional", False)}
+                   for name, entry in artifacts.get("images", {}).items()],
+        "charts": [{"name": name} for name in artifacts["charts"]],
+    }
+    validate_excluded_images(config)
+    for field in ("target.context", "target.cluster", "target.server", "target.clusterUID", "domain",
+                  "istio.revision", "istio.controlPlaneNamespace", "istio.controlPlaneDeployment",
+                  "istio.ingressNamespace", "istio.ingressDeployment", "istio.ingressServiceAccount", "istio.meshConfigMap"):
+        required(config, field)
+    if not re.fullmatch(r"https://[^\s/?#@]+", config["target"]["server"]):
+        raise ValueError("target.server must be an HTTPS Kubernetes API origin without embedded credentials")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*\.[a-z0-9-]+", config["domain"]):
+        raise ValueError("domain must be a hostname, without a scheme or path")
+    if config.get("instances") or config.get("publicTLS", {}).get("enabled"):
+        raise ValueError("Instance operations and public TLS bootstrap are outside infrastructure deployment")
+    if config["istio"].get("mode", "manage") not in ("manage", "external"):
+        raise ValueError("istio.mode must be manage or external")
+    if config["istio"].get("tlsMode", "external") not in ("external", "retain"):
+        raise ValueError("istio.tlsMode must be external or retain")
+    specs = deployment_charts(config)
+    for name in specs:
+        for field in ("release", "namespace"):
+            if not resource_name(required(config, f"{name}.{field}")):
+                raise ValueError(f"{name}.{field} must be a DNS label")
+    if len({config[name]["namespace"] for name in specs}) != len(specs):
+        raise ValueError("Infrastructure releases require separate namespaces")
+    logical_roots = {name: roots[chart_package(name)] for name in specs}
+    logical_roots.update({name: root for name, root in roots.items() if name not in CHART_PACKAGES.values()})
+    values = {name: merge(yaml_file(logical_roots[name] / "values.yaml"), config[name].get("values", {}))
+              for name in specs}
+    platform = values["platform"]
+    for component in components:
+        platform[component] = merge(yaml_file(roots[component] / "values.yaml"), platform.get(component, {}))
+    operator = platform["cetirun-operator"]
+    # Global coordinates override explicit runtime chart settings in the
+    # Operator helpers. Require explicit runtime selection and clear only the
+    # shared release coordinates, including nested subchart globals.
+    for field in ("repoURL", "version"):
+        required(config, f"platform.values.cetirun-operator.cetirun.chart.{field}")
+    runtime_digest = get_value(config, "platform.values.cetirun-operator.cetirun.chart.digest")
+    if not isinstance(runtime_digest, str) or (runtime_digest and not re.fullmatch(r"sha256:[0-9a-f]{64}", runtime_digest)):
+        raise ValueError("Retained runtime chart requires an explicit digest setting (empty retains version-only selection)")
+    for block in (platform, *(platform[name] for name in components), values["broker"],
+                  *([values["portal"]] if "portal" in values else [])):
+        block.setdefault("global", {}).update(registry="", version="")
+    control_images = [("broker", "cetirun-agent-broker")]
+    control_images.extend(("platform", name) for name in components if name != OBSERVABILITY)
+    if "portal" in values:
+        control_images.append(("portal", "cetirun-portal"))
+    for logical, component in control_images:
+        block = platform[component] if logical == "platform" else values[logical]
+        reference = required(artifacts, f"images.{component}.reference")
+        identity = _repository_digest(reference)
+        if identity is None or identity[0] != release["registry"] + "/" + component:
+            raise ValueError(f"published control-plane image {component} does not match the artifact lock")
+        block["image"].update(repository=identity[0], tag=release["version"], digest=identity[1])
+    if "portal" in values and platform["cetirun-portal"]["enabled"] is not False:
+        raise ValueError("Standalone Portal requires cetirun-portal.enabled=false in the umbrella release")
+    if not operator["enabled"]:
+        raise ValueError("Infrastructure deployment requires the existing Operator; removal is a separate operation")
+    if config.get("modelRouting", {"mode": "preserve"}) != {"mode": "preserve"}:
+        raise ValueError("Infrastructure deployment requires modelRouting.mode=preserve")
+    config["modelRouting"] = {"mode": "preserve"}
+    observation = config.get("observability")
+    if observation is not None:
+        if observation == {"enabled": False}:
+            if platform[OBSERVABILITY]["enabled"]:
+                raise ValueError("observability.enabled conflicts with platform values")
+        else:
+            for field, value in observability(config, observability_defaults=yaml_file(roots[OBSERVABILITY] / "values.yaml"),
+                                              gateway_defaults=yaml_file(roots["cetirun-ai-gateway"] / "values.yaml")).items():
+                set_value(platform, field, value)
+    # Optional topology/features are retained, not turned on by publishing a
+    # new release. Their required references and TLS are checked after render.
+    raw_custom = operator["customRuntime"]
+    defaults = yaml_file(roots["cetirun-operator"] / "values.yaml")
+    if set(raw_custom) - set(defaults["customRuntime"]):
+        raise ValueError("customRuntime contains fields unsupported by the published Operator")
+    for field in ("storageClass", "storageSize", "accessMode"):
+        required(raw_custom, field)
+    for field in ("storageClassName", "resourceGroup", "storageAccount", "containerName"):
+        required(config, "sharedSkills." + field)
+    ai = platform["cetirun-ai-gateway"]
+    persistence = ai["postgresql"]["bundled"]["persistence"]
+    required(persistence, "size")
+    retained = config["platform"].get("postgresqlStorage")
+    if retained is not None:
+        if (set(retained) != {"mode", "storageClassName"} or retained.get("mode") != "retain-default"
+                or not resource_name(retained.get("storageClassName")) or persistence.get("storageClass") != ""):
+            raise ValueError("retain-default requires the retained PVC class and an explicit empty claim-template storageClass")
+    else:
+        required(persistence, "storageClass")
+    if ai["providerCredentials"].get("inline"):
+        raise ValueError("Provider credentials must use an existing Secret")
+    for entry in ai["models"]:
+        key = entry.get("litellm_params", {}).get("api_key")
+        if key is not None and not re.fullmatch(r"os\.environ/[A-Za-z_][A-Za-z0-9_]*", str(key)):
+            raise ValueError("Model api_key must reference a provider Secret environment variable")
+    tls = platform.get("publicTLS", {})
+    if tls.get("bootstrapOnly"):
+        raise ValueError("Infrastructure deployment cannot enter certificate bootstrap mode")
+    config["_source"] = copy.deepcopy(config)
+    return config, values, logical_roots
+
+
 def _pin_published_images(value, images):
     """Replace first-party tag references with the resolver's immutable pins."""
     def reference_for(name):
@@ -1221,6 +1360,7 @@ def validate_excluded_images(config):
 class Deployment:
     def __init__(self, config, values, scratch, *, published_artifacts=None, chart_roots=None):
         self.config, self.values, self.scratch = config, values, scratch
+        self.chart_specs = deployment_charts(config)
         self.published_artifacts = published_artifacts
         self.chart_roots = chart_roots or {}
         self.documents, self.files, self.charts = {}, {}, {}
@@ -1459,7 +1599,7 @@ class Deployment:
             chart_archives = {}
             if self.published_artifacts:
                 for package_name, entry in self.published_artifacts.get("charts", {}).items():
-                    logical = next((name for name, package in CHART_PACKAGES.items() if package == package_name), package_name)
+                    logical = next((name for name in self.chart_specs if chart_package(name) == package_name), package_name)
                     archive = Path(entry.get("path", "")).resolve()
                     expected = entry.get("sha256")
                     if archive.is_file() and isinstance(expected, str) and "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest() == expected:
@@ -1469,7 +1609,7 @@ class Deployment:
             if self.published_artifacts:
                 # Preserve the exact downloaded archive for template and
                 # upgrade. The extracted roots are only used for defaults.
-                for name in CHARTS:
+                for name in self.chart_specs:
                     if name not in chart_archives:
                         raise ValueError(f"published artifact lock is missing {name} chart")
                     self.charts[name] = chart_archives[name]
@@ -1483,7 +1623,7 @@ class Deployment:
                 for path, content in updates.items():
                     path.write_text(content)
                 self.run(["helm", "dependency", "update", "--skip-refresh", str(self.scratch / CHARTS["platform"])], env=offline)
-        for name, relative in CHARTS.items():
+        for name, relative in self.chart_specs.items():
             self.charts.setdefault(name, self.scratch / relative)
             self.files[name] = self.scratch / f"{name}-values.json"
             actual_values = copy.deepcopy(self.values[name])
@@ -1501,12 +1641,12 @@ class Deployment:
             raw = self.run(["helm", "template", section["release"], str(self.charts[name]), "--namespace", section["namespace"],
                             "--kube-version", "1.37.0", "--values", str(render_values)], env=offline)
             self.documents[name] = [doc for doc in yaml.safe_load_all(raw) if doc]
-        tls_config = public_tls_config(self.config)
+        tls_config = None if self.config.get("_infrastructureOnly") else public_tls_config(self.config)
         if tls_config:
             if self.ingress is None:
                 self.ingress = PUBLIC_TLS.Ingress(tls_config, self.scratch)
             self.ingress.render(self.config["domain"])
-        if not self.values["platform"]["cetirun-operator"]["enabled"]:
+        if self.config.get("_infrastructureOnly") or not self.values["platform"]["cetirun-operator"]["enabled"]:
             return
         # Render the bootstrap too, before any cluster writes.
         bootstrap = copy.deepcopy(self.values["platform"])
@@ -1705,6 +1845,9 @@ class Deployment:
 
     def current_control(self, name, container, environment):
         namespace = self.config["platform"]["namespace"]
+        if name == "cetirun-portal" and "portal" in self.config:
+            namespace = self.config["portal"]["namespace"]
+            name = self.portal_deployment_name()
         if self.resource("Deployment", name, namespace) is None:
             return None
         prefix = '.spec.template.spec.containers[?(@.name=="' + container + '")]'
@@ -1725,8 +1868,16 @@ class Deployment:
             raise ValueError(f"Cannot inspect existing {name} control arguments")
         return {"args": arguments, "env": values}
 
+    def portal_deployment_name(self):
+        documents = self.documents.get("portal", self.documents["platform"])
+        return next(doc["metadata"]["name"] for doc in documents if doc["kind"] == "Deployment"
+                    and any(item["name"] == "portal" for item in doc["spec"]["template"]["spec"]["containers"]))
+
     def rendered_control(self, name, container):
-        deployment = next(doc for doc in self.documents["platform"] if doc["kind"] == "Deployment" and doc["metadata"]["name"] == name)
+        release = "platform"
+        if name == "cetirun-portal" and "portal" in self.config:
+            release, name = "portal", self.portal_deployment_name()
+        deployment = next(doc for doc in self.documents[release] if doc["kind"] == "Deployment" and doc["metadata"]["name"] == name)
         spec = next(item for item in deployment["spec"]["template"]["spec"]["containers"] if item["name"] == container)
         return {"args": spec.get("args", []), "env": {item["name"]: item.get("value", "") for item in spec.get("env", [])}}
 
@@ -1992,7 +2143,7 @@ class Deployment:
         withheld here. Turning Azure Monitor managed Prometheus off, for example, removes the API of the AI
         Gateway's PodMonitor that earlier platform releases hold."""
         c = self.config
-        names = [name for name in CHARTS if name in self.existing_releases
+        names = [name for name in self.chart_specs if name in self.existing_releases
                  and (name != "istio" or c["istio"].get("mode", "manage") == "manage")]
         if not names:
             return
@@ -2067,7 +2218,7 @@ class Deployment:
             self.kubectl("rollout", "status", f"deployment/{deployment}", "--namespace", namespace, "--timeout=180s")
         if not self.resource("serviceaccount", c["istio"]["ingressServiceAccount"], c["istio"]["ingressNamespace"]):
             raise ValueError("The configured Istio ingress ServiceAccount is missing")
-        for name in CHARTS:
+        for name in self.chart_specs:
             section = c[name]
             metadata = self.resource("namespace", section["namespace"])
             self.namespaces[section["namespace"]] = metadata
@@ -2094,7 +2245,14 @@ class Deployment:
                             self.existing_releases.add(name)
                     else:
                         previous = json.loads(self.helm("get", "values", section["release"], "--namespace", section["namespace"], "-o", "json")) or {}
-                        if previous.get("publicTLS", {}).get("enabled"):
+                        if c.get("_infrastructureOnly"):
+                            old_tls = previous.get("publicTLS", {})
+                            new_tls = self.values["platform"].get("publicTLS", {})
+                            if old_tls.get("enabled") or new_tls.get("enabled"):
+                                defaults = yaml_file(self.chart_roots["platform"] / "values.yaml")["publicTLS"]
+                                if merge(defaults, old_tls) != new_tls:
+                                    raise ValueError("Infrastructure deployment must retain existing publicTLS configuration")
+                        elif previous.get("publicTLS", {}).get("enabled"):
                             raise ValueError("Cannot disable managed publicTLS during a platform upgrade; migrate it separately")
                         self.existing_releases.add(name)
                 else:
@@ -2142,6 +2300,8 @@ class Deployment:
                 raise ValueError("Operator removal requires the existing platform release")
             self.check_cetiadmin_stopped()
         self.check_existing_controls()
+        if c.get("_infrastructureOnly") and not self.enforced:
+            raise ValueError("Infrastructure deployment requires existing admission enforcement")
         self.check_cetiadmin_migration()
         self.check_agent_mcp_conflicts()
         self.check_excluded_agent_images()
@@ -2190,7 +2350,7 @@ class Deployment:
             self.inspect_image(admin["runtime"]["image"])
         if self.published_artifacts:
             locked_charts = self.published_artifacts.get("charts", {})
-            for logical, chart_path in CHARTS.items():
+            for logical, chart_path in self.chart_specs.items():
                 package_name = chart_package(logical)
                 lock = locked_charts.get(package_name)
                 archive = Path(lock.get("path", "")).resolve() if isinstance(lock, dict) else None
@@ -2335,7 +2495,7 @@ class Deployment:
         for doc in workloads:
             namespace, workload = doc["metadata"].get("namespace", section["namespace"]), doc["metadata"]["name"]
             self.kubectl("rollout", "status", f"{doc['kind'].lower()}/{workload}", "--namespace", namespace, "--timeout=600s")
-            if workload in ("cetirun-operator", "cetirun-portal", "cetirun-agent-broker", "cetirun-connections-mcp"):
+            if name == "portal" or workload in ("cetirun-operator", "cetirun-portal", "cetirun-agent-broker", "cetirun-connections-mcp"):
                 selector = ",".join(f"{key}={value}" for key, value in doc["spec"]["selector"]["matchLabels"].items())
                 output = self.kubectl("get", "pods", "--namespace", namespace, "--selector", selector, "-o",
                                       'jsonpath={range .items[*]}{.spec.containers[*].name}{" "}{.spec.initContainers[*].name}{"\\n"}{end}')
@@ -2382,7 +2542,7 @@ class Deployment:
         self.defer_public_tls = False
         self.preflight()
         c = self.config
-        for name in CHARTS:
+        for name in self.chart_specs:
             namespace = c[name]["namespace"]
             if self.namespaces[namespace] is None:
                 self.kubectl("create", "namespace", namespace)
@@ -2407,6 +2567,8 @@ class Deployment:
             return
         # Never withdraw existing admission protection during an upgrade.
         if not self.enforced:
+            if c.get("_infrastructureOnly"):
+                raise ValueError("Infrastructure deployment requires existing admission enforcement")
             upgrade("platform", "bootstrap")
             # Wait for what the bootstrap installs: it has no Skill Marketplace.
             self.ready("platform", self.bootstrap_documents)
@@ -2414,6 +2576,9 @@ class Deployment:
             self.kubectl("rollout", "status", "deployment/cetirun-sandbox-admission", "--namespace", c["platform"]["namespace"], "--timeout=180s")
         upgrade("platform")
         self.ready("platform")
+        if "portal" in self.chart_specs:
+            upgrade("portal")
+            self.ready("portal")
         probe = {"apiVersion": "cetirun.microsoft.com/v1alpha1", "kind": "Team",
                  "metadata": {"name": "cetirun-admission-deployment-check"}, "spec": {}}
         if c["release"].get("clientOpenAPIValidation", True):
