@@ -159,6 +159,22 @@ class RetainedPostgresqlTests(DeploymentFixture, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "explicit empty"):
             self.configure(self.config)
 
+    def test_api_populated_pvc_type_metadata_does_not_change_storage(self):
+        deployment = self.retained()
+        template = self.state["templates"][0]
+        template.update(apiVersion="v1", kind="PersistentVolumeClaim")
+        original = copy.deepcopy(self.state)
+        deployment.check_retained_postgresql()
+        self.assertEqual(self.state, original)
+        self.assertFalse(deployment.writes)
+        for field, value in (("apiVersion", "unexpected/v1"), ("kind", "UnexpectedClaim")):
+            old = template[field]
+            template[field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "immutable storage change"):
+                deployment.check_retained_postgresql()
+            template[field] = old
+        self.assertFalse(deployment.writes)
+
     def test_claim_template_and_bound_volume_changes_are_rejected(self):
         deployment = self.retained()
         initial = copy.deepcopy(self.state)

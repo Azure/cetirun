@@ -2157,6 +2157,10 @@ class Deployment:
                 # Kubernetes adds these defaults to embedded PVC templates. Do
                 # not discard arbitrary fields, explicit storageClassName, or
                 # a nonempty status/metadata field when comparing templates.
+                if template.get("apiVersion") == "v1":
+                    del template["apiVersion"]
+                if template.get("kind") == "PersistentVolumeClaim":
+                    del template["kind"]
                 if template.get("metadata", {}).get("creationTimestamp", "missing") is None:
                     del template["metadata"]["creationTimestamp"]
                 if template.get("spec", {}).get("volumeMode") == "Filesystem":

@@ -68,6 +68,7 @@ jobs:
         run: |
           "$RUNNER_TEMP/cetirun-venv/bin/python" -B -m unittest \
             scripts.tests.test_deployment_artifacts \
+            scripts.tests.test_deployment_followups \
             scripts.tests.test_published_deployment \
             scripts.tests.test_infrastructure_configuration \
             scripts.tests.test_retained_runtime_contract \
