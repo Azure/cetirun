@@ -856,6 +856,24 @@ def infrastructure_configuration(path, artifacts, scratch):
     for field in ("storageClassName", "resourceGroup", "storageAccount", "containerName"):
         required(config, "sharedSkills." + field)
     ai = platform["cetirun-ai-gateway"]
+    # A standalone Portal is a separate release. Broker caller policy must
+    # follow that release's namespace and ServiceAccount; accepting the
+    # umbrella defaults would make the Portal appear healthy while denying
+    # every internal connection request.
+    if "portal" in config:
+        portal_section = values["portal"]
+        broker_portal = values["broker"].get("portal", {})
+        portal_sa = portal_section.get("serviceAccount", {}).get("name", "")
+        if (broker_portal.get("namespace") != config["portal"]["namespace"] or
+                broker_portal.get("serviceAccount") != portal_sa or not portal_sa):
+            raise ValueError("Broker caller policy must reference the standalone Portal namespace and ServiceAccount")
+    audiences = {
+        operator.get("connectionsMCP", {}).get("audience"),
+        platform.get("cetirun-connections-mcp", {}).get("workloadTokenAudience"),
+        values["broker"].get("workloadTokenAudience"),
+    }
+    if len(audiences) != 1 or None in audiences:
+        raise ValueError("Operator, MCP and Broker workload token audiences must match")
     persistence = ai["postgresql"]["bundled"]["persistence"]
     required(persistence, "size")
     retained = config["platform"].get("postgresqlStorage")
@@ -1988,6 +2006,40 @@ class Deployment:
             if not native["enabled"] or native["operatorNamespace"] != old_mcp["env"]["OPERATOR_NAMESPACE"] or not current_peer or native["peerUID"] != current_peer:
                 raise ValueError("Preserve existing native MCP peer identity and operator namespace")
 
+    @staticmethod
+    def _model_list(document):
+        """Return the chart-managed model entries without exposing credentials."""
+        try:
+            config = yaml.safe_load(document.get("data", {}).get("config.yaml", ""))
+            models = config.get("model_list") if isinstance(config, dict) else None
+        except yaml.YAMLError as error:
+            raise ValueError("Existing AI Gateway model configuration is not valid YAML") from error
+        if not isinstance(models, list) or not all(isinstance(item, dict) for item in models):
+            raise ValueError("Existing AI Gateway model configuration has no usable model list")
+        return models
+
+    def check_model_routing(self):
+        """Preserve chart-managed routes when modelRouting.mode=preserve."""
+        if not self.config.get("_infrastructureOnly") or self.config.get("modelRouting", {}).get("mode") != "preserve":
+            return
+        rendered = next((doc for doc in self.documents["platform"]
+                         if doc.get("kind") == "ConfigMap" and
+                         doc.get("metadata", {}).get("name", "").endswith("-config") and
+                         "config.yaml" in doc.get("data", {})), None)
+        if rendered is None:
+            raise ValueError("Rendered AI Gateway model configuration is unavailable")
+        namespace = self.config["platform"]["namespace"]
+        name = rendered["metadata"]["name"]
+        raw = self.kubectl("get", "configmap", name, "--namespace", namespace, "-o", "json")
+        if not raw.strip():
+            raise ValueError("Existing AI Gateway model configuration is unavailable")
+        try:
+            live = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ValueError("Existing AI Gateway model configuration is not valid JSON") from error
+        if self._model_list(live) != self._model_list(rendered):
+            raise ValueError("Infrastructure deployment would change chart-managed AI Gateway model routes")
+
     def check_external_istio(self, document):
         kind, metadata = document["kind"], document["metadata"]
         namespace, name = metadata.get("namespace", self.config["istio"]["namespace"]), metadata["name"]
@@ -2300,6 +2352,7 @@ class Deployment:
                 raise ValueError("Operator removal requires the existing platform release")
             self.check_cetiadmin_stopped()
         self.check_existing_controls()
+        self.check_model_routing()
         if c.get("_infrastructureOnly") and not self.enforced:
             raise ValueError("Infrastructure deployment requires existing admission enforcement")
         self.check_cetiadmin_migration()

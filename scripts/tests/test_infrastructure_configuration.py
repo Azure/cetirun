@@ -8,6 +8,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+import json
 from unittest.mock import Mock
 
 from scripts.tests import test_published_deployment as _published_fixture
@@ -25,6 +26,30 @@ class InfrastructureConfigurationTests(unittest.TestCase):
         self.assertEqual(set(DEPLOY.deployment_charts({})), {"istio", "broker", "platform"})
         charts = DEPLOY.deployment_charts({"portal": {"release": "portal", "namespace": "portal-ns"}})
         self.assertEqual(charts["portal"], "app/cetirun-portal/chart")
+
+    def test_model_routes_are_compared_before_infrastructure_upgrade(self):
+        deployment = object.__new__(DEPLOY.Deployment)
+        deployment.kubectl = Mock()
+        deployment.config = {"_infrastructureOnly": True, "modelRouting": {"mode": "preserve"},
+                             "platform": {"namespace": "platform"}}
+        entry = {"model_name": "gpt-4.1-mini", "litellm_params": {"model": "azure/gpt"}}
+        config = {"model_list": [entry]}
+        rendered = {"kind": "ConfigMap", "metadata": {"name": "gateway-config"},
+                    "data": {"config.yaml": __import__("yaml").safe_dump(config)}}
+        deployment.documents = {"platform": [rendered]}
+        deployment.kubectl.return_value = json.dumps({"data": {"config.yaml": __import__("yaml").safe_dump(config)}})
+        DEPLOY.Deployment.check_model_routing(deployment)
+        changed = {"model_list": [{**entry, "litellm_params": {"model": "azure/other"}}]}
+        deployment.kubectl.return_value = json.dumps({"data": {"config.yaml": __import__("yaml").safe_dump(changed)}})
+        with unittest.TestCase().assertRaisesRegex(ValueError, "model routes"):
+            DEPLOY.Deployment.check_model_routing(deployment)
+
+    def test_model_route_check_is_skipped_for_non_preserve_mode(self):
+        deployment = object.__new__(DEPLOY.Deployment)
+        deployment.kubectl = Mock()
+        deployment.config = {"_infrastructureOnly": True, "modelRouting": {"mode": "auto"}}
+        DEPLOY.Deployment.check_model_routing(deployment)
+        deployment.kubectl.assert_not_called()
 
 
 class PublishedInfrastructureRenderTests(unittest.TestCase):
@@ -83,6 +108,10 @@ class PublishedInfrastructureRenderTests(unittest.TestCase):
         portal_values["fullnameOverride"] = "cetirun-portal-chat"
         source["portal"] = {"release": "cetirun-portal-chat", "namespace": "cetirun-portal-chat",
                              "values": portal_values}
+        source["broker"]["values"]["portal"] = {
+            "namespace": source["portal"]["namespace"],
+            "serviceAccount": portal_values["serviceAccount"]["name"],
+        }
         for key in ("_publishedInventory", "_releaseOrigins", "_source"):
             source.pop(key, None)
         return source
