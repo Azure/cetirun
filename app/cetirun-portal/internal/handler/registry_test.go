@@ -96,6 +96,9 @@ func TestRegistryPartialCreateRetryBeforeQuota(t *testing.T) {
 	if first.Spec.Agent.RegistrySecretRef == nil || first.UID == "" {
 		t.Fatal("partial create lost recovery identity")
 	}
+	if first.Annotations[kube.AnnotationAgentDisplayName] != "research" || first.Spec.User.DisplayName != "Alice Example" {
+		t.Fatal("private registry creation must preserve both the Agent and owner names")
+	}
 	namespaces := &corev1.NamespaceList{}
 	_ = c.List(context.Background(), namespaces)
 	if len(namespaces.Items) != 0 {
@@ -392,7 +395,7 @@ func TestCustomRegistryCreateRecoveryAndVersionedManagement(t *testing.T) {
 				t.Fatalf("Custom Registry edit: %d %s", w.Code, w.Body.String())
 			}
 			updated, _ := h.Kube.GetInstanceByName(context.Background(), "alice-research")
-			if updated.Spec.Agent.Port != nil || updated.Spec.User.DisplayName != "Renamed" || !reflect.DeepEqual(updated.Spec.Agent.RegistrySecretRef, current.Spec.Agent.RegistrySecretRef) {
+			if updated.Spec.Agent.Port != nil || updated.Annotations[kube.AnnotationAgentDisplayName] != "Renamed" || !reflect.DeepEqual(updated.Spec.Agent.RegistrySecretRef, current.Spec.Agent.RegistrySecretRef) {
 				t.Fatal("Custom edit changed Registry binding or lost the requested fields")
 			}
 			w = httptest.NewRecorder()

@@ -571,9 +571,9 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	instanceName := claims.Alias + "-" + req.InstanceName
-	displayName := strings.TrimSpace(req.DisplayName)
-	if displayName == "" {
-		displayName = req.InstanceName
+	agentDisplayName := strings.TrimSpace(req.DisplayName)
+	if agentDisplayName == "" {
+		agentDisplayName = req.InstanceName
 	}
 	// See maxInstanceNameLength for where the limit comes from.
 	if len(instanceName) > maxInstanceNameLength {
@@ -631,6 +631,7 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 	}
 
 	options := kube.CreateInstanceOptions{
+		Annotations:          map[string]string{kube.AnnotationAgentDisplayName: agentDisplayName},
 		AgentIdentityEnabled: req.AgentIdentityEnabled,
 		OwnerTenantID:        claims.TenantID,
 		OwnerObjectID:        claims.ObjectID,
@@ -664,13 +665,13 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		agent.RegistrySecretRef = &cetirunv1alpha1.RegistrySecretRef{Name: "registry-source-" + id}
-		options.Annotations = map[string]string{
-			kube.AnnotationCreateRequest: r.Header.Get("Idempotency-Key"), kube.AnnotationCreateCaller: registryCaller(claims),
-			kube.AnnotationCreateConfig: registryCreateConfig(req), kube.AnnotationCreateRegistrySource: agent.RegistrySecretRef.Name,
-			registryauth.Operation: id,
-		}
+		options.Annotations[kube.AnnotationCreateRequest] = r.Header.Get("Idempotency-Key")
+		options.Annotations[kube.AnnotationCreateCaller] = registryCaller(claims)
+		options.Annotations[kube.AnnotationCreateConfig] = registryCreateConfig(req)
+		options.Annotations[kube.AnnotationCreateRegistrySource] = agent.RegistrySecretRef.Name
+		options.Annotations[registryauth.Operation] = id
 	}
-	instance, err := h.Kube.CreateInstance(r.Context(), claims.Alias, displayName, team, claims.Email, instanceName, agent, req.GatewayToken, req.TailscaleAuthKey, strings.TrimSpace(req.Model), options)
+	instance, err := h.Kube.CreateInstance(r.Context(), claims.Alias, claims.DisplayName, team, claims.Email, instanceName, agent, req.GatewayToken, req.TailscaleAuthKey, strings.TrimSpace(req.Model), options)
 	if err != nil {
 		if kube.IsAlreadyExists(err) {
 			writeError(w, http.StatusConflict, "instance_exists",
@@ -694,7 +695,7 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	slog.Info("Instance created", "alias", claims.Alias, "team", team, "displayName", displayName)
+	slog.Info("Instance created", "alias", claims.Alias, "team", team, "displayName", agentDisplayName)
 	writeJSON(w, http.StatusCreated, resp)
 }
 
@@ -748,7 +749,7 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 		RestartAvailable:         kube.CanRestartInstance(instance),
 		RestartRequestID:         instance.Spec.RestartRequestID,
 		ObservedRestartRequestID: instance.Status.ObservedRestartRequestID,
-		DisplayName:              instance.Spec.User.DisplayName,
+		DisplayName:              instance.Annotations[kube.AnnotationAgentDisplayName],
 		Team:                     instanceTeam(instance),
 		Model:                    instance.Spec.Model,
 		Phase:                    instance.Status.Phase,

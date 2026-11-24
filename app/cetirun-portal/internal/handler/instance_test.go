@@ -104,8 +104,8 @@ func TestToInstanceResponse(t *testing.T) {
 	if resp.InstanceName != "alice" {
 		t.Errorf("InstanceName = %q, want %q", resp.InstanceName, "alice")
 	}
-	if resp.DisplayName != "Alice Smith" {
-		t.Errorf("DisplayName = %q, want %q", resp.DisplayName, "Alice Smith")
+	if resp.DisplayName != "" {
+		t.Errorf("Agent without a display name returned %q; must not use the owner's name", resp.DisplayName)
 	}
 	if resp.Team != "aks" {
 		t.Errorf("Team = %q, want %q", resp.Team, "aks")
@@ -598,7 +598,7 @@ func TestCreateInstance_AlreadyExists(t *testing.T) {
 }
 
 func TestCreateInstance_DisplayName(t *testing.T) {
-	for _, tc := range []struct{ input, want string }{{"Custom Name", "Custom Name"}, {"   ", "research"}} {
+	for _, tc := range []struct{ input, want string }{{"", "research"}, {"   ", "research"}, {"Custom Name", "Custom Name"}} {
 		body, _ := json.Marshal(CreateInstanceRequest{InstanceName: "research", Agent: &agentconfig.Input{}, DisplayName: tc.input})
 		w, fc := createAgent(t, gatewayTestConfig(), string(body), catalogConfigMap("gpt-6"))
 		if w.Code != http.StatusCreated {
@@ -608,8 +608,15 @@ func TestCreateInstance_DisplayName(t *testing.T) {
 		if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice-research"}, &stored); err != nil {
 			t.Fatal(err)
 		}
-		if stored.Spec.User.DisplayName != tc.want || stored.Spec.User.Email != "alice@example.com" {
-			t.Errorf("displayName %q: stored user = %+v, want displayName %q and unchanged email", tc.input, stored.Spec.User, tc.want)
+		var response InstanceResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if response.DisplayName != tc.want || stored.Annotations[kube.AnnotationAgentDisplayName] != tc.want {
+			t.Errorf("input %q: returned Agent name %q, stored %q; want %q", tc.input, response.DisplayName, stored.Annotations[kube.AnnotationAgentDisplayName], tc.want)
+		}
+		if stored.Spec.User.DisplayName != "Alice" || stored.Spec.User.Email != "alice@example.com" {
+			t.Errorf("input %q changed the owner: %+v", tc.input, stored.Spec.User)
 		}
 	}
 }
@@ -1231,6 +1238,7 @@ func TestUpdateInstance_WithGatewayToken(t *testing.T) {
 
 func TestUpdateInstance_EmptyDisplayNameUsesNameFallback(t *testing.T) {
 	instance := sampleInstance()
+	instance.Annotations = map[string]string{kube.AnnotationAgentDisplayName: "Research Assistant"}
 	fc := newFakeClient(instance)
 	h := &InstanceHandler{
 		Kube: kube.NewClient(fc),
@@ -1249,8 +1257,11 @@ func TestUpdateInstance_EmptyDisplayNameUsesNameFallback(t *testing.T) {
 		t.Fatalf("status = %d, want %d: %s", w.Code, http.StatusOK, w.Body.String())
 	}
 	stored, err := h.Kube.GetInstance(context.Background(), "alice")
-	if err != nil || stored.Spec.User.DisplayName != "" {
-		t.Fatalf("empty display name was not preserved: %v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := stored.Annotations[kube.AnnotationAgentDisplayName]; present || stored.Spec.User != instance.Spec.User {
+		t.Fatal("clearing the Agent display name must remove only its annotation and preserve the owner")
 	}
 }
 
