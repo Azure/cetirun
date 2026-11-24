@@ -48,6 +48,19 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def public_failure_location(error):
+    """Locate a helper failure without publishing its message, locals or source text."""
+    directory = Path(__file__).resolve().parent
+    allowed = {directory / name for name in ("deploy_environment.py", "cetirun_platform_deploy.py", "deployment_artifacts.py")}
+    location, trace = None, error.__traceback__
+    while trace is not None:
+        source = Path(trace.tb_frame.f_code.co_filename).resolve()
+        if source in allowed:
+            location = {"file": "scripts/" + source.name, "line": trace.tb_lineno}
+        trace = trace.tb_next
+    return location
+
+
 def private_write(path, content):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with open(path, "w", opener=lambda name, flags: os.open(name, flags, 0o600)) as stream:
@@ -1420,6 +1433,7 @@ def run(args):
         summary["status"] = "PASS"
     except Exception as error:
         summary["status"] = "BLOCKED" if isinstance(error, Blocked) else "FAIL"
+        summary["failureLocation"] = public_failure_location(error)
         summary["stages"].append({"stage": stage, "status": summary["status"],
                                   "code": (str(error) if isinstance(error, Blocked) else error.public_code
                                            if isinstance(error, platform.DeploymentCommandError) else "stage_failed")})

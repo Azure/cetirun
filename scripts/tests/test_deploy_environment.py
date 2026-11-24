@@ -46,6 +46,20 @@ def operator_args(version="0.2.1", image="", chart_digest="sha256:" + "a" * 64):
 
 
 class EnvironmentTests(unittest.TestCase):
+    def test_failure_location_exposes_only_allowlisted_source_coordinates(self):
+        try:
+            deploy.reject_downgrade({}, "private-value")
+        except ValueError as error:
+            location = deploy.public_failure_location(error)
+        self.assertEqual(set(location), {"file", "line"})
+        self.assertEqual(location["file"], "scripts/deploy_environment.py")
+        self.assertIsInstance(location["line"], int)
+        self.assertNotIn("private-value", json.dumps(location))
+        try:
+            raise ValueError("private external exception")
+        except ValueError as error:
+            self.assertIsNone(deploy.public_failure_location(error))
+
     def test_command_failure_category_never_contains_operands_or_output(self):
         for command, code in ((["helm", "--kube-context", "private-context", "list", "--namespace", "private-ns"], "helm_list_failed"),
                               (["kubectl", "--context", "private-context", "--request-timeout=15s", "get", "secret", "private-secret"], "kubectl_get_failed"),
