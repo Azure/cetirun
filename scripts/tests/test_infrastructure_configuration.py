@@ -53,6 +53,193 @@ class InfrastructureConfigurationTests(unittest.TestCase):
         deployment.kubectl.assert_not_called()
 
 
+class InfrastructureWiringTests(unittest.TestCase):
+    def setUp(self):
+        self.driver = DEPLOY.Deployment(
+            {"_infrastructureOnly": True, "platform": {"namespace": "platform"},
+             "broker": {"namespace": "broker"}},
+            {"platform": {"cetirun-portal": {"enabled": True}}}, Path("unused"))
+        self.operator = {"name": "manager", "env": [
+            {"name": "AI_GATEWAY_ENABLED", "value": "true"},
+            {"name": "AI_GATEWAY_MASTER_KEY_SECRET", "value": "gateway-auth"},
+            {"name": "AI_GATEWAY_MASTER_KEY_SECRET_KEY", "value": "master-key"},
+            {"name": "CONNECTIONS_MCP_RUNTIME_TYPES", "value": "hermes,openclaw,custom"}]}
+        self.gateway = {"name": "gateway", "env": [self.secret("LITELLM_MASTER_KEY", "gateway-auth", "master-key"),
+                                                     self.secret("DATABASE_URL", "external-db", "url")]}
+        self.portal = {"name": "portal", "env": [
+            {"name": "FEATURE_AGENT_TOOLS_ENABLED", "value": "true"},
+            {"name": "CONNECTIONS_MCP_RUNTIME_TYPES", "value": "custom,hermes,openclaw"}]}
+        self.broker = {"name": "broker", "env": [
+            {"name": "PORTAL_NAMESPACE", "value": "platform"},
+            {"name": "PORTAL_SERVICE_ACCOUNT", "value": "portal-account"},
+            {"name": "CONNECTIONS_MCP_RUNTIME_TYPES", "value": "hermes,custom,openclaw"}]}
+        self.gateway_doc = self.workload("gateway-renamed", self.gateway)
+        self.gateway_doc["spec"]["template"]["spec"]["initContainers"] = [
+            {"name": "migrate", "env": [self.secret("DATABASE_URL", "external-db", "url")]}]
+        self.driver.documents = {"platform": [self.workload("operator", self.operator), self.gateway_doc,
+                                              self.workload("portal-renamed", self.portal)],
+                                 "broker": [self.workload("broker", self.broker)]}
+        self.driver.kubectl = Mock(return_value=json.dumps(self.gateway_doc))
+
+    @staticmethod
+    def secret(name, secret, key):
+        return {"name": name, "valueFrom": {"secretKeyRef": {"name": secret, "key": key}}}
+
+    @staticmethod
+    def workload(name, container):
+        return {"kind": "Deployment", "metadata": {"name": name},
+                "spec": {"template": {"spec": {"containers": [container], "serviceAccountName": "portal-account"}}}}
+
+    @staticmethod
+    def set_env(container, name, value):
+        next(item for item in container["env"] if item["name"] == name)["value"] = value
+
+    def test_valid_bundled_and_standalone_portal_wiring(self):
+        self.driver.check_infrastructure_wiring()
+        portal = self.driver.documents["platform"].pop()
+        self.driver.config["portal"] = {"namespace": "portal-ns"}
+        self.driver.values["portal"] = {}
+        self.driver.documents["portal"] = [portal]
+        self.set_env(self.broker, "PORTAL_NAMESPACE", "portal-ns")
+        self.driver.check_infrastructure_wiring()
+        self.driver.kubectl.assert_not_called()
+
+    def test_broker_caller_must_match_active_portal_in_both_topologies(self):
+        for standalone in (False, True):
+            for field in ("PORTAL_NAMESPACE", "PORTAL_SERVICE_ACCOUNT"):
+                with self.subTest(standalone=standalone, field=field):
+                    self.setUp()
+                    if standalone:
+                        self.driver.config["portal"] = {"namespace": "platform"}
+                        self.driver.values["portal"] = {}
+                        self.driver.documents["portal"] = [self.driver.documents["platform"].pop()]
+                    self.set_env(self.broker, field, "wrong")
+                    with self.assertRaisesRegex(ValueError, "active Portal"):
+                        self.driver.check_infrastructure_wiring()
+
+    def test_management_key_requires_same_secret_and_key(self):
+        for field in ("AI_GATEWAY_MASTER_KEY_SECRET", "AI_GATEWAY_MASTER_KEY_SECRET_KEY"):
+            with self.subTest(field=field):
+                self.setUp()
+                self.set_env(self.operator, field, "different")
+                with self.assertRaisesRegex(ValueError, "management-key"):
+                    self.driver.check_infrastructure_wiring()
+                self.driver.kubectl.assert_not_called()
+
+    def test_gateway_reference_is_effective_render_including_generated_auth_secret(self):
+        self.set_env(self.operator, "AI_GATEWAY_MASTER_KEY_SECRET", "renamed-gateway-auth")
+        self.gateway["env"][0]["valueFrom"]["secretKeyRef"]["name"] = "renamed-gateway-auth"
+        self.driver.check_infrastructure_wiring()
+
+    def test_runtime_sets_reject_narrower_broker_or_portal_and_invalid_members(self):
+        for component in ("operator", "portal", "broker"):
+            for runtimes in ("hermes,openclaw", "hermes,hermes", "unknown", ""):
+                with self.subTest(component=component, runtimes=runtimes):
+                    self.setUp()
+                    self.set_env(getattr(self, component), "CONNECTIONS_MCP_RUNTIME_TYPES", runtimes)
+                    with self.assertRaisesRegex(ValueError, "runtime sets"):
+                        self.driver.check_infrastructure_wiring()
+
+    def test_disabled_agent_tools_does_not_require_equal_runtime_sets(self):
+        self.set_env(self.portal, "FEATURE_AGENT_TOOLS_ENABLED", "false")
+        self.set_env(self.broker, "CONNECTIONS_MCP_RUNTIME_TYPES", "hermes")
+        self.driver.check_infrastructure_wiring()
+
+    def test_disabled_bundled_portal_does_not_validate_an_inactive_caller(self):
+        self.driver.values["platform"]["cetirun-portal"]["enabled"] = False
+        self.driver.documents["platform"].pop()
+        self.driver.check_infrastructure_wiring()
+
+    def test_database_reference_preserved_without_reading_secret_data(self):
+        self.driver.check_gateway_database_binding()
+        self.driver.kubectl.assert_called_once_with("get", "deployment", "gateway-renamed", "--namespace", "platform", "-o", "json")
+        # API optional=false is equivalent to an omitted optional field.
+        live = copy.deepcopy(self.gateway_doc)
+        live["spec"]["template"]["spec"]["containers"][0]["env"][1]["valueFrom"]["secretKeyRef"]["optional"] = False
+        self.driver.kubectl.return_value = json.dumps(live)
+        self.driver.check_gateway_database_binding()
+
+    def test_database_secret_or_key_change_rejected_before_upgrade(self):
+        for field in ("name", "key"):
+            with self.subTest(field=field):
+                live = copy.deepcopy(self.gateway_doc)
+                pod = live["spec"]["template"]["spec"]
+                for container in [*pod["initContainers"], *pod["containers"]]:
+                    for entry in container["env"]:
+                        if entry["name"] == "DATABASE_URL":
+                            entry["valueFrom"]["secretKeyRef"][field] = "different"
+                self.driver.kubectl.return_value = json.dumps(live)
+                with self.assertRaisesRegex(ValueError, "change the Gateway DATABASE_URL"):
+                    self.driver.check_gateway_database_binding()
+
+    def test_migration_consumer_cannot_use_another_database(self):
+        self.gateway_doc["spec"]["template"]["spec"]["initContainers"][0]["env"][0]["valueFrom"]["secretKeyRef"]["key"] = "different"
+        with self.assertRaisesRegex(ValueError, "migration DATABASE_URL"):
+            self.driver.check_gateway_database_binding()
+
+    def test_adding_same_database_migration_consumer_is_allowed(self):
+        live = copy.deepcopy(self.gateway_doc)
+        del live["spec"]["template"]["spec"]["initContainers"]
+        self.driver.kubectl.return_value = json.dumps(live)
+        self.driver.check_gateway_database_binding()
+
+    def test_database_literal_optional_or_duplicate_bindings_are_rejected(self):
+        for variant in ("literal", "optional", "duplicate", "missing"):
+            with self.subTest(variant=variant):
+                self.setUp()
+                entries = self.gateway["env"]
+                if variant == "literal":
+                    entries[1] = {"name": "DATABASE_URL", "value": "synthetic-value"}
+                elif variant == "optional":
+                    entries[1]["valueFrom"]["secretKeyRef"]["optional"] = True
+                elif variant == "duplicate":
+                    entries.append(copy.deepcopy(entries[1]))
+                else:
+                    entries.pop()
+                with self.assertRaisesRegex(ValueError, "DATABASE_URL"):
+                    self.driver.check_gateway_database_binding()
+
+    def test_disabled_gateway_does_not_require_database_or_management_key_read(self):
+        self.driver.values["platform"]["cetirun-ai-gateway"] = {"enabled": False}
+        self.driver.documents["platform"].remove(self.gateway_doc)
+        self.driver.check_gateway_database_binding()
+        self.driver.check_infrastructure_wiring()
+        self.driver.kubectl.assert_not_called()
+        # An enabled Gateway with a missing render is still invalid.
+        self.driver.values["platform"]["cetirun-ai-gateway"]["enabled"] = True
+        with self.assertRaisesRegex(ValueError, "unavailable"):
+            self.driver.check_gateway_database_binding()
+
+    def test_bootstrap_database_check_does_not_require_an_installed_gateway(self):
+        self.driver.config["_infrastructureOnly"] = False
+        self.driver.documents = {}
+        self.driver.check_gateway_database_binding()
+        self.driver.check_infrastructure_wiring()
+        self.driver.kubectl.assert_not_called()
+
+    def test_fallback_change_is_rejected_with_identical_model_list(self):
+        import yaml
+        for field in ("fallbacks", "context_window_fallbacks"):
+            with self.subTest(field=field):
+                self.driver.config["modelRouting"] = {"mode": "preserve"}
+                self.driver.values["platform"]["cetirun-ai-gateway"] = {}
+                old = {"model_list": [{"model_name": "primary"}],
+                       "router_settings": {field: [{"primary": ["backup"]}]}}
+                candidate = {"model_list": old["model_list"]}
+                def document(config):
+                    return {"kind": "ConfigMap", "metadata": {"name": "gateway-config", "labels": {
+                            "app.kubernetes.io/name": "cetirun-ai-gateway"}}, "data": {"config.yaml": yaml.safe_dump(config)}}
+                self.driver.documents["platform"] = [document(candidate)]
+                self.driver.kubectl.return_value = json.dumps(document(old))
+                with self.assertRaisesRegex(ValueError, "model routes"):
+                    self.driver.check_model_routing()
+                self.driver.documents["platform"] = [document(old)]
+                self.driver.check_model_routing()
+                empty = {**candidate, "router_settings": {field: []}}
+                self.assertEqual(DEPLOY.Deployment._model_routing(document(candidate)),
+                                 DEPLOY.Deployment._model_routing(document(empty)))
+
+
 class PublishedInfrastructureRenderTests(unittest.TestCase):
     """Compile and render an infrastructure-only upgrade from real archives."""
 

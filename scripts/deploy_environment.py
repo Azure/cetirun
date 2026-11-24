@@ -331,6 +331,8 @@ def capture(deployment, *, require_deployed=True):
                 del snapshot["objects"][key]
     # A controller can replace runtime workloads without changing Agent specs.
     # Include them so a sidecar/default rollout cannot masquerade as preservation.
+    agents_by_uid = {item["uid"]: item for item in snapshot["objects"].values() if item.get("agentType")}
+    runtime_manifests = {}
     for namespace in sorted(runtime_namespaces):
         rows = json.loads(deployment.kubectl("get", "pods", "--namespace", namespace, "-o", "json"))["items"]
         for row in rows:
@@ -343,13 +345,17 @@ def capture(deployment, *, require_deployed=True):
                        if container.get("name") == "proxy"]
             if is_proxy and (len(proxies) != 1 or not proxies[0]):
                 raise Blocked("copilot_proxy_image_unavailable")
+            # Preserve every Pod, but use only the primary runtime workload
+            # as evidence of the Memory image retained by this Agent.
+            pod_agent_uid = owned_runtime_agent_uid(
+                deployment, row, namespace, agents_by_uid.get(namespace_agents.get(namespace)), runtime_manifests)
             snapshot["objects"]["pods/" + namespace + "/" + meta["name"]] = {
                 "uid": meta["uid"], "specHash": digest(row["spec"]), "generation": meta.get("generation"),
                 "deleting": bool(meta.get("deletionTimestamp")),
                 "ready": bool(statuses) and all(item.get("ready") for item in statuses), "bound": None,
                 "agentType": "", "image": "", "suspended": False,
                 "copilotProxyImage": proxies[0] if is_proxy else None,
-                "runtimeAgentUID": namespace_agents.get(namespace),
+                "runtimeAgentUID": pod_agent_uid,
                 "isRuntimePod": any(container.get("name") == "cetirun" for container in row["spec"].get("containers", [])),
                 "podNamespace": namespace,
                 "podName": meta["name"],
@@ -374,6 +380,71 @@ def agent_ready(row):
     meta, status = row.get("metadata", {}), row.get("status", {})
     return (status.get("observedGeneration") == meta.get("generation") and
             any(c.get("type") == "Ready" and c.get("status") == "True" for c in status.get("conditions", [])))
+
+
+def owned_runtime_agent_uid(deployment, pod, namespace, agent, manifests):
+    """Attribute current StatefulSet runtimes through controller/release ownership."""
+    if not agent or not any(item.get("name") == "cetirun" for item in pod.get("spec", {}).get("containers", [])):
+        return None
+    uid = agent["uid"]
+    meta = pod.get("metadata", {})
+    for fields in (meta.get("labels", {}), meta.get("annotations", {})):
+        if fields.get("cetirun.microsoft.com/agent-uid", uid) != uid:
+            return None
+    owners = meta.get("ownerReferences", [])
+    if (len(owners) != 1 or owners[0].get("apiVersion") != "apps/v1" or owners[0].get("kind") != "StatefulSet"
+            or owners[0].get("controller") is not True or not owners[0].get("name") or not owners[0].get("uid")):
+        return None
+    ref = owners[0]
+    raw = deployment.kubectl("get", "statefulset", ref["name"], "--namespace", namespace, "-o", "json")
+    try:
+        workload = json.loads(raw)
+        metadata = workload["metadata"]
+        if (metadata.get("uid") != ref["uid"] or metadata.get("name") != ref["name"]
+                or metadata.get("namespace") != namespace or metadata.get("deletionTimestamp")):
+            return None
+        template = workload["spec"]["template"]["spec"]
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    def images(spec):
+        return {field: [item.get("image") for item in spec.get(field, []) if item.get("name") == name]
+                for field, name in (("containers", "cetirun"), ("initContainers", "memory-assets"))}
+
+    if images(template) != images(pod["spec"]):
+        return None
+    expected_release = agent.get("helmReleaseName") or "cetirun-" + agent["name"]
+    annotations = metadata.get("annotations", {})
+    if annotations.get("cetirun.microsoft.com/agent-uid", uid) != uid:
+        return None
+    owner_refs = metadata.get("ownerReferences", [])
+    if owner_refs:
+        # Both Custom and governed native runtimes carry an Agent controller.
+        owner = owner_refs[0]
+        if (len(owner_refs) == 1 and owner.get("apiVersion") == "cetirun.microsoft.com/v1alpha1"
+                and owner.get("kind") == "Agent" and owner.get("uid") == uid
+                and owner.get("name") == agent["name"] and owner.get("controller") is True
+                and metadata["name"] == expected_release[:63].rstrip("-")):
+            return uid
+        return None
+    if agent.get("agentType") not in ("openclaw", "hermes"):
+        return None
+    # Non-governed native workloads belong to their exact Helm release. An
+    # independent release in the same namespace cannot supply this evidence.
+    if (annotations.get("meta.helm.sh/release-name"), annotations.get("meta.helm.sh/release-namespace")) != (expected_release, namespace):
+        return None
+    key = (namespace, expected_release)
+    if key not in manifests:
+        raw = deployment.helm("get", "manifest", expected_release, "--namespace", namespace)
+        manifests[key] = [doc for doc in yaml.safe_load_all(raw) if isinstance(doc, dict)]
+    candidates = [doc for doc in manifests[key] if doc.get("kind") == "StatefulSet"
+                  and doc.get("metadata", {}).get("namespace", namespace) == namespace
+                  and any(item.get("name") == "cetirun" for item in doc.get("spec", {}).get("template", {}).get("spec", {}).get("containers", []))]
+    if len(candidates) != 1 or candidates[0].get("metadata", {}).get("name") != metadata["name"]:
+        return None
+    if images(candidates[0]["spec"]["template"]["spec"]) != images(template):
+        return None
+    return uid
 
 
 def published_runtime_agents(deployment, snapshot, lock):
@@ -527,7 +598,7 @@ def runtime_environment(entries):
         "CONNECTIONS_MCP_BROKER_NAMESPACE", "CONNECTIONS_MCP_BROKER_SERVICE_ACCOUNT",
         "CONNECTIONS_MCP_CA_SECRET_NAME", "CONNECTIONS_MCP_NATIVE_ENABLED",
         "CONNECTIONS_MCP_RUNTIME_TYPES", "CONNECTIONS_MCP_URL", "WORKLOAD_TOKEN_AUDIENCE",
-        "REGISTRY_CREDENTIAL_NAMESPACE",
+        "REGISTRY_CREDENTIAL_NAMESPACE", "SKILLS_STORAGE_ACCOUNT",
     }
     seen = set()
     for entry in entries:

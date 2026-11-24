@@ -877,17 +877,6 @@ def infrastructure_configuration(path, artifacts, scratch):
     for field in ("storageClassName", "resourceGroup", "storageAccount", "containerName"):
         required(config, "sharedSkills." + field)
     ai = platform["cetirun-ai-gateway"]
-    # A standalone Portal is a separate release. Broker caller policy must
-    # follow that release's namespace and ServiceAccount; accepting the
-    # umbrella defaults would make the Portal appear healthy while denying
-    # every internal connection request.
-    if "portal" in config:
-        portal_section = values["portal"]
-        broker_portal = values["broker"].get("portal", {})
-        portal_sa = portal_section.get("serviceAccount", {}).get("name", "")
-        if (broker_portal.get("namespace") != config["portal"]["namespace"] or
-                broker_portal.get("serviceAccount") != portal_sa or not portal_sa):
-            raise ValueError("Broker caller policy must reference the standalone Portal namespace and ServiceAccount")
     audiences = {
         operator.get("connectionsMCP", {}).get("audience"),
         platform.get("cetirun-connections-mcp", {}).get("workloadTokenAudience"),
@@ -1681,6 +1670,7 @@ class Deployment:
             raw = self.run(["helm", "template", section["release"], str(self.charts[name]), "--namespace", section["namespace"],
                             "--kube-version", "1.37.0", "--values", str(render_values)], env=offline)
             self.documents[name] = [doc for doc in yaml.safe_load_all(raw) if doc]
+        self.check_infrastructure_wiring()
         tls_config = None if self.config.get("_infrastructureOnly") else public_tls_config(self.config)
         if tls_config:
             if self.ingress is None:
@@ -1709,6 +1699,75 @@ class Deployment:
                         "--namespace", self.config["platform"]["namespace"], "--kube-version", "1.37.0",
                         "--values", str(self.files["bootstrap"])], env=offline)
         self.bootstrap_documents = [doc for doc in yaml.safe_load_all(raw) if doc]
+
+    def rendered_component(self, release, container):
+        matches = [(doc, item) for doc in self.documents[release] if doc.get("kind") == "Deployment"
+                   for item in doc.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+                   if item.get("name") == container]
+        if len(matches) != 1:
+            raise ValueError(f"Rendered {container} Deployment is unavailable or ambiguous")
+        return matches[0]
+
+    @staticmethod
+    def literal_environment(container):
+        values = {}
+        for item in container.get("env", []):
+            name = item.get("name")
+            if not name or name in values:
+                raise ValueError("Rendered container environment is ambiguous")
+            # References remain distinct from absent/empty literal controls.
+            values[name] = None if "valueFrom" in item else item.get("value", "")
+        return values
+
+    @staticmethod
+    def secret_environment_binding(container, name):
+        entries = [entry for entry in container.get("env", []) if entry.get("name") == name]
+        if len(entries) != 1:
+            raise ValueError(f"{name} Secret binding is unavailable or ambiguous")
+        entry = entries[0]
+        reference = entry.get("valueFrom", {}).get("secretKeyRef", {})
+        if ("value" in entry or not reference.get("name") or not reference.get("key")
+                or reference.get("optional", False)):
+            raise ValueError(f"{name} must use a required Secret name/key binding")
+        return reference["name"], reference["key"]
+
+    def check_infrastructure_wiring(self):
+        """Validate effective cross-component controls from the exact render."""
+        if not self.config.get("_infrastructureOnly"):
+            return
+        operator_doc, operator = self.rendered_component("platform", "manager")
+        operator_env = self.literal_environment(operator)
+        gateway_enabled = self.values["platform"].get("cetirun-ai-gateway", {}).get("enabled", True)
+        if gateway_enabled and (operator_env.get("AI_GATEWAY_ENABLED") == "true" or operator_env.get("AI_GATEWAY_URL")):
+            gateway_doc, gateway = self.rendered_component("platform", "gateway")
+            expected = self.secret_environment_binding(gateway, "LITELLM_MASTER_KEY")
+            actual = (operator_env.get("AI_GATEWAY_MASTER_KEY_SECRET"),
+                      operator_env.get("AI_GATEWAY_MASTER_KEY_SECRET_KEY"))
+            namespace = self.config["platform"]["namespace"]
+            if actual != expected or operator_doc["metadata"].get("namespace", namespace) != gateway_doc["metadata"].get("namespace", namespace):
+                raise ValueError("Operator and Gateway management-key Secret references must match")
+        portal_release = "portal" if "portal" in self.config else "platform"
+        portal_values = self.values["portal"] if portal_release == "portal" else self.values["platform"]["cetirun-portal"]
+        if portal_release == "platform" and not portal_values.get("enabled", True):
+            return
+        portal_doc, portal = self.rendered_component(portal_release, "portal")
+        _, broker = self.rendered_component("broker", "broker")
+        portal_env, broker_env = self.literal_environment(portal), self.literal_environment(broker)
+        namespace = portal_doc["metadata"].get("namespace", self.config[portal_release]["namespace"])
+        account = portal_doc["spec"]["template"]["spec"].get("serviceAccountName") or "default"
+        if (broker_env.get("PORTAL_NAMESPACE"), broker_env.get("PORTAL_SERVICE_ACCOUNT")) != (namespace, account):
+            raise ValueError("Broker caller policy must reference the active Portal namespace and ServiceAccount")
+        if portal_env.get("FEATURE_AGENT_TOOLS_ENABLED") == "true":
+            runtime_sets = []
+            for env in (operator_env, portal_env, broker_env):
+                raw = env.get("CONNECTIONS_MCP_RUNTIME_TYPES")
+                runtimes = raw.split(",") if isinstance(raw, str) else []
+                if (not runtimes or any(runtime not in ("hermes", "openclaw", "custom") for runtime in runtimes)
+                        or len(runtimes) != len(set(runtimes))):
+                    raise ValueError("Agent Tools runtime sets must contain distinct supported runtimes")
+                runtime_sets.append(set(runtimes))
+            if any(runtimes != runtime_sets[0] for runtimes in runtime_sets[1:]):
+                raise ValueError("Operator, active Portal and Broker Agent Tools runtime sets must match")
 
     def references(self):
         refs = set()
@@ -2029,16 +2088,27 @@ class Deployment:
                 raise ValueError("Preserve existing native MCP peer identity and operator namespace")
 
     @staticmethod
-    def _model_list(document):
-        """Return the chart-managed model entries without exposing credentials."""
+    def _model_routing(document):
+        """Return chart-managed models and effective fallback mappings."""
         try:
             config = yaml.safe_load(document.get("data", {}).get("config.yaml", ""))
             models = config.get("model_list") if isinstance(config, dict) else None
+            router = config.get("router_settings", {}) if isinstance(config, dict) else None
         except yaml.YAMLError as error:
             raise ValueError("Existing AI Gateway model configuration is not valid YAML") from error
         if not isinstance(models, list) or not all(isinstance(item, dict) for item in models):
             raise ValueError("Existing AI Gateway model configuration has no usable model list")
-        return models
+        if not isinstance(router, dict):
+            raise ValueError("Existing AI Gateway router settings are not usable")
+        routes = {"model_list": models}
+        for field in ("fallbacks", "context_window_fallbacks"):
+            entries = router.get(field)
+            if entries is None:
+                entries = []
+            if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+                raise ValueError("Existing AI Gateway fallback mappings are not usable")
+            routes[field] = entries
+        return routes
 
     def check_model_routing(self):
         """Preserve chart-managed routes when modelRouting.mode=preserve."""
@@ -2060,7 +2130,7 @@ class Deployment:
             live = json.loads(raw)
         except json.JSONDecodeError as error:
             raise ValueError("Existing AI Gateway model configuration is not valid JSON") from error
-        if self._model_list(live) != self._model_list(rendered):
+        if self._model_routing(live) != self._model_routing(rendered):
             raise ValueError("Infrastructure deployment would change chart-managed AI Gateway model routes")
 
     def check_external_istio(self, document):
@@ -2199,6 +2269,39 @@ class Deployment:
         if self.retained_database_pin is not None and snapshot != self.retained_database_pin:
             raise ValueError("Retained PostgreSQL identity or storage changed during deployment")
         self.retained_database_pin = copy.deepcopy(snapshot)
+
+    def database_binding(self, document):
+        """Require all Gateway consumers to use the same database binding."""
+        pod = document.get("spec", {}).get("template", {}).get("spec", {})
+        gateways = [item for item in pod.get("containers", []) if item.get("name") == "gateway"]
+        if len(gateways) != 1:
+            raise ValueError("Gateway database consumer is unavailable or ambiguous")
+        expected = self.secret_environment_binding(gateways[0], "DATABASE_URL")
+        for container in [*pod.get("initContainers", []), *pod.get("containers", [])]:
+            if container.get("name") == "migrate" or any(entry.get("name") == "DATABASE_URL" for entry in container.get("env", [])):
+                if self.secret_environment_binding(container, "DATABASE_URL") != expected:
+                    raise ValueError("Gateway and migration DATABASE_URL Secret bindings must match")
+        return expected
+
+    def check_gateway_database_binding(self):
+        """Preserve the database identity even when no bundled PVC exists."""
+        if not self.config.get("_infrastructureOnly"):
+            return
+        if self.values["platform"].get("cetirun-ai-gateway", {}).get("enabled", True) is False:
+            if any(item.get("name") == "gateway" for doc in self.documents["platform"]
+                   if doc.get("kind") == "Deployment"
+                   for item in doc.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])):
+                raise ValueError("Disabled Gateway unexpectedly rendered a database consumer")
+            return
+        rendered, _ = self.rendered_component("platform", "gateway")
+        namespace = rendered["metadata"].get("namespace", self.config["platform"]["namespace"])
+        raw = self.kubectl("get", "deployment", rendered["metadata"]["name"], "--namespace", namespace, "-o", "json")
+        try:
+            live = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ValueError("Existing Gateway Deployment is not valid JSON") from error
+        if self.database_binding(live) != self.database_binding(rendered):
+            raise ValueError("Infrastructure deployment would change the Gateway DATABASE_URL Secret binding")
 
     def installed_objects(self, name):
         """API version, kind and name of each object of the installed release that helm upgrade builds first: the
@@ -2416,6 +2519,7 @@ class Deployment:
         if self.resource("PersistentVolumeClaim", f"data-{database}-0", c["platform"]["namespace"]) and not self.resource("Secret", database, c["platform"]["namespace"]):
             raise ValueError("Retained PostgreSQL data has no password Secret; refusing to generate a replacement")
         self.check_retained_postgresql()
+        self.check_gateway_database_binding()
         self.check_tls()
         if self.published_artifacts:
             locked_images = self.published_artifacts.get("images", {})
@@ -2584,13 +2688,15 @@ class Deployment:
         for doc in workloads:
             namespace, workload = doc["metadata"].get("namespace", section["namespace"]), doc["metadata"]["name"]
             self.kubectl("rollout", "status", f"{doc['kind'].lower()}/{workload}", "--namespace", namespace, "--timeout=600s")
-            if name == "portal" or workload in ("cetirun-operator", "cetirun-portal", "cetirun-agent-broker", "cetirun-connections-mcp"):
+            if name in ("portal", "broker") or workload in ("cetirun-operator", "cetirun-portal", "cetirun-agent-broker", "cetirun-connections-mcp"):
                 selector = ",".join(f"{key}={value}" for key, value in doc["spec"]["selector"]["matchLabels"].items())
                 output = self.kubectl("get", "pods", "--namespace", namespace, "--selector", selector, "-o",
                                       'jsonpath={range .items[*]}{.spec.containers[*].name}{" "}{.spec.initContainers[*].name}{"\\n"}{end}')
                 if not output.strip() or any("istio-proxy" not in line.split() for line in output.splitlines()):
                     raise ValueError(f"{workload} is missing the required Istio sidecar")
-                if workload == "cetirun-agent-broker" and any("auth-sdk" not in line.split() for line in output.splitlines()):
+                requires_auth_sdk = any(container.get("name") == "auth-sdk"
+                                        for container in doc["spec"]["template"]["spec"].get("containers", []))
+                if name == "broker" and requires_auth_sdk and any("auth-sdk" not in line.split() for line in output.splitlines()):
                     raise ValueError("Broker pods are missing the Auth SDK")
 
     def resolve_public_domain(self, domain):

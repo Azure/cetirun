@@ -139,8 +139,18 @@ class EnvironmentTests(unittest.TestCase):
                  "status": {}}
         if ready:
             agent["status"]["namespace"] = "cetirun-agent"
-        pod = {"metadata": {"name": "gateway", "uid": pod_uid}, "spec": {"containers": [{"name": "gateway"}]},
+        pod = {"metadata": {"name": "gateway", "uid": pod_uid,
+                             "labels": {"cetirun.microsoft.com/agent-uid": "agent-uid"}},
+               "spec": {"containers": [{"name": "cetirun", "image": "registry.example.com/runtime"}]},
                "status": {"containerStatuses": [{"name": "gateway", "ready": True}]}}
+        pod["metadata"]["ownerReferences"] = [{"apiVersion": "apps/v1", "kind": "StatefulSet",
+                                                  "name": "cetirun-agent", "uid": "statefulset-uid",
+                                                  "controller": True}]
+        statefulset = {"metadata": {"name": "cetirun-agent", "namespace": "cetirun-agent", "uid": "statefulset-uid",
+                                     "ownerReferences": [{"apiVersion": "cetirun.microsoft.com/v1alpha1",
+                                                           "kind": "Agent", "name": "agent", "uid": "agent-uid",
+                                                           "controller": True}]},
+                       "spec": {"template": {"spec": copy.deepcopy(pod["spec"])}}}
         namespace = {"metadata": {"name": "cetirun-agent", "uid": "namespace-uid",
                                    "annotations": {"cetirun.microsoft.com/agent-uid": "agent-uid"},
                                    "ownerReferences": [{"apiVersion": "cetirun.microsoft.com/v1alpha1",
@@ -161,6 +171,8 @@ class EnvironmentTests(unittest.TestCase):
                     return json.dumps({"items": [namespace]})
                 if args[:2] == ("get", "pods"):
                     return json.dumps({"items": [pod]})
+                if args[:2] == ("get", "statefulset"):
+                    return json.dumps(statefulset)
                 if args[:2] == ("get", "pvc"):
                     return json.dumps({"items": pvc_items})
                 return json.dumps({"items": []})
@@ -749,21 +761,106 @@ class EnvironmentTests(unittest.TestCase):
         with self.assertRaisesRegex(deploy.Blocked, "existing_custom_image_not_approved"):
             deploy.verify_existing_agent_images(driver, old, {}, {})
 
-    def test_capture_associates_memory_init_with_the_owned_agent(self):
+    def memory_capture_driver(self, variant="owned", runtime="hermes"):
         driver = self.capture_driver()
         original = driver.kubectl
+        image = "registry.example.com/memory@sha256:" + "a" * 64
         def read(*args):
             result = json.loads(original(*args))
+            if args[:2] == ("get", "agents.cetirun.microsoft.com"):
+                result["items"][0]["spec"]["agent"]["type"] = runtime
+                result["items"][0]["spec"]["suspended"] = True
+            if args[:2] in (("get", "pods"), ("get", "statefulset")):
+                spec = result["items"][0]["spec"] if args[1] == "pods" else result["spec"]["template"]["spec"]
+                spec["initContainers"] = [{"name": "memory-assets", "image": image}]
             if args[:2] == ("get", "pods"):
-                result["items"][0]["spec"]["containers"][0]["name"] = "cetirun"
-                result["items"][0]["spec"]["initContainers"] = [
-                    {"name": "memory-assets", "image": "registry.example.com/memory@sha256:" + "a" * 64}]
+                if variant == "unmarked-foreign":
+                    result["items"][0]["metadata"]["labels"] = {}
+                if variant == "namespace-conflict":
+                    result["items"][0]["metadata"]["annotations"] = {"cetirun.microsoft.com/agent-uid": "other-agent"}
+            if args[:2] == ("get", "statefulset"):
+                if variant in ("unmarked-foreign", "copied-marker"):
+                    result["metadata"]["ownerReferences"][0]["uid"] = "foreign-agent"
+                elif variant == "replaced-controller":
+                    result["metadata"]["uid"] = "replacement"
+                elif variant in ("helm-native", "foreign-release"):
+                    result["metadata"]["ownerReferences"] = []
+                    result["metadata"]["annotations"] = {
+                        "meta.helm.sh/release-name": "cetirun-agent" if variant == "helm-native" else "foreign",
+                        "meta.helm.sh/release-namespace": "cetirun-agent"}
             return json.dumps(result)
         driver.kubectl = read
+        return driver, image
+
+    def test_capture_associates_memory_init_with_owned_custom_and_native_agents(self):
+        for runtime in ("custom", "openclaw", "hermes"):
+            with self.subTest(runtime=runtime):
+                driver, image = self.memory_capture_driver(runtime=runtime)
+                pod = deploy.capture(driver)["objects"]["pods/cetirun-agent/gateway"]
+                self.assertEqual(pod["runtimeAgentUID"], "agent-uid")
+                self.assertTrue(pod["isRuntimePod"])
+                self.assertEqual(pod["memoryInitImages"], [image])
+
+    def test_capture_uses_exact_native_helm_release_for_memory_evidence(self):
+        driver, image = self.memory_capture_driver("helm-native")
+        manifest = json.loads(driver.kubectl("get", "statefulset"))
+        manifest["kind"] = "StatefulSet"
+        driver.helm_manifest = yaml.safe_dump(manifest)
         pod = deploy.capture(driver)["objects"]["pods/cetirun-agent/gateway"]
         self.assertEqual(pod["runtimeAgentUID"], "agent-uid")
-        self.assertTrue(pod["isRuntimePod"])
-        self.assertEqual(pod["memoryInitImages"], ["registry.example.com/memory@sha256:" + "a" * 64])
+        # A manifest that does not contain this primary runtime cannot qualify.
+        manifest["metadata"]["name"] = "other-workload"
+        driver.helm_manifest = yaml.safe_dump(manifest)
+        pod = deploy.capture(driver)["objects"]["pods/cetirun-agent/gateway"]
+        self.assertIsNone(pod["runtimeAgentUID"])
+
+    def test_foreign_workloads_remain_preserved_but_cannot_supply_memory_evidence(self):
+        for variant in ("unmarked-foreign", "copied-marker", "namespace-conflict", "replaced-controller", "foreign-release"):
+            with self.subTest(variant=variant):
+                driver, image = self.memory_capture_driver(variant)
+                snapshot = deploy.capture(driver)
+                pod = snapshot["objects"]["pods/cetirun-agent/gateway"]
+                self.assertIsNone(pod["runtimeAgentUID"])
+                self.assertEqual(pod["memoryInitImages"], [image])
+                agents = [row for row in snapshot["objects"].values() if row.get("agentType")]
+                with self.assertRaisesRegex(deploy.Blocked, "retained_runtime_memory_unverified"):
+                    deploy.verify_memory_runtime_images(snapshot, {"args": operator_args()}, {},
+                                                        {"version": "0.2.1"}, affected_agents=agents)
+                changed = copy.deepcopy(snapshot)
+                changed["objects"]["pods/cetirun-agent/gateway"]["uid"] = "replacement"
+                with self.assertRaisesRegex(deploy.Blocked, "preserved_resource_changed"):
+                    deploy.preservation(snapshot, changed)
+
+    def test_runtime_environment_preserves_legacy_skills_storage_override(self):
+        entries = [{"name": "SKILLS_STORAGE_ACCOUNT", "value": "retainedskills"}]
+        self.assertEqual(deploy.runtime_environment(entries)["SKILLS_STORAGE_ACCOUNT"]["value"], "retainedskills")
+
+    def test_infrastructure_rejects_skills_storage_override_removal(self):
+        driver = self.infrastructure_driver(env=[{"name": "SKILLS_STORAGE_ACCOUNT", "value": "retainedskills"}])
+        with self.assertRaisesRegex(deploy.Blocked, "existing_runtime_environment_transition_out_of_scope"):
+            deploy.verify_operator_runtime_transition(driver, {"objects": {}},
+                                                      {"args": operator_args(), "env": []})
+
+    def broker_ready_driver(self, *, auth_sdk=False, pod_names="istio-proxy auth-sdk"):
+        driver = Mock()
+        driver.config = {"broker": {"namespace": "broker"}}
+        driver.documents = {"broker": [{
+            "kind": "Deployment", "metadata": {"name": "cetirun-agent-broker"},
+            "spec": {"selector": {"matchLabels": {"app": "broker"}},
+                      "template": {"spec": {"containers": ([{"name": "broker"}, {"name": "auth-sdk"}]
+                                                   if auth_sdk else [{"name": "broker"}])}}}
+        }]}
+        driver.kubectl.side_effect = lambda *args: pod_names if args[0:2] == ("get", "pods") else ""
+        return driver
+
+    def test_broker_ready_does_not_require_auth_sdk_when_rendered_disabled(self):
+        deploy.platform.Deployment.ready(self.broker_ready_driver(auth_sdk=False, pod_names="broker istio-proxy"), "broker")
+
+    def test_broker_ready_requires_rendered_auth_sdk_and_istio(self):
+        with self.assertRaisesRegex(ValueError, "Auth SDK"):
+            deploy.platform.Deployment.ready(self.broker_ready_driver(auth_sdk=True, pod_names="broker istio-proxy"), "broker")
+        with self.assertRaisesRegex(ValueError, "Istio sidecar"):
+            deploy.platform.Deployment.ready(self.broker_ready_driver(auth_sdk=False, pod_names="broker"), "broker")
 
     def test_republished_chart_memory_init_is_checked_before_runtime_rollout(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -793,6 +890,23 @@ class EnvironmentTests(unittest.TestCase):
             pod["memoryInitImages"] = ["registry.example.com/override@sha256:" + "b" * 64]
             deploy.verify_memory_runtime_images(snap, {"args": operator_args(image=pod["memoryInitImages"][0])},
                                                 {"cetirun": root}, {"version": "0.2.1"})
+
+    def test_foreign_memory_pod_cannot_satisfy_suspended_agent_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = "registry.example.com/memory@sha256:" + "a" * 64
+            (root / "values.yaml").write_text(yaml.safe_dump({"memoryContext": {"image": image}}))
+            snap = baseline()
+            agent = snap["objects"]["agents/fixture"]
+            agent.update(agentType="hermes", chartVersion="0.2.1", suspended=True)
+            snap["objects"]["pods/foreign/workload"] = {
+                "runtimeAgentUID": None, "isRuntimePod": True, "memoryInitImages": [image]
+            }
+            with self.assertRaisesRegex(deploy.Blocked, "retained_runtime_memory_unverified"):
+                deploy.verify_memory_runtime_images(
+                    snap, {"args": operator_args()}, {"cetirun": root}, {"version": "0.2.1"},
+                    affected_agents=[agent]
+                )
 
     def custom_home_fixture(self):
         snap = baseline()

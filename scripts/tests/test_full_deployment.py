@@ -206,6 +206,8 @@ class SyntheticCluster(DEPLOY.Deployment):
                     return json.dumps([entry] if entry else [])
                 return json.dumps(entry) if entry else ""
             document = self.live.get((kind, namespace, name), {})
+            if output == "json" and document:
+                return json.dumps(document)
             for field in ("spec", "spec.selector", "spec.template.spec.serviceAccountName", "spec.template.metadata.labels",
                           "spec.template.spec.volumes", "spec.accessModes", "spec.storageClassName"):
                 if output == "jsonpath={." + field + "}":
