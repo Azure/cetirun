@@ -73,7 +73,7 @@ var reservedInstanceNames = map[string]struct{}{
 
 // CreateInstanceRequest is the JSON body for POST /api/v1/instance.
 type CreateInstanceRequest struct {
-	InstanceName         string                    `json:"instanceName,omitempty"`
+	InstanceName         string                    `json:"instanceName"`
 	Agent                *agentconfig.Input        `json:"agent"`
 	RegistryAuth         *registryauth.Credentials `json:"registryAuth,omitempty"`
 	DisplayName          string                    `json:"displayName,omitempty"`
@@ -516,11 +516,6 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	displayName := req.DisplayName
-	if displayName == "" {
-		displayName = claims.DisplayName
-	}
-
 	if req.Agent == nil {
 		writeError(w, http.StatusBadRequest, "invalid_agent", "agent is required; use an object with type, image, username and optional port")
 		return
@@ -567,15 +562,18 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	instanceName := claims.Alias
-	if req.InstanceName != "" {
-		// Validate the user-supplied suffix before combining.
-		// Must match k8s DNS label rules: start and end with alphanumeric, hyphens allowed in between.
-		if !validInstanceNameSuffix.MatchString(req.InstanceName) {
-			writeError(w, http.StatusBadRequest, "invalid_name", "Instance name must start with a lowercase letter and contain only lowercase letters, digits, and hyphens")
-			return
-		}
-		instanceName = claims.Alias + "-" + req.InstanceName
+	if strings.TrimSpace(req.InstanceName) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_name", "Agent name is required")
+		return
+	}
+	if !validInstanceNameSuffix.MatchString(req.InstanceName) {
+		writeError(w, http.StatusBadRequest, "invalid_name", "Instance name must start with a lowercase letter and contain only lowercase letters, digits, and hyphens")
+		return
+	}
+	instanceName := claims.Alias + "-" + req.InstanceName
+	agentDisplayName := strings.TrimSpace(req.DisplayName)
+	if agentDisplayName == "" {
+		agentDisplayName = req.InstanceName
 	}
 	// See maxInstanceNameLength for where the limit comes from.
 	if len(instanceName) > maxInstanceNameLength {
@@ -633,6 +631,7 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 	}
 
 	options := kube.CreateInstanceOptions{
+		Annotations:          map[string]string{kube.AnnotationAgentDisplayName: agentDisplayName},
 		AgentIdentityEnabled: req.AgentIdentityEnabled,
 		OwnerTenantID:        claims.TenantID,
 		OwnerObjectID:        claims.ObjectID,
@@ -666,13 +665,13 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		agent.RegistrySecretRef = &cetirunv1alpha1.RegistrySecretRef{Name: "registry-source-" + id}
-		options.Annotations = map[string]string{
-			kube.AnnotationCreateRequest: r.Header.Get("Idempotency-Key"), kube.AnnotationCreateCaller: registryCaller(claims),
-			kube.AnnotationCreateConfig: registryCreateConfig(req), kube.AnnotationCreateRegistrySource: agent.RegistrySecretRef.Name,
-			registryauth.Operation: id,
-		}
+		options.Annotations[kube.AnnotationCreateRequest] = r.Header.Get("Idempotency-Key")
+		options.Annotations[kube.AnnotationCreateCaller] = registryCaller(claims)
+		options.Annotations[kube.AnnotationCreateConfig] = registryCreateConfig(req)
+		options.Annotations[kube.AnnotationCreateRegistrySource] = agent.RegistrySecretRef.Name
+		options.Annotations[registryauth.Operation] = id
 	}
-	instance, err := h.Kube.CreateInstance(r.Context(), claims.Alias, displayName, team, claims.Email, instanceName, agent, req.GatewayToken, req.TailscaleAuthKey, strings.TrimSpace(req.Model), options)
+	instance, err := h.Kube.CreateInstance(r.Context(), claims.Alias, claims.DisplayName, team, claims.Email, instanceName, agent, req.GatewayToken, req.TailscaleAuthKey, strings.TrimSpace(req.Model), options)
 	if err != nil {
 		if kube.IsAlreadyExists(err) {
 			writeError(w, http.StatusConflict, "instance_exists",
@@ -696,7 +695,7 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	slog.Info("Instance created", "alias", claims.Alias, "team", team, "displayName", displayName)
+	slog.Info("Instance created", "alias", claims.Alias, "team", team, "displayName", agentDisplayName)
 	writeJSON(w, http.StatusCreated, resp)
 }
 
@@ -750,7 +749,7 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 		RestartAvailable:         kube.CanRestartInstance(instance),
 		RestartRequestID:         instance.Spec.RestartRequestID,
 		ObservedRestartRequestID: instance.Status.ObservedRestartRequestID,
-		DisplayName:              instance.Spec.User.DisplayName,
+		DisplayName:              instance.Annotations[kube.AnnotationAgentDisplayName],
 		Team:                     instanceTeam(instance),
 		Model:                    instance.Spec.Model,
 		Phase:                    instance.Status.Phase,

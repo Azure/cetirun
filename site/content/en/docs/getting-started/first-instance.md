@@ -49,11 +49,11 @@ To compare Hermes, OpenClaw, and Custom, refer to
 
 | Field | What to enter |
 | --- | --- |
-| **Agent Name (optional)** | A short name, or nothing. The portal puts your alias in front of it. For the synthetic owner `alice`, the name `example` gives the Agent name `alice-example`. If you leave the field empty, the Agent name is your alias. Use lowercase letters, digits, and hyphens. The complete Agent name can have a maximum of 35 characters. |
+| **Agent Name** | Required. Start with a lowercase letter, use only lowercase letters, digits, and hyphens, and end with a letter or digit. The portal adds your alias to form the resource name: if `alice` enters `research`, the resource name is `alice-research`. The full resource name must fit within 35 characters. |
 | **Team (optional)** | Your Team, or **(none)**. The Agent Policy of a Team can limit the Agent types, the models, and the other options that you can select. If the Team has an Agent Policy, the form shows its name and its request limits. An Agent of a policy-bound Team runs in the Sandbox of that Team. In this Sandbox, Tailscale is not available. |
 | **Agent Type** | **Hermes**, **OpenClaw**, or **Custom**. Hermes is the default. The form shows only the types that the deployment and the Team allow. |
 | **Agent Image (optional)** | Nothing, unless your platform administrator gives you an image. An empty field uses the platform default image. A Custom Agent must have one of the approved images that the field suggests. Refer to [Choose an Agent type](../../guides/agent-types/#custom). |
-| **Display Name (optional)** | The name that the portal shows. The default is your sign-in name, for example `alice@example.com`. |
+| **Display Name (optional)** | Leave blank to show the Agent Name you entered (`research` in the example), or enter a different name to show in the portal. |
 | **Use private registry credentials** | Keep it off, unless your platform administrator tells you that the image is in a private registry. |
 | **Use shared models** | On, to use the models that your platform administrators share. The hint lists these models. The form shows this switch only when shared models are available. |
 | **Use GitHub Copilot** | On, to use the models of your own GitHub Copilot subscription. You sign in to GitHub after you create the Agent. The form shows this switch only when the deployment offers GitHub Copilot. At least one model source stays on. |

@@ -104,8 +104,8 @@ func TestToInstanceResponse(t *testing.T) {
 	if resp.InstanceName != "alice" {
 		t.Errorf("InstanceName = %q, want %q", resp.InstanceName, "alice")
 	}
-	if resp.DisplayName != "Alice Smith" {
-		t.Errorf("DisplayName = %q, want %q", resp.DisplayName, "Alice Smith")
+	if resp.DisplayName != "" {
+		t.Errorf("Agent without a display name returned %q; must not use the owner's name", resp.DisplayName)
 	}
 	if resp.Team != "aks" {
 		t.Errorf("Team = %q, want %q", resp.Team, "aks")
@@ -295,11 +295,11 @@ func TestCreateInstance_Success(t *testing.T) {
 		Kube: kube.NewClient(fc), Config: gatewayTestConfig(),
 	}
 
-	body := CreateInstanceRequest{Agent: &agentconfig.Input{}, Team: "aks"}
+	body := CreateInstanceRequest{InstanceName: "research", Agent: &agentconfig.Input{}, Team: "aks"}
 	bodyBytes, _ := json.Marshal(body)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", bytes.NewReader(bodyBytes))
-	req = withClaims(req, "alice", "Alice Smith", "alice@microsoft.com")
+	req = withClaims(req, "alice", "alice@example.com", "alice@example.com")
 	w := httptest.NewRecorder()
 
 	h.CreateInstance(w, req)
@@ -318,11 +318,14 @@ func TestCreateInstance_Success(t *testing.T) {
 	if resp.Agent.Type != "hermes" {
 		t.Errorf("AgentType = %q, want default hermes", resp.Agent.Type)
 	}
+	if resp.DisplayName != "research" || resp.InstanceName != "alice-research" {
+		t.Errorf("displayName = %q, instanceName = %q; want research, alice-research", resp.DisplayName, resp.InstanceName)
+	}
 }
 
 func TestCreateInstance_ExplicitOpenClaw(t *testing.T) {
 	h := &InstanceHandler{Kube: kube.NewClient(newGatewayFakeClient()), Config: gatewayTestConfig()}
-	body := strings.NewReader(`{"agent":{"type":"openclaw"},"team":"aks"}`)
+	body := strings.NewReader(`{"instanceName":"research","agent":{"type":"openclaw"},"team":"aks"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", body)
 	req = withClaims(req, "alice", "Example User", "alice@example.com")
 	w := httptest.NewRecorder()
@@ -341,7 +344,7 @@ func TestCreateInstance_ExplicitOpenClaw(t *testing.T) {
 
 func TestCreateInstanceAgentIdentityRequiresEnabledFeature(t *testing.T) {
 	h := &InstanceHandler{Kube: kube.NewClient(newGatewayFakeClient()), Config: gatewayTestConfig()}
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agent":{},"team":"aks","agentIdentityEnabled":true}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"instanceName":"research","agent":{},"team":"aks","agentIdentityEnabled":true}`))
 	req = withAgentIdentityClaims(req, "alice", "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222")
 	w := httptest.NewRecorder()
 
@@ -357,7 +360,7 @@ func TestCreateInstanceAgentIdentityRequiresVerifiedOwner(t *testing.T) {
 		Kube:   kube.NewClient(newGatewayFakeClient()),
 		Config: func() config.Config { cfg := gatewayTestConfig(); cfg.AgentIdentityEnabled = true; return cfg }(),
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agent":{},"team":"aks","agentIdentityEnabled":true}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"instanceName":"research","agent":{},"team":"aks","agentIdentityEnabled":true}`))
 	req = withClaims(req, "alice", "Alice Smith", "alice@example.com")
 	w := httptest.NewRecorder()
 
@@ -375,7 +378,7 @@ func TestCreateInstanceAgentIdentityBindsVerifiedOwner(t *testing.T) {
 		Kube:   kube.NewClient(newGatewayFakeClient()),
 		Config: func() config.Config { cfg := gatewayTestConfig(); cfg.AgentIdentityEnabled = true; return cfg }(),
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agent":{},"team":"aks","agentIdentityEnabled":true}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"instanceName":"research","agent":{},"team":"aks","agentIdentityEnabled":true}`))
 	req = withAgentIdentityClaims(req, "alice", tenantID, objectID)
 	w := httptest.NewRecorder()
 
@@ -384,7 +387,7 @@ func TestCreateInstanceAgentIdentityBindsVerifiedOwner(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("response = %d %s, want created", w.Code, w.Body.String())
 	}
-	instance, err := h.Kube.GetInstance(context.Background(), "alice")
+	instance, err := h.Kube.GetInstanceByName(context.Background(), "alice-research")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +406,7 @@ func TestCreateInstance_ModelRoundTrip(t *testing.T) {
 	fc := newGatewayFakeClient()
 	h := &InstanceHandler{Kube: kube.NewClient(fc), Config: gatewayTestConfig()}
 
-	body := CreateInstanceRequest{Agent: &agentconfig.Input{}, Team: "aks", Model: " gpt-6-astra "}
+	body := CreateInstanceRequest{InstanceName: "research", Agent: &agentconfig.Input{}, Team: "aks", Model: " gpt-6-astra "}
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", bytes.NewReader(bodyBytes))
 	req = withClaims(req, "alice", "Alice Smith", "alice@microsoft.com")
@@ -420,7 +423,7 @@ func TestCreateInstance_ModelRoundTrip(t *testing.T) {
 	if resp.Model != "gpt-6-astra" {
 		t.Errorf("response model = %q, want gpt-6-astra", resp.Model)
 	}
-	instance, err := h.Kube.GetInstance(context.Background(), "alice")
+	instance, err := h.Kube.GetInstanceByName(context.Background(), "alice-research")
 	if err != nil {
 		t.Fatalf("GetInstance: %v", err)
 	}
@@ -431,7 +434,7 @@ func TestCreateInstance_ModelRoundTrip(t *testing.T) {
 
 func TestCreateInstance_ModelTooLongRejected(t *testing.T) {
 	h := &InstanceHandler{Kube: kube.NewClient(newGatewayFakeClient()), Config: gatewayTestConfig()}
-	bodyBytes, _ := json.Marshal(CreateInstanceRequest{Agent: &agentconfig.Input{}, Model: strings.Repeat("a", 257)})
+	bodyBytes, _ := json.Marshal(CreateInstanceRequest{InstanceName: "research", Agent: &agentconfig.Input{}, Model: strings.Repeat("a", 257)})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", bytes.NewReader(bodyBytes))
 	req = withClaims(req, "alice", "Alice Smith", "alice@microsoft.com")
 	w := httptest.NewRecorder()
@@ -460,8 +463,6 @@ func TestCreateInstance_NameLength(t *testing.T) {
 		{name: "35 characters with suffix", alias: "alice", suffix: strings.Repeat("a", 29), want: http.StatusCreated},
 		{name: "36 characters with suffix", alias: "alice", suffix: strings.Repeat("a", 30), want: http.StatusBadRequest},
 		{name: "55 characters with suffix", alias: "alice", suffix: strings.Repeat("a", 49), want: http.StatusBadRequest},
-		{name: "35-character alias alone", alias: strings.Repeat("b", 35), want: http.StatusCreated},
-		{name: "36-character alias alone", alias: strings.Repeat("b", 36), want: http.StatusBadRequest},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -518,33 +519,22 @@ func TestCreateInstance_ReservedName(t *testing.T) {
 		})
 	}
 
-	// Now exercise the actual rejection path: an alias that itself equals a reserved name,
-	// with no suffix, so instanceName == reserved.
-	for _, name := range reserved {
-		t.Run("bare-"+name, func(t *testing.T) {
-			fc := newGatewayFakeClient()
-			h := &InstanceHandler{Kube: kube.NewClient(fc), Config: gatewayTestConfig()}
+	h := &InstanceHandler{Kube: kube.NewClient(newGatewayFakeClient()), Config: gatewayTestConfig()}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances", strings.NewReader(`{"agent":{},"instanceName":"credentials"}`))
+	w := httptest.NewRecorder()
+	h.CreateInstance(w, withClaims(req, "registry", "Registry", "registry@example.com"))
+	if w.Code != http.StatusBadRequest || errorCode(t, w) != "reserved_name" {
+		t.Fatalf("reserved credential namespace: %d %s", w.Code, w.Body.String())
+	}
+}
 
-			body := CreateInstanceRequest{Agent: &agentconfig.Input{}, Team: "aks"}
-			bodyBytes, _ := json.Marshal(body)
-
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", bytes.NewReader(bodyBytes))
-			req = withClaims(req, name, "X", name+"@microsoft.com")
-			w := httptest.NewRecorder()
-
-			h.CreateInstance(w, req)
-
-			if w.Code != http.StatusBadRequest {
-				t.Errorf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
-			}
-			var resp ErrorResponse
-			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-				t.Fatalf("decode error body: %v (body=%s)", err, w.Body.String())
-			}
-			if resp.Error.Code != "reserved_name" {
-				t.Errorf("error.code = %q, want %q (body=%s)", resp.Error.Code, "reserved_name", w.Body.String())
-			}
-		})
+func TestCreateInstance_RequiresName(t *testing.T) {
+	for _, body := range []string{`{"agent":{}}`, `{"agent":{},"instanceName":""}`, `{"agent":{},"instanceName":"   ","displayName":"Research"}`} {
+		w, fc := createAgent(t, gatewayTestConfig(), body, catalogConfigMap("gpt-6"))
+		if w.Code != http.StatusBadRequest || errorCode(t, w) != "invalid_name" {
+			t.Fatalf("body %s: %d %s", body, w.Code, w.Body.String())
+		}
+		assertNoCreationWrites(t, fc)
 	}
 }
 
@@ -554,7 +544,7 @@ func TestCreateLegacyInstanceWithoutTeam(t *testing.T) {
 		Kube: kube.NewClient(fc), Config: gatewayTestConfig(),
 	}
 
-	body := CreateInstanceRequest{Agent: &agentconfig.Input{}}
+	body := CreateInstanceRequest{InstanceName: "research", Agent: &agentconfig.Input{}}
 	bodyBytes, _ := json.Marshal(body)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", bytes.NewReader(bodyBytes))
@@ -587,32 +577,13 @@ func TestCreateInstance_InvalidBody(t *testing.T) {
 
 func TestCreateInstance_AlreadyExists(t *testing.T) {
 	instance := sampleInstance()
-	fc := newFakeClient(instance)
-	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
-	}
-
-	body := CreateInstanceRequest{Agent: &agentconfig.Input{}, Team: "aks"}
-	bodyBytes, _ := json.Marshal(body)
-
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", bytes.NewReader(bodyBytes))
-	req = withClaims(req, "alice", "Alice Smith", "alice@microsoft.com")
-	w := httptest.NewRecorder()
-
-	h.CreateInstance(w, req)
-
-	if w.Code != http.StatusConflict {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusConflict)
-	}
-}
-
-func TestCreateInstance_CustomDisplayName(t *testing.T) {
-	fc := newGatewayFakeClient()
+	instance.Name = "alice-research"
+	fc := newGatewayFakeClient(instance)
 	h := &InstanceHandler{
 		Kube: kube.NewClient(fc), Config: gatewayTestConfig(),
 	}
 
-	body := CreateInstanceRequest{Agent: &agentconfig.Input{}, DisplayName: "Custom Name", Team: "aks"}
+	body := CreateInstanceRequest{InstanceName: "research", Agent: &agentconfig.Input{}, Team: "aks"}
 	bodyBytes, _ := json.Marshal(body)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", bytes.NewReader(bodyBytes))
@@ -621,16 +592,32 @@ func TestCreateInstance_CustomDisplayName(t *testing.T) {
 
 	h.CreateInstance(w, req)
 
-	if w.Code != http.StatusCreated {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusCreated)
+	if w.Code != http.StatusConflict || errorCode(t, w) != "instance_exists" {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusConflict)
 	}
+}
 
-	var resp InstanceResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("failed to decode: %v", err)
-	}
-	if resp.DisplayName != "Custom Name" {
-		t.Errorf("DisplayName = %q, want %q", resp.DisplayName, "Custom Name")
+func TestCreateInstance_DisplayName(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{{"", "research"}, {"   ", "research"}, {"Custom Name", "Custom Name"}} {
+		body, _ := json.Marshal(CreateInstanceRequest{InstanceName: "research", Agent: &agentconfig.Input{}, DisplayName: tc.input})
+		w, fc := createAgent(t, gatewayTestConfig(), string(body), catalogConfigMap("gpt-6"))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("displayName %q: %d %s", tc.input, w.Code, w.Body.String())
+		}
+		var stored cetirunv1alpha1.Agent
+		if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice-research"}, &stored); err != nil {
+			t.Fatal(err)
+		}
+		var response InstanceResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if response.DisplayName != tc.want || stored.Annotations[kube.AnnotationAgentDisplayName] != tc.want {
+			t.Errorf("input %q: returned Agent name %q, stored %q; want %q", tc.input, response.DisplayName, stored.Annotations[kube.AnnotationAgentDisplayName], tc.want)
+		}
+		if stored.Spec.User.DisplayName != "Alice" || stored.Spec.User.Email != "alice@example.com" {
+			t.Errorf("input %q changed the owner: %+v", tc.input, stored.Spec.User)
+		}
 	}
 }
 
@@ -640,7 +627,7 @@ func TestCreateInstance_WithGatewayToken(t *testing.T) {
 		Kube: kube.NewClient(fc), Config: gatewayTestConfig(),
 	}
 
-	body := CreateInstanceRequest{Agent: &agentconfig.Input{}, Team: "aks", GatewayToken: "my-secret-token"}
+	body := CreateInstanceRequest{InstanceName: "research", Agent: &agentconfig.Input{}, Team: "aks", GatewayToken: "my-secret-token"}
 	bodyBytes, _ := json.Marshal(body)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", bytes.NewReader(bodyBytes))
@@ -663,7 +650,7 @@ func TestCreateInstance_WithGatewayToken(t *testing.T) {
 
 	// Verify gateway-token secret was created in the instance namespace.
 	secret := &corev1.Secret{}
-	if err := fc.Get(context.Background(), client.ObjectKey{Namespace: "cetirun-alice", Name: "gateway-token"}, secret); err != nil {
+	if err := fc.Get(context.Background(), client.ObjectKey{Namespace: "cetirun-alice-research", Name: "gateway-token"}, secret); err != nil {
 		t.Fatalf("expected gateway-token secret to exist: %v", err)
 	}
 	if string(secret.Data["OPENCLAW_GATEWAY_TOKEN"]) != "my-secret-token" {
@@ -678,7 +665,7 @@ func TestCreateInstance_WithTailscaleAuthKey(t *testing.T) {
 		Config: func() config.Config { cfg := gatewayTestConfig(); cfg.TailscaleEnabled = true; return cfg }(),
 	}
 
-	body := CreateInstanceRequest{Agent: &agentconfig.Input{}, Team: "aks", TailscaleAuthKey: "tskey-auth-xxxxx"}
+	body := CreateInstanceRequest{InstanceName: "research", Agent: &agentconfig.Input{}, Team: "aks", TailscaleAuthKey: "tskey-auth-xxxxx"}
 	bodyBytes, _ := json.Marshal(body)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", bytes.NewReader(bodyBytes))
@@ -701,7 +688,7 @@ func TestCreateInstance_WithTailscaleAuthKey(t *testing.T) {
 
 	// Verify tailscale-auth secret was created.
 	secret := &corev1.Secret{}
-	if err := fc.Get(context.Background(), client.ObjectKey{Namespace: "cetirun-alice", Name: "tailscale-auth"}, secret); err != nil {
+	if err := fc.Get(context.Background(), client.ObjectKey{Namespace: "cetirun-alice-research", Name: "tailscale-auth"}, secret); err != nil {
 		t.Fatalf("expected tailscale-auth secret to exist: %v", err)
 	}
 	if string(secret.Data["TAILSCALE_AUTH_KEY"]) != "tskey-auth-xxxxx" {
@@ -710,7 +697,7 @@ func TestCreateInstance_WithTailscaleAuthKey(t *testing.T) {
 
 	// Verify the CR has Tailscale spec set.
 	instance := &cetirunv1alpha1.Agent{}
-	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, instance); err != nil {
+	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice-research"}, instance); err != nil {
 		t.Fatalf("expected instance to exist: %v", err)
 	}
 	if instance.Spec.Tailscale == nil {
@@ -1251,6 +1238,7 @@ func TestUpdateInstance_WithGatewayToken(t *testing.T) {
 
 func TestUpdateInstance_EmptyDisplayNameUsesNameFallback(t *testing.T) {
 	instance := sampleInstance()
+	instance.Annotations = map[string]string{kube.AnnotationAgentDisplayName: "Research Assistant"}
 	fc := newFakeClient(instance)
 	h := &InstanceHandler{
 		Kube: kube.NewClient(fc),
@@ -1269,8 +1257,11 @@ func TestUpdateInstance_EmptyDisplayNameUsesNameFallback(t *testing.T) {
 		t.Fatalf("status = %d, want %d: %s", w.Code, http.StatusOK, w.Body.String())
 	}
 	stored, err := h.Kube.GetInstance(context.Background(), "alice")
-	if err != nil || stored.Spec.User.DisplayName != "" {
-		t.Fatalf("empty display name was not preserved: %v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := stored.Annotations[kube.AnnotationAgentDisplayName]; present || stored.Spec.User != instance.Spec.User {
+		t.Fatal("clearing the Agent display name must remove only its annotation and preserve the owner")
 	}
 }
 

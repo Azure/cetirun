@@ -29,17 +29,18 @@ import (
 func TestPortalPatchesPreserveFutureFields(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
-		name        string
-		team        bool
-		addRegistry bool
-		registry    bool
-		copilot     bool
-		strict      bool
-		wantSpec    string
-		run         func(*Client, client.Object) (client.Object, error)
+		name            string
+		team            bool
+		addRegistry     bool
+		registry        bool
+		copilot         bool
+		strict          bool
+		wantAnnotations map[string]any
+		wantSpec        string
+		run             func(*Client, client.Object) (client.Object, error)
 	}{
 		{
-			name: "instance-display-name", strict: true, wantSpec: `{"user":{"displayName":"Renamed"}}`,
+			name: "instance-display-name", strict: true, wantAnnotations: map[string]any{AnnotationAgentDisplayName: "Renamed"},
 			run: func(c *Client, object client.Object) (client.Object, error) {
 				return c.UpdateInstanceByName(ctx, object.GetName(), UpdateInstanceOpts{
 					ExpectedUID: object.GetUID(), ExpectedResourceVersion: object.GetResourceVersion(), DisplayName: ptr.To("Renamed"),
@@ -242,6 +243,9 @@ func TestPortalPatchesPreserveFutureFields(t *testing.T) {
 				t.Fatal("write mutated the caller's object")
 			}
 			wantMetadata := map[string]any{"resourceVersion": "7"}
+			if tc.wantAnnotations != nil {
+				wantMetadata["annotations"] = tc.wantAnnotations
+			}
 			if tc.registry {
 				operation := result.GetAnnotations()[registryauth.Operation]
 				if len(operation) != 32 || operation == "previous-operation" {

@@ -80,6 +80,9 @@ func validateInstanceUpdate(instance *cetirunv1alpha1.Agent, opts UpdateInstance
 // triggering a reconcile even when the CR spec (generation) hasn't changed.
 const AnnotationSecretUpdatedAt = "cetirun.microsoft.com/secret-updated-at"
 
+// AnnotationAgentDisplayName stores the Agent's name for display in the Portal.
+const AnnotationAgentDisplayName = "cetirun.microsoft.com/agent-display-name"
+
 // UpdateInstanceOpts specifies which fields to update on an existing instance.
 // nil pointer = no change; non-nil = apply the pointed-to value.
 type UpdateInstanceOpts struct {
@@ -87,7 +90,7 @@ type UpdateInstanceOpts struct {
 	ExpectedUID             types.UID
 	ExpectedResourceVersion string
 	Authorize               func(*cetirunv1alpha1.Agent) error
-	DisplayName             *string // nil = no change
+	DisplayName             *string // Agent display name; empty clears the annotation
 	Team                    *string // nil = no change
 	SandboxRef              *string // nil = no change; set with Team from the selected Team default
 	GatewayToken            *string // nil = no change, non-empty = update
@@ -174,7 +177,7 @@ func (c *Client) GetInstance(ctx context.Context, alias string) (*cetirunv1alpha
 // instanceName is metadata.name; an empty value uses the caller's alias.
 // If gatewayToken or tailscaleAuthKey are non-empty, it pre-creates the
 // corresponding Secrets in the instance namespace before creating the CR.
-func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, email, instanceName string, agent cetirunv1alpha1.HarnessSpec, gatewayToken, tailscaleAuthKey, model string, optional ...CreateInstanceOptions) (*cetirunv1alpha1.Agent, error) {
+func (c *Client) CreateInstance(ctx context.Context, alias, ownerDisplayName, team, email, instanceName string, agent cetirunv1alpha1.HarnessSpec, gatewayToken, tailscaleAuthKey, model string, optional ...CreateInstanceOptions) (*cetirunv1alpha1.Agent, error) {
 	if instanceName == "" {
 		instanceName = alias
 	}
@@ -232,7 +235,7 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 			SandboxRef: sandboxRef,
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       alias,
-				DisplayName: displayName,
+				DisplayName: ownerDisplayName,
 				Email:       email,
 			},
 		},
@@ -491,7 +494,11 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 		}
 
 		if opts.DisplayName != nil {
-			instance.Spec.User.DisplayName = *opts.DisplayName
+			if *opts.DisplayName == "" {
+				delete(instance.Annotations, AnnotationAgentDisplayName)
+			} else {
+				metav1.SetMetaDataAnnotation(&instance.ObjectMeta, AnnotationAgentDisplayName, *opts.DisplayName)
+			}
 			crChanged = true
 		}
 		if opts.Team != nil {

@@ -18,11 +18,11 @@ func TestSandboxCreatePinsRuntimeBeforeFirstWrite(t *testing.T) {
 	policy.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeOpenClaw}
 	h, _ := creationPolicyHandler(team, policy)
 	w := httptest.NewRecorder()
-	h.CreateInstance(w, managementRequest(http.MethodPost, `{"agent":{"type":"openclaw"},"team":"policy-team","modelAccess":{"sharedModels":true,"githubCopilot":false}}`))
+	h.CreateInstance(w, managementRequest(http.MethodPost, `{"instanceName":"research","agent":{"type":"openclaw"},"team":"policy-team","modelAccess":{"sharedModels":true,"githubCopilot":false}}`))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create: %d %s", w.Code, w.Body.String())
 	}
-	a, err := h.Kube.GetInstance(context.Background(), "alice")
+	a, err := h.Kube.GetInstanceByName(context.Background(), "alice-research")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,12 +42,12 @@ func TestSandboxCreatePreservesCustomContracts(t *testing.T) {
 		h.Config.SandboxControllerDefaults = true
 		w := httptest.NewRecorder()
 		h.CreateInstance(w, managementRequest(http.MethodPost,
-			`{"agent":{"type":"custom","image":"`+managementImage+`"`+
+			`{"instanceName":"research","agent":{"type":"custom","image":"`+managementImage+`"`+
 				endpoint+`},"team":"policy-team","modelAccess":{"sharedModels":true,"githubCopilot":false}}`))
 		if w.Code != http.StatusCreated {
 			t.Fatalf("Custom create: %d %s", w.Code, w.Body.String())
 		}
-		agent, err := h.Kube.GetInstance(context.Background(), "alice")
+		agent, err := h.Kube.GetInstanceByName(context.Background(), "alice-research")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -69,11 +69,11 @@ func TestSandboxCreateUsesCommonControllerDefaults(t *testing.T) {
 			h.Config.SandboxControllerDefaults = true
 			w := httptest.NewRecorder()
 			h.CreateInstance(w, managementRequest(http.MethodPost,
-				`{"agent":{"type":"`+string(kind)+`"},"team":"policy-team","modelAccess":{"sharedModels":true,"githubCopilot":false}}`))
+				`{"instanceName":"research","agent":{"type":"`+string(kind)+`"},"team":"policy-team","modelAccess":{"sharedModels":true,"githubCopilot":false}}`))
 			if w.Code != http.StatusCreated {
 				t.Fatalf("create without a redundant profile: %d %s", w.Code, w.Body.String())
 			}
-			agent, err := h.Kube.GetInstance(context.Background(), "alice")
+			agent, err := h.Kube.GetInstanceByName(context.Background(), "alice-research")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -97,7 +97,7 @@ func TestSandboxCreateRequiresValidRuntimeWithoutWrites(t *testing.T) {
 			h.Config.SandboxRuntimes["hermes"] = profile
 			h.Config.SandboxControllerDefaults = controllerDefaults
 			w := httptest.NewRecorder()
-			h.CreateInstance(w, managementRequest(http.MethodPost, `{"agent":{"type":"hermes"},"team":"policy-team","gatewayToken":"synthetic-token","modelAccess":{"sharedModels":true,"githubCopilot":false}}`))
+			h.CreateInstance(w, managementRequest(http.MethodPost, `{"instanceName":"research","agent":{"type":"hermes"},"team":"policy-team","gatewayToken":"synthetic-token","modelAccess":{"sharedModels":true,"githubCopilot":false}}`))
 			if w.Code != http.StatusServiceUnavailable || errorCode(t, w) != "runtime_unavailable" {
 				t.Fatalf("invalid runtime (controller defaults=%t): %d %s", controllerDefaults, w.Code, w.Body.String())
 			}
@@ -116,7 +116,7 @@ func TestSandboxCreateWithoutProfileRequiresControllerDefaults(t *testing.T) {
 				h.Config.SandboxRuntimes = profiles
 				w := httptest.NewRecorder()
 				h.CreateInstance(w, managementRequest(http.MethodPost,
-					`{"agent":{"type":"`+string(kind)+`"},"team":"policy-team","modelAccess":{"sharedModels":true,"githubCopilot":false}}`))
+					`{"instanceName":"research","agent":{"type":"`+string(kind)+`"},"team":"policy-team","modelAccess":{"sharedModels":true,"githubCopilot":false}}`))
 				if w.Code != http.StatusServiceUnavailable || errorCode(t, w) != "runtime_unavailable" {
 					t.Fatalf("missing runtime without controller defaults: %d %s", w.Code, w.Body.String())
 				}
@@ -137,11 +137,11 @@ func TestSandboxCreatePreservesExplicitRuntimeRequests(t *testing.T) {
 		w := httptest.NewRecorder()
 		// Admission, not Portal defaulting, decides whether the explicit image
 		// and port are qualified by the selected runtime chart.
-		h.CreateInstance(w, managementRequest(http.MethodPost, `{"agent":{"type":"hermes","image":"registry.example.com/request:1","port":9000},"team":"policy-team","modelAccess":{"sharedModels":true,"githubCopilot":false}}`))
+		h.CreateInstance(w, managementRequest(http.MethodPost, `{"instanceName":"research","agent":{"type":"hermes","image":"registry.example.com/request:1","port":9000},"team":"policy-team","modelAccess":{"sharedModels":true,"githubCopilot":false}}`))
 		if w.Code != http.StatusCreated {
 			t.Fatalf("create: %d %s", w.Code, w.Body.String())
 		}
-		a, err := h.Kube.GetInstance(context.Background(), "alice")
+		a, err := h.Kube.GetInstanceByName(context.Background(), "alice-research")
 		if err != nil || a.Spec.Agent.Image == nil || *a.Spec.Agent.Image != "registry.example.com/request:1" || a.Spec.Agent.Port == nil || *a.Spec.Agent.Port != 9000 {
 			t.Fatalf("explicit request was overwritten: %v", err)
 		}

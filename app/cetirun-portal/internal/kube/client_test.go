@@ -417,7 +417,7 @@ func TestUpdateInstance_DisplayNameAndTeam(t *testing.T) {
 	fc := newFakeClient(sampleInstance())
 	c := NewClient(fc)
 
-	displayName := "Alice Updated"
+	displayName := "Research Assistant"
 	team := "other-team"
 	instance, err := c.UpdateInstance(context.Background(), "alice", UpdateInstanceOpts{
 		DisplayName: &displayName,
@@ -426,8 +426,8 @@ func TestUpdateInstance_DisplayNameAndTeam(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateInstance failed: %v", err)
 	}
-	if instance.Spec.User.DisplayName != "Alice Updated" {
-		t.Errorf("DisplayName = %q, want %q", instance.Spec.User.DisplayName, "Alice Updated")
+	if instance.Annotations[AnnotationAgentDisplayName] != displayName {
+		t.Errorf("Agent display name = %q, want %q", instance.Annotations[AnnotationAgentDisplayName], displayName)
 	}
 	if instance.Spec.Team != "other-team" {
 		t.Errorf("Team = %q, want %q", instance.Spec.Team, "other-team")
@@ -438,8 +438,8 @@ func TestUpdateInstance_DisplayNameAndTeam(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetInstance after update failed: %v", err)
 	}
-	if got.Spec.User.DisplayName != "Alice Updated" {
-		t.Errorf("persisted DisplayName = %q, want %q", got.Spec.User.DisplayName, "Alice Updated")
+	if got.Annotations[AnnotationAgentDisplayName] != displayName || got.Spec.User.DisplayName != "Alice Smith" {
+		t.Errorf("persisted Agent name = %q, owner name = %q", got.Annotations[AnnotationAgentDisplayName], got.Spec.User.DisplayName)
 	}
 }
 

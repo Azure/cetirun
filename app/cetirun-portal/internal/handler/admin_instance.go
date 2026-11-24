@@ -72,7 +72,7 @@ func adminInstanceSummary(ins *cetirunv1alpha1.Agent) AdminInstanceSummary {
 	return AdminInstanceSummary{
 		Name:        ins.Name,
 		Alias:       ins.Spec.User.Alias,
-		DisplayName: ins.Spec.User.DisplayName,
+		DisplayName: ins.Annotations[kube.AnnotationAgentDisplayName],
 		Email:       ins.Spec.User.Email,
 		Team:        instanceTeam(ins),
 		Agent:       AdminAgentConfig{Type: agent.Type, Image: agent.Image, Username: agent.Username, Port: agent.Port, WebUI: agent.WebUI},

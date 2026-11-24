@@ -28,7 +28,7 @@ func TestCreateGovernedCustomAgentIdentity(t *testing.T) {
 			}
 			response := httptest.NewRecorder()
 			h.CreateInstance(response, managementRequest(http.MethodPost,
-				`{"team":"policy-team","agent":{"type":"custom","image":"`+managementImage+`"},"agentIdentityEnabled":true}`))
+				`{"instanceName":"research","team":"policy-team","agent":{"type":"custom","image":"`+managementImage+`"},"agentIdentityEnabled":true}`))
 			if !enabled {
 				if response.Code != http.StatusBadRequest {
 					t.Fatalf("unqualified Custom identity was not rejected: %d %s", response.Code, response.Body)

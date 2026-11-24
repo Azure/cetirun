@@ -190,7 +190,7 @@ compare `spec.user.alias`; the ingress check and terminal also accept the
 full email address.
 
 By default, each user can create one Agent (`features.maxInstancesPerUser: 1`
-of the Portal chart). The Portal names it `<alias>`, or `<alias>-<suffix>`.
+of the Portal chart). The Portal names new Agents `<alias>-<suffix>`.
 
 ### Roles
 

@@ -31,6 +31,7 @@ it("offers the Team's smart-routing models as the default model", async () => {
   const user = userEvent.setup();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><CreateForm /></QueryClientProvider>);
+  await user.type(screen.getByRole("textbox", { name: "Agent Name" }), "research");
   await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "research");
   await waitFor(() => expect(screen.queryByText("Loading allowed Agent options...")).not.toBeInTheDocument());
   const models = await screen.findByRole("combobox", { name: /Default model/ });

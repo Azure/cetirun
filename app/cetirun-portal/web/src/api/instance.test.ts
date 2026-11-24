@@ -182,12 +182,12 @@ describe("createInstance", () => {
       }),
     );
 
-    const result = await createInstance({ agent: {}, team: "example-team" });
+    const result = await createInstance({ instanceName: "research", agent: {}, team: "example-team" });
 
     expect(result).toEqual(createdInstance);
     expect(fetch).toHaveBeenCalledWith("/api/v1/instances", expect.objectContaining({
       method: "POST",
-      body: JSON.stringify({ agent: {}, team: "example-team" }),
+      body: JSON.stringify({ instanceName: "research", agent: {}, team: "example-team" }),
     }));
   });
 
@@ -202,7 +202,7 @@ describe("createInstance", () => {
       }),
     );
 
-    await expect(createInstance({ agent: {}, team: "example-team" })).rejects.toThrow(
+    await expect(createInstance({ instanceName: "research", agent: {}, team: "example-team" })).rejects.toThrow(
       "Instance already exists"
     );
   });

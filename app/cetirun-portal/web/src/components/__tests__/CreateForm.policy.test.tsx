@@ -30,6 +30,7 @@ function respond(body: unknown, status = 200) {
 function renderForm() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const result = render(<QueryClientProvider client={client}><CreateForm /></QueryClientProvider>);
+  fireEvent.change(screen.getByRole("textbox", { name: "Agent Name" }), { target: { value: "research" } });
   return { ...result, client };
 }
 async function selectTeam(user: ReturnType<typeof userEvent.setup>, team = "restricted") {

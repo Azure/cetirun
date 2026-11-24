@@ -1008,7 +1008,9 @@ the optional Agent HTTP port.
 
 Management requests and responses use a nested `agent` object. The old
 `agentType` input, unknown fields and duplicate JSON fields are rejected on
-both the `/api/v1/instance` and `/api/v1/instances` routes. For example:
+both the `/api/v1/instance` and `/api/v1/instances` routes. Creation requires
+`instanceName`. If `displayName` is omitted or blank, the Portal uses the
+submitted `instanceName` without the owner prefix. For example:
 
 ```json
 {
@@ -1031,9 +1033,10 @@ leave model setup and login to the image. Custom requests must omit Gateway
 Token, Tailscale and Agent Identity settings, also when their values are empty
 or false. No built-in credential Secret is created for Custom.
 
-The heading of an Agent shows its nonblank Display Name. If the Display Name is
-blank, the heading shows the Agent's name. An owner can clear Display Name with
-an empty string.
+The Portal stores the Agent's Display Name in the `cetirun.microsoft.com/agent-display-name`
+annotation. If the annotation is absent or cleared, the heading shows the Agent's
+resource name. Renaming the Agent in the Portal does not change `spec.user.displayName`,
+the owner's name used by the runtime. Existing Agents are not rewritten.
 
 ### Configuring Custom self-service
 

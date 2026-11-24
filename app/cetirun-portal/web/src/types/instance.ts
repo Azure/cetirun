@@ -158,7 +158,7 @@ export interface GovernanceStatus {
 }
 
 export interface CreateInstanceRequest {
-  instanceName?: string;
+  instanceName: string;
   agent: Omit<AgentConfig, "registrySecretRef" | "type"> & { type?: AgentType };
   registryAuth?: RegistryAuth;
   requestId?: string;

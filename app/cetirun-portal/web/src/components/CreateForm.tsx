@@ -147,7 +147,7 @@ export function CreateForm({ onCreated, onCancel }: {
     }
     setValidationError("");
     createMutation.mutate({
-      instanceName: instanceName || undefined,
+      instanceName,
       agent: custom
         ? { type: agentType, image: image.trim(), username, port: httpPort, webUI: webUI || undefined }
         : { type: agentType, image: image.trim() || undefined },
@@ -166,17 +166,19 @@ export function CreateForm({ onCreated, onCancel }: {
   return (
     <form onSubmit={handleSubmit} className="portal-form">
       <Field
-        label="Agent Name (optional)"
+        label="Agent Name"
+        required
         hint={
           instanceName
             ? `CR name will be: <your-alias>-${instanceName} (e.g. alice-${instanceName})`
-            : "Leave blank to use your alias as the agent name. Lowercase letters, digits, hyphens only."
+            : "Start with a lowercase letter. Use lowercase letters, digits, and hyphens; end with a letter or digit."
         }
       >
         <Input
           value={instanceName}
           onChange={(_, data) => setInstanceName(data.value)}
-          placeholder="e.g. my-project (leave blank for default)"
+          placeholder="e.g. my-project"
+          required
           pattern={"[a-z](?:[a-z0-9\\-]*[a-z0-9])?"}
         />
       </Field>
@@ -255,7 +257,7 @@ export function CreateForm({ onCreated, onCancel }: {
         <Input
           value={displayName}
           onChange={(_, data) => setDisplayName(data.value)}
-          placeholder="Defaults to your profile name"
+          placeholder={instanceName || "Defaults to Agent Name"}
         />
       </Field>
 

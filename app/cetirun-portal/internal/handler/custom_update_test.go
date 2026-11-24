@@ -137,7 +137,7 @@ func TestCustomWebUICreateThroughNestedAgent(t *testing.T) {
 	h := customManagementHandler()
 	w := httptest.NewRecorder()
 	h.CreateInstance(w, managementRequest(http.MethodPost,
-		`{"agent":{"type":"custom","image":"`+managementImage+`","port":8080,"webUI":true},"team":"aks"}`))
+		`{"instanceName":"research","agent":{"type":"custom","image":"`+managementImage+`","port":8080,"webUI":true},"team":"aks"}`))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create Web UI: %d %s", w.Code, w.Body.String())
 	}
@@ -148,7 +148,7 @@ func TestCustomWebUICreateThroughNestedAgent(t *testing.T) {
 	if !response.Agent.WebUI || !ptr.Equal(response.Agent.Port, ptr.To[int32](8080)) || response.WebUIURL != "" || response.AccessURL != "" {
 		t.Fatalf("wrong Web UI creation response: %s", w.Body.String())
 	}
-	stored, err := h.Kube.GetInstance(context.Background(), "alice")
+	stored, err := h.Kube.GetInstanceByName(context.Background(), "alice-research")
 	if err != nil || !stored.Spec.Agent.WebUI || !ptr.Equal(stored.Spec.Agent.Port, response.Agent.Port) {
 		t.Fatalf("Web UI was not persisted: %v", err)
 	}

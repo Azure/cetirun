@@ -81,23 +81,23 @@ func errorCode(t *testing.T, w *httptest.ResponseRecorder) string {
 }
 
 func TestCreateInstanceAIGatewaySupportsOptionalTeamAndCustom(t *testing.T) {
-	w, fc := createAgent(t, gatewayConfig(), `{"agent":{"type":"openclaw"}}`, catalogConfigMap("gpt-6"))
+	w, fc := createAgent(t, gatewayConfig(), `{"instanceName":"research","agent":{"type":"openclaw"}}`, catalogConfigMap("gpt-6"))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("no team: status %d body %s", w.Code, w.Body.String())
 	}
 	created := &cetirunv1alpha1.Agent{}
-	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, created); err != nil {
+	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice-research"}, created); err != nil {
 		t.Fatal(err)
 	}
 	if created.Spec.Team != "" || created.Spec.SandboxRef != "" || created.Spec.ModelAccess == nil {
 		t.Fatalf("unbound gateway agent = %+v", created.Spec)
 	}
-	w, _ = createAgent(t, gatewayConfig(), `{"agent":{"type":"openclaw"},"team":"nope"}`, gatewayTeam("aks"), catalogConfigMap("gpt-6"))
+	w, _ = createAgent(t, gatewayConfig(), `{"instanceName":"research","agent":{"type":"openclaw"},"team":"nope"}`, gatewayTeam("aks"), catalogConfigMap("gpt-6"))
 	if w.Code != http.StatusBadRequest || errorCode(t, w) != "unknown_team" {
 		t.Fatalf("unknown team: status %d body %s", w.Code, w.Body.String())
 	}
 	// Gateway-only creation rejects deployments where it is disabled.
-	w, _ = createAgent(t, config.Config{}, `{"agent":{"type":"openclaw"}}`, gatewayTeam("aks"))
+	w, _ = createAgent(t, config.Config{}, `{"instanceName":"research","agent":{"type":"openclaw"}}`, gatewayTeam("aks"))
 	if w.Code != http.StatusConflict || errorCode(t, w) != "gateway_required" {
 		t.Fatalf("feature off: status %d body %s", w.Code, w.Body.String())
 	}
@@ -105,12 +105,12 @@ func TestCreateInstanceAIGatewaySupportsOptionalTeamAndCustom(t *testing.T) {
 	custom := gatewayConfig()
 	custom.AllowedAgentTypes = []string{"openclaw", "custom"}
 	customAgent := `"agent":{"type":"custom","image":"` + managementImage + `","username":"assistant"}`
-	w, fc = createAgent(t, custom, `{`+customAgent+`,"modelAccess":{"githubCopilot":false}}`, catalogConfigMap("gpt-6"))
+	w, fc = createAgent(t, custom, `{"instanceName":"research",`+customAgent+`,"modelAccess":{"githubCopilot":false}}`, catalogConfigMap("gpt-6"))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("custom: status %d body %s", w.Code, w.Body.String())
 	}
 	agent := &cetirunv1alpha1.Agent{}
-	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, agent); err != nil {
+	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice-research"}, agent); err != nil {
 		t.Fatal(err)
 	}
 	if agent.Spec.Team != "" || agent.Spec.ModelAccess == nil || *agent.Spec.ModelAccess.GitHubCopilot {
@@ -119,8 +119,8 @@ func TestCreateInstanceAIGatewaySupportsOptionalTeamAndCustom(t *testing.T) {
 }
 
 func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
-	const openclaw = `{"agent":{"type":"openclaw"},"team":"aks"`
-	const hermes = `{"agent":{"type":"hermes"},"team":"aks"}`
+	const openclaw = `{"instanceName":"research","agent":{"type":"openclaw"},"team":"aks"`
+	const hermes = `{"instanceName":"research","agent":{"type":"hermes"},"team":"aks"}`
 	routes := func(agentTypes ...cetirunv1alpha1.AgentType) *cetirunv1alpha1.AIGatewayRouting {
 		return &cetirunv1alpha1.AIGatewayRouting{Chart: testAgentChart, AgentTypes: append([]cetirunv1alpha1.AgentType{}, agentTypes...)}
 	}
@@ -134,7 +134,7 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 		wantErrCode string
 		wantErrText string
 	}{
-		{name: "defaults", body: `{"agent":{"type":"openclaw"},"team":" aks "}`, catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, true}},
+		{name: "defaults", body: `{"instanceName":"research","agent":{"type":"openclaw"},"team":" aks "}`, catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, true}},
 		{name: "both on", body: openclaw + `,"modelAccess":{"sharedModels":true,"githubCopilot":true}}`,
 			catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, true}},
 		{name: "both off", body: openclaw + `,"modelAccess":{"sharedModels":false,"githubCopilot":false}}`,
@@ -159,11 +159,11 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 		{name: "no copilot, no shared models, copilot asked for", body: openclaw + `,"modelAccess":{"sharedModels":false,"githubCopilot":true}}`,
 			catalog: publishedCatalog(false), wantStatus: http.StatusConflict, wantErrCode: "no_model_source"},
 		// Hermes takes its models from the Gateway too, under the same rules.
-		{name: "hermes copilot off with shared models", body: `{"agent":{"type":"hermes"},"team":"aks","modelAccess":{"githubCopilot":false}}`,
+		{name: "hermes copilot off with shared models", body: `{"instanceName":"research","agent":{"type":"hermes"},"team":"aks","modelAccess":{"githubCopilot":false}}`,
 			catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, false}},
-		{name: "hermes copilot off without shared models", body: `{"agent":{"type":"hermes"},"team":"aks","modelAccess":{"githubCopilot":false}}`,
+		{name: "hermes copilot off without shared models", body: `{"instanceName":"research","agent":{"type":"hermes"},"team":"aks","modelAccess":{"githubCopilot":false}}`,
 			catalog: catalogConfigMap(), wantStatus: http.StatusBadRequest, wantErrCode: "invalid_model_access"},
-		{name: "hermes with an unpublished catalog", body: `{"agent":{"type":"hermes"},"team":"aks"}`,
+		{name: "hermes with an unpublished catalog", body: `{"instanceName":"research","agent":{"type":"hermes"},"team":"aks"}`,
 			wantStatus: http.StatusServiceUnavailable, wantErrCode: "model_sources_unknown"},
 		// Only the agent types the operator's default agent chart routes
 		// through the Gateway take its models: the operator would leave
@@ -204,7 +204,7 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 				return
 			}
 			agent := &cetirunv1alpha1.Agent{}
-			if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, agent); err != nil {
+			if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice-research"}, agent); err != nil {
 				t.Fatal(err)
 			}
 			if agent.Spec.Team != "aks" || agent.Spec.SandboxRef != "" {

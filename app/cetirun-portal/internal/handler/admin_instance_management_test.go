@@ -62,6 +62,7 @@ func adminManagedInstance() *api.Agent {
 
 func TestAdminAgentDetailAndUpdateCrossOwnerDoNotReadSecrets(t *testing.T) {
 	instance := adminManagedInstance()
+	instance.Annotations[kube.AnnotationAgentDisplayName] = "Research Assistant"
 	secretReads := 0
 	fc := fake.NewClientBuilder().WithScheme(newScheme()).WithGlobalResourceVersionCounter().WithObjects(
 		instance,
@@ -86,7 +87,7 @@ func TestAdminAgentDetailAndUpdateCrossOwnerDoNotReadSecrets(t *testing.T) {
 	if err := json.Unmarshal(get.Body.Bytes(), &detail); err != nil {
 		t.Fatal(err)
 	}
-	if detail.Alias != "foreign-owner" || !detail.RegistryAuthConfigured || detail.UID != string(instance.UID) || detail.ResourceVersion == "" {
+	if detail.DisplayName != "Research Assistant" || detail.Alias != "foreign-owner" || !detail.RegistryAuthConfigured || detail.UID != string(instance.UID) || detail.ResourceVersion == "" {
 		t.Fatalf("unexpected cross-owner detail: %+v", detail)
 	}
 
@@ -104,10 +105,10 @@ func TestAdminAgentDetailAndUpdateCrossOwnerDoNotReadSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Spec.User.DisplayName != "Updated foreign agent" || updated.Spec.Model != "shared/updated" || updated.Spec.Agent.Image == nil || *updated.Spec.Agent.Image != "registry.example.com/agent:2" {
+	if updated.Annotations[kube.AnnotationAgentDisplayName] != "Updated foreign agent" || updated.Spec.Model != "shared/updated" || updated.Spec.Agent.Image == nil || *updated.Spec.Agent.Image != "registry.example.com/agent:2" {
 		t.Fatalf("requested update not persisted: %+v", updated.Spec)
 	}
-	if updated.Spec.Team != instance.Spec.Team || updated.Spec.SandboxRef != instance.Spec.SandboxRef || !reflect.DeepEqual(updated.Spec.Agent.RegistrySecretRef, instance.Spec.Agent.RegistrySecretRef) || !reflect.DeepEqual(updated.Spec.Agent.Port, instance.Spec.Agent.Port) {
+	if updated.Spec.User != instance.Spec.User || updated.Spec.Team != instance.Spec.Team || updated.Spec.SandboxRef != instance.Spec.SandboxRef || !reflect.DeepEqual(updated.Spec.Agent.RegistrySecretRef, instance.Spec.Agent.RegistrySecretRef) || !reflect.DeepEqual(updated.Spec.Agent.Port, instance.Spec.Agent.Port) {
 		t.Fatalf("admin edit changed protected or unrelated state: %+v", updated.Spec)
 	}
 	if secretReads != 0 {
@@ -174,7 +175,7 @@ func TestAdminAgentUpdateRequiresVersionAndStrictAllowlist(t *testing.T) {
 				t.Fatalf("status=%d want=%d body=%s", w.Code, test.want, w.Body.String())
 			}
 			current, err := h.Kube.GetInstanceByName(context.Background(), instance.Name)
-			if err != nil || current.Spec.User.DisplayName != instance.Spec.User.DisplayName || !reflect.DeepEqual(current.Spec.Agent.RegistrySecretRef, instance.Spec.Agent.RegistrySecretRef) {
+			if err != nil || !reflect.DeepEqual(current.Annotations, instance.Annotations) || current.Spec.User != instance.Spec.User || !reflect.DeepEqual(current.Spec.Agent.RegistrySecretRef, instance.Spec.Agent.RegistrySecretRef) {
 				t.Fatalf("rejected update persisted changes: instance=%+v err=%v", current, err)
 			}
 		})
@@ -275,7 +276,7 @@ func TestAdminAgentPortUpdatesAreCustomOnly(t *testing.T) {
 					}
 					return
 				}
-				if w.Code != http.StatusOK || after.Spec.User.DisplayName != "Updated name" {
+				if w.Code != http.StatusOK || after.Annotations[kube.AnnotationAgentDisplayName] != "Updated name" {
 					t.Fatalf("Custom port update: status=%d body=%s", w.Code, w.Body.String())
 				}
 				var expected *int32
