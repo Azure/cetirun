@@ -3,7 +3,7 @@ module github.com/Azure/CetiRun/app/cetirun-portal
 go 1.27.4
 
 require (
-	github.com/Azure/CetiRun/app/cetirun-operator v0.2.1
+	github.com/Azure/CetiRun/app/cetirun-operator v0.2.2
 	github.com/Azure/CetiRun/app/internal v0.0.0
 	github.com/evanphx/json-patch/v5 v5.9.11
 	k8s.io/api v0.37.2

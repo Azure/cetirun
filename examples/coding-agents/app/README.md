@@ -181,7 +181,7 @@ not part of the release.
 To build one runtime separately from the repository root:
 
 ```bash
-CODING_RUNTIME=claude REGISTRY=registry.example.com/team VERSION=0.2.1 \
+CODING_RUNTIME=claude REGISTRY=registry.example.com/team VERSION=0.2.2 \
   bash scripts/coding-agent-docker-build.sh
 ```
 

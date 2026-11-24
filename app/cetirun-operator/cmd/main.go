@@ -92,7 +92,7 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&chartRepoURL, "chart-repo-url", "oci://mcr.microsoft.com/aks/ai-runtime/cetirun/helm/cetirun",
 		"OCI registry URL for the CetiRun Helm chart.")
-	flag.StringVar(&chartVersion, "chart-version", "0.2.1",
+	flag.StringVar(&chartVersion, "chart-version", "0.2.2",
 		"Version of the CetiRun Helm chart to deploy.")
 	flag.StringVar(&chartDigest, "chart-digest", "",
 		"OCI manifest digest of the configured CetiRun chart version.")
