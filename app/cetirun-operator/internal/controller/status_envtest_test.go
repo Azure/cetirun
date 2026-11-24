@@ -15,6 +15,7 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -129,6 +130,7 @@ func TestAgentStatusPatchPreservesFutureFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent.Status.Phase = api.PhaseReady
+	setCondition(&agent.Status.Conditions, api.ConditionReady, metav1.ConditionTrue, "WorkloadReady", "Workload is ready")
 	if err := r.updateStatus(ctx, agent); err != nil {
 		t.Fatal(err)
 	}
@@ -137,8 +139,39 @@ func TestAgentStatusPatchPreservesFutureFields(t *testing.T) {
 		t.Fatal("status patch replaced the Agent")
 	}
 
+	t.Run("verified identity alone is visible before the workload update", func(t *testing.T) {
+		pending := agent.DeepCopy()
+		pending.Status.Phase = api.PhaseProvisioning
+		setCondition(&pending.Status.Conditions, api.ConditionReady, metav1.ConditionFalse, "Updating", "Runtime update pending")
+		setAgentIdentityState(pending, api.AgentIdentityPhaseReady, "")
+		setCondition(&pending.Status.Conditions, api.ConditionAgentIdentityReady, metav1.ConditionTrue, "AgentIdentityReady", "Agent Identity is ready")
+		stale := pending.DeepCopy()
+		if err := r.persistVerifiedAgentIdentity(ctx, pending); err != nil {
+			t.Fatal(err)
+		}
+		var stored api.Agent
+		if err := cl.Get(ctx, key, &stored); err != nil {
+			t.Fatal(err)
+		}
+		if stored.Status.Phase != api.PhaseReady || !meta.IsStatusConditionTrue(stored.Status.Conditions, api.ConditionReady) ||
+			stored.Status.AgentIdentity.Phase != api.AgentIdentityPhaseReady || !meta.IsStatusConditionTrue(stored.Status.Conditions, api.ConditionAgentIdentityReady) {
+			t.Fatalf("identity checkpoint changed the wrong status fields: %+v", stored.Status)
+		}
+		if pending.Status.Phase != api.PhaseProvisioning || !meta.IsStatusConditionFalse(pending.Status.Conditions, api.ConditionReady) ||
+			pending.ResourceVersion != stored.ResourceVersion || pending.ResourceVersion == stale.ResourceVersion {
+			t.Fatal("identity checkpoint lost pending workload state or failed to advance its revision")
+		}
+		if err := r.persistVerifiedAgentIdentity(ctx, stale); !apierrors.IsConflict(err) {
+			t.Fatalf("stale verification must conflict even when its result is unchanged: %v", err)
+		}
+		assertFuture()
+	})
+
 	t.Run("stale status cannot overwrite a concurrent update", func(t *testing.T) {
-		stale := agent.DeepCopy()
+		stale := &api.Agent{}
+		if err := cl.Get(ctx, key, stale); err != nil {
+			t.Fatal(err)
+		}
 		object := get()
 		if err := cl.Patch(ctx, object, client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"example.com/concurrent":"write"}}}`))); err != nil {
 			t.Fatal(err)

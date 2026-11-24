@@ -805,13 +805,25 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// Successful workload-only waits must not publish False then True: each
 	// status change enqueues another reconcile independently of RequeueAfter.
 	prerequisitesComplete := false
+	identityCheckpointFailed := false
 	defer func() {
 		if prerequisitesComplete || meta.IsStatusConditionFalse(instance.Status.Conditions, builtInPrerequisitesReady) {
 			return
 		}
-		setCondition(&instance.Status.Conditions, builtInPrerequisitesReady,
+		stored, err := r.readAgentForStatusPatch(ctx, instance)
+		if err != nil {
+			reconcileErr = stderrors.Join(reconcileErr, err)
+			return
+		}
+		pending := instance
+		if identityCheckpointFailed {
+			// The fallback must not publish in-memory identity or workload state
+			// that the failed checkpoint was unable to confirm.
+			pending = stored.DeepCopy()
+		}
+		setCondition(&pending.Status.Conditions, builtInPrerequisitesReady,
 			metav1.ConditionFalse, "PrerequisitesPending", "Agent prerequisites did not complete")
-		reconcileErr = stderrors.Join(reconcileErr, r.updateStatus(ctx, instance))
+		reconcileErr = stderrors.Join(reconcileErr, r.patchStatusFrom(ctx, stored, pending))
 	}()
 	logger.V(1).Info("Ensuring namespace", "namespace", ns)
 	var namespaceErr error
@@ -887,6 +899,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// The Broker reads only the canonical binding persisted in CR status.
 	var agentIdentityRequeueAfter time.Duration
 	if identityReconcileRequired && (instance.Spec.AgentIdentity != nil || instance.Status.AgentIdentity != nil) {
+		wasIdentityReady := isConditionTrue(instance.Status.Conditions, cetirunv1alpha1.ConditionAgentIdentityReady)
 		logger.Info("Reconciling Agent Identity", "instance", instance.Name)
 		if err := r.reconcileAgentIdentity(ctx, instance); err != nil {
 			logger.Error(err, "Agent Identity reconciliation failed", "instance", instance.Name)
@@ -905,15 +918,19 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			// ingress, while retaining the identity error for a separate retry.
 			agentIdentityRequeueAfter = 30 * time.Second
 		}
-		if agentIdentityRequested(instance) && instance.Status.AgentIdentity != nil && instance.Status.AgentIdentity.Phase == cetirunv1alpha1.AgentIdentityPhaseReady &&
-			agentIdentityVerificationDue(instance, time.Now()) {
+		identityReady := agentIdentityRequested(instance) && instance.Status.AgentIdentity != nil && instance.Status.AgentIdentity.Phase == cetirunv1alpha1.AgentIdentityPhaseReady
+		if identityReady && agentIdentityVerificationDue(instance, time.Now()) {
 			now := metav1.Now()
 			instance.Status.AgentIdentity.LastVerifiedTime = &now
 		}
 		if instance.Status.Policy != nil {
-			// Broker readback uses the persisted canonical identity, never the
-			// in-memory result of a directory request.
+			// The Broker needs the persisted binding for governed Agents.
 			if err := r.updateStatus(ctx, instance); err != nil {
+				return ctrl.Result{}, err
+			}
+		} else if identityReady && !wasIdentityReady {
+			if err := r.persistVerifiedAgentIdentity(ctx, instance); err != nil {
+				identityCheckpointFailed = true
 				return ctrl.Result{}, err
 			}
 		}
@@ -2155,20 +2172,32 @@ func (r *AgentReconciler) agentIsCurrent(ctx context.Context, instance *cetirunv
 
 // updateStatus patches the CR status sub-resource.
 func (r *AgentReconciler) updateStatus(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
+	current, err := r.readAgentForStatusPatch(ctx, instance)
+	if err != nil {
+		return err
+	}
+	return r.patchStatusFrom(ctx, current, instance)
+}
+
+func (r *AgentReconciler) readAgentForStatusPatch(ctx context.Context, instance *cetirunv1alpha1.Agent) (*cetirunv1alpha1.Agent, error) {
 	reader := r.APIReader
 	if reader == nil {
 		reader = r.Client
 	}
 	current := &cetirunv1alpha1.Agent{}
 	if err := reader.Get(ctx, client.ObjectKeyFromObject(instance), current); err != nil {
-		return fmt.Errorf("read Agent before status patch: %w", err)
+		return nil, fmt.Errorf("read Agent before status patch: %w", err)
 	}
 	// Callers already changed their typed status. Read the same revision to
 	// construct a delta without deleting fields introduced by a newer binary.
 	if instance.ResourceVersion == "" || current.ResourceVersion != instance.ResourceVersion || current.UID != instance.UID {
-		return errors.NewConflict(cetirunv1alpha1.GroupVersion.WithResource("agents").GroupResource(), instance.Name,
+		return nil, errors.NewConflict(cetirunv1alpha1.GroupVersion.WithResource("agents").GroupResource(), instance.Name,
 			fmt.Errorf("Agent changed before its status could be patched"))
 	}
+	return current, nil
+}
+
+func (r *AgentReconciler) patchStatusFrom(ctx context.Context, current, instance *cetirunv1alpha1.Agent) error {
 	// An unchanged status must not issue a patch or generate a watch event.
 	if equality.Semantic.DeepEqual(current.Status, instance.Status) {
 		return nil
