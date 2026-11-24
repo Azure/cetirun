@@ -51,10 +51,15 @@ class EnvironmentTests(unittest.TestCase):
             deploy.reject_downgrade({}, "private-value")
         except ValueError as error:
             location = deploy.public_failure_location(error)
+            trace = deploy.public_failure_trace(error)
         self.assertEqual(set(location), {"file", "line"})
         self.assertEqual(location["file"], "scripts/deploy_environment.py")
         self.assertIsInstance(location["line"], int)
         self.assertNotIn("private-value", json.dumps(location))
+        self.assertTrue(trace)
+        self.assertLessEqual(len(trace), 8)
+        self.assertTrue(all(set(frame) == {"file", "line"} for frame in trace))
+        self.assertNotIn("private-value", json.dumps(trace))
         try:
             raise ValueError("private external exception")
         except ValueError as error:
@@ -63,6 +68,8 @@ class EnvironmentTests(unittest.TestCase):
     def test_command_failure_category_never_contains_operands_or_output(self):
         for command, code in ((["helm", "--kube-context", "private-context", "list", "--namespace", "private-ns"], "helm_list_failed"),
                               (["kubectl", "--context", "private-context", "--request-timeout=15s", "get", "secret", "private-secret"], "kubectl_get_failed"),
+                              (["docker", "buildx", "imagetools", "inspect", "private-image"], "image_inspection_failed"),
+                              (["openssl", "x509", "-in", "private-file"], "certificate_inspection_failed"),
                               (["helm", "private-operation"], "deployment_command_failed")):
             error = deploy.platform.DeploymentCommandError("private failure details", command)
             self.assertEqual(error.public_code, code)

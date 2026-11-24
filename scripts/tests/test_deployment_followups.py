@@ -40,6 +40,35 @@ class ToolchainTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("helm"), "requires existing Helm")
 class ArtifactPreflightTests(DeploymentFixture, unittest.TestCase):
+    def test_infrastructure_retains_private_approvals_without_requiring_registry_access(self):
+        deployment = self.deployment()
+        deployment.execute()  # Seed only the synthetic cluster's installed state.
+        deployment.writes.clear()
+        deployment.commands.clear()
+        deployment.verified_image_digests.clear()
+        approvals = deployment.values["platform"]["cetirun-operator"]["customRuntime"]["approvedImages"]
+        original = copy.deepcopy(approvals)
+        deployment.fail = approvals[0]
+        deployment.config["_infrastructureOnly"] = True
+        deployment.preflight()
+        inspections = [command[-1] for command in deployment.commands
+                       if command[:4] == ["docker", "buildx", "imagetools", "inspect"]]
+        self.assertTrue(inspections)
+        self.assertFalse(set(approvals) & set(inspections))
+        self.assertEqual(approvals, original)
+        self.assertFalse(deployment.writes)
+        # Full deployment still verifies runtime candidates.
+        deployment.config["_infrastructureOnly"] = False
+        with self.assertRaisesRegex(ValueError, "Synthetic failure"):
+            deployment.preflight()
+        # Infrastructure artifacts remain required, including on repeat checks.
+        deployment.config["_infrastructureOnly"] = True
+        deployment.verified_image_digests.clear()
+        deployment.fail = inspections[0]
+        with self.assertRaisesRegex(ValueError, "Synthetic failure"):
+            deployment.preflight()
+        self.assertFalse(deployment.writes)
+
     def test_incompatible_kubectl_stops_before_artifact_checks_or_writes(self):
         deployment = self.deployment()
         original = deployment.kubectl

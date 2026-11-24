@@ -113,6 +113,10 @@ class DeploymentCommandError(ValueError):
                    "kubectl": {"get", "rollout", "create", "apply", "patch", "config", "version"}}
         self.public_code = (tool + "_" + rest[0] + "_failed" if rest and rest[0] in allowed.get(tool, set())
                             else "deployment_command_failed")
+        if tool == "docker" and rest[:3] == ["buildx", "imagetools", "inspect"]:
+            self.public_code = "image_inspection_failed"
+        elif tool == "openssl":
+            self.public_code = "certificate_inspection_failed"
 
 
 def step(command):
@@ -2424,8 +2428,12 @@ class Deployment:
         else:
             for entry in release_inventory(c)["images"]:
                 self.inspect_image(f"{c['release']['registry']}/{entry['name']}:{c['release']['version']}")
-        for image in self.values["platform"]["cetirun-operator"]["customRuntime"]["approvedImages"]:
-            self.inspect_image(image)
+        # Retained instance approvals are not infrastructure artifacts. Their
+        # exact configuration and existing Agent membership are guarded by the
+        # infrastructure entry point; registry access belongs to creation/upgrade.
+        if not c.get("_infrastructureOnly"):
+            for image in self.values["platform"]["cetirun-operator"]["customRuntime"]["approvedImages"]:
+                self.inspect_image(image)
         admin = self.values["platform"]["cetirun-operator"]["cetiadmin"]
         if admin["enabled"] and admin["runtime"].get("image"):
             self.inspect_image(admin["runtime"]["image"])
