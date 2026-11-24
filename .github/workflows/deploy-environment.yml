@@ -72,6 +72,7 @@ jobs:
             scripts.tests.test_infrastructure_configuration \
             scripts.tests.test_retained_runtime_contract \
             scripts.tests.test_infrastructure_auxiliary \
+            scripts.tests.test_copilot_proxy_ownership \
             scripts.tests.test_deploy_environment
 
       - name: Preflight and optionally deploy

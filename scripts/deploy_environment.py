@@ -250,6 +250,7 @@ def capture(deployment, *, require_deployed=True):
                 "agentType": spec.get("agent", {}).get("type", ""),
                 "image": spec.get("agent", {}).get("image", ""),
                 "chartVersion": spec.get("helm", {}).get("version", ""),
+                "helmReleaseName": status.get("helmReleaseName", ""),
                 "suspended": spec.get("suspended", False),
                 "name": meta["name"],
                 "customOwnershipRequired": "cetirun.microsoft.com/custom-runtime-ownership" in meta.get("finalizers", []),
@@ -331,6 +332,8 @@ def capture(deployment, *, require_deployed=True):
                 "copilotProxyImage": proxies[0] if is_proxy else None,
                 "runtimeAgentUID": namespace_agents.get(namespace),
                 "isRuntimePod": any(container.get("name") == "cetirun" for container in row["spec"].get("containers", [])),
+                "podNamespace": namespace,
+                "podName": meta["name"],
                 "memoryInitImages": [container.get("image", "") for container in row["spec"].get("initContainers", [])
                                      if container.get("name") == "memory-assets"],
             }
@@ -803,8 +806,89 @@ def verify_runtime_preservation(deployment, snapshot, roots, lock):
     for item in snapshot["objects"].values():
         image = item.get("copilotProxyImage")
         if image is not None and (not proxy_image or image != proxy_image):
-            raise Blocked("existing_copilot_proxy_rollout_out_of_scope")
+            if (not deployment.config.get("_infrastructureOnly") or not proxy_image or
+                    not verify_foreign_copilot_proxy(deployment, item, snapshot)):
+                raise Blocked("existing_copilot_proxy_rollout_out_of_scope")
     verify_cetiadmin_transition(deployment, operator, lock)
+
+
+def verify_foreign_copilot_proxy(deployment, pod_record, snapshot):
+    """Exclude an independent release from desired-image checks, never preservation.
+
+    An Agent namespace can contain older, separately managed Helm releases.
+    Labels alone do not identify the proxy the Operator renders. Require the
+    actual controller chain and foreign release manifest before excluding one.
+    """
+    namespace, name = pod_record.get("podNamespace"), pod_record.get("podName")
+    if not namespace or not name:
+        raise Blocked("copilot_proxy_ownership_unavailable")
+
+    def read(kind, object_name, uid):
+        raw = deployment.kubectl("get", kind, object_name, "--namespace", namespace, "-o", "json")
+        try:
+            document = json.loads(raw)
+            meta = document["metadata"]
+            if (not uid or meta.get("uid") != uid or meta.get("name") != object_name or
+                    meta.get("namespace") != namespace or meta.get("deletionTimestamp")):
+                raise Blocked("copilot_proxy_ownership_changed")
+            return document
+        except (KeyError, TypeError, ValueError) as error:
+            if isinstance(error, Blocked):
+                raise
+            raise Blocked("copilot_proxy_ownership_unavailable") from None
+
+    def proxy_images(spec):
+        return [container.get("image") for container in spec.get("containers", [])
+                if container.get("name") == "proxy"]
+
+    pod = read("pod", name, pod_record.get("uid"))
+    if digest(pod.get("spec", {})) != pod_record.get("specHash"):
+        raise Blocked("copilot_proxy_ownership_changed")
+    owners = pod.get("metadata", {}).get("ownerReferences", [])
+    if (len(owners) != 1 or owners[0].get("apiVersion") != "apps/v1" or owners[0].get("kind") != "ReplicaSet"
+            or owners[0].get("controller") is not True or not owners[0].get("name") or not owners[0].get("uid")):
+        raise Blocked("copilot_proxy_ownership_unavailable")
+    pod_images = proxy_images(pod.get("spec", {}))
+    if pod_images != [pod_record.get("copilotProxyImage")]:
+        raise Blocked("copilot_proxy_ownership_changed")
+    rs = read("replicaset", owners[0]["name"], owners[0]["uid"])
+    rs_owners = rs.get("metadata", {}).get("ownerReferences", [])
+    if (len(rs_owners) != 1 or rs_owners[0].get("apiVersion") != "apps/v1"
+            or rs_owners[0].get("kind") != "Deployment" or rs_owners[0].get("controller") is not True
+            or not rs_owners[0].get("name") or not rs_owners[0].get("uid")):
+        raise Blocked("copilot_proxy_ownership_unavailable")
+    deployment_name, deployment_uid = rs_owners[0]["name"], rs_owners[0]["uid"]
+    owner = read("deployment", deployment_name, deployment_uid)
+    for controller in (rs, owner):
+        if proxy_images(controller.get("spec", {}).get("template", {}).get("spec", {})) != pod_images:
+            raise Blocked("copilot_proxy_ownership_changed")
+    annotations = owner.get("metadata", {}).get("annotations", {})
+    release, release_namespace = annotations.get("meta.helm.sh/release-name"), annotations.get("meta.helm.sh/release-namespace")
+    managed = {deployment.config[name]["release"] for name in platform.deployment_charts(deployment.config)}
+    agent_releases = set()
+    for candidate in snapshot["objects"].values():
+        if candidate.get("agentType"):
+            if candidate.get("helmReleaseName"):
+                agent_releases.add(candidate["helmReleaseName"])
+            if candidate.get("name"):
+                agent_releases.add("cetirun-" + candidate["name"])
+    expected_names = {value for agent_release in agent_releases
+                      for value in (agent_release + "-copilot-proxy", (agent_release + "-copilot-proxy")[:63].rstrip("-"))}
+    if (not release or release_namespace != namespace or release in managed or release in agent_releases or
+            deployment_name in expected_names or owner.get("metadata", {}).get("ownerReferences")):
+        raise Blocked("copilot_proxy_ownership_unavailable")
+    manifest = deployment.helm("get", "manifest", release, "--namespace", namespace)
+    documents = [document for document in yaml.safe_load_all(manifest) if isinstance(document, dict)]
+    matching = [document for document in documents
+                if document.get("kind") == "Deployment"
+                and document.get("metadata", {}).get("name") == deployment_name
+                and document.get("metadata", {}).get("namespace", namespace) == namespace]
+    if len(matching) != 1:
+        raise Blocked("copilot_proxy_ownership_unavailable")
+    proxy = proxy_images(matching[0].get("spec", {}).get("template", {}).get("spec", {}))
+    if proxy != pod_images:
+        raise Blocked("copilot_proxy_ownership_changed")
+    return True
 
 
 def reject_downgrade(releases, candidate, names=None):
