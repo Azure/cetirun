@@ -71,6 +71,7 @@ describe("CreateForm", () => {
     mockFeatures.data.allowedAgentTypes = ["hermes", "custom"];
     const user = userEvent.setup();
     renderWithQuery(<CreateForm />);
+    await user.type(screen.getByRole("textbox", { name: "Agent Name" }), "research");
     await user.type(screen.getByLabelText("Gateway Token (optional)"), "sk-dummy");
     await user.selectOptions(screen.getByRole("combobox", { name: "Agent Type" }), "custom");
     expect(screen.getByText(/Image updates retain HOME and require a compatible image/)).toBeInTheDocument();
@@ -83,13 +84,14 @@ describe("CreateForm", () => {
     expect(screen.queryByLabelText("Model (optional)")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Create Agent" }));
     expect(mockMutate).toHaveBeenCalledOnce();
-    expect(JSON.parse(JSON.stringify(mockMutate.mock.calls[0][0]))).toEqual({ agent: { type: "custom", image, username: "vibe" } });
+    expect(JSON.parse(JSON.stringify(mockMutate.mock.calls[0][0]))).toEqual({ instanceName: "research", agent: { type: "custom", image, username: "vibe" } });
   });
 
   it("validates the Custom HTTP port before submitting", async () => {
     mockFeatures.data.allowedAgentTypes = ["custom"];
     const user = userEvent.setup();
     renderWithQuery(<CreateForm />);
+    await user.type(screen.getByRole("textbox", { name: "Agent Name" }), "research");
     await user.type(await screen.findByLabelText(/Agent Image/), approvedImage);
     fireEvent.change(screen.getByLabelText("HTTP Port (optional)"), { target: { value: "65536" } });
     fireEvent.submit(screen.getByRole("button", { name: "Create Agent" }).closest("form")!);
@@ -102,6 +104,7 @@ describe("CreateForm", () => {
     mockFeatures.data.agentIdentityEnabled = true;
     const user = userEvent.setup();
     renderWithQuery(<CreateForm />);
+    await user.type(screen.getByRole("textbox", { name: "Agent Name" }), "research");
     await user.type(await screen.findByLabelText(/Agent Image/), approvedImage);
     expect(screen.queryByLabelText("Enable Microsoft Entra Agent Identity")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Create Agent" }));
@@ -115,6 +118,7 @@ describe("CreateForm", () => {
     mockFeatures.data.allowedAgentTypes = ["hermes", "custom"];
     const user = userEvent.setup();
     renderWithQuery(<CreateForm />);
+    await user.type(screen.getByRole("textbox", { name: "Agent Name" }), "research");
     await user.selectOptions(screen.getByRole("combobox", { name: "Agent Type" }), "custom");
     await user.type(screen.getByLabelText(/Agent Image/), approvedImage);
     await user.click(screen.getByRole("switch", { name: "Serve Web UI" }));
@@ -134,6 +138,7 @@ describe("CreateForm", () => {
     mockFeatures.data.allowedAgentTypes = [type];
     const user = userEvent.setup();
     renderWithQuery(<CreateForm />);
+    await user.type(screen.getByRole("textbox", { name: "Agent Name" }), "research");
     const image = approvedImage;
     await user.type(await screen.findByLabelText(/Agent Image/), image);
     await user.click(screen.getByLabelText("Use private registry credentials"));
@@ -174,6 +179,7 @@ describe("CreateForm", () => {
     mockFeatures.data.allowedAgentTypes = ["custom"];
     const user = userEvent.setup();
     renderWithQuery(<CreateForm />);
+    await user.type(screen.getByRole("textbox", { name: "Agent Name" }), "research");
     await user.type(await screen.findByLabelText(/Agent Image/), image);
     await user.click(screen.getByRole("button", { name: "Create Agent" }));
     expect(screen.getByText(/Tags and unapproved images cannot run/)).toBeInTheDocument();
@@ -195,9 +201,10 @@ describe("CreateForm", () => {
     renderWithQuery(<CreateForm />);
 
     await user.type(
-      screen.getByPlaceholderText("e.g. my-project (leave blank for default)"),
+      screen.getByRole("textbox", { name: "Agent Name" }),
       "my-instance",
     );
+    expect(screen.getByLabelText("Display Name (optional)")).toHaveAttribute("placeholder", "my-instance");
     await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
@@ -215,7 +222,7 @@ describe("CreateForm", () => {
     renderWithQuery(<CreateForm />);
 
     await user.type(
-      screen.getByPlaceholderText("e.g. my-project (leave blank for default)"),
+      screen.getByRole("textbox", { name: "Agent Name" }),
       "my-instance",
     );
     await user.selectOptions(
@@ -239,11 +246,11 @@ describe("CreateForm", () => {
     renderWithQuery(<CreateForm />);
 
     await user.type(
-      screen.getByPlaceholderText("e.g. my-project (leave blank for default)"),
+      screen.getByRole("textbox", { name: "Agent Name" }),
       "my-instance",
     );
     await user.type(
-      screen.getByPlaceholderText("Defaults to your profile name"),
+      screen.getByLabelText("Display Name (optional)"),
       "Custom Name",
     );
     await user.selectOptions(
@@ -274,6 +281,7 @@ describe("CreateForm", () => {
   it("preserves an explicit OpenClaw selection", async () => {
     const user = userEvent.setup();
     renderWithQuery(<CreateForm />);
+    await user.type(screen.getByRole("textbox", { name: "Agent Name" }), "research");
 
     await user.selectOptions(
       screen.getByRole("combobox", { name: /Agent Type/ }),
@@ -282,7 +290,7 @@ describe("CreateForm", () => {
     await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
-      instanceName: undefined,
+      instanceName: "research",
       agent: { type: "openclaw" },
       displayName: undefined,
       team: undefined,
@@ -295,6 +303,7 @@ describe("CreateForm", () => {
     const user = userEvent.setup();
     mockFeatures.data = { tailscaleEnabled: true, allowedAgentTypes: ["openclaw"] };
     renderWithQuery(<CreateForm />);
+    await user.type(screen.getByRole("textbox", { name: "Agent Name" }), "research");
 
     const agentTypeSelect = screen.getByRole("combobox", { name: /Agent Type/ });
     await waitFor(() => expect(agentTypeSelect).toHaveValue("openclaw"));
@@ -302,7 +311,7 @@ describe("CreateForm", () => {
     await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
-      instanceName: undefined,
+      instanceName: "research",
       agent: { type: "openclaw" },
       displayName: undefined,
       team: undefined,
@@ -311,14 +320,18 @@ describe("CreateForm", () => {
     });
   });
 
-  it("submit button is enabled even without team selected", () => {
+  it("requires an Agent Name even without a Team", async () => {
+    const user = userEvent.setup();
     renderWithQuery(<CreateForm />);
-    expect(screen.getByText("Create Agent")).not.toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "Agent Name" })).toBeRequired();
+    await user.click(screen.getByRole("button", { name: "Create Agent" }));
+    expect(mockMutate).not.toHaveBeenCalled();
   });
 
   it("explains automatic Memory defaults without sending policy settings", async () => {
     const user = userEvent.setup();
     renderWithQuery(<CreateForm />);
+    await user.type(screen.getByRole("textbox", { name: "Agent Name" }), "research");
     expect(screen.getByText(/memory and bounded learning are enabled automatically/)).toBeInTheDocument();
     expect(screen.queryByRole("switch", { name: /private memory/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Create Agent" }));

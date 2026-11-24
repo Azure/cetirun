@@ -51,7 +51,7 @@ func TestCustomCreateRoundTripWithoutNativeSideEffects(t *testing.T) {
 		h := customManagementHandler()
 		fc := newGatewayFakeClient()
 		h.Kube = kube.NewClient(fc)
-		body := `{"agent":{"type":"custom","image":"` + managementImage + `","username":"assistant"` + port + `},"displayName":"Research Assistant","team":"aks"}`
+		body := `{"instanceName":"research","agent":{"type":"custom","image":"` + managementImage + `","username":"assistant"` + port + `},"displayName":"Research Assistant","team":"aks"}`
 		w := httptest.NewRecorder()
 		h.CreateInstance(w, managementRequest(http.MethodPost, body))
 		if w.Code != http.StatusCreated {
@@ -66,7 +66,7 @@ func TestCustomCreateRoundTripWithoutNativeSideEffects(t *testing.T) {
 			(port == "") != (response.Agent.Port == nil) || response.AccessURL != "" {
 			t.Fatalf("invalid response: %s", w.Body.String())
 		}
-		stored, err := h.Kube.GetInstance(context.Background(), "alice")
+		stored, err := h.Kube.GetInstanceByName(context.Background(), "alice-research")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -108,7 +108,7 @@ func TestCustomCreateUsesExistingPortalAuthentication(t *testing.T) {
 			if tc.disabled {
 				h.Config.AllowedAgentTypes = []string{"hermes", "openclaw"}
 			}
-			body, err := json.Marshal(map[string]any{"agent": map[string]any{"type": "custom", "image": tc.image}, "team": tc.team})
+			body, err := json.Marshal(map[string]any{"instanceName": "research", "agent": map[string]any{"type": "custom", "image": tc.image}, "team": tc.team})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -147,14 +147,14 @@ func TestCustomCreateUsesExistingPortalAuthentication(t *testing.T) {
 
 func TestManagementRejectsOldUnknownAndNativeCustomFields(t *testing.T) {
 	for _, body := range []string{
-		`{}`, `{"agent":null}`, `{"agentType":"hermes"}`, `{"agent":{},"agentType":"hermes"}`,
-		`{"agent":{},"unknown":true}`, `{"agent":{"unknown":true}}`,
-		`{"agent":{"type":"hermes","type":"openclaw"}}`,
-		`{"agent":{},"registryAuth":{"password":"sk-dummy"}}`,
-		`{"agent":{"registrySecretRef":{"name":"unowned"}}}`,
-		`{"agent":{"type":"custom","image":"` + managementImage + `"},"gatewayToken":""}`,
-		`{"agent":{"type":"custom","image":"` + managementImage + `"},"tailscaleAuthKey":null}`,
-		`{"agent":{"type":"custom","image":"` + managementImage + `"},"agentIdentityEnabled":true}`,
+		`{}`, `{"instanceName":"research","agent":null}`, `{"agentType":"hermes"}`, `{"instanceName":"research","agent":{},"agentType":"hermes"}`,
+		`{"instanceName":"research","agent":{},"unknown":true}`, `{"instanceName":"research","agent":{"unknown":true}}`,
+		`{"instanceName":"research","agent":{"type":"hermes","type":"openclaw"}}`,
+		`{"instanceName":"research","agent":{},"registryAuth":{"password":"sk-dummy"}}`,
+		`{"instanceName":"research","agent":{"registrySecretRef":{"name":"unowned"}}}`,
+		`{"instanceName":"research","agent":{"type":"custom","image":"` + managementImage + `"},"gatewayToken":""}`,
+		`{"instanceName":"research","agent":{"type":"custom","image":"` + managementImage + `"},"tailscaleAuthKey":null}`,
+		`{"instanceName":"research","agent":{"type":"custom","image":"` + managementImage + `"},"agentIdentityEnabled":true}`,
 	} {
 		t.Run(body, func(t *testing.T) {
 			fc := newFakeClient()
@@ -188,7 +188,7 @@ func TestRetiredTeamsEnabledIsRejectedOnCreate(t *testing.T) {
 			h.Kube = kube.NewClient(fc)
 			w := httptest.NewRecorder()
 			h.CreateInstance(w, managementRequest(http.MethodPost,
-				`{"agent":{"type":"custom","image":"`+managementImage+`"},"teamsEnabled":`+value+`}`))
+				`{"instanceName":"research","agent":{"type":"custom","image":"`+managementImage+`"},"teamsEnabled":`+value+`}`))
 			if w.Code != http.StatusBadRequest || errorCode(t, w) != "invalid_body" {
 				t.Fatalf("teamsEnabled=%s: status=%d body=%s", value, w.Code, w.Body.String())
 			}
@@ -201,7 +201,7 @@ func TestCustomAgentIdentityIsRejected(t *testing.T) {
 	h := customManagementHandler()
 	h.Config.AgentIdentityEnabled = true
 	response := httptest.NewRecorder()
-	h.CreateInstance(response, managementRequest(http.MethodPost, `{"agent":{"type":"custom","image":"`+managementImage+`"},"agentIdentityEnabled":true}`))
+	h.CreateInstance(response, managementRequest(http.MethodPost, `{"instanceName":"research","agent":{"type":"custom","image":"`+managementImage+`"},"agentIdentityEnabled":true}`))
 	var payload ErrorResponse
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
@@ -215,7 +215,7 @@ func TestCustomAgentIdentityIsRejected(t *testing.T) {
 func TestDefaultBuiltinCreationUsesExistingPortalIdentity(t *testing.T) {
 	for _, kind := range []string{"hermes", "openclaw"} {
 		h := customManagementHandler()
-		r := managementRequest(http.MethodPost, `{"agent":{"type":"`+kind+`"},"team":"aks"}`)
+		r := managementRequest(http.MethodPost, `{"instanceName":"research","agent":{"type":"`+kind+`"},"team":"aks"}`)
 		r = withClaims(r, "alice", "Alice", "alice@example.com")
 		w := httptest.NewRecorder()
 		h.CreateInstance(w, r)

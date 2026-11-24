@@ -18,7 +18,7 @@ describe("registry requests", () => {
 
   it("sends the stable creation request ID as a header, not a CR field", async () => {
     global.fetch = vi.fn().mockResolvedValue(new Response("{}", { status: 201, headers: { "Content-Type": "application/json" } }));
-    await createInstance({ agent: { type: "hermes", image: "registry.example.com/agent:1" }, registryAuth: { username: "example", password: "synthetic-token" }, requestId: "synthetic-id-123456" });
+    await createInstance({ instanceName: "research", agent: { type: "hermes", image: "registry.example.com/agent:1" }, registryAuth: { username: "example", password: "synthetic-token" }, requestId: "synthetic-id-123456" });
     const [, options] = vi.mocked(fetch).mock.calls[0];
     expect(options?.headers).toMatchObject({ "Idempotency-Key": "synthetic-id-123456" });
     expect(JSON.parse(String(options?.body))).not.toHaveProperty("requestId");

@@ -73,7 +73,7 @@ var reservedInstanceNames = map[string]struct{}{
 
 // CreateInstanceRequest is the JSON body for POST /api/v1/instance.
 type CreateInstanceRequest struct {
-	InstanceName         string                    `json:"instanceName,omitempty"`
+	InstanceName         string                    `json:"instanceName"`
 	Agent                *agentconfig.Input        `json:"agent"`
 	RegistryAuth         *registryauth.Credentials `json:"registryAuth,omitempty"`
 	DisplayName          string                    `json:"displayName,omitempty"`
@@ -516,11 +516,6 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	displayName := req.DisplayName
-	if displayName == "" {
-		displayName = claims.DisplayName
-	}
-
 	if req.Agent == nil {
 		writeError(w, http.StatusBadRequest, "invalid_agent", "agent is required; use an object with type, image, username and optional port")
 		return
@@ -567,15 +562,18 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	instanceName := claims.Alias
-	if req.InstanceName != "" {
-		// Validate the user-supplied suffix before combining.
-		// Must match k8s DNS label rules: start and end with alphanumeric, hyphens allowed in between.
-		if !validInstanceNameSuffix.MatchString(req.InstanceName) {
-			writeError(w, http.StatusBadRequest, "invalid_name", "Instance name must start with a lowercase letter and contain only lowercase letters, digits, and hyphens")
-			return
-		}
-		instanceName = claims.Alias + "-" + req.InstanceName
+	if strings.TrimSpace(req.InstanceName) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_name", "Agent name is required")
+		return
+	}
+	if !validInstanceNameSuffix.MatchString(req.InstanceName) {
+		writeError(w, http.StatusBadRequest, "invalid_name", "Instance name must start with a lowercase letter and contain only lowercase letters, digits, and hyphens")
+		return
+	}
+	instanceName := claims.Alias + "-" + req.InstanceName
+	displayName := strings.TrimSpace(req.DisplayName)
+	if displayName == "" {
+		displayName = req.InstanceName
 	}
 	// See maxInstanceNameLength for where the limit comes from.
 	if len(instanceName) > maxInstanceNameLength {

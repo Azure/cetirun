@@ -29,7 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
-const registryCreateBody = `{"agent":{"type":"hermes","image":"registry.example.com/agent:1"},"team":"aks","registryAuth":{"username":"registry-user","password":"synthetic-write-only-token"}}`
+const registryCreateBody = `{"instanceName":"research","agent":{"type":"hermes","image":"registry.example.com/agent:1"},"team":"aks","registryAuth":{"username":"registry-user","password":"synthetic-write-only-token"}}`
 
 func registryHandler(t *testing.T, failSave *bool) (*InstanceHandler, client.Client) {
 	t.Helper()
@@ -70,7 +70,7 @@ func createdRegistryInstance(t *testing.T, h *InstanceHandler) *api.Agent {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create: %d %s", w.Code, w.Body.String())
 	}
-	a, err := h.Kube.GetInstanceByName(context.Background(), "alice")
+	a, err := h.Kube.GetInstanceByName(context.Background(), "alice-research")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestRegistryPartialCreateRetryBeforeQuota(t *testing.T) {
 	if w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String()+logs.String(), "synthetic-write-only-token") {
 		t.Fatalf("unsafe partial failure: %d", w.Code)
 	}
-	first, err := h.Kube.GetInstanceByName(context.Background(), "alice")
+	first, err := h.Kube.GetInstanceByName(context.Background(), "alice-research")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestRegistryPartialCreateRetryBeforeQuota(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("resume failed behind quota: %d %s", w.Code, w.Body.String())
 	}
-	current, _ := h.Kube.GetInstanceByName(context.Background(), "alice")
+	current, _ := h.Kube.GetInstanceByName(context.Background(), "alice-research")
 	if current.UID != first.UID || !h.Kube.RegistryAuthConfigured(context.Background(), current) {
 		t.Fatal("retry did not finish the same instance")
 	}
@@ -215,13 +215,13 @@ func TestRegistryReplaceRemoveAndConcurrency(t *testing.T) {
 	if w.Code != http.StatusConflict {
 		t.Fatal("stale write was accepted")
 	}
-	agent, _ = h.Kube.GetInstanceByName(context.Background(), "alice")
+	agent, _ = h.Kube.GetInstanceByName(context.Background(), "alice-research")
 	w = httptest.NewRecorder()
 	h.DeleteRegistryAuth(w, registryRequest(http.MethodDelete, "", agent))
 	if w.Code != http.StatusOK {
 		t.Fatalf("remove failed: %d", w.Code)
 	}
-	agent, _ = h.Kube.GetInstanceByName(context.Background(), "alice")
+	agent, _ = h.Kube.GetInstanceByName(context.Background(), "alice-research")
 	if agent.Spec.Agent.RegistrySecretRef != nil || h.Kube.RegistryAuthConfigured(context.Background(), agent) {
 		t.Fatal("reference was not detached")
 	}
@@ -233,7 +233,7 @@ func TestRegistryReplaceRemoveAndConcurrency(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("reattach failed: %d", w.Code)
 	}
-	agent, _ = h.Kube.GetInstanceByName(context.Background(), "alice")
+	agent, _ = h.Kube.GetInstanceByName(context.Background(), "alice-research")
 	if agent.Spec.Agent.RegistrySecretRef.Name == key.Name {
 		t.Fatal("detached source reused")
 	}
@@ -245,7 +245,7 @@ func TestRegistryCreateRetryCannotBecomeAnotherInstance(t *testing.T) {
 	h.Config.MaxInstancesPerUser = 0
 	createdRegistryInstance(t, h)
 	w := httptest.NewRecorder()
-	body := strings.Replace(registryCreateBody, `{"agent":`, `{"instanceName":"different","agent":`, 1)
+	body := strings.Replace(registryCreateBody, `"instanceName":"research"`, `"instanceName":"different"`, 1)
 	h.CreateInstance(w, registryRequest(http.MethodPost, body, nil))
 	if w.Code != http.StatusConflict {
 		t.Fatalf("request ID was reused for another instance: %d", w.Code)
@@ -337,7 +337,7 @@ func TestCustomRegistryCreateRecoveryAndVersionedManagement(t *testing.T) {
 			failing := true
 			h, c := registryHandler(t, &failing)
 			h.Config.AllowedAgentTypes = []string{"hermes", "custom"}
-			body := `{"agent":{"type":"custom","image":"` + managementImage + `","username":"assistant"` + port + `},"team":"aks","registryAuth":{"username":"synthetic-user","password":"synthetic-token"}}`
+			body := `{"instanceName":"research","agent":{"type":"custom","image":"` + managementImage + `","username":"assistant"` + port + `},"team":"aks","registryAuth":{"username":"synthetic-user","password":"synthetic-token"}}`
 			request := func(method, body string, instance *api.Agent) *http.Request {
 				return withAgentIdentityClaims(registryRequest(method, body, instance), "alice", managementTenant, managementOwner)
 			}
@@ -346,7 +346,7 @@ func TestCustomRegistryCreateRecoveryAndVersionedManagement(t *testing.T) {
 			if w.Code != http.StatusServiceUnavailable {
 				t.Fatalf("partial Custom create: %d %s", w.Code, w.Body.String())
 			}
-			first, err := h.Kube.GetInstanceByName(context.Background(), "alice")
+			first, err := h.Kube.GetInstanceByName(context.Background(), "alice-research")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -361,7 +361,7 @@ func TestCustomRegistryCreateRecoveryAndVersionedManagement(t *testing.T) {
 			if w.Code != http.StatusOK {
 				t.Fatalf("Custom retry failed behind quota: %d %s", w.Code, w.Body.String())
 			}
-			current, _ := h.Kube.GetInstanceByName(context.Background(), "alice")
+			current, _ := h.Kube.GetInstanceByName(context.Background(), "alice-research")
 			if current.UID != first.UID || !h.Kube.RegistryAuthConfigured(context.Background(), current) || (port == "") != (current.Spec.Agent.Port == nil) {
 				t.Fatal("Custom retry changed identity/port or failed to save credentials")
 			}
@@ -375,7 +375,7 @@ func TestCustomRegistryCreateRecoveryAndVersionedManagement(t *testing.T) {
 			if w.Code != http.StatusOK {
 				t.Fatalf("Custom Registry image update: %d %s", w.Code, w.Body.String())
 			}
-			imageUpdated, err := h.Kube.GetInstanceByName(context.Background(), "alice")
+			imageUpdated, err := h.Kube.GetInstanceByName(context.Background(), "alice-research")
 			if err != nil || imageUpdated.UID != current.UID || *imageUpdated.Spec.Agent.Image != replacementImage ||
 				!reflect.DeepEqual(imageUpdated.Spec.Agent.RegistrySecretRef, current.Spec.Agent.RegistrySecretRef) {
 				t.Fatalf("image update changed the Registry binding or instance identity: %v", err)
@@ -391,7 +391,7 @@ func TestCustomRegistryCreateRecoveryAndVersionedManagement(t *testing.T) {
 			if w.Code != http.StatusOK {
 				t.Fatalf("Custom Registry edit: %d %s", w.Code, w.Body.String())
 			}
-			updated, _ := h.Kube.GetInstanceByName(context.Background(), "alice")
+			updated, _ := h.Kube.GetInstanceByName(context.Background(), "alice-research")
 			if updated.Spec.Agent.Port != nil || updated.Spec.User.DisplayName != "Renamed" || !reflect.DeepEqual(updated.Spec.Agent.RegistrySecretRef, current.Spec.Agent.RegistrySecretRef) {
 				t.Fatal("Custom edit changed Registry binding or lost the requested fields")
 			}
@@ -438,9 +438,9 @@ func TestRegistryForeignSourceAndDeletingAgent(t *testing.T) {
 	if w.Code != http.StatusConflict {
 		t.Fatalf("foreign source adopted: %d", w.Code)
 	}
-	agent, _ = h.Kube.GetInstanceByName(context.Background(), "alice")
+	agent, _ = h.Kube.GetInstanceByName(context.Background(), "alice-research")
 	_ = c.Delete(context.Background(), agent)
-	agent, _ = h.Kube.GetInstanceByName(context.Background(), "alice")
+	agent, _ = h.Kube.GetInstanceByName(context.Background(), "alice-research")
 	if agent.DeletionTimestamp == nil {
 		t.Fatal("test did not enter deletion")
 	}
@@ -498,7 +498,7 @@ func TestRegistryRetryKeepsRetainedChartWhenDefaultRoutingChanges(t *testing.T) 
 				t.Fatal("retry did not preserve and complete the retained Agent")
 			}
 			// A different creation still requires the current default chart.
-			body := strings.Replace(registryCreateBody, `"team":"aks"`, `"team":"aks","instanceName":"second"`, 1)
+			body := strings.Replace(registryCreateBody, `"instanceName":"research"`, `"instanceName":"second"`, 1)
 			r := registryRequest(http.MethodPost, body, nil)
 			r.Header.Set("Idempotency-Key", "synthetic-create-request-0002")
 			w := httptest.NewRecorder()

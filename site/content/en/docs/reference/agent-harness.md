@@ -1008,7 +1008,9 @@ the optional Agent HTTP port.
 
 Management requests and responses use a nested `agent` object. The old
 `agentType` input, unknown fields and duplicate JSON fields are rejected on
-both the `/api/v1/instance` and `/api/v1/instances` routes. For example:
+both the `/api/v1/instance` and `/api/v1/instances` routes. Creation requires
+`instanceName`. If `displayName` is omitted or blank, the Portal uses the
+submitted `instanceName` without the owner prefix. For example:
 
 ```json
 {

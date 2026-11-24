@@ -29,7 +29,7 @@ send it to your platform administrator.
 | **New Agent** is unavailable and shows "Limit of 1 agent reached". | You have the maximum number of Agents. | Delete an Agent that you do not use, or ask your platform administrator for a higher limit. |
 | "Instance name too long: ... the limit is 35" | The alias, the hyphen, and the name that you entered have more than 35 characters. | Enter a shorter name. |
 | "Instance name must start with a lowercase letter and contain only lowercase letters, digits, and hyphens" | The name has a character that is not allowed. | Use lowercase letters, digits, and hyphens. End the name with a letter or a digit. |
-| "Instance name '...' is reserved" | The portal uses this name for its own pages, for example `admin`, `api`, or `ui`. This can occur when you leave **Agent Name (optional)** empty and your alias is such a name. | Enter a name in **Agent Name (optional)**. |
+| "Agent name is required" | The creation request has no Agent Name. | Enter an **Agent Name**, or set `instanceName` if you use the API. |
 | "No models are available for new agents under the selected Team's Policy and deployment settings." | No model source is available for the selected Team. | Select another Team, or ask your administrator to examine model access. |
 | "The AI Gateway has not published its models yet. Try again in a minute." | The platform did not finish its start. | Wait one minute, and try again. |
 | "The operator has not read its agent chart yet. Try again in a minute." | The platform did not finish its start. | Wait one minute, and try again. |

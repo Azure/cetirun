@@ -258,13 +258,13 @@ func TestCreationOptionsOfferThePolicysModelRouters(t *testing.T) {
 	// A router the policy does not allow is refused as a default model before
 	// any write; an allowed one passes the model check.
 	w := httptest.NewRecorder()
-	h.CreateInstance(w, managementRequest(http.MethodPost, `{"agent":{"type":"hermes"},"team":"policy-team","model":"auto-unlisted","gatewayToken":"synthetic-token"}`))
+	h.CreateInstance(w, managementRequest(http.MethodPost, `{"instanceName":"research","agent":{"type":"hermes"},"team":"policy-team","model":"auto-unlisted","gatewayToken":"synthetic-token"}`))
 	if w.Code != http.StatusForbidden || errorCode(t, w) != "model_not_allowed" {
 		t.Fatalf("unlisted router: %d %s", w.Code, w.Body.String())
 	}
 	assertNoCreationWrites(t, fc)
 	w = httptest.NewRecorder()
-	h.CreateInstance(w, managementRequest(http.MethodPost, `{"agent":{"type":"hermes"},"team":"policy-team","model":"auto","gatewayToken":"synthetic-token"}`))
+	h.CreateInstance(w, managementRequest(http.MethodPost, `{"instanceName":"research","agent":{"type":"hermes"},"team":"policy-team","model":"auto","gatewayToken":"synthetic-token"}`))
 	if w.Code == http.StatusForbidden && errorCode(t, w) == "model_not_allowed" {
 		t.Fatalf("an allowed router must pass the model check: %s", w.Body.String())
 	}

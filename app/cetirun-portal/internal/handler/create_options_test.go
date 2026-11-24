@@ -46,7 +46,7 @@ func TestCustomCreateRequiresPublishedImageApproval(t *testing.T) {
 				t.Fatal(err)
 			}
 			cm.Data[api.AIGatewayCatalogKey] = string(raw)
-			w, fc := createAgent(t, gatewayConfig(), `{"agent":{"type":"custom","image":"`+tc.image+`"}}`, cm)
+			w, fc := createAgent(t, gatewayConfig(), `{"instanceName":"research","agent":{"type":"custom","image":"`+tc.image+`"}}`, cm)
 			if w.Code < 400 || errorCode(t, w) != tc.code {
 				t.Fatalf("unapproved create: %d %s", w.Code, w.Body.String())
 			}
@@ -124,7 +124,7 @@ func TestCreationOptionsProjectPolicyAndRecheckBeforeWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := httptest.NewRecorder()
-	h.CreateInstance(w, managementRequest(http.MethodPost, `{"agent":{"type":"hermes"},"team":"policy-team","gatewayToken":"synthetic-token"}`))
+	h.CreateInstance(w, managementRequest(http.MethodPost, `{"instanceName":"research","agent":{"type":"hermes"},"team":"policy-team","gatewayToken":"synthetic-token"}`))
 	if w.Code != http.StatusForbidden || errorCode(t, w) != "agent_type_not_allowed" {
 		t.Fatalf("stale policy: %d %s", w.Code, w.Body.String())
 	}
@@ -182,7 +182,7 @@ func TestCreateRejectsPolicyViolationsWithoutWrites(t *testing.T) {
 			fc := newFakeClient(team, policy, catalogConfigMap("gpt-6", "gpt-6-mini"))
 			h.Kube = kube.NewClient(fc)
 			w := httptest.NewRecorder()
-			h.CreateInstance(w, managementRequest(http.MethodPost, `{"team":"policy-team",`+tc.body+`}`))
+			h.CreateInstance(w, managementRequest(http.MethodPost, `{"instanceName":"research","team":"policy-team",`+tc.body+`}`))
 			if w.Code < 400 || errorCode(t, w) != tc.code {
 				t.Fatalf("status %d %s", w.Code, w.Body.String())
 			}
@@ -197,12 +197,12 @@ func TestCreatePersistsEffectiveModelDefaultsAndPolicyBinding(t *testing.T) {
 			team, policy := creationPolicy()
 			h, fc := creationPolicyHandler(team, policy)
 			w := httptest.NewRecorder()
-			h.CreateInstance(w, managementRequest(http.MethodPost, `{"agent":{"type":"hermes"},"team":"policy-team"`+body+`}`))
+			h.CreateInstance(w, managementRequest(http.MethodPost, `{"instanceName":"research","agent":{"type":"hermes"},"team":"policy-team"`+body+`}`))
 			if w.Code != http.StatusCreated {
 				t.Fatalf("create: %d %s", w.Code, w.Body.String())
 			}
 			agent := &api.Agent{}
-			if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, agent); err != nil {
+			if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice-research"}, agent); err != nil {
 				t.Fatal(err)
 			}
 			if agent.Spec.SandboxRef != "test-sandbox" || agent.Spec.Team != team.Name || agent.Spec.ModelAccess == nil || agent.Spec.ModelAccess.SharedModels == nil || agent.Spec.ModelAccess.GitHubCopilot == nil || !*agent.Spec.ModelAccess.SharedModels || *agent.Spec.ModelAccess.GitHubCopilot || agent.Spec.ModelAccess.MonthlyBudgetUSD != "" {
@@ -251,7 +251,7 @@ func TestCreateCustomSandboxModelSelection(t *testing.T) {
 				}
 			}
 			w := httptest.NewRecorder()
-			body := `{"agent":{"type":"custom","image":"` + managementImage + `","username":"assistant"},"team":"policy-team"` + tt.fields + `}`
+			body := `{"instanceName":"research","agent":{"type":"custom","image":"` + managementImage + `","username":"assistant"},"team":"policy-team"` + tt.fields + `}`
 			h.CreateInstance(w, managementRequest(http.MethodPost, body))
 			if w.Code != tt.status {
 				t.Fatalf("create: %d %s, want %d", w.Code, w.Body.String(), tt.status)
@@ -264,7 +264,7 @@ func TestCreateCustomSandboxModelSelection(t *testing.T) {
 				return
 			}
 			agent := &api.Agent{}
-			if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, agent); err != nil {
+			if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice-research"}, agent); err != nil {
 				t.Fatal(err)
 			}
 			selection := agent.Spec.ModelAccess
@@ -286,13 +286,13 @@ func TestCreationIdentityRequiredAndAvailable(t *testing.T) {
 		t.Fatalf("identity options: %+v", options)
 	}
 	w := httptest.NewRecorder()
-	h.CreateInstance(w, managementRequest(http.MethodPost, `{"agent":{"type":"hermes"},"team":"policy-team"}`))
+	h.CreateInstance(w, managementRequest(http.MethodPost, `{"instanceName":"research","agent":{"type":"hermes"},"team":"policy-team"}`))
 	if w.Code != http.StatusForbidden || errorCode(t, w) != "policy_identity_required" {
 		t.Fatalf("required: %d %s", w.Code, w.Body.String())
 	}
 	assertNoCreationWrites(t, fc)
 	w = httptest.NewRecorder()
-	h.CreateInstance(w, managementRequest(http.MethodPost, `{"agent":{"type":"hermes"},"team":"policy-team","agentIdentityEnabled":true}`))
+	h.CreateInstance(w, managementRequest(http.MethodPost, `{"instanceName":"research","agent":{"type":"hermes"},"team":"policy-team","agentIdentityEnabled":true}`))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("identity: %d %s", w.Code, w.Body.String())
 	}
@@ -349,7 +349,7 @@ func TestCreationOptionsDependenciesFailClosed(t *testing.T) {
 				}
 			}
 			w = httptest.NewRecorder()
-			h.CreateInstance(w, managementRequest(http.MethodPost, `{"agent":{"type":"hermes"},"team":"policy-team"}`))
+			h.CreateInstance(w, managementRequest(http.MethodPost, `{"instanceName":"research","agent":{"type":"hermes"},"team":"policy-team"}`))
 			if w.Code < 400 {
 				t.Fatalf("failure allowed creation: %d", w.Code)
 			}
@@ -414,7 +414,7 @@ func createdPartialRegistryForPolicy(t *testing.T, h *InstanceHandler) *api.Agen
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("partial create: %d", w.Code)
 	}
-	a, err := h.Kube.GetInstanceByName(context.Background(), "alice")
+	a, err := h.Kube.GetInstanceByName(context.Background(), "alice-research")
 	if err != nil {
 		t.Fatal(err)
 	}
