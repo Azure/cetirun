@@ -136,8 +136,6 @@ jobs:
       - bash: |
           set -euo pipefail
           export PATH="${HELM_BIN}:${PATH}"
-          package_dir="${AGENT_TEMPDIRECTORY}/cetirun-chart-packages"
-          mkdir -p "${package_dir}"
 
           bash scripts/cetirun-helm-lint.sh
           bash scripts/cetirun-helm-test.sh
@@ -145,11 +143,7 @@ jobs:
           bash scripts/cetirun-ai-gateway-helm-test.sh
           bash scripts/cetirun-agent-broker-helm-test.sh
 
-          # Local packaging only: embed public pull URLs, not backing ACR URLs.
-          # All image/chart pushes below still target the backing ACR for MCR sync.
-          REGISTRY=mcr.microsoft.com/aks/ai-runtime/cetirun VERSION="${RELEASE_VERSION}" \
-            python3 -B scripts/cetirun-release.py package-charts --package-dir "${package_dir}"
-        displayName: Lint, template, and package all charts
+        displayName: Lint and template all charts
         env:
           AGENT_TEMPDIRECTORY: $(Agent.TempDirectory)
           HELM_BIN: $(helmBin)
@@ -245,20 +239,80 @@ jobs:
             mkdir -p "${verify_dir}"
             trap 'rm -rf "${verify_dir}"' EXIT
 
-            for chart in "${chart_artifacts[@]}"; do
-              test -f "${package_dir}/${chart}-${RELEASE_VERSION}.tgz" || { echo "ERROR: missing chart package ${chart}" >&2; exit 1; }
-            done
-            published_images=()
-            # Promote every staged image before publishing charts that reference them.
+            staged_images=()
+            # Resolve and validate staged digests before packaging. The chart is
+            # therefore reproducible without consuming any final version tags.
             for artifact in "${image_artifacts[@]}"; do
               repository="${REPOSITORY_PREFIX}/${artifact}"
               staged_image="${registry}/${REPOSITORY_PREFIX}/staging/${BUILD_ID}/${artifact}:${RELEASE_VERSION}"
+              docker buildx imagetools inspect "${staged_image}" > /dev/null
+              digest="$(az acr repository show --name "${ACR_NAME}" --image "${REPOSITORY_PREFIX}/staging/${BUILD_ID}/${artifact}:${RELEASE_VERSION}" --query digest --output tsv)"
+              if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                echo "ERROR: staged image verification returned an invalid digest for ${staged_image}." >&2
+                exit 1
+              fi
+              staged_images+=("${artifact}@${digest}")
+            done
+
+            # Embed public pull coordinates; pushes still use the backing ACR.
+            image_digest_file="${verify_dir}/release-image-digests.json"
+            python3 -c 'import json, sys; json.dump(dict(item.split("@", 1) for item in sys.argv[2:]), open(sys.argv[1], "w", encoding="utf-8"))' \
+              "${image_digest_file}" "${staged_images[@]}"
+            REGISTRY=mcr.microsoft.com/aks/ai-runtime/cetirun VERSION="${RELEASE_VERSION}" \
+              RELEASE_IMAGE_DIGESTS_FILE="${image_digest_file}" \
+              python3 -B scripts/cetirun-release.py package-charts --package-dir "${package_dir}"
+
+            # Bind the exact packaged chart archives to the source-verified
+            # operator image. The wrapper is built only after packaging, so a
+            # same-version chart replacement cannot pass deployment provenance
+            # checks without changing the operator config digest as well.
+            chart_digest_json="$(python3 -c 'import hashlib, json, pathlib, sys; directory=pathlib.Path(sys.argv[1]); version=sys.argv[-1]; names=sys.argv[2:-1]; values={name: "sha256:" + hashlib.sha256((directory / (name + "-" + version + ".tgz")).read_bytes()).hexdigest() for name in names}; print(json.dumps(values, sort_keys=True, separators=(",", ":")))' "${package_dir}" "${chart_artifacts[@]}" "${RELEASE_VERSION}")"
+            image_digest_json="$(python3 -c 'import json, sys; names=sys.argv[1:-1]; values=dict(item.split("@", 1) for item in names if item.split("@", 1)[0] != "cetirun-operator"); print(json.dumps(values, sort_keys=True, separators=(",", ":")))' "${staged_images[@]}" "${RELEASE_VERSION}")"
+            operator_staged_image="${registry}/${REPOSITORY_PREFIX}/staging/${BUILD_ID}/cetirun-operator:${RELEASE_VERSION}"
+            operator_staged_digest="$(az acr repository show --name "${ACR_NAME}" --image "${REPOSITORY_PREFIX}/staging/${BUILD_ID}/cetirun-operator:${RELEASE_VERSION}" --query digest --output tsv)"
+            if [[ ! "${operator_staged_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "ERROR: staged operator image has an invalid digest." >&2
+              exit 1
+            fi
+            wrapper_dir="${verify_dir}/operator-provenance"
+            mkdir -p "${wrapper_dir}"
+            wrapper_file="${wrapper_dir}/Dockerfile"
+            python3 -c 'import json, pathlib, sys; base, charts, images = sys.argv[2:]; pathlib.Path(sys.argv[1]).write_text("FROM " + base + "\nLABEL io.cetirun.release.chart-digests=" + json.dumps(charts) + "\n" + "LABEL io.cetirun.release.image-digests=" + json.dumps(images) + "\n", encoding="utf-8")' \
+              "${wrapper_file}" "${operator_staged_image}@${operator_staged_digest}" "${chart_digest_json}" "${image_digest_json}"
+            operator_wrapper_image="${registry}/${REPOSITORY_PREFIX}/staging/${BUILD_ID}/cetirun-operator:${RELEASE_VERSION}-provenance"
+            # The wrapper is the image that is promoted as cetirun-operator.
+            # Apply the same attestation policy to this final image; Buildx does
+            # not carry attestations from the FROM image across a new build.
+            source scripts/cetirun-build-attestations.sh
+            wrapper_driver="$(docker buildx inspect --bootstrap | awk '/^Driver:/ { print $2; exit }')"
+            cetirun_configure_sbom_attestation "${wrapper_driver}"
+            docker buildx build --platform linux/amd64 "${CETIRUN_SBOM_ATTESTATION_ARGS[@]}" \
+              --file "${wrapper_file}" --tag "${operator_wrapper_image}" --push "${wrapper_dir}"
+            docker buildx imagetools inspect "${operator_wrapper_image}" > /dev/null
+            operator_wrapper_digest="$(az acr repository show --name "${ACR_NAME}" --image "${REPOSITORY_PREFIX}/staging/${BUILD_ID}/cetirun-operator:${RELEASE_VERSION}-provenance" --query digest --output tsv)"
+            if [[ ! "${operator_wrapper_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "ERROR: operator provenance wrapper has an invalid digest." >&2
+              exit 1
+            fi
+
+            published_images=()
+            # Only consume final version tags after chart packaging succeeds.
+            # Verify promotion preserved every digest used by the package.
+            for image in "${staged_images[@]}"; do
+              artifact="${image%@*}"
+              staged_digest="${image#*@}"
+              repository="${REPOSITORY_PREFIX}/${artifact}"
+              staged_image="${registry}/${REPOSITORY_PREFIX}/staging/${BUILD_ID}/${artifact}:${RELEASE_VERSION}"
+              if [[ "${artifact}" == "cetirun-operator" ]]; then
+                staged_image="${operator_wrapper_image}"
+                staged_digest="${operator_wrapper_digest}"
+              fi
               versioned_image="${registry}/${repository}:${RELEASE_VERSION}"
-              docker buildx imagetools create --tag "${versioned_image}" "${staged_image}"
+              docker buildx imagetools create --prefer-index=false --tag "${versioned_image}" "${staged_image}"
               docker buildx imagetools inspect "${versioned_image}" > /dev/null
               digest="$(az acr repository show --name "${ACR_NAME}" --image "${repository}:${RELEASE_VERSION}" --query digest --output tsv)"
-              if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-                echo "ERROR: published image verification returned an invalid digest for ${versioned_image}." >&2
+              if [[ "${digest}" != "${staged_digest}" ]]; then
+                echo "ERROR: promoted image digest differs from the staged digest for ${versioned_image}." >&2
                 exit 1
               fi
               published_images+=("${artifact}@${digest}")
@@ -288,7 +342,7 @@ jobs:
               repository="${REPOSITORY_PREFIX}/${artifact}"
               versioned_image="${registry}/${repository}:${RELEASE_VERSION}"
               latest_image="${registry}/${repository}:latest"
-              docker buildx imagetools create --tag "${latest_image}" "${versioned_image}"
+              docker buildx imagetools create --prefer-index=false --tag "${latest_image}" "${versioned_image}"
               docker buildx imagetools inspect "${latest_image}" > /dev/null
             done
         env:

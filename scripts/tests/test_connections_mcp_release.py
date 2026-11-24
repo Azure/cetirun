@@ -4,6 +4,7 @@
 """Exercise MCP release steps with isolated command doubles, never a registry."""
 
 import json
+import hashlib
 from pathlib import Path
 import shutil
 import subprocess
@@ -18,10 +19,11 @@ ROOT = Path(__file__).resolve().parents[2]
 COMPONENT = "cetirun-connections-mcp"
 VERSION = "9.8.7"
 DIGEST = "sha256:" + "a" * 64
+WRAPPER_DIGEST = "sha256:" + "b" * 64
 CHART = f"app/{COMPONENT}/chart"
 BUILD_SCRIPT = f"scripts/{COMPONENT}-docker-build.sh"
 PREFLIGHT = "Authenticate and preflight MCR release artifacts"
-PACKAGE = "Lint, template, and package all charts"
+LINT = "Lint and template all charts"
 BUILD = "Build, push, and verify Linux AMD64 release images"
 PUBLISH = "Publish charts and promote latest MCR images"
 CLEANUP = "Clean staging MCR image repositories"
@@ -29,17 +31,24 @@ CLEANUP = "Clean staging MCR image repositories"
 # Only these doubles and a small set of local filesystem utilities enter PATH.
 # The MCP build helper runs unchanged, but its Docker command is intercepted.
 MOCK_TOOL = r'''
-import json, os, pathlib, subprocess, sys
+import hashlib, json, os, pathlib, subprocess, sys
 tool, args = pathlib.Path(sys.argv[0]).name, sys.argv[1:]
 with open(os.environ["MCP_RELEASE_LOG"], "a") as log:
     log.write(json.dumps([tool, *args]) + "\n")
 component, version = "cetirun-connections-mcp", os.environ["RELEASE_VERSION"]
 if tool == "python3" and args[:1] == ["-B"]:
     args = args[1:]
+if tool == "python3" and args[:1] == ["-c"]:
+    # Execute the pipeline's inline digest-file writer with real Python. Azure,
+    # Docker, Helm and provider verification remain intercepted below.
+    sys.exit(subprocess.run([sys.executable, *args], env=os.environ).returncode)
 if tool == "python3" and args[:1] == ["scripts/cetirun-release.py"]:
     if args[1] == "publish-images":
         with open(os.environ["MCP_RELEASE_LOG"] + ".driver-env", "a") as output:
             output.write(json.dumps({"license": os.environ.get("ACCEPT_VSCODE_SERVER_LICENSE_TERMS")}) + "\n")
+    if args[1] == "package-charts":
+        digests = json.loads(pathlib.Path(os.environ["RELEASE_IMAGE_DIGESTS_FILE"]).read_text())
+        pathlib.Path(os.environ["MCP_RELEASE_LOG"] + ".digests").write_text(json.dumps(digests))
     sys.exit(subprocess.run([sys.executable, *args], env=os.environ).returncode)
 if tool == "bash" and args[0].endswith("-docker-build.sh") and os.environ.get("IMAGE_NAME"):
     marker = pathlib.Path(os.environ["MCP_RELEASE_LOG"] + ".published")
@@ -52,7 +61,17 @@ if tool == "az" and args[:3] == ["acr", "repository", "show-tags"]:
     if repository == os.environ.get("MCP_EXISTING_REPOSITORY"):
         print(version)
 elif tool == "az" and args[:3] == ["acr", "repository", "show"]:
-    print("sha256:" + "a" * 64)
+    image = args[args.index("--image") + 1]
+    if "/staging/" not in image and os.environ.get("MCP_PROMOTION_MISMATCH"):
+        print("sha256:" + "c" * 64)
+    elif image.endswith("-provenance") or ("/staging/" not in image and "/cetirun-operator:" in image):
+        print("sha256:" + "b" * 64)
+    else:
+        if os.environ.get("MCP_DISTINCT_DIGESTS"):
+            artifact = image.rsplit("/", 1)[-1].split(":", 1)[0]
+            print("sha256:" + hashlib.sha256(artifact.encode()).hexdigest())
+        else:
+            print(os.environ.get("MCP_IMAGE_DIGEST", "sha256:" + "a" * 64))
 elif tool == "helm" and args[0] == "package":
     name = next(line.split(":", 1)[1].strip() for line in
                 (pathlib.Path(args[1]) / "Chart.yaml").read_text().splitlines()
@@ -70,6 +89,15 @@ elif tool == "helm" and args[0] == "pull":
 elif tool == "python3" and args[0] == "scripts/verify-mcr-image.py":
     if os.environ.get("MCP_FAIL_VERIFY") and f"/{component}:" in args[args.index("--image") + 1]:
         sys.exit(1)
+elif tool == "docker" and args[:2] == ["buildx", "build"] and "--file" in args:
+    tag = args[args.index("--tag") + 1]
+    marker = pathlib.Path(os.environ["MCP_RELEASE_LOG"] + ".published")
+    with marker.open("a") as output:
+        output.write(tag + "\n")
+    pathlib.Path(os.environ["MCP_RELEASE_LOG"] + ".wrapper").write_text(
+        pathlib.Path(args[args.index("--file") + 1]).read_text())
+elif tool == "docker" and args[:2] == ["buildx", "inspect"]:
+    print("Driver: " + os.environ.get("MCP_BUILDX_DRIVER", "docker-container"))
 elif tool == "docker" and args[:2] == ["image", "inspect"]:
     sys.exit(1)
 elif tool == "docker" and args[:3] == ["buildx", "imagetools", "inspect"] and "/staging/" in args[3]:
@@ -114,10 +142,19 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
             shutil.copyfile(source.parent / "values.yaml", target.parent / "values.yaml")
         (self.root / "scripts").mkdir()
         inventory = json.loads((ROOT / "scripts/release-artifacts.json").read_text())
-        for path in [entry["script"] for entry in inventory["images"]] + ["scripts/release-artifacts.json", "scripts/cetirun-release.py", "scripts/cetirun-release-metadata.sh"]:
+        for path in [entry["script"] for entry in inventory["images"]] + [
+            "scripts/release-artifacts.json", "scripts/cetirun-release.py",
+            "scripts/cetirun-release-metadata.sh", "scripts/cetirun-runtime-chart-lock.py",
+            "scripts/cetirun-build-attestations.sh",
+        ]:
             shutil.copy2(ROOT / path, self.root / path)
+        for runtime in ("openclaw", "hermes"):
+            relative = Path("app/cetirun-chart/agents") / runtime / "profile.yaml"
+            (self.root / relative).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / relative, self.root / relative)
         # Use the real transformation helpers. Full source consistency is
-        # exercised separately; this fixture contains only chart metadata.
+        # exercised separately; this fixture uses minimal metadata, values and
+        # runtime profiles rather than the complete chart source.
         (self.root / "scripts/cetirun-version.py").write_text(
             (ROOT / "scripts/cetirun-version.py").read_text().partition('if __name__ == "__main__":')[0])
         subprocess.run([shutil.which("git"), "-c", "init.defaultBranch=main", "init", "--quiet"], cwd=self.root, check=True)
@@ -169,7 +206,15 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
         self.assertIn("match tag version", result.stderr)
 
     def test_mcp_follows_the_complete_release_lifecycle(self):
-        for name in ("Validate all chart versions", PACKAGE, PREFLIGHT, BUILD, PUBLISH, CLEANUP):
+        self.env["MCP_DISTINCT_DIGESTS"] = "1"
+        def artifact_digest(name):
+            return "sha256:" + hashlib.sha256(name.encode()).hexdigest()
+
+        for name in ("Validate all chart versions", LINT, PREFLIGHT, BUILD):
+            self.run_step(name)
+        self.assertFalse(self.archive.exists(), "charts must wait for verified staging image digests")
+        self.assertFalse(any(c[:2] == ["helm", "package"] for c in self.commands()))
+        for name in (PUBLISH, CLEANUP):
             self.run_step(name)
         commands = self.commands()
         self.assertTrue(self.archive.is_file(), "MCP chart was not packaged")
@@ -182,10 +227,38 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
         # on the backing ACR, including all inventory images and chart pushes.
         built = Path(str(self.log) + ".published").read_text().splitlines()
         inventory = json.loads((ROOT / "scripts/release-artifacts.json").read_text())
-        self.assertEqual(set(built), {
+        digests = json.loads(Path(str(self.log) + ".digests").read_text())
+        expected_digests = {entry["name"]: artifact_digest(entry["name"]) for entry in inventory["images"]}
+        self.assertEqual(digests, expected_digests)
+        wrapper_lines = Path(str(self.log) + ".wrapper").read_text().splitlines()
+        self.assertEqual(len(wrapper_lines), 3)
+        self.assertEqual(wrapper_lines[0], f"FROM synthetic.azurecr.io/{self.env['REPOSITORY_PREFIX']}/staging/42/cetirun-operator:{VERSION}@{expected_digests['cetirun-operator']}")
+        labels = {line.split("=", 1)[0].split(" ", 1)[1]: json.loads(json.loads(line.split("=", 1)[1]))
+                  for line in wrapper_lines[1:]}
+        chart_digests = labels["io.cetirun.release.chart-digests"]
+        self.assertEqual(set(chart_digests), {entry["name"] for entry in inventory["charts"]})
+        self.assertEqual(chart_digests, {entry["name"]: "sha256:" + hashlib.sha256(
+            (self.archive.parent / (entry["name"] + "-" + VERSION + ".tgz")).read_bytes()).hexdigest()
+            for entry in inventory["charts"]})
+        self.assertEqual(labels["io.cetirun.release.image-digests"],
+                         {entry["name"]: expected_digests[entry["name"]] for entry in inventory["images"] if entry["name"] != "cetirun-operator"})
+        runtime_values = yaml.safe_load(next(item["values"] for item in packages if item["name"] == "cetirun"))
+        for runtime in ("openclaw", "hermes", "desktop", "ttyd"):
+            image_name = {"openclaw": "openclaw-gateway", "hermes": "hermes-gateway", "desktop": "cetirun-desktop", "ttyd": "cetirun-terminal"}[runtime]
+            self.assertEqual(runtime_values[runtime]["image"]["digest"], expected_digests[image_name])
+        self.assertEqual(runtime_values["memoryContext"]["image"],
+                         f"mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-memory-context:{VERSION}@{expected_digests['cetirun-memory-context']}")
+        first_package = next(i for i, c in enumerate(commands) if c[:2] == ["helm", "package"])
+        digest_reads = [i for i, c in enumerate(commands) if c[:4] == ["az", "acr", "repository", "show"]]
+        self.assertEqual(len(digest_reads), len(inventory["images"]) * 2 + 2)
+        self.assertLess(digest_reads[len(inventory["images"]) - 1], first_package)
+        self.assertGreater(digest_reads[len(inventory["images"])], first_package)
+        expected_built = {
             f"synthetic.azurecr.io/{self.env['REPOSITORY_PREFIX']}/staging/42/{entry['name']}:{VERSION}"
             for entry in inventory["images"]
-        })
+        }
+        expected_built.add(f"synthetic.azurecr.io/{self.env['REPOSITORY_PREFIX']}/staging/42/cetirun-operator:{VERSION}-provenance")
+        self.assertEqual(set(built), expected_built)
         pushed_charts = [c for c in commands if c[:2] == ["helm", "push"]]
         self.assertEqual(len(pushed_charts), len(inventory["charts"]))
         for command in pushed_charts:
@@ -215,8 +288,18 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
         self.assertNotEqual(build_root, self.root, "image builds must use the filtered source snapshot")
         self.assertIn(str(build_root / "app/cetirun-connections-mcp/Dockerfile"), build)
         self.assertIn(["docker", "buildx", "imagetools", "inspect", self.staged], commands)
-        promoted = ["docker", "buildx", "imagetools", "create", "--tag", self.image, self.staged]
+        wrapper_build = next(c for c in commands if c[:3] == ["docker", "buildx", "build"] and
+                             any(argument.endswith("cetirun-operator:9.8.7-provenance") for argument in c))
+        self.assertIn("--provenance=true", wrapper_build)
+        self.assertIn("--sbom=true", wrapper_build)
+        self.assertNotIn("--provenance=false", wrapper_build)
+        promoted = ["docker", "buildx", "imagetools", "create", "--prefer-index=false", "--tag", self.image, self.staged]
         self.assertIn(promoted, commands)
+        operator_image = f"synthetic.azurecr.io/{self.env['REPOSITORY_PREFIX']}/cetirun-operator:{VERSION}"
+        self.assertIn(["docker", "buildx", "imagetools", "create", "--prefer-index=false", "--tag", operator_image,
+                       f"synthetic.azurecr.io/{self.env['REPOSITORY_PREFIX']}/staging/42/cetirun-operator:{VERSION}-provenance"], commands)
+        self.assertIn(["python3", "scripts/verify-mcr-image.py", "--image",
+                       f"mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-operator:{VERSION}", "--digest", WRAPPER_DIGEST], commands)
         self.assertIn(["docker", "buildx", "imagetools", "inspect", self.image], commands)
         destination = f'oci://synthetic.azurecr.io/{self.env["REPOSITORY_PREFIX"]}/helm'
         push = ["helm", "push", str(self.archive), destination]
@@ -225,8 +308,8 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
         self.assertIn(["helm", "pull", f"{destination}/{COMPONENT}", "--version", VERSION,
                        "--destination", str(self.root / "temporary/cetirun-chart-verify")], commands)
         verify = ["python3", "scripts/verify-mcr-image.py", "--image",
-                  f"mcr.microsoft.com/aks/ai-runtime/cetirun/{COMPONENT}:{VERSION}", "--digest", DIGEST]
-        latest = ["docker", "buildx", "imagetools", "create", "--tag",
+                  f"mcr.microsoft.com/aks/ai-runtime/cetirun/{COMPONENT}:{VERSION}", "--digest", expected_digests[COMPONENT]]
+        latest = ["docker", "buildx", "imagetools", "create", "--prefer-index=false", "--tag",
                   self.image.rsplit(":", 1)[0] + ":latest", self.image]
         self.assertIn(verify, commands)
         self.assertIn(latest, commands)
@@ -235,6 +318,28 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
                        "--repository", f'{self.env["REPOSITORY_PREFIX"]}/staging/42/{COMPONENT}',
                        "--yes", "--output", "none"], commands)
         self.assertEqual(self.steps[CLEANUP]["condition"], "and(always(), eq(variables['stagingStarted'], 'true'))")
+
+    def test_operator_wrapper_applies_custom_sbom_generator_policy(self):
+        self.run_step(BUILD)
+        generator = "registry.example.com/sbom@sha256:" + "e" * 64
+        self.env["SBOM_GENERATOR"] = generator
+        self.run_step(PUBLISH)
+        commands = [json.loads(line) for line in self.log.read_text().splitlines()]
+        wrapper = next(c for c in commands if c[:3] == ["docker", "buildx", "build"] and
+                       any(argument.endswith("-provenance") for argument in c))
+        self.assertIn("--provenance=true", wrapper)
+        self.assertIn("--sbom=generator=" + generator, wrapper)
+        self.assertNotIn("--sbom=true", wrapper)
+
+    def test_operator_wrapper_rejects_generator_on_unsupported_driver(self):
+        self.run_step(BUILD)
+        self.env.update(SBOM_GENERATOR="registry.example.com/sbom@sha256:" + "e" * 64, MCP_BUILDX_DRIVER="docker")
+        result = self.run_step(PUBLISH, success=False)
+        self.assertIn("requires a docker-container", result.stderr)
+        commands = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertFalse(any(c[:4] == ["docker", "buildx", "imagetools", "create"] for c in commands))
+        self.assertFalse(any(c[:3] == ["docker", "buildx", "build"] and
+                             any(arg.endswith("-provenance") for arg in c) for c in commands))
 
     def test_mcp_chart_version_mismatch_fails_validation(self):
         manifest = self.root / CHART / "Chart.yaml"
@@ -250,23 +355,48 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
                 self.assertIn(f"{repository}:{VERSION} already exists", result.stderr)
 
     def test_missing_mcp_package_fails_packaging(self):
+        for name in (LINT, PREFLIGHT, BUILD):
+            self.run_step(name)
         self.env["MCP_SKIP_PACKAGE"] = "1"
-        self.run_step(PACKAGE, success=False)
+        result = self.run_step(PUBLISH, success=False)
+        self.assertIn(f"Missing packaged chart: {COMPONENT}", result.stderr)
+        self.assertFalse(any(c[:2] == ["helm", "push"] for c in self.commands()))
+        self.assertFalse(Path(str(self.log) + ".wrapper").exists())
+        self.assertFalse(any(c[:4] == ["docker", "buildx", "imagetools", "create"] and ":latest" not in c
+                            for c in self.commands()))
+        self.assertFalse(any(argument.endswith(":latest")
+                             for command in self.commands() for argument in command))
 
-    def test_missing_package_or_failed_mcr_verification_blocks_latest(self):
-        self.run_step(PACKAGE)
+    def test_failed_mcr_verification_blocks_latest(self):
+        for name in (LINT, PREFLIGHT, BUILD):
+            self.run_step(name)
+        self.env["MCP_FAIL_VERIFY"] = "1"
+        self.run_step(PUBLISH, success=False)
         self.assertTrue(self.archive.is_file())
-        for failure in ("package", "verification"):
-            with self.subTest(failure=failure):
-                self.log.write_text("")
-                if failure == "package":
-                    self.archive.unlink()
-                else:
-                    self.archive.touch()
-                    self.env["MCP_FAIL_VERIFY"] = "1"
-                self.run_step(PUBLISH, success=False)
-                self.assertFalse(any(argument.endswith(":latest")
-                                     for command in self.commands() for argument in command))
+        self.assertIn(["python3", "scripts/verify-mcr-image.py", "--image",
+                       f"mcr.microsoft.com/aks/ai-runtime/cetirun/{COMPONENT}:{VERSION}", "--digest", DIGEST], self.commands())
+        self.assertFalse(any(argument.endswith(":latest")
+                             for command in self.commands() for argument in command))
+
+    def test_changed_promoted_digest_prevents_chart_push_and_latest(self):
+        for name in (LINT, PREFLIGHT, BUILD):
+            self.run_step(name)
+        self.env["MCP_PROMOTION_MISMATCH"] = "1"
+        result = self.run_step(PUBLISH, success=False)
+        self.assertIn("differs from the staged digest", result.stderr)
+        self.assertFalse(any(c[:2] == ["helm", "push"] for c in self.commands()))
+        self.assertFalse(any(argument.endswith(":latest") for command in self.commands() for argument in command))
+
+    def test_invalid_staged_digest_prevents_packaging_and_latest(self):
+        for name in (LINT, PREFLIGHT, BUILD):
+            self.run_step(name)
+        self.env["MCP_IMAGE_DIGEST"] = "invalid"
+        result = self.run_step(PUBLISH, success=False)
+        self.assertIn("invalid digest", result.stderr)
+        commands = self.commands()
+        self.assertFalse(any(c[:2] in (["helm", "package"], ["helm", "push"]) for c in commands))
+        self.assertFalse(any(argument.endswith(":latest")
+                             for command in commands for argument in command))
 
 
 if __name__ == "__main__":

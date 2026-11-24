@@ -33,7 +33,12 @@ func resolveMemory(input map[string]any, chrt *chart.Chart, home string) (*runti
 	}
 	image := options.Image
 	if image == "" {
-		image = runtimebindings.DefaultMemoryImage(options.Registry, chrt.Metadata.AppVersion)
+		if configured, ok := chrt.Values["memoryContext"].(map[string]any); ok {
+			image, _ = configured["image"].(string)
+		}
+		if image == "" {
+			image = runtimebindings.DefaultMemoryImage(options.Registry, chrt.Metadata.AppVersion)
+		}
 	}
 	binding := &runtimebindings.Memory{Image: image, Home: home}
 	return binding, true, binding.Validate(home)

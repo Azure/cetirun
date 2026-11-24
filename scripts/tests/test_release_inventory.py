@@ -164,7 +164,8 @@ class ReleaseInventoryTests(unittest.TestCase):
             elif chart_name != "cetirun-istio":
                 self.assertEqual(values["image"]["repository"], f"{registry}/{chart_name}")
             if chart_name == "cetirun-operator":
-                self.assertEqual(values["cetirun"]["chart"], {"repoURL": f"oci://{registry}/helm/cetirun", "version": version})
+                self.assertEqual(values["cetirun"]["chart"], {
+                    "repoURL": f"oci://{registry}/helm/cetirun", "version": version, "digest": ""})
             for entry in package.getmembers():
                 if entry.isfile() and entry.name.endswith(("values.yaml", ".tpl")):
                     text = package.extractfile(entry).read().decode()

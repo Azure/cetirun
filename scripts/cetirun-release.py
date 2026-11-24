@@ -93,6 +93,31 @@ def runtime_chart_lock_inputs():
     hermes = os.environ.get("HERMES_IMAGE_DIGEST", "")
     if bool(openclaw) != bool(hermes):
         raise ValueError("OPENCLAW_IMAGE_DIGEST and HERMES_IMAGE_DIGEST must be supplied together")
+    digest_file = os.environ.get("RELEASE_IMAGE_DIGESTS_FILE", "")
+    if digest_file:
+        try:
+            def no_duplicate_pairs(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError(f"duplicate digest entry: {key}")
+                    result[key] = value
+                return result
+            data = json.loads(Path(digest_file).read_text(), object_pairs_hook=no_duplicate_pairs)
+        except (OSError, ValueError) as error:
+            raise ValueError(f"RELEASE_IMAGE_DIGESTS_FILE is not valid JSON: {error}") from None
+        if not isinstance(data, dict):
+            raise ValueError("RELEASE_IMAGE_DIGESTS_FILE must contain an object")
+        expected = {entry["name"] for entry in inventory()["images"]}
+        if set(data) != expected:
+            raise ValueError("RELEASE_IMAGE_DIGESTS_FILE must contain every release image exactly once")
+        if any(not isinstance(value, str) or not IMAGE_DIGEST.fullmatch(value) for value in data.values()):
+            raise ValueError("RELEASE_IMAGE_DIGESTS_FILE contains an invalid image digest")
+        if openclaw and data["openclaw-gateway"] != openclaw or hermes and data["hermes-gateway"] != hermes:
+            raise ValueError("RELEASE_IMAGE_DIGESTS_FILE conflicts with OPENCLAW_IMAGE_DIGEST/HERMES_IMAGE_DIGEST")
+        return {"openclaw": data["openclaw-gateway"], "hermes": data["hermes-gateway"],
+                "desktop": data["cetirun-desktop"], "terminal": data["cetirun-terminal"],
+                "memory": data["cetirun-memory-context"], "all": data}
     if not openclaw:
         return None
     for runtime, digest in (("openclaw", openclaw), ("hermes", hermes)):
@@ -189,11 +214,15 @@ def package_charts(args, data, destination, root=ROOT, runtime_lock=None):
             source = args.chart_dir if args.chart_dir and entry["name"] == args.chart else root / entry["path"]
             target = source_root / entry["path"]
             if entry["name"] == "cetirun" and runtime_lock is not None:
+                lock_args = []
+                for name in ("desktop", "terminal", "memory"):
+                    if name in runtime_lock:
+                        lock_args.extend((f"--{name}-image-digest", runtime_lock[name]))
                 run([sys.executable, "-B", str(RUNTIME_CHART_LOCK),
                      "--source-chart", str(source), "--output-chart", str(target),
                      "--registry", args.registry, "--version", args.version,
                      "--openclaw-image-digest", runtime_lock["openclaw"],
-                     "--hermes-image-digest", runtime_lock["hermes"]])
+                     "--hermes-image-digest", runtime_lock["hermes"], *lock_args])
             else:
                 shutil.copytree(source, target, ignore=shutil.ignore_patterns("charts", "__pycache__"))
         updates = VERSIONS.chart_updates(source_root, [entry["path"] for entry in data["charts"]],

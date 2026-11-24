@@ -65,6 +65,16 @@ All publish entry points reject a direct MCR push. Official MCR releases use
 the ADO pipeline's backing ACR and automatic synchronization, not `make publish`
 against MCR.
 
+The MCR pipeline packages charts against verified staging image digests before
+creating final version tags. It records every chart archive SHA256 in the
+`io.cetirun.release.chart-digests` label of the staged Operator image, then
+verifies that promotion preserves the staged image digests. The environment
+deployment resolver checks this receipt from the source-verified Operator image
+before it renders any downloaded chart. Missing receipts or partial MCR
+synchronization stop the deployment. The verified runtime chart manifest digest
+is also passed to the Operator through `cetirun.chart.digest`; it applies only
+to the configured chart version, leaving other Agent versions unchanged.
+
 Chart publishers share the same packager, registry preflight and mandatory
 pull comparison. Packages carry the selected image defaults and the Operator's
 downstream agent chart URL/version. MCR publication keeps public pull

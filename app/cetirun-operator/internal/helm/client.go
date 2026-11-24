@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,10 @@ type ChartReference struct {
 
 	// Version is the semantic version of the chart (e.g., "0.1.0").
 	Version string
+
+	// Digest pins the OCI manifest for Version only. Other Agent versions keep
+	// their own version selection instead of inheriting this release's archive.
+	Digest string
 }
 
 // Validate checks whether the ChartReference configuration is valid.
@@ -45,6 +50,9 @@ func (ref *ChartReference) Validate() error {
 	}
 	if ref.Version == "" {
 		return fmt.Errorf("Version must be specified")
+	}
+	if ref.Digest != "" && !regexp.MustCompile(`^sha256:[0-9a-f]{64}$`).MatchString(ref.Digest) {
+		return fmt.Errorf("Digest must be a lowercase sha256 OCI manifest digest")
 	}
 	return nil
 }
@@ -71,12 +79,21 @@ func (c *Client) loadChart(cfg *action.Configuration, namespace, version string)
 	}
 	logger := log.Log.WithName("helm").WithValues("namespace", namespace)
 	chartURL := fmt.Sprintf("%s:%s", c.chartRef.RepoURL, version)
+	pinned := version == c.chartRef.Version && c.chartRef.Digest != ""
+	if pinned {
+		chartURL = c.chartRef.RepoURL + "@" + c.chartRef.Digest
+	}
 	logger.Info("Pulling chart from OCI registry", "url", chartURL)
 
 	// action.NewInstall copies cfg.RegistryClient into ChartPathOptions.registryClient,
 	// which is the private field that LocateChart checks for OCI references.
 	install := action.NewInstall(cfg)
 	install.Version = version
+	if pinned {
+		// Supplying both a version and digest makes Helm resolve the mutable
+		// version tag again. Pull only the verified digest, then check metadata.
+		install.Version = ""
+	}
 
 	chartPath, err := install.LocateChart(chartURL, cli.New())
 	if err != nil {
@@ -86,6 +103,9 @@ func (c *Client) loadChart(cfg *action.Configuration, namespace, version string)
 	chrt, err := loader.Load(chartPath)
 	if err != nil {
 		return nil, fmt.Errorf("load chart from %s: %w", chartPath, err)
+	}
+	if pinned && (chrt.Name() != "cetirun" || chrt.Metadata.Version != version) {
+		return nil, fmt.Errorf("pinned runtime chart metadata does not match cetirun version %s", version)
 	}
 
 	logger.Info("Successfully loaded chart from OCI registry",
@@ -170,6 +190,9 @@ func dockerConfigFile() string {
 func (c *Client) ChartIdentity(version string) string {
 	if version == "" {
 		version = c.chartRef.Version
+	}
+	if version == c.chartRef.Version && c.chartRef.Digest != "" {
+		return c.chartRef.RepoURL + "@" + c.chartRef.Digest
 	}
 	return c.chartRef.RepoURL + ":" + version
 }

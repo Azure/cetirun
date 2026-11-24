@@ -60,6 +60,7 @@ func main() {
 	var probeAddr string
 	var chartRepoURL string
 	var chartVersion string
+	var chartDigest string
 	var domainSuffix string
 	var istioGateway string
 	var defaultModel string
@@ -93,6 +94,8 @@ func main() {
 		"OCI registry URL for the CetiRun Helm chart.")
 	flag.StringVar(&chartVersion, "chart-version", "0.2.1",
 		"Version of the CetiRun Helm chart to deploy.")
+	flag.StringVar(&chartDigest, "chart-digest", "",
+		"OCI manifest digest of the configured CetiRun chart version.")
 	flag.StringVar(&domainSuffix, "domain-suffix", "", "Base domain suffix for instance access URLs.")
 	flag.StringVar(&istioGateway, "istio-gateway", controller.DefaultIstioGateway,
 		"Istio Gateway namespace/name used by instance VirtualServices.")
@@ -165,6 +168,9 @@ func main() {
 	if version := os.Getenv("CETIRUN_CHART_VERSION"); version != "" {
 		chartVersion = version
 	}
+	if digest := os.Getenv("CETIRUN_CHART_DIGEST"); digest != "" {
+		chartDigest = digest
+	}
 	if model := os.Getenv("CETIRUN_DEFAULT_MODEL"); model != "" {
 		defaultModel = model
 	}
@@ -172,6 +178,7 @@ func main() {
 	chartRef := helmclient.ChartReference{
 		RepoURL: chartRepoURL,
 		Version: chartVersion,
+		Digest:  chartDigest,
 	}
 	// Runtime images share the chart's registry prefix, not just its hostname.
 	chartRegistry := runtimeRegistry(chartRepoURL)

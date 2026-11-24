@@ -1278,9 +1278,54 @@ For an official MCR release, use the Azure Pipelines release. It pushes to the
 backing ACR, which synchronizes to MCR. The pipeline uses
 `REGISTRY=mcr.microsoft.com/...` only to package the charts with public pull
 coordinates. It stages and promotes images and pushes charts to the backing
-ACR. It promotes `latest` only after all versioned images and charts succeed.
+ACR. It packages the charts with verified staging image digests through
+`RELEASE_IMAGE_DIGESTS_FILE`, then embeds receipts for the chart archives and all
+other first-party images in the Operator image. The environment deployment
+workflow requires those receipts and rejects partial synchronization or mixed
+builds, including rebuilds of the same version and source commit. Versioned
+images are promoted only after packaging succeeds; `latest` is promoted only
+after all versioned images and charts succeed. The Agent chart locks OpenClaw,
+Hermes, Desktop, Terminal, and Memory images before publication. Earlier releases
+without these receipts are unsupported by the environment workflow; use a new
+release for this publication contract.
 It passes `ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true` to the shared driver, the
 same value as the local default. Only a manual run can set `forcePublish`.
+
+The environment workflow uses each selected runtime chart's Memory image pin
+and rejects global or Operator Memory image overrides. Existing release
+namespaces and the configured Broker/platform `istio.io/rev` labels are
+prerequisites; the workflow does not create or relabel them during an upgrade.
+The existing mesh ConfigMap must already contain the configured OAuth provider
+and required headers; published deployments do not patch it. Custom image
+approvals remain independent of the release images. Every retained Custom
+Agent must keep its exact approved pin. Built-in Agents selecting the candidate
+chart version must have an image qualified by that chart, including when
+suspended or when a version was republished.
+
+The workflow blocks changes that would restart a retained CetiAdmin installation
+or replace an existing Copilot proxy Pod. A disabled CetiAdmin installation must
+have a verified stop record and no remaining writers. These checks run before
+deployment and before each Helm upgrade. The workflow does not migrate runtime
+pins or relax Agent, Pod, or HOME preservation to accommodate these changes.
+
+Existing Operator runtime arguments are part of that preflight: clearing a
+Memory image override or changing effective Memory enablement is rejected while
+Agents remain. Explicit runtime `helmValues` overrides are preserved and must
+match the running Operator's values while Agents remain. When the
+default chart advances from X to Y and an Agent explicitly retains X, the X tag
+must still resolve to the previously configured digest. This is checked again
+before each upgrade; it does not make future tag replacements safe. An Agent
+with no explicit chart version blocks a default-version change.
+
+StatefulSet scale-up does not authorize adopting a same-name PVC outside the
+installed ordinal range or explicit volume references. Unattributed claims,
+including possible historical claims without current evidence, block deployment.
+Missing installed storage required by the candidate also blocks recreation.
+Newly planned PVCs retain their first observed UID and storage contract through
+all remaining upgrades, acceptance, and failure reporting; only their initial
+volume binding is allowed to change. Each published Helm upgrade requires an
+explicit expected revision. The final Operator receipt wrapper uses the shared
+Buildx provenance/SBOM policy, including the configured SBOM generator.
 
 Offline release and deployment tests use synthetic APIs and local Helm:
 

@@ -74,6 +74,34 @@ func TestMemoryOptionsResolveSelectedChartAppVersion(t *testing.T) {
 	}
 }
 
+func TestMemoryOptionsUseSelectedChartDigestPin(t *testing.T) {
+	for _, typ := range []string{"openclaw", "hermes", "custom"} {
+		t.Run(typ, func(t *testing.T) {
+			chrt := testChart(t)
+			chrt.Metadata.Version, chrt.Metadata.AppVersion = "2.0.0", "2.0.0"
+			pin := "registry.example.com/cetirun-memory-context:2.0.0@sha256:" + strings.Repeat("a", 64)
+			chrt.Values["memoryContext"] = map[string]any{"image": pin}
+			input := sampleInput(typ, "openai", false)
+			if typ == "custom" {
+				input = customInput(8080)
+			}
+			input["memoryOptions"] = MemoryOptions{Enabled: true, Registry: "registry.example.com/staging"}
+			prepared, err := PrepareChart(chrt, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			objects := platformRender(t, prepared, chartutil.DefaultCapabilities)
+			var pod corev1.PodSpec
+			if err := decodeObject(object(object(object(objects["StatefulSet"]["spec"])["template"])["spec"]), &pod); err != nil {
+				t.Fatal(err)
+			}
+			if got := pod.InitContainers[0].Image; got != pin {
+				t.Fatalf("selected Chart Memory digest pin not honored: got %q want %q", got, pin)
+			}
+		})
+	}
+}
+
 func TestMemoryChartDefaultsAndContext(t *testing.T) {
 	for _, typ := range []string{"hermes", "openclaw", "custom"} {
 		for _, shared := range []bool{false, true} {

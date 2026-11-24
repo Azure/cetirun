@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tarfile
 import urllib.parse
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -34,6 +35,17 @@ CLUSTER_KINDS = {"Namespace", "CustomResourceDefinition", "ClusterRole", "Cluste
                  "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding", "StorageClass", "PersistentVolume"}
 CHARTS = {"istio": "infra/istio", "broker": "app/cetirun-agent-broker/chart",
           "platform": "app/cetirun-platform"}
+# Published artifact names are deliberately kept in one place.  Every chart
+# lock and Helm operation must address the same package; local aliases are not
+# allowed to drift between render, preflight, and upgrade.
+CHART_PACKAGES = {"istio": "cetirun-istio", "broker": "cetirun-agent-broker", "platform": "cetirun-platform"}
+
+
+def chart_package(name):
+    try:
+        return CHART_PACKAGES[name]
+    except KeyError as exc:
+        raise ValueError(f"unknown chart release {name}") from exc
 AGENT_ACCOUNT_FIELDS = ("metadata.name", "spec.agent.type", "spec.team", "spec.sandboxRef",
                         "spec.helm.values.serviceAccount.name", "spec.helm.values.serviceAccount.role",
                         "spec.helm.values.serviceAccount.automountToken")
@@ -225,7 +237,7 @@ def check_repository_url(url, auth):
         raise ValueError(f"skillMarketplace.repository.auth {auth} needs an https:// URL")
 
 
-def skill_marketplace(config, platform):
+def skill_marketplace(config, platform, *, operator_defaults=None):
     """Platform values of the optional Skill Marketplace, from its own input block."""
     if "skillMarketplace" not in config:
         for field in SKILL_MARKETPLACE_SWITCHES:
@@ -255,7 +267,7 @@ def skill_marketplace(config, platform):
     if keys and not (isinstance(secret, str) and re.fullmatch(DNS_SUBDOMAIN, secret)):
         raise ValueError(f"skillMarketplace.repository.auth {auth} needs existingSecret: the name of a Secret in platform.namespace "
                          f"with the {'key' if len(keys) == 1 else 'keys'} {' and '.join(keys)}")
-    defaults = yaml_file(OPERATOR_VALUES)["skillMarketplace"]["repository"]
+    defaults = (operator_defaults or yaml_file(OPERATOR_VALUES))["skillMarketplace"]["repository"]
     optional = {}
     for field, default in (("ref", ""), ("path", ""), ("syncInterval", defaults["syncInterval"])):
         optional[field] = default if repository.get(field) is None else repository[field]
@@ -304,7 +316,7 @@ def skill_marketplace(config, platform):
             "cetirun-portal.skillMarketplace.enabled": True, "cetirun-portal.skillMarketplace.catalogNamespace": namespace}
 
 
-def observability(config):
+def observability(config, *, observability_defaults=None, gateway_defaults=None):
     """Platform values of the ADX-Mon collection and of the AI Gateway's content, from their input block."""
     switch = f"{OBSERVABILITY}.enabled"
     if "observability" not in config:
@@ -331,7 +343,7 @@ def observability(config):
     client = required(config, "observability.ingestorClientId")
     if not re.fullmatch(GUID, client):
         raise ValueError("observability.ingestorClientId must be the client ID of the managed identity that the ingestor uses")
-    defaults = yaml_file(OBSERVABILITY_VALUES)["adx"]["databases"]
+    defaults = (observability_defaults or yaml_file(OBSERVABILITY_VALUES))["adx"]["databases"]
     names = {}
     for field in OBSERVABILITY_FIELDS["observability.adx.databases"]:
         names[field] = databases.get(field, defaults[field])
@@ -362,7 +374,7 @@ def observability(config):
         if not re.fullmatch(GUID, content_client):
             raise ValueError("observability.content.clientId must be the client ID of the managed identity with which the "
                              "AI Gateway writes its content")
-        database = content.get("database", yaml_file(AI_GATEWAY_VALUES)["content"]["adx"]["database"])
+        database = content.get("database", (gateway_defaults or yaml_file(AI_GATEWAY_VALUES))["content"]["adx"]["database"])
         if not isinstance(database, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,99}", database):
             raise ValueError("observability.content.database must be a database name of letters and digits")
         if database in names.values():
@@ -628,8 +640,185 @@ def public_tls_config(config):
     return PUBLIC_TLS.normalize(result)
 
 
-def configuration(path, *, domain=None, registry=None, version=None, coordinate_origins=None):
+def prepare_published_charts(artifacts, scratch):
+    """Extract verified chart archives and return chart-name -> chart directory.
+
+    The artifact resolver owns archive/download and digest verification. This
+    function deliberately accepts only its lock-shaped result and performs a
+    second safe extraction before Helm sees a chart. No chart is rebuilt or
+    repackaged by the deployment driver.
+    """
+    charts = artifacts.get("charts") if isinstance(artifacts, dict) else None
+    if not isinstance(charts, dict) or not charts:
+        raise ValueError("published artifact lock has no charts")
+    roots = {}
+    destination = Path(scratch) / "published-charts"
+    destination.mkdir(parents=True, exist_ok=True)
+    for name, entry in charts.items():
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+            raise ValueError(f"published chart {name} has no downloaded archive")
+        archive = Path(entry["path"]).resolve()
+        if not archive.is_file() or archive.is_symlink():
+            raise ValueError(f"published chart {name} archive is unavailable")
+        expected_sha = entry.get("sha256")
+        if not isinstance(expected_sha, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_sha):
+            raise ValueError(f"published chart {name} has no valid archive digest")
+        actual_sha = "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()
+        if actual_sha != expected_sha:
+            raise ValueError(f"published chart {name} archive digest changed")
+        artifact_helpers = load_helper("deployment_artifacts.py")
+        artifact_helpers._safe_chart_members(archive)
+        target = destination / name
+        target.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive, "r:gz") as stream:
+            base = target.resolve()
+            for member in stream.getmembers():
+                member_path = (target / member.name).resolve()
+                if member_path != base and base not in member_path.parents:
+                    raise ValueError(f"published chart {name} contains an unsafe archive path")
+                if member.issym() or member.islnk() or member.isdev():
+                    raise ValueError(f"published chart {name} contains an unsafe archive entry")
+            stream.extractall(target, filter="data")
+        candidates = [child for child in target.iterdir() if child.is_dir()]
+        if len(candidates) != 1 or not (candidates[0] / "Chart.yaml").is_file():
+            raise ValueError(f"published chart {name} archive has an invalid root")
+        roots[name] = candidates[0]
+    return roots
+
+
+def published_configuration(path, artifacts, scratch, *, domain=None, registry=None,
+                            version=None, coordinate_origins=None):
+    """Prepare immutable chart packages and build values from their defaults.
+
+    Returns ``(config, values, chart_roots)`` for :class:`Deployment`. The
+    caller must retain the private scratch directory until rendering and Helm
+    installation finish.
+    """
+    roots = prepare_published_charts(artifacts, scratch)
+    required_roots = {"cetirun", "cetirun-platform", "cetirun-istio", "cetirun-agent-broker", "cetirun-operator",
+                      "cetirun-portal", "cetirun-ai-gateway", "cetirun-connections-mcp", "cetirun-observability"}
+    if not required_roots <= roots.keys():
+        raise ValueError("published release is missing required chart defaults; no source fallback is permitted")
+    lock_registry = artifacts.get("registry")
+    lock_version = artifacts.get("version")
+    lock_sha = artifacts.get("sourceSHA")
+    if not isinstance(lock_registry, str) or not isinstance(lock_version, str) or not re.fullmatch(r"[0-9a-f]{40}", str(lock_sha)):
+        raise ValueError("published artifact lock has incomplete release coordinates")
+    if registry is not None and registry.rstrip("/") != lock_registry:
+        raise ValueError("published registry override conflicts with artifact lock")
+    if version is not None and version.lstrip("v") != lock_version:
+        raise ValueError("published version override conflicts with artifact lock")
+    if isinstance(path, dict):
+        source = copy.deepcopy(path)
+    else:
+        source = yaml_file(path)
+    release = source.setdefault("release", {})
+    for key, expected in (("registry", lock_registry), ("version", lock_version), ("gitSHA", lock_sha)):
+        if release.get(key) not in (None, "", expected):
+            raise ValueError(f"environment release.{key} conflicts with artifact lock")
+        release[key] = expected
+    # Retain optionality from the release inventory.  Published deployments
+    # still validate exclusions even though they do not consult the checkout's
+    # mutable inventory.
+    if any(type(entry.get("optional", False)) is not bool for entry in (artifacts.get("images") or {}).values()):
+        raise ValueError("published image optional must be boolean")
+    source["_publishedInventory"] = {
+        "images": [
+            {"name": name, "optional": entry.get("optional", False)}
+            for name, entry in sorted((artifacts.get("images") or {}).items())
+        ],
+        "charts": [{"name": name} for name in sorted((artifacts.get("charts") or {}))],
+    }
+    # Artifact inventory uses package names; the deployment driver uses logical
+    # release names. Keep aliases explicit so no local chart can be selected.
+    chart_aliases = {package: logical for logical, package in CHART_PACKAGES.items()}
+    logical_roots = {chart_aliases.get(name, name): root for name, root in roots.items()}
+    config, values = configuration(source, domain=domain, registry=lock_registry,
+                                   version=version, coordinate_origins=coordinate_origins,
+                                   chart_roots=logical_roots, published_artifacts=artifacts)
+    return config, values, logical_roots
+
+
+def _pin_published_images(value, images):
+    """Replace first-party tag references with the resolver's immutable pins."""
+    def reference_for(name):
+        entry = images.get(name)
+        reference = entry.get("reference") if isinstance(entry, dict) else None
+        if not isinstance(reference, str) or not re.fullmatch(r"\S+@sha256:[0-9a-f]{64}", reference):
+            raise ValueError(f"published image {name} is not immutable")
+        return reference
+
+    def image_name(repository):
+        if not isinstance(repository, str):
+            return None
+        base = repository.rsplit("/", 1)[-1]
+        return base.split("@", 1)[0].split(":", 1)[0] if base else None
+
+    def scalar_image(item):
+        name = image_name(item)
+        return reference_for(name) if name in images else item
+
+    if isinstance(value, dict):
+        repository = value.get("repository")
+        name = image_name(repository)
+        if name in images:
+            reference = reference_for(name)
+            image, digest = reference.split("@", 1)
+            image_repository, image_tag = image.rsplit(":", 1)
+            result = {key: _pin_published_images(item, images) for key, item in value.items()
+                      if key not in ("repository", "tag", "digest")}
+            result.update(repository=image_repository, tag=image_tag, digest=digest)
+            return result
+        return {key: (scalar_image(item) if key == "image" and isinstance(item, str)
+                      else _pin_published_images(item, images)) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_pin_published_images(item, images) for item in value]
+    if not isinstance(value, str):
+        return value
+    return value
+
+
+def _repository_digest(reference):
+    """Return an image's full repository and digest, ignoring an optional tag."""
+    if not isinstance(reference, str) or "@" not in reference:
+        return None
+    repository, digest = reference.rsplit("@", 1)
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        return None
+    last = repository.rsplit("/", 1)[-1]
+    if ":" in last:
+        repository = repository.rsplit(":", 1)[0]
+    return repository, digest
+
+
+def _image_repository(reference):
+    """Return an image repository after removing an optional tag or digest."""
+    if not isinstance(reference, str) or not reference.strip() or any(char.isspace() for char in reference):
+        return None
+    repository = reference.split("@", 1)[0]
+    last = repository.rsplit("/", 1)[-1]
+    if ":" in last:
+        repository = repository.rsplit(":", 1)[0]
+    return repository
+
+
+def validate_mesh_configmap(document, service, *, published=False):
+    """Validate the existing mesh contract without changing the cluster."""
+    try:
+        patch, changed = MESH.configmap_patch(document, service)
+    except RuntimeError as error:
+        if published:
+            raise ValueError("Istio mesh ConfigMap does not already contain the required OAuth2 provider and headers") from error
+        raise
+    if published and changed:
+        raise ValueError("Istio mesh ConfigMap does not already contain the required OAuth2 provider and headers")
+    return patch, changed
+
+
+def configuration(path, *, domain=None, registry=None, version=None, coordinate_origins=None,
+                  chart_roots=None, published_artifacts=None):
     config = copy.deepcopy(path) if isinstance(path, dict) else yaml_file(path)
+    chart_roots = chart_roots or {}
     release = config.setdefault("release", {})
     if not isinstance(release, dict):
         raise ValueError("release must be an object")
@@ -700,18 +889,22 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
     raw_custom = get_value(config, "platform.values.cetirun-operator.customRuntime")
     if type(raw_custom.get("fsGroup")) is not int or not 1 <= raw_custom["fsGroup"] <= 2147483647:
         raise ValueError("customRuntime.fsGroup must explicitly name the qualified non-root storage group")
-    unknown = sorted(set(raw_custom) - set(yaml_file(OPERATOR_VALUES)["customRuntime"]))
+    operator_defaults = yaml_file(Path(chart_roots.get("cetirun-operator", OPERATOR_VALUES.parent)) / "values.yaml")
+    unknown = sorted(set(raw_custom) - set(operator_defaults["customRuntime"]))
     if unknown:
         note = " Every approved Custom image uses the AI Gateway binding." if REMOVED_CUSTOM_FIELDS & set(unknown) else ""
         raise ValueError("Remove " + ", ".join(f"customRuntime.{field}" for field in unknown) + " from the environment file: "
                          "the Operator stops at startup on a customRuntime field that it does not know." + note)
 
-    values = {name: merge(yaml_file(ROOT / chart / "values.yaml"), config[name].get("values", {}))
+    values = {name: merge(yaml_file(Path(chart_roots.get(name, ROOT / chart)) / "values.yaml"), config[name].get("values", {}))
               for name, chart in CHARTS.items()}
     platform = values["platform"]
     for component in ("operator", "portal", "ai-gateway", "connections-mcp", "observability"):
         key = f"cetirun-{component}"
-        platform[key] = merge(yaml_file(ROOT / f"app/{key}/chart/values.yaml"), platform.get(key, {}))
+        component_root = chart_roots.get(key)
+        if component_root is None:
+            component_root = ROOT / f"app/{key}/chart"
+        platform[key] = merge(yaml_file(Path(component_root) / "values.yaml"), platform.get(key, {}))
     pns, bns, ins = (config[name]["namespace"] for name in ("platform", "broker", "istio"))
     identity, registry, version = config["identity"], config["release"]["registry"], config["release"]["version"]
     domain, revision = config["domain"], config["istio"]["revision"]
@@ -762,7 +955,9 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
                    "agentIdentity.redirectUri": f"https://{domain}/api/v1/connections/callback"},
         "platform": {"global.registry": registry, "global.version": version,
                      "global.portalChat.enabled": operator_enabled, "global.portalChat.identityRealm": config["identityRealm"],
-                     "global.memoryContext.image": f"{registry}/cetirun-memory-context:{version}",
+                     **({} if published_artifacts else {
+                         "global.memoryContext.image": f"{registry}/cetirun-memory-context:{version}"
+                     }),
                      "istio.enabled": True, "istio.oauth2Proxy.namespace": ins,
                      "cetirun-operator.namespace": pns, "cetirun-operator.domainSuffix": domain,
                      "cetirun-operator.istioRevision": revision, "cetirun-operator.istioGateway": gateway,
@@ -796,8 +991,12 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
     }
     for field in ("tenantId", "blueprintClientId", "authorizationClientId", "encryptionClientId", "keyVaultKeyUrl"):
         assignments["broker"][f"agentIdentity.{field}"] = identity[field]
-    assignments["platform"].update(skill_marketplace(config, platform))
-    assignments["platform"].update(observability(config))
+    operator_defaults = yaml_file(Path(chart_roots.get("cetirun-operator", OPERATOR_VALUES.parent)) / "values.yaml")
+    observability_defaults = yaml_file(Path(chart_roots.get("cetirun-observability", OBSERVABILITY_VALUES.parent)) / "values.yaml")
+    gateway_defaults = yaml_file(Path(chart_roots.get("cetirun-ai-gateway", AI_GATEWAY_VALUES.parent)) / "values.yaml")
+    assignments["platform"].update(skill_marketplace(config, platform, operator_defaults=operator_defaults))
+    assignments["platform"].update(observability(config, observability_defaults=observability_defaults,
+                                                  gateway_defaults=gateway_defaults))
     for name, fields in assignments.items():
         for field, value in fields.items():
             supplied = get_value(config[name].get("values", {}), field)
@@ -849,6 +1048,8 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
     custom = operator["customRuntime"]
     if not custom["approvedImages"] or any(not re.fullmatch(r"\S+@sha256:[0-9a-f]{64}", image) for image in custom["approvedImages"]):
         raise ValueError("Custom runtime requires explicitly qualified approvedImages pinned by digest")
+    if len(custom["approvedImages"]) > 64:
+        raise ValueError("Custom runtime approvedImages cannot contain more than 64 images")
     skills = mapping(config.get("sharedSkills"), "sharedSkills")
     for field in ("storageClassName", "resourceGroup", "storageAccount", "containerName"):
         required(skills, field)
@@ -913,10 +1114,79 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
         values["istio"]["tls"]["enabled"] = False
         values["istio"]["gateway"]["includeWildcardHost"] = False
     config["_source"] = source
+    if published_artifacts:
+        runtime_digest = published_artifacts.get("charts", {}).get("cetirun", {}).get("digest")
+        if not isinstance(runtime_digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", runtime_digest):
+            raise ValueError("published runtime chart has no immutable manifest digest")
+        supplied_digest = get_value(config["platform"].get("values", {}), "cetirun-operator.cetirun.chart.digest")
+        if supplied_digest not in (None, "", runtime_digest):
+            raise ValueError("runtime chart digest override conflicts with the artifact lock")
+        set_value(values["platform"], "cetirun-operator.cetirun.chart.digest", runtime_digest)
+        images = published_artifacts.get("images", {})
+        if not isinstance(images, dict) or not images:
+            raise ValueError("published artifact lock has no images")
+        # CetiAdmin is a separately retained workload. Preserve its explicit
+        # qualified pin; basename matching must not silently replace it with
+        # the platform release image.
+        cetiadmin_image = get_value(config.get("platform", {}).get("values", {}),
+                                    "cetirun-operator.cetiadmin.runtime.image")
+        if cetiadmin_image:
+            basename = cetiadmin_image.rsplit("/", 1)[-1].split("@", 1)[0].split(":", 1)[0]
+            locked = images.get(basename)
+            if locked and _repository_digest(cetiadmin_image) != _repository_digest(locked.get("reference")):
+                raise ValueError("cetirun-operator.cetiadmin.runtime.image conflicts with the published artifact lock")
+        # Published runtime charts own their Memory pin. A platform-wide
+        # override would affect Agents on other chart versions too. Reject it
+        # before image rewriting, regardless of repository, digest or spelling.
+        for path in ("global.memoryContext.image", "cetirun-operator.memoryContext.image"):
+            if get_value(values["platform"], path):
+                raise ValueError(f"{path} is unsupported in published deployments; use the runtime chart's Memory pin")
+        approved = get_value(values["platform"], "cetirun-operator.customRuntime.approvedImages")
+        original_approved = copy.deepcopy(approved) if isinstance(approved, list) else None
+        # Runtime chart helmValues are explicit operator-owned overrides.  Do
+        # not rewrite their initContainers/helpers by matching image
+        # basenames: those images may intentionally belong to an older or
+        # separately approved runtime.  The published chart itself is already
+        # pinned by its immutable archive and remains covered by the rendered
+        # image audit.
+        runtime_helm_values = get_value(
+            values, "platform.cetirun-operator.cetirun.helmValues"
+        )
+        original_runtime_helm_values = (
+            copy.deepcopy(runtime_helm_values)
+            if isinstance(runtime_helm_values, dict) else None
+        )
+        if isinstance(approved, list):
+            for supplied in approved:
+                if not isinstance(supplied, str) or not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", supplied):
+                    raise ValueError("published custom runtime images must be qualified by digest")
+        values = _pin_published_images(values, images)
+        # Approvals authorize Agent images independently from rollout artifacts.
+        # The Operator uses exact membership, so keep every supplied spelling.
+        if original_approved is not None:
+            set_value(values, "platform.cetirun-operator.customRuntime.approvedImages", original_approved)
+        if original_runtime_helm_values is not None:
+            set_value(values, "platform.cetirun-operator.cetirun.helmValues", original_runtime_helm_values)
+        if cetiadmin_image:
+            set_value(values, "platform.cetirun-operator.cetiadmin.runtime.image", cetiadmin_image)
     return config, values
 
 
 def release_inventory(config):
+    published = config.get("_publishedInventory")
+    if isinstance(published, dict):
+        excluded = set(config.get("release", {}).get("excludeImages", []))
+        result = {}
+        for kind in ("images", "charts"):
+            entries = published.get(kind, [])
+            normalized = [copy.deepcopy(entry) for entry in entries]
+            result[kind] = [
+                entry for entry in normalized
+                if kind != "images" or entry.get("name") not in excluded
+            ]
+            for entry in result[kind]:
+                entry.setdefault("path", "")
+        return result
     return RELEASE.selected_inventory(RELEASE.inventory(), config["release"].get("excludeImages", []))
 
 
@@ -930,16 +1200,29 @@ def image_references(value, name):
 
 def validate_excluded_images(config):
     excluded = set(config["release"].get("excludeImages", []))
+    published = config.get("_publishedInventory")
+    if isinstance(published, dict):
+        entries = {entry["name"]: entry for entry in published.get("images", [])}
+        for name in excluded:
+            entry = entries.get(name)
+            if entry is None:
+                raise ValueError(f"excludeImages names an unknown image: {name}")
+            if entry.get("optional", False) is not True:
+                raise ValueError(f"excludeImages can only exclude optional images: {name}")
     references = copy.deepcopy(config)
     references["release"].pop("excludeImages", None)
+    # This is availability metadata, not a configured image consumer.
+    references.pop("_publishedInventory", None)
     for name in excluded:
         if image_references(references, name):
             raise ValueError(f"release.excludeImages excludes image still referenced by the deployment: {name}")
 
 
 class Deployment:
-    def __init__(self, config, values, scratch):
+    def __init__(self, config, values, scratch, *, published_artifacts=None, chart_roots=None):
         self.config, self.values, self.scratch = config, values, scratch
+        self.published_artifacts = published_artifacts
+        self.chart_roots = chart_roots or {}
         self.documents, self.files, self.charts = {}, {}, {}
         self.bootstrap_documents = []
         self.existing_releases, self.namespaces = set(), {}
@@ -1092,9 +1375,10 @@ class Deployment:
             self.check_cetiadmin_grants({"name": account, "namespace": namespace["name"]})
             self.cetiadmin_migration_receipt = metadata
 
-    def check_cetiadmin_stopped(self):
+    def check_cetiadmin_stopped(self, *, configuration=None):
         source, checkpoint, current, state = self.cetiadmin_binding()
-        desired = copy.deepcopy(self.values["platform"]["cetirun-operator"]["cetiadmin"])
+        desired = copy.deepcopy(configuration if configuration is not None else
+                                self.values["platform"]["cetirun-operator"]["cetiadmin"])
         desired["runtime"]["version"] = desired["runtime"].get("version") or self.config["release"]["version"]
         if (current.get("enabled") is not False or state.get("phase") != "Disabled" or state.get("hold") is not True
                 or state.get("pendingCreate") or state.get("creation") or state.get("bootstrapReleasePending")
@@ -1170,16 +1454,37 @@ class Deployment:
     def render(self):
         offline = {**os.environ, "KUBECONFIG": os.devnull, "HELM_REGISTRY_CONFIG": os.devnull}
         if not self.charts:
-            for entry in release_inventory(self.config)["charts"]:
-                source = ROOT / entry["path"]
-                shutil.copytree(source, self.scratch / entry["path"], ignore=shutil.ignore_patterns("charts", "__pycache__"))
-            updates = RELEASE.VERSIONS.chart_updates(self.scratch,
-                [entry["path"] for entry in release_inventory(self.config)["charts"]], self.config["release"]["version"])
-            for path, content in updates.items():
-                path.write_text(content)
-            self.run(["helm", "dependency", "update", "--skip-refresh", str(self.scratch / CHARTS["platform"])], env=offline)
+            chart_roots = self.chart_roots or (prepare_published_charts(self.published_artifacts, self.scratch)
+                                               if self.published_artifacts else {})
+            chart_archives = {}
+            if self.published_artifacts:
+                for package_name, entry in self.published_artifacts.get("charts", {}).items():
+                    logical = next((name for name, package in CHART_PACKAGES.items() if package == package_name), package_name)
+                    archive = Path(entry.get("path", "")).resolve()
+                    expected = entry.get("sha256")
+                    if archive.is_file() and isinstance(expected, str) and "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest() == expected:
+                        chart_archives[logical] = archive
+                    else:
+                        raise ValueError(f"published chart {package_name} changed before render")
+            if self.published_artifacts:
+                # Preserve the exact downloaded archive for template and
+                # upgrade. The extracted roots are only used for defaults.
+                for name in CHARTS:
+                    if name not in chart_archives:
+                        raise ValueError(f"published artifact lock is missing {name} chart")
+                    self.charts[name] = chart_archives[name]
+            else:
+                for entry in release_inventory(self.config)["charts"]:
+                    source = Path(chart_roots.get(entry["name"], ROOT / entry["path"]))
+                    shutil.copytree(source, self.scratch / entry["path"], ignore=shutil.ignore_patterns("charts", "__pycache__"))
+            if not self.published_artifacts:
+                updates = RELEASE.VERSIONS.chart_updates(self.scratch,
+                    [entry["path"] for entry in release_inventory(self.config)["charts"]], self.config["release"]["version"])
+                for path, content in updates.items():
+                    path.write_text(content)
+                self.run(["helm", "dependency", "update", "--skip-refresh", str(self.scratch / CHARTS["platform"])], env=offline)
         for name, relative in CHARTS.items():
-            self.charts[name] = self.scratch / relative
+            self.charts.setdefault(name, self.scratch / relative)
             self.files[name] = self.scratch / f"{name}-values.json"
             actual_values = copy.deepcopy(self.values[name])
             if name == "istio" and self.config["istio"].get("tlsMode") == "retain":
@@ -1767,8 +2072,14 @@ class Deployment:
             metadata = self.resource("namespace", section["namespace"])
             self.namespaces[section["namespace"]] = metadata
             label = (metadata or {}).get("labels", {}).get("istio.io/rev")
-            if name != "istio" and label and label != c["istio"]["revision"]:
-                raise ValueError(f"{section['namespace']} uses another Istio revision; refusing to replace it")
+            if self.published_artifacts and metadata is None:
+                raise ValueError(f"{section['namespace']} must already exist for a published deployment")
+            if name != "istio" and metadata is not None:
+                if label and label != c["istio"]["revision"]:
+                    raise ValueError(f"{section['namespace']} uses another Istio revision; refusing to replace it")
+                if self.published_artifacts and label != c["istio"]["revision"]:
+                    raise ValueError(f"{section['namespace']} must already be labeled with Istio revision "
+                                     f"{c['istio']['revision']}; refusing an implicit namespace mutation")
             releases = json.loads(self.helm("list", "--deployed", "--failed", "--pending", "--uninstalling", "--uninstalled", "--superseded",
                                             "--namespace", section["namespace"], "--filter", f"^{section['release']}$", "-o", "json"))
             if releases:
@@ -1845,23 +2156,7 @@ class Deployment:
                 raise ValueError("The admission coordination ConfigMap UID does not match the configured authority")
             if kind == "Secret" and key and key not in self.secret_keys(namespace, name):
                 raise ValueError(f"Required Secret key is missing: {namespace}/{name}:{key}")
-        mesh = self.kubectl("get", "configmap", c["istio"]["meshConfigMap"], "--namespace", c["istio"]["controlPlaneNamespace"], "--ignore-not-found", "-o", "json")
-        if mesh.strip():
-            document = json.loads(mesh)
-            self.mesh_uid = document["metadata"]["uid"]
-            _, changed = MESH.configmap_patch(document, self.oauth_service())
-            if changed and c["istio"].get("mode", "manage") == "external":
-                raise ValueError("External Istio has no matching OAuth2 provider/header configuration")
-        else:
-            # The helper creates a missing ConfigMap. AKS managed Istio reads only
-            # istio-shared-configmap-<revision>, so another name leaves the OAuth2
-            # provider out of the mesh.
-            shared = f"istio-shared-configmap-{c['istio']['revision']}"
-            if shared != c["istio"]["meshConfigMap"] and self.resource("configmap", shared, c["istio"]["controlPlaneNamespace"]):
-                raise ValueError(f"The configured istio.meshConfigMap {c['istio']['controlPlaneNamespace']}/{c['istio']['meshConfigMap']} "
-                                 f"does not exist, and AKS managed Istio reads {shared}, which exists")
-            if c["istio"].get("mode", "manage") == "external":
-                raise ValueError("External Istio requires the existing OAuth2 mesh provider")
+        self.check_mesh_configuration()
         if c["istio"].get("mode", "manage") == "external" and "istio" not in self.existing_releases:
             raise ValueError("istio.mode=external requires the named existing CetiRun Istio release")
         tls = self.resource("Secret", "cetirun-tls", c["istio"]["ingressNamespace"])
@@ -1877,21 +2172,102 @@ class Deployment:
             raise ValueError("Retained PostgreSQL data has no password Secret; refusing to generate a replacement")
         self.check_retained_postgresql()
         self.check_tls()
-        for entry in release_inventory(c)["images"]:
-            self.inspect_image(f"{c['release']['registry']}/{entry['name']}:{c['release']['version']}")
+        if self.published_artifacts:
+            locked_images = self.published_artifacts.get("images", {})
+            for entry in release_inventory(c)["images"]:
+                lock = locked_images.get(entry["name"])
+                reference = lock.get("reference") if isinstance(lock, dict) else None
+                if not isinstance(reference, str) or not re.fullmatch(r"\S+@sha256:[0-9a-f]{64}", reference):
+                    raise ValueError(f"published artifact lock is missing immutable image {entry['name']}")
+                self.inspect_image(reference)
+        else:
+            for entry in release_inventory(c)["images"]:
+                self.inspect_image(f"{c['release']['registry']}/{entry['name']}:{c['release']['version']}")
         for image in self.values["platform"]["cetirun-operator"]["customRuntime"]["approvedImages"]:
             self.inspect_image(image)
         admin = self.values["platform"]["cetirun-operator"]["cetiadmin"]
         if admin["enabled"] and admin["runtime"].get("image"):
             self.inspect_image(admin["runtime"]["image"])
-        for entry in release_inventory(c)["charts"]:
-            self.run(["helm", "show", "chart", f"oci://{c['release']['registry']}/helm/{entry['name']}", "--version", c["release"]["version"]])
+        if self.published_artifacts:
+            locked_charts = self.published_artifacts.get("charts", {})
+            for logical, chart_path in CHARTS.items():
+                package_name = chart_package(logical)
+                lock = locked_charts.get(package_name)
+                archive = Path(lock.get("path", "")).resolve() if isinstance(lock, dict) else None
+                expected = lock.get("sha256") if isinstance(lock, dict) else None
+                if archive is None or not archive.is_file() or not isinstance(expected, str):
+                    raise ValueError(f"published artifact lock is missing chart {package_name}")
+                actual = "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()
+                if actual != expected or self.charts.get(logical) != archive:
+                    raise ValueError(f"published chart {package_name} changed after render")
+                self.run(["helm", "show", "chart", str(archive)])
+        else:
+            for entry in release_inventory(c)["charts"]:
+                self.run(["helm", "show", "chart", f"oci://{c['release']['registry']}/helm/{entry['name']}", "--version", c["release"]["version"]])
 
     def oauth_service(self):
         return f"oauth2-proxy.{self.config['istio']['namespace']}.svc.cluster.local"
 
-    def upgrade(self, name, values=None):
+    def check_mesh_configuration(self):
+        c = self.config
+        mesh = self.kubectl("get", "configmap", c["istio"]["meshConfigMap"], "--namespace", c["istio"]["controlPlaneNamespace"], "--ignore-not-found", "-o", "json")
+        if mesh.strip():
+            document = json.loads(mesh)
+            self.mesh_uid = document["metadata"]["uid"]
+            _, changed = validate_mesh_configmap(document, self.oauth_service(), published=bool(self.published_artifacts))
+            if changed and c["istio"].get("mode", "manage") == "external":
+                raise ValueError("External Istio has no matching OAuth2 provider/header configuration")
+        else:
+            if self.published_artifacts:
+                raise ValueError("Published deployment requires the existing OAuth2 mesh ConfigMap")
+            # The helper creates a missing ConfigMap. AKS managed Istio reads only
+            # istio-shared-configmap-<revision>, so another name leaves the OAuth2
+            # provider out of the mesh.
+            shared = f"istio-shared-configmap-{c['istio']['revision']}"
+            if shared != c["istio"]["meshConfigMap"] and self.resource("configmap", shared, c["istio"]["controlPlaneNamespace"]):
+                raise ValueError(f"The configured istio.meshConfigMap {c['istio']['controlPlaneNamespace']}/{c['istio']['meshConfigMap']} "
+                                 f"does not exist, and AKS managed Istio reads {shared}, which exists")
+            if c["istio"].get("mode", "manage") == "external":
+                raise ValueError("External Istio requires the existing OAuth2 mesh provider")
+
+    def retained_tls_values(self):
+        """Carry only the chart-owned TLS material into a reset-values upgrade."""
+        section = self.config["istio"]
+        namespace = section["ingressNamespace"]
+        before = self.resource("secret", "cetirun-tls", namespace)
+        owner = (before or {}).get("annotations", {})
+        if (not before or not before.get("uid") or before.get("deletionTimestamp") or
+                (owner.get("meta.helm.sh/release-name"), owner.get("meta.helm.sh/release-namespace")) !=
+                (section["release"], section["namespace"])):
+            raise ValueError("retained TLS Secret ownership is unavailable")
+        tls = {"enabled": True}
+        for key, field in (("cert", r"tls\.crt"), ("key", r"tls\.key")):
+            encoded = self.kubectl("get", "secret", "cetirun-tls", "--namespace", namespace, "-o",
+                                   "jsonpath={.data." + field + "}")
+            try:
+                tls[key] = base64.b64decode(encoded, validate=True).decode("ascii")
+                if not tls[key]:
+                    raise ValueError()
+            except (ValueError, UnicodeError):
+                raise ValueError("retained TLS Secret material is unavailable") from None
+        after = self.resource("secret", "cetirun-tls", namespace)
+        if not after or any(before.get(key) != after.get(key) for key in ("uid", "resourceVersion")):
+            raise ValueError("retained TLS Secret changed during read")
+        return {"tls": tls}, before
+
+    def upgrade(self, name, values=None, *, expected_revision=None):
+        if self.published_artifacts and (type(expected_revision) is not int or expected_revision < 1):
+            raise ValueError("published upgrade requires an explicit expected release revision")
         section = self.config[name]
+        if self.published_artifacts:
+            package_name = chart_package(name)
+            entry = self.published_artifacts.get("charts", {}).get(package_name, {})
+            archive = Path(entry.get("path", "")).resolve()
+            expected = entry.get("sha256")
+            if not archive.is_file() or "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest() != expected:
+                raise ValueError(f"published chart {package_name} changed before upgrade")
+            if self.charts.get(name) != archive:
+                raise ValueError(f"published chart {package_name} is not the rendered archive")
         if name == "platform":
             self.check_retained_postgresql()
         if name == "platform" and not self.values["platform"]["cetirun-operator"]["enabled"]:
@@ -1902,15 +2278,52 @@ class Deployment:
         timeout = "10m"
         if name == "platform":
             timeout = str(max(600, self.values["platform"]["cetirun-operator"]["cetiadmin"]["hookTimeoutSeconds"] + 60)) + "s"
-        args = ["upgrade", "--install", section["release"], str(self.charts[name]), "--namespace", section["namespace"],
+        args = ["upgrade"]
+        # Published deployments only target the three pre-existing releases.
+        # Omitting --install prevents a missing release from becoming an
+        # unexpected bootstrap during an upgrade. Source-based make deploy
+        # retains its existing bootstrap behavior.
+        if not self.published_artifacts:
+            args.append("--install")
+        args += [section["release"], str(self.charts[name]), "--namespace", section["namespace"],
                 "--values", str(self.files[values or name]), "--timeout", timeout]
+        retained, tls_pin = None, None
         if name == "istio" and section.get("tlsMode") == "retain":
-            args.append("--reuse-values")
-        else:
-            args.append("--reset-values")
+            retained, tls_pin = self.retained_tls_values()
+            if not tls_pin.get("resourceVersion"):
+                raise ValueError("retained TLS Secret version is unavailable")
+            if not self.published_artifacts:
+                history = json.loads(self.helm("history", section["release"], "--namespace", section["namespace"],
+                                               "--max", "1", "-o", "json"))
+                if (not isinstance(history, list) or len(history) != 1 or history[0].get("status") != "deployed" or
+                        not str(history[0].get("revision", "")).isdigit() or int(history[0]["revision"]) < 1):
+                    raise ValueError("retained TLS requires a deployed release revision")
+                expected_revision = int(history[0]["revision"])
+        if self.published_artifacts or retained:
+            guard = ROOT / "scripts" / "helm_revision_guard.py"
+            args += ["--post-renderer", str(guard)]
+            guard_args = ["--expected-revision", str(expected_revision), "--release", section["release"],
+                          "--namespace", section["namespace"], "--context", self.config["target"]["context"]]
+            if tls_pin:
+                guard_args += ["--tls-secret-namespace", section["ingressNamespace"], "--tls-secret-name", "cetirun-tls",
+                               "--tls-secret-uid", tls_pin["uid"], "--tls-secret-resource-version", tls_pin["resourceVersion"]]
+            for argument in guard_args:
+                args.append("--post-renderer-args=" + argument)
+        # Reusing live values silently merges removed selectors and other
+        # settings into the upgrade. Only chart-owned TLS is retained; every
+        # non-TLS value comes from exactly the candidate that was previewed.
+        args.append("--reset-values")
         if not self.config["release"].get("clientOpenAPIValidation", True):
             args.append("--disable-openapi-validation")
-        self.helm(*args)
+        if retained:
+            # TemporaryFile is mode 0600 and removed on both success and error.
+            # Never put TLS material in argv, previews or the public report.
+            with tempfile.NamedTemporaryFile(mode="w", dir=self.scratch, suffix="-retained-tls.json") as tls_file:
+                json.dump(retained, tls_file)
+                tls_file.flush()
+                self.helm(*args, "--values", tls_file.name)
+        else:
+            self.helm(*args)
         if name == "platform":
             self.check_retained_postgresql()
 
@@ -1936,7 +2349,7 @@ class Deployment:
         self.render()
         self.preflight()
 
-    def execute(self):
+    def execute(self, *, before_upgrade=None, after_upgrade=None):
         for key in ("registry", "version"):
             print(f"Deployment {key}: {self.config['release'][key]} "
                   f"(from {self.config['_releaseOrigins'][key]})", flush=True)
@@ -1948,12 +2361,24 @@ class Deployment:
                 self.resolve_public_domain(self.ingress.domain)
             else:
                 self.preflight()
-            result = self.ingress.prepare(resolved=self.resolve_public_domain, complete=self.execute_platform)
+            complete = lambda: self.execute_platform(before_upgrade=before_upgrade, after_upgrade=after_upgrade)
+            result = self.ingress.prepare(resolved=self.resolve_public_domain, complete=complete)
             print(json.dumps(result, indent=2))
         else:
-            self.execute_platform()
+            self.execute_platform(before_upgrade=before_upgrade, after_upgrade=after_upgrade)
 
-    def execute_platform(self):
+    def execute_platform(self, *, before_upgrade=None, after_upgrade=None):
+        def upgrade(name, values=None):
+            revision = before_upgrade(name, values) if before_upgrade is not None else None
+            arguments = (name,) if values is None else (name, values)
+            # The caller supplies observations, never the actual writer. Every
+            # published write passes through the required revision guard.
+            if self.published_artifacts:
+                self.upgrade(*arguments, expected_revision=revision)
+            else:
+                self.upgrade(*arguments)
+            if after_upgrade is not None:
+                after_upgrade(name, values)
         self.defer_public_tls = False
         self.preflight()
         c = self.config
@@ -1964,30 +2389,30 @@ class Deployment:
             if name != "istio" and (self.namespaces[namespace] or {}).get("labels", {}).get("istio.io/rev") != c["istio"]["revision"]:
                 self.kubectl("label", "namespace", namespace, f"istio.io/rev={c['istio']['revision']}", "--overwrite=false")
         if c["istio"].get("mode", "manage") == "manage":
-            self.upgrade("istio")
+            upgrade("istio")
         self.ready("istio")
         command = [sys.executable, "-B", str(ROOT / "scripts/ensure-oauth2-proxy-id-token-header.py"),
                    "--context", c["target"]["context"], "--namespace", c["istio"]["controlPlaneNamespace"],
                    "--name", c["istio"]["meshConfigMap"], "--service", self.oauth_service()]
         if self.mesh_uid:
             command += ["--uid", self.mesh_uid]
-        if c["istio"].get("mode", "manage") == "manage":
+        if c["istio"].get("mode", "manage") == "manage" and not self.published_artifacts:
             self.run(command)
-        self.upgrade("broker")
+        upgrade("broker")
         self.ready("broker")
         if not self.values["platform"]["cetirun-operator"]["enabled"]:
-            self.upgrade("platform")
+            upgrade("platform")
             self.ready("platform")
             print("Operator subchart removed after current CetiAdmin stop checks. Retained Agent and HOME data were not deleted.")
             return
         # Never withdraw existing admission protection during an upgrade.
         if not self.enforced:
-            self.upgrade("platform", "bootstrap")
+            upgrade("platform", "bootstrap")
             # Wait for what the bootstrap installs: it has no Skill Marketplace.
             self.ready("platform", self.bootstrap_documents)
         else:
             self.kubectl("rollout", "status", "deployment/cetirun-sandbox-admission", "--namespace", c["platform"]["namespace"], "--timeout=180s")
-        self.upgrade("platform")
+        upgrade("platform")
         self.ready("platform")
         probe = {"apiVersion": "cetirun.microsoft.com/v1alpha1", "kind": "Team",
                  "metadata": {"name": "cetirun-admission-deployment-check"}, "spec": {}}

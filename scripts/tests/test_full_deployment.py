@@ -114,7 +114,10 @@ class SyntheticCluster(DEPLOY.Deployment):
                 self.writes.append(command)
                 release = args[2]
                 name = next(name for name in DEPLOY.CHARTS if self.config[name]["release"] == release)
-                values = json.loads(Path(args[args.index("--values") + 1]).read_text())
+                values = {}
+                for index, argument in enumerate(args):
+                    if argument == "--values":
+                        values = DEPLOY.merge(values, json.loads(Path(args[index + 1]).read_text()))
                 self.applied.append((name, values, list(command)))
                 bootstrap = name == "platform" and not values["cetirun-operator"]["sandboxAdmission"]["enforce"]
                 self.installed.add(release)
@@ -352,11 +355,11 @@ class ReleaseCoordinateTests(DeploymentFixture, unittest.TestCase):
         deployment = self.deployment()
         original = deployment.execute_platform
         with patch("sys.stdout", new_callable=io.StringIO) as stdout:
-            def execute_platform():
+            def execute_platform(*, before_upgrade=None, after_upgrade=None):
                 for key in ("registry", "version"):
                     self.assertIn(f"Deployment {key}: {deployment.config['release'][key]} (from environment file)", stdout.getvalue())
                 self.assertFalse(deployment.writes)
-                original()
+                original(before_upgrade=before_upgrade, after_upgrade=after_upgrade)
             with patch.object(deployment, "execute_platform", side_effect=execute_platform):
                 deployment.execute()
         self.assertTrue(deployment.writes)
@@ -957,7 +960,7 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
             deployment.execute()
         self.assertEqual(deployment.writes, [])
 
-    def test_retained_tls_reuses_values_without_reading_or_sending_key_material(self):
+    def test_retained_tls_resets_values_without_sending_key_material_in_argv(self):
         self.config["istio"]["tlsMode"] = "retain"
         deployment = self.deployment()
         deployment.installed.add("cetirun-istio")
@@ -966,13 +969,16 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
                 continue
             ns = doc["metadata"].get("namespace", "cetirun-istio")
             name = doc["metadata"]["name"]
-            deployment.objects[("secret", ns, name)] = {"annotations": {
+            deployment.objects[("secret", ns, name)] = {"uid": "synthetic-tls-uid", "resourceVersion": "7", "annotations": {
                 "meta.helm.sh/release-name": "cetirun-istio", "meta.helm.sh/release-namespace": "cetirun-istio"}}
             deployment.keys[(ns, name)] = set(doc["data"])
         deployment.execute()
         _, values, command = deployment.applied[0]
-        self.assertIn("--reuse-values", command)
-        self.assertNotIn("tls", values)
+        self.assertIn("--reset-values", command)
+        self.assertNotIn("--reuse-values", command)
+        self.assertEqual(values["tls"], {"enabled": True, "cert": "synthetic public certificate", "key": "synthetic public certificate"})
+        self.assertNotIn("synthetic public certificate", json.dumps(command))
+        self.assertFalse(list(deployment.scratch.glob("*-retained-tls.json")))
         self.assertEqual(values["cookieSecret"], "")
         self.assertNotIn("offline-render-only", json.dumps(values))
 
