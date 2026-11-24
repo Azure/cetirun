@@ -32,9 +32,10 @@ class InfrastructureConfigurationTests(unittest.TestCase):
         deployment.kubectl = Mock()
         deployment.config = {"_infrastructureOnly": True, "modelRouting": {"mode": "preserve"},
                              "platform": {"namespace": "platform"}}
+        deployment.values = {"platform": {"cetirun-ai-gateway": {}}}
         entry = {"model_name": "gpt-4.1-mini", "litellm_params": {"model": "azure/gpt"}}
         config = {"model_list": [entry]}
-        rendered = {"kind": "ConfigMap", "metadata": {"name": "gateway-config"},
+        rendered = {"kind": "ConfigMap", "metadata": {"name": "gateway-config", "labels": {"app.kubernetes.io/name": "cetirun-ai-gateway"}},
                     "data": {"config.yaml": __import__("yaml").safe_dump(config)}}
         deployment.documents = {"platform": [rendered]}
         deployment.kubectl.return_value = json.dumps({"data": {"config.yaml": __import__("yaml").safe_dump(config)}})

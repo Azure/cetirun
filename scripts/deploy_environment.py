@@ -20,9 +20,9 @@ from pathlib import Path
 import re
 import sys
 import time
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 import yaml
 
@@ -354,10 +354,42 @@ def agent_ready(row):
             any(c.get("type") == "Ready" and c.get("status") == "True" for c in status.get("conditions", [])))
 
 
+def published_runtime_agents(deployment, snapshot, lock):
+    """Select by the repository, effective version and digest the Operator uses."""
+    arguments = runtime_arguments(rendered_operator(deployment).get("args", []))
+    expected = "oci://" + lock["registry"] + "/helm/cetirun"
+    if arguments["chart-repo-url"] != expected:
+        return [], False
+    selected, mutable = [], False
+    default = arguments["chart-version"]
+    for item in snapshot["objects"].values():
+        if not item.get("agentType"):
+            continue
+        version = item.get("chartVersion") or default
+        if version != lock["version"]:
+            continue
+        pin = arguments.get("chart-digest", "") if version == default else ""
+        if pin and pin != lock["charts"]["cetirun"]["digest"]:
+            continue
+        selected.append(item)
+        mutable |= not pin
+    return selected, mutable
+
+
 def verify_existing_agent_images(deployment, snapshot, roots, lock):
     """Match the Operator's exact image approvals without migrating any pin."""
     profiles = {}
     approved = platform.get_value(deployment.values["platform"], "cetirun-operator.customRuntime.approvedImages") or []
+    selected = None
+    if deployment.config.get("_infrastructureOnly"):
+        selected, mutable = published_runtime_agents(deployment, snapshot, lock)
+        if mutable:
+            try:
+                actual, _, _ = artifacts._manifest(artifacts.PREFIX + "/helm/cetirun", lock["version"], "chart")
+            except artifacts.ArtifactError as error:
+                raise Blocked("retained_chart_digest_unverified") from error
+            if actual != lock["charts"]["cetirun"]["digest"]:
+                raise Blocked("retained_chart_tag_changed")
     for item in snapshot["objects"].values():
         runtime = item.get("agentType")
         if runtime == "custom" and item["image"] not in approved:
@@ -365,11 +397,11 @@ def verify_existing_agent_images(deployment, snapshot, roots, lock):
         if deployment.config.get("_infrastructureOnly"):
             if runtime in ("openclaw", "hermes") and not item.get("image"):
                 raise Blocked("existing_agent_runtime_image_unpinned")
-            # An unchanged runtime is qualified by its retained chart, not by
-            # the unrelated runtime chart bundled with this control-plane
-            # release. Exact runtime configuration and live objects are
-            # checked separately before every write and during acceptance.
-            continue
+            # Other repositories or explicitly retained default digests keep
+            # their own chart bytes. Non-default versions load by mutable tag
+            # and must be checked against the candidate when it supplies them.
+            if item not in selected:
+                continue
         if runtime not in ("openclaw", "hermes") or item.get("chartVersion", "") not in ("", lock["version"]):
             continue
         if runtime not in profiles:
@@ -484,6 +516,10 @@ def runtime_environment(entries):
         if name not in protected:
             continue
         value = {key: copy.deepcopy(item) for key, item in entry.items() if key != "name"}
+        if "valueFrom" not in value:
+            # API serialization omits empty literal values. An absent EnvVar
+            # remains distinct because it never contributes an entry here.
+            value.setdefault("value", "")
         if name in json_values and "value" in value:
             try:
                 value["value"] = json.loads(value["value"])
@@ -511,11 +547,65 @@ def verify_runtime_environment(deployment, operator):
         raise Blocked("existing_runtime_environment_transition_out_of_scope")
 
 
+def runtime_registry_credentials(document):
+    """Project chart-pull credential references and mounts, never Secret data."""
+    pod = document.get("spec", {}).get("template", {}).get("spec", {})
+    managers = [item for item in pod.get("containers", []) if item.get("name") == "manager"]
+    if len(managers) != 1:
+        raise Blocked("operator_runtime_credentials_unavailable")
+    manager = managers[0]
+    entries = [entry for entry in manager.get("env", []) if entry.get("name") == "DOCKER_CONFIG"]
+    if len(entries) > 1 or any("valueFrom" in entry for entry in entries):
+        raise Blocked("operator_runtime_credentials_unavailable")
+    directory = entries[0].get("value", "") if entries else None
+    mounts = [item for item in manager.get("volumeMounts", [])
+              if item.get("name") == "acr-docker-config" or directory and
+              (directory == item.get("mountPath") or directory.startswith(item.get("mountPath", "") + "/"))]
+    normalized = []
+    for mount in mounts:
+        volumes = [item for item in pod.get("volumes", []) if item.get("name") == mount.get("name")]
+        if len(volumes) != 1 or "secret" not in volumes[0]:
+            raise Blocked("operator_runtime_credentials_unavailable")
+        secret = copy.deepcopy(volumes[0]["secret"])
+        secret.setdefault("defaultMode", 420)
+        secret.setdefault("optional", False)
+        secret["items"] = sorted(secret.get("items", []), key=lambda item: (item.get("key", ""), item.get("path", "")))
+        for item in secret["items"]:
+            item.setdefault("mode", secret["defaultMode"])
+        normalized.append({"name": mount["name"], "mountPath": mount.get("mountPath", ""),
+                           "readOnly": mount.get("readOnly", False), "subPath": mount.get("subPath", ""),
+                           "subPathExpr": mount.get("subPathExpr", ""), "secret": secret})
+    if directory and not mounts:
+        raise Blocked("operator_runtime_credentials_unavailable")
+    return {"directory": directory, "mounts": sorted(normalized, key=lambda item: item["name"])}
+
+
+def current_operator_runtime_snapshot(deployment):
+    """Use one API revision for arguments, environment and credential mounts."""
+    namespace = deployment.config["platform"]["namespace"]
+    raw = deployment.kubectl("get", "deployment", "cetirun-operator", "--namespace", namespace, "-o", "json")
+    try:
+        document = json.loads(raw)
+        metadata = document["metadata"]
+        managers = [item for item in document["spec"]["template"]["spec"]["containers"] if item.get("name") == "manager"]
+        if (not metadata.get("uid") or not metadata.get("resourceVersion") or metadata.get("deletionTimestamp")
+                or len(managers) != 1):
+            raise ValueError()
+        operator = managers[0]
+        arguments = runtime_arguments(operator.get("args", []))
+        arguments["helm-values"] = runtime_helm_values(operator.get("env", []))
+        return {"arguments": arguments, "environment": runtime_environment(operator.get("env", [])),
+                "credentials": runtime_registry_credentials(document)}
+    except (ValueError, TypeError, KeyError):
+        raise Blocked("operator_runtime_snapshot_unavailable") from None
+
+
 def verify_operator_runtime_transition(deployment, snapshot, operator):
     agents = [item for item in snapshot["objects"].values() if item.get("agentType")]
     if not agents and not deployment.config.get("_infrastructureOnly"):
         return
-    current = current_operator_arguments(deployment)
+    observed = current_operator_runtime_snapshot(deployment) if deployment.config.get("_infrastructureOnly") else None
+    current = observed["arguments"] if observed is not None else current_operator_arguments(deployment)
     candidate = runtime_arguments(operator.get("args", []))
     if digest(current["helm-values"]) != digest(runtime_helm_values(operator.get("env", []))):
         raise Blocked("existing_runtime_values_transition_out_of_scope")
@@ -533,7 +623,12 @@ def verify_operator_runtime_transition(deployment, snapshot, operator):
         if any(current.get(field, "") != candidate.get(field, "")
                for field in ("domain-suffix", "istio-gateway", "default-model")):
             raise Blocked("existing_runtime_arguments_transition_out_of_scope")
-        verify_runtime_environment(deployment, operator)
+        if observed["environment"] != runtime_environment(operator.get("env", [])):
+            raise Blocked("existing_runtime_environment_transition_out_of_scope")
+        document = next((item for item in deployment.documents["platform"] if item.get("kind") == "Deployment"
+                         and item.get("metadata", {}).get("name") == "cetirun-operator"), None)
+        if document is None or observed["credentials"] != runtime_registry_credentials(document):
+            raise Blocked("existing_chart_pull_credentials_transition_out_of_scope")
         return
     if old_version == new_version:
         return
@@ -559,17 +654,22 @@ def verify_operator_runtime_transition(deployment, snapshot, operator):
         raise Blocked("retained_chart_tag_changed")
 
 
-def verify_memory_runtime_images(snapshot, operator, roots, lock):
+def verify_memory_runtime_images(snapshot, operator, roots, lock, *, affected_agents=None):
     """Compare effective chart Memory images before an Agent can reconcile."""
-    affected = {item["uid"] for item in snapshot["objects"].values()
-                if item.get("agentType") and item.get("chartVersion", "") in ("", lock["version"])}
+    affected = {item["uid"] for item in (affected_agents if affected_agents is not None else snapshot["objects"].values())
+                if item.get("agentType") and (affected_agents is not None or item.get("chartVersion", "") in ("", lock["version"]))}
     pods = [item for item in snapshot["objects"].values()
             if item.get("runtimeAgentUID") in affected and (item.get("isRuntimePod") or item.get("memoryInitImages"))]
-    if not pods:
+    if not pods and affected_agents is None:
         return
     arguments = runtime_arguments(operator.get("args", []))
     image = arguments.get("memory-context-image", "")
     enabled = arguments["memory-context-enabled"] == "true" or bool(image)
+    if affected_agents is not None and enabled and affected - {item["runtimeAgentUID"] for item in pods}:
+        # Suspended Agents still load the mutable chart when resumed. Without
+        # workload evidence, its former Memory capability and init image
+        # cannot be established, even if a global image override is retained.
+        raise Blocked("retained_runtime_memory_unverified")
     if enabled and not image:
         values = yaml.safe_load((roots["cetirun"] / "values.yaml").read_text())
         image = values.get("memoryContext", {}).get("image", "")
@@ -693,6 +793,10 @@ def verify_runtime_preservation(deployment, snapshot, roots, lock):
     verify_operator_runtime_transition(deployment, snapshot, operator)
     if not deployment.config.get("_infrastructureOnly"):
         verify_memory_runtime_images(snapshot, operator, roots, lock)
+    else:
+        selected, mutable = published_runtime_agents(deployment, snapshot, lock)
+        if selected and mutable:
+            verify_memory_runtime_images(snapshot, operator, roots, lock, affected_agents=selected)
     verify_custom_home_preservation(deployment, snapshot)
     proxy_image = next((item.get("value", "") for item in operator.get("env", [])
                         if item.get("name") == "AI_GATEWAY_COPILOT_PROXY_IMAGE"), "")
@@ -835,6 +939,107 @@ def workload_images(document):
             for field in ("containers", "initContainers") for container in template.get(field, [])}
 
 
+def auxiliary_image_identity(image, actual, lock_entry=None):
+    """Validate a running image ID without requiring a mutable tag lookup.
+
+    A multi-platform index identifies the selected node image by its platform
+    manifest digest.  Release locks carry both the index and platform digest;
+    either is accepted only when the lock has already verified the relation.
+    """
+    # Existing installations may intentionally retain a mutable third-party
+    # tag. The manifest/spec preservation check protects that case; there is no
+    # digest identity to compare at runtime.
+    if "@" not in image:
+        return
+    observed = re.search(r"(?:^|@|://)(sha256:[0-9a-f]{64})$", actual) if isinstance(actual, str) else None
+    if observed is None:
+        raise Blocked("auxiliary_image_identity_unavailable")
+    observed = observed[1]
+    allowed = set()
+    if lock_entry:
+        allowed.update(value for value in (lock_entry.get("digest"), lock_entry.get("platformDigest")) if value)
+    elif "@" in image:
+        allowed.add(image.rsplit("@", 1)[1])
+    if not allowed or observed not in allowed:
+        raise Blocked("auxiliary_image_identity_mismatch")
+
+
+_AUX_MANIFEST_MAX_BYTES = 2 * 1024 * 1024
+_AUX_MANIFEST_ACCEPT = ", ".join((
+    "application/vnd.oci.image.index.v1+json",
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+    "application/vnd.oci.image.manifest.v1+json",
+    "application/vnd.docker.distribution.manifest.v2+json"))
+
+
+def _auxiliary_manifest(repository, digest):
+    """Fetch one immutable registry manifest with bounded, sanitized errors."""
+    registry, name = repository.split("/", 1)
+    request = Request("https://" + registry + "/v2/" + name + "/manifests/" + digest,
+                      headers={"Accept": _AUX_MANIFEST_ACCEPT, "User-Agent": "cetirun-deployment/1"})
+    try:
+        with urlopen(request, timeout=30) as response:
+            body = response.read(_AUX_MANIFEST_MAX_BYTES + 1)
+            returned = response.headers.get("Docker-Content-Digest", "")
+    except (HTTPError, URLError, TimeoutError, OSError):
+        raise Blocked("auxiliary_registry_manifest_unavailable") from None
+    if len(body) > _AUX_MANIFEST_MAX_BYTES or returned != digest:
+        raise Blocked("auxiliary_registry_manifest_unavailable")
+    if "sha256:" + hashlib.sha256(body).hexdigest() != digest:
+        raise Blocked("auxiliary_registry_manifest_unavailable")
+    try:
+        document = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        raise Blocked("auxiliary_registry_manifest_unavailable") from None
+    if not isinstance(document, dict):
+        raise Blocked("auxiliary_registry_manifest_unavailable")
+    return document
+
+
+def auxiliary_image_receipt(image):
+    """Resolve an immutable image reference to its verified platform child."""
+    if "@" not in image:
+        return None
+    repository, digest = image.rsplit("@", 1)
+    last = repository.rsplit("/", 1)[-1]
+    if ":" in last:
+        repository = repository.rsplit(":", 1)[0]
+    if not re.fullmatch(r"[^/]+/.+", repository) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise Blocked("auxiliary_image_reference_invalid")
+    manifest = _auxiliary_manifest(repository, digest)
+    children = manifest.get("manifests", [])
+    if not children:
+        return {"digest": digest, "platformDigest": digest}
+    candidates = [item for item in children
+                  if item.get("platform", {}).get("os") == "linux"
+                  and item.get("platform", {}).get("architecture") == "amd64"
+                  and re.fullmatch(r"sha256:[0-9a-f]{64}", item.get("digest", ""))]
+    if len(candidates) != 1:
+        raise Blocked("auxiliary_platform_manifest_ambiguous")
+    child_digest = candidates[0]["digest"]
+    child = _auxiliary_manifest(repository, child_digest)
+    if not isinstance(child.get("config"), dict) and not child.get("layers"):
+        raise Blocked("auxiliary_platform_manifest_unavailable")
+    return {"digest": digest, "platformDigest": child_digest}
+
+
+def collect_auxiliary_image_receipts(deployment):
+    """Collect receipts before Helm writes; keyed by the exact image reference."""
+    receipts = {}
+    for documents in deployment.documents.values():
+        for document in documents:
+            for item in platform.walk(document):
+                for field in ("containers", "initContainers"):
+                    for container in item.get(field, []):
+                        image = container.get("image", "")
+                        basename = image.split("@")[0].rsplit("/", 1)[-1].split(":")[0]
+                        if basename in CONTROL_PLANE_IMAGES or "@" not in image:
+                            continue
+                        if image not in receipts:
+                            receipts[image] = auxiliary_image_receipt(image)
+    return receipts
+
+
 def compare_manifests(deployment):
     """Reject resource removals and storage changes; publish counts, not values."""
     changes = {}
@@ -851,12 +1056,18 @@ def compare_manifests(deployment):
             if key[1] in ("PersistentVolumeClaim", "PersistentVolume", "StorageClass") and old[key].get("spec") != new[key].get("spec"):
                 raise Blocked("storage_contract_changed")
         if deployment.config.get("_infrastructureOnly") is True:
-            for key, document in new.items():
-                previous = workload_images(old.get(key, {}))
-                for container, image in workload_images(document).items():
-                    basename = image.split("@")[0].rsplit("/", 1)[-1].split(":")[0]
-                    if basename not in CONTROL_PLANE_IMAGES and image != previous.get(container):
-                        raise Blocked("auxiliary_image_transition_out_of_scope")
+            old_workloads = {key: workload_images(document) for key, document in old.items()}
+            new_workloads = {key: workload_images(document) for key, document in new.items()}
+            for key in old_workloads.keys() & new_workloads.keys():
+                previous, candidate = old_workloads[key], new_workloads[key]
+                auxiliary_old = {name: image for name, image in previous.items()
+                                  if image.split("@")[0].rsplit("/", 1)[-1].split(":")[0] not in CONTROL_PLANE_IMAGES}
+                auxiliary_new = {name: image for name, image in candidate.items()
+                                  if image.split("@")[0].rsplit("/", 1)[-1].split(":")[0] not in CONTROL_PLANE_IMAGES}
+                if set(auxiliary_old) != set(auxiliary_new):
+                    raise Blocked("auxiliary_container_transition_out_of_scope")
+                if any(auxiliary_old[name] != auxiliary_new[name] for name in auxiliary_old):
+                    raise Blocked("auxiliary_image_transition_out_of_scope")
         changes[name] = {"added": len(new.keys() - old.keys()), "changed": sum(old[key] != new[key] for key in old.keys() & new.keys()),
                          "removed": 0}
     return changes
@@ -865,6 +1076,8 @@ def compare_manifests(deployment):
 def audit_rendered_images(deployment, lock):
     """Catch new or unsupported image value shapes before any cluster write."""
     observed = set()
+    if deployment.config.get("_infrastructureOnly") is True:
+        deployment.auxiliary_image_receipts = collect_auxiliary_image_receipts(deployment)
     for documents in deployment.documents.values():
         for document in documents:
             for item in platform.walk(document):
@@ -958,6 +1171,15 @@ def verify_images(deployment, lock):
             for container in containers:
                 image = container["image"]
                 item = published_workload_image(deployment, image, lock)
+                basename = image.split("@")[0].rsplit("/", 1)[-1].split(":")[0]
+                if item is None and deployment.config.get("_infrastructureOnly") is True:
+                    candidate = lock.get("images", {}).get(basename)
+                    # A retained auxiliary image must not be forced onto the
+                    # newly published lock entry merely because its basename
+                    # matches. Use a release receipt only when the exact image
+                    # reference is selected; otherwise preserve its own digest.
+                    if candidate and image == candidate.get("reference"):
+                        item = candidate
                 if not item and deployment.config.get("_infrastructureOnly") is not True:
                     continue
                 if item and image != item["reference"]:
@@ -972,9 +1194,8 @@ def verify_images(deployment, lock):
                         raise Blocked("workload_image_pin_mismatch")
                     statuses = {c["name"]: c for field in ("containerStatuses", "initContainerStatuses") for c in pod.get("status", {}).get(field, [])}
                     actual = statuses.get(container["name"], {}).get("imageID", "")
-                    digests = (item["digest"], item["platformDigest"]) if item else ((image.split("@", 1)[1],) if "@" in image else ())
-                    if digests and not any(actual.endswith(value) for value in digests):
-                        raise Blocked("workload_image_identity_mismatch")
+                    receipt = item or getattr(deployment, "auxiliary_image_receipts", {}).get(image)
+                    auxiliary_image_identity(image, actual, receipt)
                     if item:
                         count += 1
     if not count:

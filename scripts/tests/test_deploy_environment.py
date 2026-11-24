@@ -46,6 +46,16 @@ def operator_args(version="0.2.1", image="", chart_digest="sha256:" + "a" * 64):
 
 
 class EnvironmentTests(unittest.TestCase):
+    def infrastructure_driver(self, arguments=None, env=None):
+        driver = self.runtime_driver(arguments)
+        driver.config["_infrastructureOnly"] = True
+        document = {"kind": "Deployment", "metadata": {"name": "cetirun-operator", "uid": "operator-uid", "resourceVersion": "7"},
+                    "spec": {"template": {"spec": {"containers": [{"name": "manager", "args": arguments or operator_args(),
+                                                                  "env": env or []}]}}}}
+        driver.documents = {"platform": [copy.deepcopy(document)]}
+        driver.kubectl.return_value = json.dumps(document)
+        return driver
+
     def runtime_driver(self, arguments=None):
         driver = Mock()
         driver.config = {"platform": {"namespace": "platform"}}
@@ -406,26 +416,26 @@ class EnvironmentTests(unittest.TestCase):
                                           "tls": {"secretName": "existing-tls"}})
 
     def test_infrastructure_does_not_apply_new_runtime_profiles_to_retained_agents(self):
-        driver = self.runtime_driver()
-        driver.config["_infrastructureOnly"] = True
+        driver = self.infrastructure_driver()
+        lock = {"version": "0.2.1", "registry": "mcr.microsoft.com/aks/ai-runtime/cetirun",
+                "charts": {"cetirun": {"digest": "sha256:" + "a" * 64}}}
         driver.values["platform"]["cetirun-operator"] = {"customRuntime": {"approvedImages": []}}
         snap = baseline("registry.example.com/hermes-gateway@sha256:" + "b" * 64)
         snap["objects"]["agents/fixture"]["chartVersion"] = "0.1.7"
         before = copy.deepcopy(snap)
-        deploy.verify_existing_agent_images(driver, snap, {}, {"version": "0.2.1"})
+        deploy.verify_existing_agent_images(driver, snap, {}, lock)
         self.assertEqual(snap, before)
         driver.kubectl.assert_not_called()
         with self.assertRaisesRegex(deploy.Blocked, "existing_agent_runtime_image_unpinned"):
-            deploy.verify_existing_agent_images(driver, baseline(""), {}, {"version": "0.2.1"})
+            deploy.verify_existing_agent_images(driver, baseline(""), {}, lock)
         snap["objects"]["agents/fixture"]["agentType"] = "custom"
         with self.assertRaisesRegex(deploy.Blocked, "existing_custom_image_not_approved"):
-            deploy.verify_existing_agent_images(driver, snap, {}, {"version": "0.2.1"})
+            deploy.verify_existing_agent_images(driver, snap, {}, lock)
 
     def test_infrastructure_preserves_external_runtime_chart_and_memory_exactly(self):
         arguments = operator_args(version="0.1.7", image="registry.example.com/memory@sha256:" + "b" * 64)
         arguments[0] = "--chart-repo-url=oci://registry.example.com/runtime/cetirun"
-        driver = self.runtime_driver(arguments)
-        driver.config["_infrastructureOnly"] = True
+        driver = self.infrastructure_driver(arguments)
         candidate = {"args": arguments.copy(), "env": []}
         with patch.object(deploy.artifacts, "_manifest") as manifest:
             deploy.verify_operator_runtime_transition(driver, baseline(), candidate)
@@ -461,6 +471,41 @@ class EnvironmentTests(unittest.TestCase):
         with self.assertRaisesRegex(deploy.Blocked, "operator_runtime_environment_changed"):
             deploy.verify_runtime_environment(driver, {"env": candidate})
 
+    def test_runtime_environment_normalizes_empty_literal_but_not_absent_variable(self):
+        name = "AI_GATEWAY_DEFAULT_MODEL"
+        self.assertEqual(deploy.runtime_environment([{"name": name}]),
+                         deploy.runtime_environment([{"name": name, "value": ""}]))
+        self.assertNotEqual(deploy.runtime_environment([]), deploy.runtime_environment([{"name": name}]))
+
+    def test_infrastructure_reads_one_operator_revision_and_preserves_chart_credentials(self):
+        driver = self.infrastructure_driver()
+        document = json.loads(driver.kubectl.return_value)
+        pod = document["spec"]["template"]["spec"]
+        manager = pod["containers"][0]
+        manager["env"] = [{"name": "DOCKER_CONFIG", "value": "/etc/docker"},
+                          {"name": "AI_GATEWAY_DEFAULT_MODEL"}]
+        manager["volumeMounts"] = [{"name": "acr-docker-config", "mountPath": "/etc/docker", "readOnly": True}]
+        pod["volumes"] = [{"name": "acr-docker-config", "secret": {"secretName": "retained-chart-pull",
+                           "items": [{"key": ".dockerconfigjson", "path": "config.json"}], "defaultMode": 420}}]
+        driver.kubectl.return_value = json.dumps(document)
+        driver.documents["platform"] = [copy.deepcopy(document)]
+        candidate = driver.documents["platform"][0]["spec"]["template"]["spec"]["containers"][0]
+        candidate["env"][1]["value"] = ""
+        deploy.verify_operator_runtime_transition(driver, {"objects": {}}, candidate)
+        driver.kubectl.assert_called_once_with("get", "deployment", "cetirun-operator", "--namespace", "platform", "-o", "json")
+        driver.selected_fields.assert_not_called()
+        driver.resource.assert_not_called()
+        for change in ("env", "volumeMounts", "secretName"):
+            changed = copy.deepcopy(document)
+            updated_pod = changed["spec"]["template"]["spec"]
+            updated_manager = updated_pod["containers"][0]
+            if change == "env": updated_manager["env"] = updated_manager["env"][1:]
+            elif change == "volumeMounts": updated_manager.pop("volumeMounts")
+            else: updated_pod["volumes"][0]["secret"]["secretName"] = "replacement-secret"
+            driver.documents["platform"] = [changed]
+            with self.subTest(change=change), self.assertRaises(deploy.Blocked):
+                deploy.verify_operator_runtime_transition(driver, {"objects": {}}, updated_manager)
+
     def test_infrastructure_preserves_auxiliary_workload_images(self):
         document = {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "cache"},
                     "spec": {"template": {"spec": {"containers": [{"name": "cache", "image": "cache.example/valkey:8"}]}}}}
@@ -486,7 +531,7 @@ class EnvironmentTests(unittest.TestCase):
         driver.kubectl.return_value = json.dumps({"items": [{"metadata": {"labels": {"app": "cache"}},
             "spec": {"containers": [{"name": "cache", "image": image}]},
             "status": {"containerStatuses": [{"name": "cache", "imageID": "cache.example/valkey@sha256:" + "b" * 64}]}}]})
-        with self.assertRaisesRegex(deploy.Blocked, "workload_image_identity_mismatch"):
+        with self.assertRaisesRegex(deploy.Blocked, "auxiliary_image_identity_mismatch"):
             deploy.verify_images(driver, {"images": {}})
 
     def test_current_operator_projection_reads_runtime_args_and_rejects_drift(self):
@@ -629,6 +674,7 @@ class EnvironmentTests(unittest.TestCase):
         next_image = agent["image"].replace("a" * 64, "b" * 64)
         driver = Mock()
         approved = [agent["image"], next_image]
+        driver.config = {}
         driver.values = {"platform": {"cetirun-operator": {"customRuntime": {"approvedImages": approved}}}}
         deploy.verify_existing_agent_images(driver, old, {}, {})
         approved.remove(agent["image"])
@@ -752,6 +798,7 @@ class EnvironmentTests(unittest.TestCase):
         image = "registry.example.com/cetirun-ai-gateway@sha256:" + "a" * 64
         old["objects"]["pods/cetirun-agent/proxy"] = {"agentType": "", "copilotProxyImage": image}
         driver = Mock()
+        driver.config = {}
         driver.values = {"platform": {"cetirun-operator": {"customRuntime": {"approvedImages": []}}}}
         operator = {"name": "manager", "image": "operator:2", "env": []}
         driver.documents = {"platform": [{"kind": "Deployment", "metadata": {"name": "cetirun-operator"},
@@ -1133,7 +1180,7 @@ class EnvironmentTests(unittest.TestCase):
                 elif replacement_at and replacement_at != "platform_claim":
                     self.assertEqual(report["preservationAfterFailure"], "UNVERIFIED")
 
-    def test_workflow_uses_only_manual_default_branch_and_report_allowlist(self):
+    def test_workflow_uses_only_manual_branch_dispatch_and_report_allowlist(self):
         path = Path(__file__).resolve().parents[2] / ".github/workflows/deploy-environment.yml"
         workflow = yaml.safe_load(path.read_text())
         triggers = workflow.get("on", workflow.get(True))
@@ -1145,7 +1192,8 @@ class EnvironmentTests(unittest.TestCase):
         self.assertFalse(workflow["concurrency"]["cancel-in-progress"])
         self.assertEqual(workflow["permissions"], {"contents": "read"})
         job = workflow["jobs"]["deploy"]
-        self.assertIn("default_branch", job["if"])
+        self.assertEqual(job["if"], "github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/')")
+        self.assertEqual(job["steps"][0]["with"]["ref"], "${{ github.sha }}")
         self.assertEqual(job["environment"], "${{ inputs.environment }}")
         uploads = [step for step in job["steps"] if step.get("uses", "").startswith("actions/upload-artifact")]
         self.assertEqual(len(uploads), 1)

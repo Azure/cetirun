@@ -2022,12 +2022,13 @@ class Deployment:
         """Preserve chart-managed routes when modelRouting.mode=preserve."""
         if not self.config.get("_infrastructureOnly") or self.config.get("modelRouting", {}).get("mode") != "preserve":
             return
-        rendered = next((doc for doc in self.documents["platform"]
-                         if doc.get("kind") == "ConfigMap" and
-                         doc.get("metadata", {}).get("name", "").endswith("-config") and
-                         "config.yaml" in doc.get("data", {})), None)
-        if rendered is None:
+        chart_name = (self.values["platform"]["cetirun-ai-gateway"].get("nameOverride") or "cetirun-ai-gateway")[:63].rstrip("-")
+        matches = [doc for doc in self.documents["platform"] if doc.get("kind") == "ConfigMap"
+                   and doc.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/name") == chart_name
+                   and "config.yaml" in doc.get("data", {})]
+        if len(matches) != 1:
             raise ValueError("Rendered AI Gateway model configuration is unavailable")
+        rendered = matches[0]
         namespace = self.config["platform"]["namespace"]
         name = rendered["metadata"]["name"]
         raw = self.kubectl("get", "configmap", name, "--namespace", namespace, "-o", "json")
