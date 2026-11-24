@@ -1122,6 +1122,19 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
                 raise ValueError(f"{path} is unsupported in published deployments; use the runtime chart's Memory pin")
         approved = get_value(values["platform"], "cetirun-operator.customRuntime.approvedImages")
         original_approved = copy.deepcopy(approved) if isinstance(approved, list) else None
+        # Runtime chart helmValues are explicit operator-owned overrides.  Do
+        # not rewrite their initContainers/helpers by matching image
+        # basenames: those images may intentionally belong to an older or
+        # separately approved runtime.  The published chart itself is already
+        # pinned by its immutable archive and remains covered by the rendered
+        # image audit.
+        runtime_helm_values = get_value(
+            values, "platform.cetirun-operator.cetirun.helmValues"
+        )
+        original_runtime_helm_values = (
+            copy.deepcopy(runtime_helm_values)
+            if isinstance(runtime_helm_values, dict) else None
+        )
         if isinstance(approved, list):
             for supplied in approved:
                 if not isinstance(supplied, str) or not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", supplied):
@@ -1131,6 +1144,8 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
         # The Operator uses exact membership, so keep every supplied spelling.
         if original_approved is not None:
             set_value(values, "platform.cetirun-operator.customRuntime.approvedImages", original_approved)
+        if original_runtime_helm_values is not None:
+            set_value(values, "platform.cetirun-operator.cetirun.helmValues", original_runtime_helm_values)
         if cetiadmin_image:
             set_value(values, "platform.cetirun-operator.cetiadmin.runtime.image", cetiadmin_image)
     return config, values
@@ -1180,10 +1195,6 @@ class Deployment:
         # Only immutable references can reuse a successful registry inspection.
         # Tags and chart versions are mutable and are checked on every preflight.
         self.verified_image_digests = set()
-        # Set by the published-environment coordinator immediately before an
-        # upgrade. The post-renderer checks this revision after Helm has
-        # rendered the chart and before Helm writes the pending revision.
-        self.expected_release_revision = None
 
     def run(self, command, *, env=None, input_text=None, allowed_exits=()):
         if env is None and self.config["target"].get("kubeconfig"):
@@ -2181,7 +2192,9 @@ class Deployment:
             if c["istio"].get("mode", "manage") == "external":
                 raise ValueError("External Istio requires the existing OAuth2 mesh provider")
 
-    def upgrade(self, name, values=None):
+    def upgrade(self, name, values=None, *, expected_revision=None):
+        if self.published_artifacts and (type(expected_revision) is not int or expected_revision < 1):
+            raise ValueError("published upgrade requires an explicit expected release revision")
         section = self.config[name]
         if self.published_artifacts:
             aliases = {"platform": "cetirun-platform", "broker": "cetirun-agent-broker", "istio": "cetirun-istio"}
@@ -2212,10 +2225,10 @@ class Deployment:
             args.append("--install")
         args += [section["release"], str(self.charts[name]), "--namespace", section["namespace"],
                 "--values", str(self.files[values or name]), "--timeout", timeout]
-        if self.published_artifacts and self.expected_release_revision is not None:
+        if self.published_artifacts:
             guard = ROOT / "scripts" / "helm_revision_guard.py"
             args += ["--post-renderer", str(guard)]
-            guard_args = ["--expected-revision", str(self.expected_release_revision), "--release", section["release"],
+            guard_args = ["--expected-revision", str(expected_revision), "--release", section["release"],
                           "--namespace", section["namespace"], "--context", self.config["target"]["context"]]
             for argument in guard_args:
                 args.append("--post-renderer-args=" + argument)
@@ -2251,7 +2264,7 @@ class Deployment:
         self.render()
         self.preflight()
 
-    def execute(self):
+    def execute(self, *, before_upgrade=None, after_upgrade=None):
         for key in ("registry", "version"):
             print(f"Deployment {key}: {self.config['release'][key]} "
                   f"(from {self.config['_releaseOrigins'][key]})", flush=True)
@@ -2263,12 +2276,24 @@ class Deployment:
                 self.resolve_public_domain(self.ingress.domain)
             else:
                 self.preflight()
-            result = self.ingress.prepare(resolved=self.resolve_public_domain, complete=self.execute_platform)
+            complete = lambda: self.execute_platform(before_upgrade=before_upgrade, after_upgrade=after_upgrade)
+            result = self.ingress.prepare(resolved=self.resolve_public_domain, complete=complete)
             print(json.dumps(result, indent=2))
         else:
-            self.execute_platform()
+            self.execute_platform(before_upgrade=before_upgrade, after_upgrade=after_upgrade)
 
-    def execute_platform(self):
+    def execute_platform(self, *, before_upgrade=None, after_upgrade=None):
+        def upgrade(name, values=None):
+            revision = before_upgrade(name, values) if before_upgrade is not None else None
+            arguments = (name,) if values is None else (name, values)
+            # The caller supplies observations, never the actual writer. Every
+            # published write passes through the required revision guard.
+            if self.published_artifacts:
+                self.upgrade(*arguments, expected_revision=revision)
+            else:
+                self.upgrade(*arguments)
+            if after_upgrade is not None:
+                after_upgrade(name, values)
         self.defer_public_tls = False
         self.preflight()
         c = self.config
@@ -2279,7 +2304,7 @@ class Deployment:
             if name != "istio" and (self.namespaces[namespace] or {}).get("labels", {}).get("istio.io/rev") != c["istio"]["revision"]:
                 self.kubectl("label", "namespace", namespace, f"istio.io/rev={c['istio']['revision']}", "--overwrite=false")
         if c["istio"].get("mode", "manage") == "manage":
-            self.upgrade("istio")
+            upgrade("istio")
         self.ready("istio")
         command = [sys.executable, "-B", str(ROOT / "scripts/ensure-oauth2-proxy-id-token-header.py"),
                    "--context", c["target"]["context"], "--namespace", c["istio"]["controlPlaneNamespace"],
@@ -2288,21 +2313,21 @@ class Deployment:
             command += ["--uid", self.mesh_uid]
         if c["istio"].get("mode", "manage") == "manage" and not self.published_artifacts:
             self.run(command)
-        self.upgrade("broker")
+        upgrade("broker")
         self.ready("broker")
         if not self.values["platform"]["cetirun-operator"]["enabled"]:
-            self.upgrade("platform")
+            upgrade("platform")
             self.ready("platform")
             print("Operator subchart removed after current CetiAdmin stop checks. Retained Agent and HOME data were not deleted.")
             return
         # Never withdraw existing admission protection during an upgrade.
         if not self.enforced:
-            self.upgrade("platform", "bootstrap")
+            upgrade("platform", "bootstrap")
             # Wait for what the bootstrap installs: it has no Skill Marketplace.
             self.ready("platform", self.bootstrap_documents)
         else:
             self.kubectl("rollout", "status", "deployment/cetirun-sandbox-admission", "--namespace", c["platform"]["namespace"], "--timeout=180s")
-        self.upgrade("platform")
+        upgrade("platform")
         self.ready("platform")
         probe = {"apiVersion": "cetirun.microsoft.com/v1alpha1", "kind": "Team",
                  "metadata": {"name": "cetirun-admission-deployment-check"}, "spec": {}}

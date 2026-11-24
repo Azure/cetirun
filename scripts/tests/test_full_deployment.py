@@ -352,11 +352,11 @@ class ReleaseCoordinateTests(DeploymentFixture, unittest.TestCase):
         deployment = self.deployment()
         original = deployment.execute_platform
         with patch("sys.stdout", new_callable=io.StringIO) as stdout:
-            def execute_platform():
+            def execute_platform(*, before_upgrade=None, after_upgrade=None):
                 for key in ("registry", "version"):
                     self.assertIn(f"Deployment {key}: {deployment.config['release'][key]} (from environment file)", stdout.getvalue())
                 self.assertFalse(deployment.writes)
-                original()
+                original(before_upgrade=before_upgrade, after_upgrade=after_upgrade)
             with patch.object(deployment, "execute_platform", side_effect=execute_platform):
                 deployment.execute()
         self.assertTrue(deployment.writes)

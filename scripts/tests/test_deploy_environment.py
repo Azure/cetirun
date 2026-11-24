@@ -39,7 +39,22 @@ def baseline(image="mcr.microsoft.com/aks/ai-runtime/cetirun/hermes-gateway@sha2
                          for name, chart in (("platform", "cetirun-platform"), ("istio", "cetirun-istio"), ("broker", "cetirun-agent-broker"))}}
 
 
+def operator_args(version="0.2.1", image="", chart_digest="sha256:" + "a" * 64):
+    return ["--chart-repo-url=oci://mcr.microsoft.com/aks/ai-runtime/cetirun/helm/cetirun",
+            "--chart-version=" + version, "--chart-digest=" + chart_digest,
+            "--memory-context-enabled=true", "--memory-context-image=" + image]
+
+
 class EnvironmentTests(unittest.TestCase):
+    def runtime_driver(self, arguments=None):
+        driver = Mock()
+        driver.config = {"platform": {"namespace": "platform"}}
+        driver.values = {"platform": {"global": {"memoryContext": {"image": ""}}}}
+        driver.resource.return_value = {"uid": "operator-uid", "resourceVersion": "7"}
+        driver.selected_fields.return_value = [json.dumps(operator_args() if arguments is None else arguments)]
+        driver.kubectl.return_value = "[]"
+        return driver
+
     def capture_driver(self, *, ready=False, pod_uid="pod-uid", pvc_items=None, manifest="", namespace_metadata=None):
         agent = {"metadata": {"name": "agent", "namespace": "", "uid": "agent-uid", "generation": 1},
                  "spec": {"agent": {"type": "hermes", "image": "mcr.example/hermes"}, "suspended": False},
@@ -240,6 +255,61 @@ class EnvironmentTests(unittest.TestCase):
         driver.documents["istio"] = [{"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": {"name": "external"}}]
         self.assertEqual(deploy.planned_claim_keys(driver), {"pvc/platform/data-db-3", "pvc/platform/data-db-4"})
 
+    def test_statefulset_scale_up_does_not_adopt_a_same_name_claim(self):
+        installed = {"apiVersion": "apps/v1", "kind": "StatefulSet", "metadata": {"name": "ingestor", "namespace": "platform"},
+                     "spec": {"replicas": 1, "ordinals": {"start": 3},
+                              "volumeClaimTemplates": [{"metadata": {"name": "data"}}]}}
+        candidate = copy.deepcopy(installed)
+        candidate["spec"]["replicas"] = 2
+        retained = {"metadata": {"name": "data-ingestor-3", "namespace": "platform", "uid": "retained"},
+                    "spec": {}, "status": {"phase": "Bound"}}
+        collision = copy.deepcopy(retained)
+        collision["metadata"].update(name="data-ingestor-4", uid="unrelated")
+        # Matching labels or a numeric template-name suffix are not evidence
+        # that an unreferenced retained volume belongs to this installation.
+        collision["metadata"]["labels"] = {"app.kubernetes.io/managed-by": "Helm"}
+        for claims in ([retained], [retained, collision]):
+            driver = self.capture_driver(pvc_items=claims, manifest=yaml.safe_dump(installed))
+            driver.documents["platform"] = [candidate]
+            snap = deploy.capture(driver)
+            if len(claims) == 1:
+                deploy.verify_planned_claim_ownership(driver, snap)
+            else:
+                with self.assertRaisesRegex(deploy.Blocked, "existing_planned_claim_unattributed"):
+                    deploy.verify_planned_claim_ownership(driver, snap)
+        # An ordinal already used by the installed StatefulSet is known storage.
+        installed["spec"]["replicas"] = 2
+        driver.helm_manifest = yaml.safe_dump(installed)
+        deploy.verify_planned_claim_ownership(driver, deploy.capture(driver))
+        missing = self.capture_driver(pvc_items=[retained], manifest=yaml.safe_dump(installed))
+        missing.documents["platform"] = [candidate]
+        with self.assertRaisesRegex(deploy.Blocked, "installed_claim_missing"):
+            deploy.verify_planned_claim_ownership(missing, deploy.capture(missing))
+
+    def test_planned_claim_identity_survives_the_upgrade_to_acceptance_boundary(self):
+        old = baseline()
+        key = "pvc/istio/oauth2-proxy-sessions"
+        created = copy.deepcopy(old)
+        created["objects"][key] = {"uid": "first-uid", "specHash": "pending", "generation": None,
+                                    "deleting": False, "ready": False, "bound": False,
+                                    "claimContractHash": "storage-contract", "volumeName": ""}
+        observed = copy.deepcopy(old)
+        deploy.observe_preservation(old, observed, created, allowed_additions={key})
+        bound = copy.deepcopy(created)
+        bound["objects"][key].update(specHash="bound", volumeName="first-pv", bound=True)
+        deploy.observe_preservation(old, observed, bound, allowed_additions={key})
+        for field, value in (("uid", "replacement"), ("specHash", "changed"),
+                             ("volumeName", "different-pv")):
+            changed = copy.deepcopy(bound)
+            changed["objects"][key][field] = value
+            if field == "volumeName":
+                changed["objects"][key]["specHash"] = "different-volume-spec"
+            with self.subTest(field=field), patch.object(deploy, "capture", return_value=changed), \
+                 self.assertRaisesRegex(deploy.Blocked, "preserved_resource_changed"):
+                deploy.stable_acceptance(Mock(), old, allowed_additions={key}, observed=copy.deepcopy(observed))
+        with self.assertRaisesRegex(deploy.Blocked, "resource_set_changed"):
+            deploy.observe_preservation(old, observed, old, allowed_additions={key})
+
     def test_stability_pins_first_identity_of_planned_claim(self):
         old = baseline()
         added = copy.deepcopy(old)
@@ -341,6 +411,94 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual(deploy.registry_conflicts(baseline("registry.example.com/hermes-gateway:old"), registry), 1)
         self.assertEqual(deploy.registry_conflicts(baseline(""), registry), 1)
 
+    def test_current_operator_projection_reads_runtime_args_and_rejects_drift(self):
+        driver = self.runtime_driver()
+        result = deploy.current_operator_arguments(driver)
+        self.assertEqual(result["chart-version"], "0.2.1")
+        self.assertIn('.containers[?(@.name=="manager")].args', driver.selected_fields.call_args.args[2][0])
+        driver.resource.side_effect = [{"uid": "old", "resourceVersion": "7"}, {"uid": "new", "resourceVersion": "8"}]
+        with self.assertRaisesRegex(deploy.Blocked, "operator_runtime_arguments_changed"):
+            deploy.current_operator_arguments(driver)
+        for invalid in ({}, ["--chart-version"], operator_args() + ["--chart-version=9.9.9"]):
+            with self.subTest(invalid=invalid), self.assertRaises(deploy.Blocked):
+                deploy.runtime_arguments(invalid)
+
+    def test_current_memory_override_is_rejected_even_when_environment_omits_it(self):
+        driver = self.runtime_driver(operator_args(image="registry.example.com/memory@sha256:" + "b" * 64))
+        for runtime in ("openclaw", "hermes", "custom"):
+            for suspended in (False, True):
+                snap = baseline()
+                snap["objects"]["agents/fixture"].update(agentType=runtime, suspended=suspended, chartVersion="0.1.0")
+                with self.subTest(runtime=runtime, suspended=suspended), \
+                     self.assertRaisesRegex(deploy.Blocked, "existing_memory_override_transition"):
+                    deploy.verify_operator_runtime_transition(driver, snap, {"args": operator_args()})
+        # Neither a default-only environment file nor a suspended Agent makes
+        # the current nonempty Operator argument disappear from this check.
+        deploy.verify_operator_runtime_transition(driver, snap, {"args": json.loads(driver.selected_fields.return_value[0])})
+        deploy.verify_operator_runtime_transition(driver, {"objects": {}}, {})
+
+    def test_memory_effective_enablement_change_is_rejected(self):
+        driver = self.runtime_driver()
+        candidate = [arg.replace("enabled=true", "enabled=false") for arg in operator_args()]
+        with self.assertRaisesRegex(deploy.Blocked, "existing_memory_override_transition"):
+            deploy.verify_operator_runtime_transition(driver, baseline(), {"args": candidate})
+
+    def test_current_runtime_helper_overrides_cannot_change_or_disappear(self):
+        driver = self.runtime_driver()
+        override = {"initContainers": [{"name": "helper", "image": "registry.example.com/helper@sha256:" + "e" * 64}]}
+        entries = [{"name": "CETIRUN_HELM_VALUES", "value": json.dumps(override)}]
+        driver.kubectl.return_value = json.dumps(entries)
+        snap = baseline()
+        snap["objects"]["agents/fixture"].update(chartVersion="0.1.0", suspended=True)
+        with self.assertRaisesRegex(deploy.Blocked, "existing_runtime_values_transition"):
+            deploy.verify_operator_runtime_transition(driver, snap, {"args": operator_args()})
+        deploy.verify_operator_runtime_transition(driver, snap, {"args": operator_args(), "env": entries})
+        driver.kubectl.return_value = "[]"
+        with self.assertRaisesRegex(deploy.Blocked, "existing_runtime_values_transition"):
+            deploy.verify_operator_runtime_transition(driver, snap, {"args": operator_args(), "env": entries})
+
+    def test_former_default_chart_digest_is_checked_for_retained_explicit_versions(self):
+        driver = self.runtime_driver(operator_args(version="0.2.0"))
+        candidate = {"args": operator_args()}
+        snap = baseline()
+        snap["objects"]["agents/fixture"].update(chartVersion="0.2.0", suspended=True)
+        expected = "sha256:" + "a" * 64
+        for runtime in ("hermes", "custom"):
+            snap["objects"]["agents/fixture"]["agentType"] = runtime
+            with patch.object(deploy.artifacts, "_manifest", return_value=(expected, {}, b"")) as manifest:
+                deploy.verify_operator_runtime_transition(driver, snap, candidate)
+                manifest.assert_called_once_with("aks/ai-runtime/cetirun/helm/cetirun", "0.2.0", "chart")
+            with patch.object(deploy.artifacts, "_manifest", return_value=("sha256:" + "b" * 64, {}, b"")), \
+                 self.assertRaisesRegex(deploy.Blocked, "retained_chart_tag_changed"):
+                deploy.verify_operator_runtime_transition(driver, snap, candidate)
+        with patch.object(deploy.artifacts, "_manifest", side_effect=deploy.artifacts.ArtifactError("registry unavailable")), \
+             self.assertRaisesRegex(deploy.Blocked, "retained_chart_digest_unverified"):
+            deploy.verify_operator_runtime_transition(driver, snap, candidate)
+        driver.selected_fields.return_value = [json.dumps(operator_args(version="0.2.0", chart_digest=""))]
+        with patch.object(deploy.artifacts, "_manifest") as manifest, self.assertRaisesRegex(deploy.Blocked, "retained_chart_digest_unverified"):
+            deploy.verify_operator_runtime_transition(driver, snap, candidate)
+        manifest.assert_not_called()
+
+    def test_former_chart_tag_is_rechecked_and_unaffected_versions_are_not_resolved(self):
+        driver = self.runtime_driver(operator_args(version="0.2.0"))
+        candidate = {"args": operator_args()}
+        snap = baseline()
+        agent = snap["objects"]["agents/fixture"]
+        agent["chartVersion"] = "0.2.0"
+        with patch.object(deploy.artifacts, "_manifest", side_effect=[("sha256:" + "a" * 64, {}, b""),
+                                                                   ("sha256:" + "b" * 64, {}, b"")]) as manifest:
+            deploy.verify_operator_runtime_transition(driver, snap, candidate)
+            with self.assertRaisesRegex(deploy.Blocked, "retained_chart_tag_changed"):
+                deploy.verify_operator_runtime_transition(driver, snap, candidate)
+            self.assertEqual(manifest.call_count, 2)
+        agent["chartVersion"] = "0.1.0"
+        with patch.object(deploy.artifacts, "_manifest") as manifest:
+            deploy.verify_operator_runtime_transition(driver, snap, candidate)
+        manifest.assert_not_called()
+        agent["chartVersion"] = ""
+        with self.assertRaisesRegex(deploy.Blocked, "implicit_agent_chart_upgrade"):
+            deploy.verify_operator_runtime_transition(driver, snap, candidate)
+
     def test_republished_builtin_profile_checks_suspended_and_default_version_agents(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -395,7 +553,7 @@ class EnvironmentTests(unittest.TestCase):
         operator = {"name": "manager", "image": "operator:2", "env": []}
         driver.documents = {"platform": [{"kind": "Deployment", "metadata": {"name": "cetirun-operator"},
                                           "spec": {"template": {"spec": {"containers": [operator]}}}}]}
-        with patch.object(deploy, "verify_cetiadmin_transition"):
+        with patch.object(deploy, "verify_cetiadmin_transition"), patch.object(deploy, "verify_operator_runtime_transition"):
             for candidate in ("", image.replace("a" * 64, "b" * 64), image):
                 operator["env"] = [{"name": "AI_GATEWAY_COPILOT_PROXY_IMAGE", "value": candidate}]
                 if candidate == image:
@@ -606,7 +764,8 @@ class EnvironmentTests(unittest.TestCase):
                  (True, False, False, None), (True, False, True, None)]
         cases += [(True, False, False, code) for code in (
             "existing_agent_image_not_qualified", "existing_copilot_proxy_rollout_out_of_scope",
-            "cetiadmin_installation_transition_out_of_scope")]
+            "cetiadmin_installation_transition_out_of_scope", "existing_memory_override_transition_out_of_scope",
+            "retained_chart_tag_changed", "tag_changed_after_plan")]
         for apply, conflict, failure, runtime_block in cases:
             with self.subTest(apply=apply, conflict=conflict, failure=failure, runtime_block=runtime_block), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -624,17 +783,24 @@ class EnvironmentTests(unittest.TestCase):
                 driver.scratch = root / "private" / "deployment"
                 driver.resource.return_value = {"uid": "synthetic-cluster"}
                 live_releases = copy.deepcopy(baseline()["releases"])
-                def upgraded(name, values=None):
+                def upgraded(name, values=None, *, expected_revision):
+                    self.assertEqual(expected_revision, int(live_releases[name]["revision"]))
                     live_releases[name]["revision"] = str(int(live_releases[name]["revision"]) + 1)
                 driver.upgrade.side_effect = upgraded
                 if failure:
-                    def partial_execute():
-                        driver.upgrade("istio")
+                    def partial_execute(*, before_upgrade, after_upgrade):
+                        driver.upgrade("istio", expected_revision=before_upgrade("istio"))
+                        after_upgrade("istio")
                         raise ValueError("private-upgrade-log")
                     driver.execute.side_effect = partial_execute
                 else:
-                    driver.execute.side_effect = lambda: [driver.upgrade(name) for name in deploy.platform.CHARTS]
+                    driver.execute.side_effect = lambda *, before_upgrade, after_upgrade: [
+                        (driver.upgrade(name, expected_revision=before_upgrade(name)), after_upgrade(name))
+                        for name in deploy.platform.CHARTS]
                 snap = baseline("registry.example.com/hermes-gateway:old") if conflict else baseline()
+                runtime_effect = deploy.Blocked(runtime_block) if runtime_block else None
+                if runtime_block == "tag_changed_after_plan":
+                    runtime_effect = [None, deploy.Blocked("retained_chart_tag_changed")]
                 with patch.object(deploy.artifacts, "resolve", return_value=lock), \
                      patch.object(deploy.platform, "published_configuration", return_value=(config, {}, {})), \
                      patch.object(deploy.platform, "Deployment", return_value=driver), \
@@ -644,7 +810,7 @@ class EnvironmentTests(unittest.TestCase):
                      patch.object(deploy, "compare_manifests", return_value={}), \
                      patch.object(deploy, "audit_rendered_images", return_value=5), \
                      patch.object(deploy, "verify_runtime_chart", return_value="PASS"), \
-                     patch.object(deploy, "verify_runtime_preservation", side_effect=deploy.Blocked(runtime_block) if runtime_block else None) as runtime_check, \
+                     patch.object(deploy, "verify_runtime_preservation", side_effect=runtime_effect) as runtime_check, \
                      patch.object(deploy, "verify_images", return_value=3), \
                      patch.object(deploy, "verify_entry", return_value={"tls": "PASS"}), redirect_stdout(io.StringIO()):
                     code = deploy.run(args)
@@ -661,6 +827,94 @@ class EnvironmentTests(unittest.TestCase):
                     self.assertEqual(result["afterReleases"]["istio"]["revision"], "5")
                     self.assertEqual(result["preservationAfterFailure"], "PASS")
                     self.assertIn({"stage": "upgrade_istio", "status": "PASS"}, result["stages"])
+
+    def test_new_claim_is_pinned_between_upgrades_and_through_failure_reporting(self):
+        for replacement_at in ("collision", "before_broker", "before_platform", "acceptance", "failed_broker", None):
+            with self.subTest(replacement_at=replacement_at), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                config, kube = inputs()
+                config["domain"] = "portal.example.invalid"
+                (root / "config").write_text(yaml.safe_dump(config))
+                (root / "kube").write_text(yaml.safe_dump(kube))
+                args = argparse.Namespace(work=root / "work", report=root / "report", source=root, release_tag="v0.2.1",
+                                          apply=True, config=root / "config", kubeconfig=root / "kube")
+                lock = {"sourceSHA": "a" * 40, "version": "0.2.1", "registry": "mcr.microsoft.com/aks/ai-runtime/cetirun",
+                        "images": {}, "charts": {}}
+                driver = Mock()
+                driver.config = {name: {"namespace": name, "release": name} for name in deploy.platform.CHARTS}
+                driver.documents = {name: [] for name in deploy.platform.CHARTS}
+                driver.documents["istio"] = [{"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+                                              "metadata": {"name": "sessions", "namespace": "istio"}}]
+                driver.scratch = root / "work/deployment"
+                driver.resource.return_value = {"uid": "synthetic-cluster"}
+                live = baseline()
+                key = "pvc/istio/sessions"
+                if replacement_at == "collision":
+                    live["objects"][key] = {"uid": "unrelated", "specHash": "unrelated", "generation": None,
+                                            "deleting": False, "ready": False, "bound": True}
+                upgrades = []
+                reads = 0
+                def upgrade(name, values=None, *, expected_revision):
+                    nonlocal reads
+                    self.assertEqual(expected_revision, int(live["releases"][name]["revision"]))
+                    upgrades.append(name)
+                    reads = 0
+                    if name == "istio":
+                        live["objects"][key] = {"uid": "first-claim", "specHash": "pending", "generation": None,
+                                                "deleting": False, "ready": False, "bound": False,
+                                                "claimContractHash": "storage", "volumeName": ""}
+                    if name == "broker" and replacement_at == "failed_broker":
+                        live["objects"][key]["uid"] = "replacement"
+                        raise ValueError("synthetic broker failure")
+                    live["releases"][name]["revision"] = str(expected_revision + 1)
+                def capture(*unused, **kwargs):
+                    nonlocal reads
+                    reads += 1
+                    if upgrades:
+                        stage = upgrades[-1]
+                        if reads >= 2:
+                            live["objects"][key].update(specHash="bound", volumeName="first-pv", bound=True)
+                            if ((stage == "istio" and replacement_at == "before_broker") or
+                                    (stage == "broker" and replacement_at == "before_platform") or
+                                    (stage == "platform" and replacement_at == "acceptance")):
+                                live["objects"][key]["uid"] = "replacement"
+                    return copy.deepcopy(live)
+                driver.upgrade.side_effect = upgrade
+                driver.execute.side_effect = lambda *, before_upgrade, after_upgrade: [
+                        (driver.upgrade(name, expected_revision=before_upgrade(name)), after_upgrade(name))
+                        for name in deploy.platform.CHARTS]
+                # Exercise the real run/acceptance tracker without waiting for
+                # Kubernetes or the stability interval. All external APIs are doubles.
+                acceptance = deploy.stable_acceptance
+                with patch.object(deploy.artifacts, "resolve", return_value=lock), \
+                     patch.object(deploy.platform, "published_configuration", return_value=(config, {}, {})), \
+                     patch.object(deploy.platform, "Deployment", return_value=driver), \
+                     patch.object(deploy, "capture", side_effect=capture), \
+                     patch.object(deploy, "release_snapshot", side_effect=lambda *a, **k: copy.deepcopy(live["releases"])), \
+                     patch.object(deploy, "compare_manifests", return_value={}), \
+                     patch.object(deploy, "audit_rendered_images", return_value=5), \
+                     patch.object(deploy, "verify_runtime_chart", return_value="PASS"), \
+                     patch.object(deploy, "verify_runtime_preservation"), \
+                     patch.object(deploy, "verify_control_readiness"), \
+                     patch.object(deploy, "verify_images", return_value=3), \
+                     patch.object(deploy, "verify_entry", return_value={}), \
+                     patch.object(deploy, "stable_acceptance", side_effect=lambda *a, **k: acceptance(*a, **k, window=0)), \
+                     redirect_stdout(io.StringIO()):
+                    code = deploy.run(args)
+                self.assertEqual(code, int(replacement_at is not None))
+                if replacement_at == "collision":
+                    self.assertEqual(upgrades, [])
+                elif replacement_at == "before_broker":
+                    self.assertEqual(upgrades, ["istio"])
+                elif replacement_at in ("before_platform", "failed_broker"):
+                    self.assertEqual(upgrades, ["istio", "broker"])
+                else:
+                    self.assertEqual(upgrades, list(deploy.platform.CHARTS))
+                report = json.loads(args.report.read_text())
+                if replacement_at == "collision":
+                    self.assertEqual(report["preservationAfterFailure"], "PASS")
+                elif replacement_at:
+                    self.assertEqual(report["preservationAfterFailure"], "UNVERIFIED")
 
     def test_workflow_uses_only_manual_default_branch_and_report_allowlist(self):
         path = Path(__file__).resolve().parents[2] / ".github/workflows/deploy-environment.yml"

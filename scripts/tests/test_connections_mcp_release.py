@@ -96,6 +96,8 @@ elif tool == "docker" and args[:2] == ["buildx", "build"] and "--file" in args:
         output.write(tag + "\n")
     pathlib.Path(os.environ["MCP_RELEASE_LOG"] + ".wrapper").write_text(
         pathlib.Path(args[args.index("--file") + 1]).read_text())
+elif tool == "docker" and args[:2] == ["buildx", "inspect"]:
+    print("Driver: " + os.environ.get("MCP_BUILDX_DRIVER", "docker-container"))
 elif tool == "docker" and args[:2] == ["image", "inspect"]:
     sys.exit(1)
 elif tool == "docker" and args[:3] == ["buildx", "imagetools", "inspect"] and "/staging/" in args[3]:
@@ -143,6 +145,7 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
         for path in [entry["script"] for entry in inventory["images"]] + [
             "scripts/release-artifacts.json", "scripts/cetirun-release.py",
             "scripts/cetirun-release-metadata.sh", "scripts/cetirun-runtime-chart-lock.py",
+            "scripts/cetirun-build-attestations.sh",
         ]:
             shutil.copy2(ROOT / path, self.root / path)
         for runtime in ("openclaw", "hermes"):
@@ -285,6 +288,11 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
         self.assertNotEqual(build_root, self.root, "image builds must use the filtered source snapshot")
         self.assertIn(str(build_root / "app/cetirun-connections-mcp/Dockerfile"), build)
         self.assertIn(["docker", "buildx", "imagetools", "inspect", self.staged], commands)
+        wrapper_build = next(c for c in commands if c[:3] == ["docker", "buildx", "build"] and
+                             any(argument.endswith("cetirun-operator:9.8.7-provenance") for argument in c))
+        self.assertIn("--provenance=true", wrapper_build)
+        self.assertIn("--sbom=true", wrapper_build)
+        self.assertNotIn("--provenance=false", wrapper_build)
         promoted = ["docker", "buildx", "imagetools", "create", "--prefer-index=false", "--tag", self.image, self.staged]
         self.assertIn(promoted, commands)
         operator_image = f"synthetic.azurecr.io/{self.env['REPOSITORY_PREFIX']}/cetirun-operator:{VERSION}"
@@ -310,6 +318,28 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
                        "--repository", f'{self.env["REPOSITORY_PREFIX"]}/staging/42/{COMPONENT}',
                        "--yes", "--output", "none"], commands)
         self.assertEqual(self.steps[CLEANUP]["condition"], "and(always(), eq(variables['stagingStarted'], 'true'))")
+
+    def test_operator_wrapper_applies_custom_sbom_generator_policy(self):
+        self.run_step(BUILD)
+        generator = "registry.example.com/sbom@sha256:" + "e" * 64
+        self.env["SBOM_GENERATOR"] = generator
+        self.run_step(PUBLISH)
+        commands = [json.loads(line) for line in self.log.read_text().splitlines()]
+        wrapper = next(c for c in commands if c[:3] == ["docker", "buildx", "build"] and
+                       any(argument.endswith("-provenance") for argument in c))
+        self.assertIn("--provenance=true", wrapper)
+        self.assertIn("--sbom=generator=" + generator, wrapper)
+        self.assertNotIn("--sbom=true", wrapper)
+
+    def test_operator_wrapper_rejects_generator_on_unsupported_driver(self):
+        self.run_step(BUILD)
+        self.env.update(SBOM_GENERATOR="registry.example.com/sbom@sha256:" + "e" * 64, MCP_BUILDX_DRIVER="docker")
+        result = self.run_step(PUBLISH, success=False)
+        self.assertIn("requires a docker-container", result.stderr)
+        commands = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertFalse(any(c[:4] == ["docker", "buildx", "imagetools", "create"] for c in commands))
+        self.assertFalse(any(c[:3] == ["docker", "buildx", "build"] and
+                             any(arg.endswith("-provenance") for arg in c) for c in commands))
 
     def test_mcp_chart_version_mismatch_fails_validation(self):
         manifest = self.root / CHART / "Chart.yaml"

@@ -168,14 +168,51 @@ class PublishedIntegrationTests(unittest.TestCase):
                           operator["spec"]["template"]["spec"]["containers"][0]["args"])
             self.assertIn("--memory-context-image=", operator["spec"]["template"]["spec"]["containers"][0]["args"])
             self.assertEqual(deployment.charts["platform"], Path(self.lock["charts"]["cetirun-platform"]["path"]))
-            deployment.expected_release_revision = 7
             with patch.object(deployment, "helm") as helm:
-                deployment.upgrade("broker")
+                deployment.upgrade("broker", expected_revision=7)
             self.assertIn(self.lock["charts"]["cetirun-agent-broker"]["path"], helm.call_args.args)
             self.assertNotIn("--install", helm.call_args.args)
             guard_args = [arg.split("=", 1)[1] for arg in helm.call_args.args if arg.startswith("--post-renderer-args=")]
             self.assertEqual(guard_args, ["--expected-revision", "7", "--release", config["broker"]["release"],
                                          "--namespace", config["broker"]["namespace"], "--context", config["target"]["context"]])
+
+    def test_published_upgrade_requires_explicit_expected_revision(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            config, values, roots = DEPLOY.published_configuration(self.configuration(), self.lock, scratch)
+            deployment = DEPLOY.Deployment(config, values, scratch, published_artifacts=self.lock, chart_roots=roots)
+            deployment.render()
+            with patch.object(deployment, "helm") as helm, self.assertRaisesRegex(
+                    ValueError, "explicit expected release revision"):
+                deployment.upgrade("broker")
+            helm.assert_not_called()
+
+    def test_published_execute_cannot_delegate_an_unguarded_upgrade(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config, values, roots = DEPLOY.published_configuration(self.configuration(), self.lock, Path(temporary))
+            driver = DEPLOY.Deployment(config, values, Path(temporary), published_artifacts=self.lock, chart_roots=roots)
+            driver.namespaces = {config[name]["namespace"]: {"labels": {"istio.io/rev": config["istio"]["revision"]}}
+                                 for name in DEPLOY.CHARTS}
+            for revision in (None, 0, -1, True, "7"):
+                with self.subTest(revision=revision), patch.object(driver, "preflight"), \
+                     patch.object(driver, "helm") as helm, patch.object(driver, "ready"), \
+                     self.assertRaisesRegex(ValueError, "explicit expected release revision"):
+                    driver.execute_platform(before_upgrade=lambda *args: revision)
+                helm.assert_not_called()
+
+    def test_published_runtime_helm_values_overrides_are_preserved(self):
+        config = self.configuration()
+        helm_values = config["platform"]["values"]["cetirun-operator"].setdefault("cetirun", {}).setdefault("helmValues", {})
+        override = {
+            "initContainers": [{"name": "runtime-helper", "image": self.registry + "/cetirun-pi-agent:legacy"}],
+            "helpers": {"image": self.registry + "/cetirun-pi-agent:legacy"},
+        }
+        helm_values.update(copy.deepcopy(override))
+        with tempfile.TemporaryDirectory() as temporary:
+            values = DEPLOY.published_configuration(config, self.lock, Path(temporary))[1]
+        actual = values["platform"]["cetirun-operator"]["cetirun"]["helmValues"]
+        self.assertEqual(actual["initContainers"], override["initContainers"])
+        self.assertEqual(actual["helpers"], override["helpers"])
 
     def test_tagless_approved_image_matches_locked_digest_and_is_preserved(self):
         config = self.configuration()
@@ -257,7 +294,7 @@ class PublishedIntegrationTests(unittest.TestCase):
             driver.namespaces = {config[name]["namespace"]: {"labels": {"istio.io/rev": config["istio"]["revision"]}}
                                  for name in DEPLOY.CHARTS}
             before = copy.deepcopy(driver.mesh)
-            def upgrade(name):
+            def upgrade(name, *, expected_revision):
                 if name == "broker":
                     raise ValueError("broker revision changed")
             # Namespace, certificate and artifact probes have separate coverage.

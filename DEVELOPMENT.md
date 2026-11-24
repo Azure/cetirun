@@ -1308,6 +1308,25 @@ have a verified stop record and no remaining writers. These checks run before
 deployment and before each Helm upgrade. The workflow does not migrate runtime
 pins or relax Agent, Pod, or HOME preservation to accommodate these changes.
 
+Existing Operator runtime arguments are part of that preflight: clearing a
+Memory image override or changing effective Memory enablement is rejected while
+Agents remain. Explicit runtime `helmValues` overrides are preserved and must
+match the running Operator's values while Agents remain. When the
+default chart advances from X to Y and an Agent explicitly retains X, the X tag
+must still resolve to the previously configured digest. This is checked again
+before each upgrade; it does not make future tag replacements safe. An Agent
+with no explicit chart version blocks a default-version change.
+
+StatefulSet scale-up does not authorize adopting a same-name PVC outside the
+installed ordinal range or explicit volume references. Unattributed claims,
+including possible historical claims without current evidence, block deployment.
+Missing installed storage required by the candidate also blocks recreation.
+Newly planned PVCs retain their first observed UID and storage contract through
+all remaining upgrades, acceptance, and failure reporting; only their initial
+volume binding is allowed to change. Each published Helm upgrade requires an
+explicit expected revision. The final Operator receipt wrapper uses the shared
+Buildx provenance/SBOM policy, including the configured SBOM generator.
+
 Offline release and deployment tests use synthetic APIs and local Helm:
 
 ```bash

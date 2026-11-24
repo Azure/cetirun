@@ -182,6 +182,9 @@ def installation_claim_keys(deployment):
                     claim_name = template_claim.get("metadata", {}).get("name", "")
                     if claim_name and statefulset:
                         prefixes.append((namespace, claim_name + "-" + statefulset + "-"))
+                        start = spec.get("ordinals", {}).get("start", 0)
+                        for ordinal in range(start, start + spec.get("replicas", 1)):
+                            claims.add((namespace, f"{claim_name}-{statefulset}-{ordinal}"))
     return claims, tuple(prefixes)
 
 
@@ -273,6 +276,10 @@ def capture(deployment, *, require_deployed=True):
     # Agent-owned namespaces.
     installation_claims, claim_prefixes = installation_claim_keys(deployment)
     planned_claims = planned_claim_keys(deployment)
+    # Only explicit references and the installed StatefulSet ordinal range
+    # establish prior use. A template name prefix alone does not prove that an
+    # existing claim at a newly requested ordinal belongs to this installation.
+    snapshot["installedClaimKeys"] = sorted("pvc/" + ns + "/" + name for ns, name in installation_claims)
     pvc_prefix = "pvc/"
     for key in list(snapshot["objects"]):
         if key.startswith(pvc_prefix):
@@ -306,6 +313,16 @@ def capture(deployment, *, require_deployed=True):
             }
     snapshot["releases"] = release_snapshot(deployment, require_deployed=require_deployed)
     return snapshot
+
+
+def verify_planned_claim_ownership(deployment, snapshot):
+    planned = planned_claim_keys(deployment)
+    installed = set(snapshot.get("installedClaimKeys", []))
+    if (installed & planned) - snapshot["objects"].keys():
+        raise Blocked("installed_claim_missing")
+    existing_planned = planned & snapshot["objects"].keys()
+    if existing_planned - installed:
+        raise Blocked("existing_planned_claim_unattributed")
 
 
 def agent_ready(row):
@@ -351,6 +368,105 @@ def rendered_operator(deployment):
     return {}
 
 
+def runtime_arguments(arguments):
+    """Read only the runtime controls, without disclosing other arguments."""
+    names = {"chart-repo-url", "chart-version", "chart-digest", "memory-context-image", "memory-context-enabled"}
+    if not isinstance(arguments, list) or not all(isinstance(value, str) for value in arguments):
+        raise Blocked("operator_runtime_arguments_unavailable")
+    result = {}
+    index = 0
+    while index < len(arguments):
+        name, separator, value = arguments[index].removeprefix("--").partition("=")
+        if name in names:
+            if name in result:
+                raise Blocked("operator_runtime_arguments_ambiguous")
+            if not separator:
+                index += 1
+                if index >= len(arguments) or arguments[index].startswith("--"):
+                    raise Blocked("operator_runtime_arguments_unavailable")
+                value = arguments[index]
+            result[name] = value
+        index += 1
+    if (not result.get("chart-repo-url") or not result.get("chart-version") or
+            result.get("memory-context-enabled") not in ("true", "false")):
+        raise Blocked("operator_runtime_arguments_unavailable")
+    return result
+
+
+def current_operator_arguments(deployment):
+    namespace = deployment.config["platform"]["namespace"]
+    before = deployment.resource("deployment", "cetirun-operator", namespace)
+    if not before or not before.get("uid") or before.get("deletionTimestamp"):
+        raise Blocked("operator_runtime_arguments_unavailable")
+    prefix = 'spec.template.spec.containers[?(@.name=="manager")]'
+    raw = deployment.selected_fields("deployment", "cetirun-operator", (prefix + ".args",), namespace)[0]
+    # jsonpath-as-json retains an array even for one matching environment entry.
+    values = deployment.kubectl("get", "deployment", "cetirun-operator", "--namespace", namespace, "-o",
+                                'jsonpath-as-json={.' + prefix + '.env[?(@.name=="CETIRUN_HELM_VALUES")]}')
+    try:
+        arguments = runtime_arguments(json.loads(raw))
+        arguments["helm-values"] = runtime_helm_values(json.loads(values or "[]"))
+    except (ValueError, TypeError) as error:
+        raise Blocked("operator_runtime_arguments_unavailable") from error
+    after = deployment.resource("deployment", "cetirun-operator", namespace)
+    if not after or any(before.get(key) != after.get(key) for key in ("uid", "resourceVersion")):
+        raise Blocked("operator_runtime_arguments_changed")
+    return arguments
+
+
+def runtime_helm_values(entries):
+    if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+        raise Blocked("operator_runtime_values_unavailable")
+    values = [entry for entry in entries if entry.get("name") == "CETIRUN_HELM_VALUES"]
+    if len(values) > 1 or any("valueFrom" in entry or not isinstance(entry.get("value"), str) for entry in values):
+        raise Blocked("operator_runtime_values_unavailable")
+    try:
+        result = json.loads(values[0]["value"] or "{}") if values else {}
+    except ValueError as error:
+        raise Blocked("operator_runtime_values_unavailable") from error
+    if not isinstance(result, dict):
+        raise Blocked("operator_runtime_values_unavailable")
+    return result
+
+
+def verify_operator_runtime_transition(deployment, snapshot, operator):
+    agents = [item for item in snapshot["objects"].values() if item.get("agentType")]
+    if not agents:
+        return
+    current = current_operator_arguments(deployment)
+    candidate = runtime_arguments(operator.get("args", []))
+    if digest(current["helm-values"]) != digest(runtime_helm_values(operator.get("env", []))):
+        raise Blocked("existing_runtime_values_transition_out_of_scope")
+    old_image, new_image = (values.get("memory-context-image", "") for values in (current, candidate))
+    old_enabled = current["memory-context-enabled"] == "true" or bool(old_image)
+    new_enabled = candidate["memory-context-enabled"] == "true" or bool(new_image)
+    if old_image != new_image or old_enabled != new_enabled:
+        raise Blocked("existing_memory_override_transition_out_of_scope")
+    old_version, new_version = current["chart-version"], candidate["chart-version"]
+    if old_version == new_version:
+        return
+    if any(not item.get("chartVersion") for item in agents):
+        raise Blocked("implicit_agent_chart_upgrade_out_of_scope")
+    if not any(item["chartVersion"] == old_version for item in agents):
+        return
+    # The runtime pins only its configured default version. Verify the tag
+    # that retained Agents will use when the platform changes that default.
+    # This proves content at deployment time, not future tag immutability.
+    repository = artifacts.PREFIX + "/helm/cetirun"
+    expected_repo = "oci://" + artifacts.REGISTRY + "/" + repository
+    old_digest = current.get("chart-digest", "")
+    if (current["chart-repo-url"] != expected_repo or candidate["chart-repo-url"] != expected_repo or
+            not re.fullmatch(r"sha256:[0-9a-f]{64}", old_digest) or
+            not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", old_version)):
+        raise Blocked("retained_chart_digest_unverified")
+    try:
+        actual, _, _ = artifacts._manifest(repository, old_version, "chart")
+    except artifacts.ArtifactError as error:
+        raise Blocked("retained_chart_digest_unverified") from error
+    if actual != old_digest:
+        raise Blocked("retained_chart_tag_changed")
+
+
 def verify_cetiadmin_transition(deployment, operator, lock):
     """A platform upgrade cannot implicitly restart a preserved installation."""
     namespace = deployment.config["platform"]["namespace"]
@@ -386,6 +502,7 @@ def verify_cetiadmin_transition(deployment, operator, lock):
 def verify_runtime_preservation(deployment, snapshot, roots, lock):
     verify_existing_agent_images(deployment, snapshot, roots, lock)
     operator = rendered_operator(deployment)
+    verify_operator_runtime_transition(deployment, snapshot, operator)
     proxy_image = next((item.get("value", "") for item in operator.get("env", [])
                         if item.get("name") == "AI_GATEWAY_COPILOT_PROXY_IMAGE"), "")
     for item in snapshot["objects"].values():
@@ -418,33 +535,35 @@ def preservation(before, after, *, readiness=True, allowed_additions=frozenset()
             raise Blocked("preserved_resource_not_ready")
 
 
+def observe_preservation(baseline, observed, current, *, allowed_additions=frozenset(), readiness=True):
+    """Carry first-observed claims through every upgrade and acceptance read."""
+    for key in observed["objects"].keys() & current["objects"].keys() & set(allowed_additions):
+        previous, latest = observed["objects"][key], current["objects"][key]
+        if key not in baseline["objects"] and not previous["bound"]:
+            # Only initial binding can change a newly created claim's spec.
+            # Its UID and all other storage fields must remain unchanged.
+            if (previous.get("claimContractHash") and
+                    previous["claimContractHash"] == latest.get("claimContractHash") and
+                    previous.get("volumeName", "") in ("", latest.get("volumeName", ""))):
+                previous["specHash"] = latest["specHash"]
+                previous["volumeName"] = latest.get("volumeName", "")
+    preservation(observed, current, readiness=readiness, allowed_additions=allowed_additions)
+    for key in current["objects"].keys() - observed["objects"].keys():
+        observed["objects"][key] = copy.deepcopy(current["objects"][key])
+    for key in set(allowed_additions) & current["objects"].keys():
+        if current["objects"][key]["bound"]:
+            observed["objects"][key]["bound"] = True
+
+
 def stable_acceptance(deployment, baseline, *, expected_releases=None, allowed_additions=frozenset(),
-                      window=60, timeout=300, interval=15):
+                      observed=None, window=60, timeout=300, interval=15):
     """Observe several reconciles; never excuse UID/spec drift during settling."""
     start = time.monotonic()
     stable_since = None
-    observed = copy.deepcopy(baseline)
+    observed = copy.deepcopy(baseline) if observed is None else observed
     while time.monotonic() - start <= timeout:
         current = capture(deployment)
-        for key in observed["objects"].keys() & current["objects"].keys() & set(allowed_additions):
-            previous, latest = observed["objects"][key], current["objects"][key]
-            if key not in baseline["objects"] and not previous["bound"]:
-                # Kubernetes may bind a newly planned claim after Helm returns.
-                # Permit only its initial volumeName assignment; preserve UID,
-                # the remaining storage contract and any assigned volume.
-                if (previous.get("claimContractHash") and
-                        previous["claimContractHash"] == latest.get("claimContractHash") and
-                        previous.get("volumeName", "") in ("", latest.get("volumeName", ""))):
-                    previous["specHash"] = latest["specHash"]
-                    previous["volumeName"] = latest.get("volumeName", "")
-        preservation(observed, current, readiness=False, allowed_additions=allowed_additions)
-        # Pin the first observed identity of a newly created planned claim too.
-        # Its replacement or loss during the stability window is still drift.
-        for key in current["objects"].keys() - observed["objects"].keys():
-            observed["objects"][key] = copy.deepcopy(current["objects"][key])
-        for key in set(allowed_additions) & current["objects"].keys():
-            if current["objects"][key]["bound"]:
-                observed["objects"][key]["bound"] = True
+        observe_preservation(baseline, observed, current, readiness=False, allowed_additions=allowed_additions)
         if expected_releases is not None and current["releases"] != expected_releases:
             raise Blocked("helm_revision_changed_during_acceptance")
         try:
@@ -664,7 +783,7 @@ def run(args):
                "stages": [], "notQualified": ["browser OAuth", "native runtime chat", "model inference",
                                                 "Marketplace publication", "ADX ingestion", "provider background request count"]}
     stage = "inputs"
-    deployment, baseline = None, None
+    deployment, baseline, observed = None, None, None
     allowed_additions = set()
     try:
         if not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", args.release_tag):
@@ -698,6 +817,8 @@ def run(args):
             if actual_uid != config["target"]["clusterUID"]:
                 raise Blocked("cluster_uid_mismatch")
             baseline = capture(deployment)
+            observed = copy.deepcopy(baseline)
+            verify_planned_claim_ownership(deployment, baseline)
             private_write(work / "baseline.json", json.dumps(baseline, indent=2))
             summary["beforeReleases"] = baseline["releases"]
             summary["preservedResourceCount"] = len(baseline["objects"])
@@ -720,14 +841,13 @@ def run(args):
             if args.apply:
                 stage = "deploy"
                 current = capture(deployment)
-                preservation(baseline, current)
+                observe_preservation(baseline, observed, current)
                 verify_runtime_preservation(deployment, current, roots, lock)
                 if current["releases"] != baseline["releases"]:
                     raise Blocked("helm_revision_changed_before_deploy")
                 private_write(work / "intent.json", json.dumps({"action": "deploy", "release": lock["version"], "before": baseline["releases"]}))
-                upgrade = deployment.upgrade
                 expected_releases = copy.deepcopy(baseline["releases"])
-                def recorded_upgrade(name, values=None):
+                def before_upgrade(name, values=None):
                     nonlocal stage
                     stage = "upgrade_" + name
                     summary["stages"].append({"stage": stage, "status": "STARTED"})
@@ -736,32 +856,32 @@ def run(args):
                     if release_snapshot(deployment) != expected_releases:
                         raise Blocked("helm_revision_changed_before_upgrade")
                     current = capture(deployment)
-                    preservation(baseline, current, allowed_additions=allowed_additions)
+                    observe_preservation(baseline, observed, current, allowed_additions=allowed_additions)
                     verify_runtime_preservation(deployment, current, roots, lock)
                     # The post-renderer repeats this check after Helm has
                     # rendered the chart, immediately before Helm writes its
                     # pending revision. This closes the check-then-act gap.
-                    deployment.expected_release_revision = int(expected_releases[name]["revision"])
-                    try:
-                        upgrade(name, values)
-                    finally:
-                        deployment.expected_release_revision = None
+                    return int(expected_releases[name]["revision"])
+
+                def after_upgrade(name, values=None):
                     chart_names = {"istio": "cetirun-istio", "broker": "cetirun-agent-broker", "platform": "cetirun-platform"}
                     expected_releases[name] = {"revision": str(int(expected_releases[name]["revision"]) + 1),
                                                "chart": chart_names[name] + "-" + lock["version"], "status": "deployed"}
                     if release_snapshot(deployment) != expected_releases:
                         raise Blocked("helm_revision_changed_after_upgrade")
+                    # Record newly created claims immediately, not only when
+                    # the next release or final acceptance starts.
+                    observe_preservation(baseline, observed, capture(deployment), allowed_additions=allowed_additions)
                     summary["expectedReleases"] = copy.deepcopy(expected_releases)
                     summary["stages"].append({"stage": stage, "status": "PASS"})
                     private_write(output, json.dumps(summary, indent=2) + "\n")
-                deployment.upgrade = recorded_upgrade
                 summary["stages"].append({"stage": "deploy", "status": "STARTED"})
                 private_write(output, json.dumps(summary, indent=2) + "\n")
-                deployment.execute()
+                deployment.execute(before_upgrade=before_upgrade, after_upgrade=after_upgrade)
                 summary["stages"].append({"stage": "deploy", "status": "PASS"})
                 stage = "acceptance"
                 after = stable_acceptance(deployment, baseline, expected_releases=expected_releases,
-                                          allowed_additions=allowed_additions)
+                                          allowed_additions=allowed_additions, observed=observed)
                 summary["afterReleases"] = after["releases"]
                 summary["verifiedContainers"] = verify_images(deployment, lock)
                 summary["entryAfter"] = verify_entry(config["domain"])
@@ -784,7 +904,7 @@ def run(args):
             try:
                 summary["afterReleases"] = release_snapshot(deployment, require_deployed=False)
                 current = capture(deployment, require_deployed=False)
-                preservation(baseline, current, allowed_additions=allowed_additions)
+                observe_preservation(baseline, observed, current, allowed_additions=allowed_additions)
                 summary["preservationAfterFailure"] = "PASS"
             except Exception:
                 summary["preservationAfterFailure"] = "UNVERIFIED"
