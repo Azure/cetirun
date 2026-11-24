@@ -805,13 +805,25 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// Successful workload-only waits must not publish False then True: each
 	// status change enqueues another reconcile independently of RequeueAfter.
 	prerequisitesComplete := false
+	identityCheckpointFailed := false
 	defer func() {
 		if prerequisitesComplete || meta.IsStatusConditionFalse(instance.Status.Conditions, builtInPrerequisitesReady) {
 			return
 		}
-		setCondition(&instance.Status.Conditions, builtInPrerequisitesReady,
+		stored, err := r.readAgentForStatusPatch(ctx, instance)
+		if err != nil {
+			reconcileErr = stderrors.Join(reconcileErr, err)
+			return
+		}
+		pending := instance
+		if identityCheckpointFailed {
+			// The fallback must not publish in-memory identity or workload state
+			// that the failed checkpoint was unable to confirm.
+			pending = stored.DeepCopy()
+		}
+		setCondition(&pending.Status.Conditions, builtInPrerequisitesReady,
 			metav1.ConditionFalse, "PrerequisitesPending", "Agent prerequisites did not complete")
-		reconcileErr = stderrors.Join(reconcileErr, r.updateStatus(ctx, instance))
+		reconcileErr = stderrors.Join(reconcileErr, r.patchStatusFrom(ctx, stored, pending))
 	}()
 	logger.V(1).Info("Ensuring namespace", "namespace", ns)
 	var namespaceErr error
@@ -918,6 +930,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			}
 		} else if identityReady && !wasIdentityReady {
 			if err := r.persistVerifiedAgentIdentity(ctx, instance); err != nil {
+				identityCheckpointFailed = true
 				return ctrl.Result{}, err
 			}
 		}

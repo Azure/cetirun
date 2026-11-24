@@ -14,14 +14,18 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 
@@ -60,7 +64,8 @@ func (*suspensionHelmClient) CustomApplied(string, string, *helm.PreparedRelease
 
 func (*suspensionHelmClient) Uninstall(string, string) error { return nil }
 
-func TestNoTeamAgentIdentityIsReadyDuringHelmUpgrade(t *testing.T) {
+func newNoTeamIdentityUpgrade(t *testing.T) (*deployedAgent, *fakeAgentIdentityDirectory) {
+	t.Helper()
 	ctx := t.Context()
 	f := newDeployedAgent(t)
 	agent := f.agent(t)
@@ -109,7 +114,13 @@ func TestNoTeamAgentIdentityIsReadyDuringHelmUpgrade(t *testing.T) {
 	if pending.Phase != cetirunv1alpha1.AgentIdentityPhaseProvisioning || pending.ObservedGeneration != agent.Generation {
 		t.Fatalf("missing current-generation identity intent: %+v", pending)
 	}
+	return f, directory
+}
 
+func TestNoTeamAgentIdentityIsReadyDuringHelmUpgrade(t *testing.T) {
+	f, directory := newNoTeamIdentityUpgrade(t)
+	agent := f.agent(t)
+	principal := directory.byObject
 	reads := directory.getObjectCalls
 	installs := f.chart.installs
 	f.chart.onInstall = func() {
@@ -128,11 +139,58 @@ func TestNoTeamAgentIdentityIsReadyDuringHelmUpgrade(t *testing.T) {
 			t.Fatalf("canonical binding changed during upgrade: %+v", identity)
 		}
 	}
-	if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+	if _, err := f.r.Reconcile(t.Context(), f.req); err != nil {
 		t.Fatal(err)
 	}
 	if f.chart.installs != installs+1 || directory.getObjectCalls != reads+1 || directory.createCalls != 1 {
 		t.Fatal("expected one Helm upgrade and verification, not replacement, of the existing identity")
+	}
+}
+
+func TestNoTeamIdentityCheckpointReadFailureInvalidatesOnlyPrerequisites(t *testing.T) {
+	ctx := t.Context()
+	f, directory := newNoTeamIdentityUpgrade(t)
+	before := f.agent(t)
+	if before.Status.Phase != cetirunv1alpha1.PhaseReady || !meta.IsStatusConditionTrue(before.Status.Conditions, builtInPrerequisitesReady) {
+		t.Fatal("expected a running workload with previously satisfied prerequisites")
+	}
+	reads, installs := directory.getObjectCalls, f.chart.installs
+	readErr := errors.New("temporary failure reading Agent after identity verification")
+	failNext := true
+	f.r.APIReader = interceptor.NewClient(f.r.Client.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, isAgent := obj.(*cetirunv1alpha1.Agent); isAgent && key == f.req.NamespacedName && directory.getObjectCalls > reads && failNext {
+				failNext = false
+				return readErr
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	if _, err := f.r.Reconcile(ctx, f.req); !errors.Is(err, readErr) {
+		t.Fatalf("checkpoint error not returned: %v", err)
+	}
+	after := f.agent(t)
+	condition := meta.FindStatusCondition(after.Status.Conditions, builtInPrerequisitesReady)
+	if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "PrerequisitesPending" {
+		t.Fatalf("prerequisite failure was not recorded: %+v", condition)
+	}
+	meta.RemoveStatusCondition(&before.Status.Conditions, builtInPrerequisitesReady)
+	meta.RemoveStatusCondition(&after.Status.Conditions, builtInPrerequisitesReady)
+	if !equality.Semantic.DeepEqual(before.Status, after.Status) {
+		t.Fatalf("prerequisite invalidation changed other stored status: workload %s -> %s, identity %s -> %s",
+			before.Status.Phase, after.Status.Phase, before.Status.AgentIdentity.Phase, after.Status.AgentIdentity.Phase)
+	}
+	if f.chart.installs != installs || directory.getObjectCalls != reads+1 {
+		t.Fatal("failed checkpoint must stop after directory verification and before Helm")
+	}
+	if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+		t.Fatal(err)
+	}
+	recovered := f.agent(t)
+	if f.chart.installs != installs+1 || directory.getObjectCalls != reads+2 || directory.createCalls != 1 ||
+		recovered.Status.ObservedGeneration != recovered.Generation || recovered.Status.AgentIdentity.Phase != cetirunv1alpha1.AgentIdentityPhaseReady ||
+		!meta.IsStatusConditionTrue(recovered.Status.Conditions, builtInPrerequisitesReady) {
+		t.Fatal("retry did not reverify the existing identity, upgrade once and restore prerequisites")
 	}
 }
 
