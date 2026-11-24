@@ -308,6 +308,8 @@ def resolve(source: Path, work: Path, release_tag: str):
         if len(names) != len(data[kind]) or len(names) != len(set(names)) or any(not isinstance(name, str) or not _NAME.fullmatch(name) for name in names):
             raise ArtifactError(f"invalid or duplicate {kind} inventory name")
         for entry in data[kind]:
+            if kind == "images" and type(entry.get("optional", False)) is not bool:
+                raise ArtifactError("image inventory optional must be boolean")
             if kind == "charts":
                 chart_source = (source / entry.get("path", "")).resolve()
                 if source not in chart_source.parents or not (chart_source / "Chart.yaml").is_file():
@@ -316,7 +318,12 @@ def resolve(source: Path, work: Path, release_tag: str):
     images = {}
     for entry in data["images"]:
         try:
-            images[entry["name"]] = _image(f"{PREFIX}/{entry['name']}", tag, source_sha)
+            resolved = _image(f"{PREFIX}/{entry['name']}", tag, source_sha)
+            # Keep release inventory optionality beside the immutable image
+            # coordinates so published deployment validation can reject
+            # mandatory exclusions without consulting the checkout.
+            resolved["optional"] = entry.get("optional", False)
+            images[entry["name"]] = resolved
         except ArtifactError as error:
             error.artifact, error.artifact_kind = entry["name"], "image"
             raise

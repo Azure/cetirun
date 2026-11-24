@@ -4,6 +4,7 @@
 """Offline checks for immutable chart extraction and image pinning."""
 
 import importlib.util
+import base64
 from pathlib import Path
 import tarfile
 import hashlib
@@ -75,11 +76,19 @@ class PublishedDeploymentTests(unittest.TestCase):
 
     def test_excluded_published_inventory_is_availability_metadata(self):
         config = {"release": {"excludeImages": ["cetirun-vscode"]},
-                  "_publishedInventory": {"images": ["cetirun-vscode"], "charts": []}}
+                  "_publishedInventory": {"images": [{"name": "cetirun-vscode", "optional": True}], "charts": []}}
         DEPLOY.validate_excluded_images(config)
         config["platform"] = {"values": {"image": "mcr.example/cetirun-vscode:1"}}
         with self.assertRaisesRegex(ValueError, "still referenced"):
             DEPLOY.validate_excluded_images(config)
+        for inventory in (
+                [{"name": "cetirun-portal", "optional": False}],
+                [{"name": "known", "optional": True}],
+        ):
+            excluded = "cetirun-missing" if inventory[0]["name"] == "known" else inventory[0]["name"]
+            with self.subTest(inventory=inventory), self.assertRaisesRegex(ValueError, "optional|unknown"):
+                DEPLOY.validate_excluded_images({"release": {"excludeImages": [excluded]},
+                                                 "_publishedInventory": {"images": inventory, "charts": []}})
 
     def test_real_helm_renders_original_archive(self):
         helm = shutil.which("helm")
@@ -131,7 +140,8 @@ class PublishedIntegrationTests(unittest.TestCase):
         for entry in inventory["images"]:
             sha = "sha256:" + hashlib.sha256(entry["name"].encode()).hexdigest()
             cls.lock["images"][entry["name"]] = {"reference": f"{cls.registry}/{entry['name']}:{cls.version}@{sha}",
-                                               "digest": sha, "platformDigest": sha}
+                                               "digest": sha, "platformDigest": sha,
+                                               "optional": bool(entry.get("optional", False))}
         for name, source in staged.items():
             archive = cls.root / (name + ".tgz")
             with tarfile.open(archive, "w:gz") as stream:
@@ -186,6 +196,110 @@ class PublishedIntegrationTests(unittest.TestCase):
                     ValueError, "explicit expected release revision"):
                 deployment.upgrade("broker")
             helm.assert_not_called()
+
+    def test_retained_istio_upgrade_uses_previewed_values_and_preserves_only_tls(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config, values, roots = DEPLOY.published_configuration(self.configuration(), self.lock, Path(temporary))
+            config["istio"]["tlsMode"] = "retain"
+            values["istio"]["oauth2Proxy"]["nodeSelector"] = {"agentpool": None, "new-pool": "true"}
+            values["istio"]["oauth2Proxy"]["sessionStore"]["redis"]["existingSecret"] = "sessions-fixture"
+            deployment = DEPLOY.Deployment(config, values, Path(temporary), published_artifacts=self.lock, chart_roots=roots)
+            deployment.render()
+            preview = next(doc for doc in deployment.documents["istio"] if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "oauth2-proxy-sessions")
+            metadata = {"uid": "tls-uid", "resourceVersion": "7", "annotations": {
+                "meta.helm.sh/release-name": config["istio"]["release"],
+                "meta.helm.sh/release-namespace": config["istio"]["namespace"]}}
+            tls = {"cert": "synthetic preserved certificate", "key": "synthetic preserved private key"}
+            files = []
+            def read(*args):
+                value = tls["cert" if "tls\\.crt" in args[-1] else "key"]
+                return base64.b64encode(value.encode()).decode()
+            def upgrade(*args):
+                self.assertEqual(args[0], "upgrade")
+                self.assertIn("--reset-values", args)
+                self.assertNotIn("--reuse-values", args)
+                for option in ("--tls-secret-uid", "tls-uid", "--tls-secret-resource-version", "7"):
+                    self.assertIn("--post-renderer-args=" + option, args)
+                paths = [Path(args[i + 1]) for i, arg in enumerate(args) if arg == "--values"]
+                files.extend(paths[1:])
+                self.assertEqual(paths[-1].stat().st_mode & 0o777, 0o600)
+                self.assertEqual(json.loads(paths[-1].read_text()), {"tls": {"enabled": True, **tls}})
+                # Replay the exact applied values through real Helm's renderer.
+                # Only the unrelated cookie lookup is stubbed for offline Helm.
+                command = ["helm", "template", config["istio"]["release"], str(deployment.charts["istio"]),
+                           "--namespace", config["istio"]["namespace"], "--set", "cookieSecret=offline-cookie"]
+                for path in paths:
+                    command += ["--values", str(path)]
+                result = subprocess.run(command, check=True, capture_output=True, text=True,
+                                        env={**DEPLOY.os.environ, "KUBECONFIG": "/dev/null",
+                                             "HELM_REGISTRY_CONFIG": "/dev/null", "HELM_REPOSITORY_CONFIG": "/dev/null"})
+                documents = list(yaml.safe_load_all(result.stdout))
+                applied = next(doc for doc in documents if doc and doc["kind"] == "Deployment" and doc["metadata"]["name"] == "oauth2-proxy-sessions")
+                self.assertEqual(applied, preview)
+                self.assertEqual(applied["spec"]["template"]["spec"]["nodeSelector"],
+                                 preview["spec"]["template"]["spec"]["nodeSelector"])
+                secret = next(doc for doc in documents if doc and doc["kind"] == "Secret" and doc["metadata"]["name"] == "cetirun-tls")
+                self.assertEqual(secret["data"], {"tls.crt": base64.b64encode(tls["cert"].encode()).decode(),
+                                                  "tls.key": base64.b64encode(tls["key"].encode()).decode()})
+            with patch.object(deployment, "resource", return_value=metadata), \
+                 patch.object(deployment, "kubectl", side_effect=read), patch.object(deployment, "helm", side_effect=upgrade):
+                deployment.upgrade("istio", expected_revision=7)
+            self.assertTrue(files)
+            self.assertTrue(all(not path.exists() for path in files))
+            with patch.object(deployment, "resource", return_value=metadata), \
+                 patch.object(deployment, "kubectl", side_effect=read), \
+                 patch.object(deployment, "helm", side_effect=ValueError("synthetic failure")), \
+                 self.assertRaisesRegex(ValueError, "synthetic failure"):
+                deployment.upgrade("istio", expected_revision=7)
+            self.assertFalse(list(Path(temporary).glob("*-retained-tls.json")))
+            with patch.object(deployment, "resource", side_effect=[metadata, {**metadata, "uid": "replacement"}]), \
+                 patch.object(deployment, "kubectl", side_effect=read), patch.object(deployment, "helm") as helm, \
+                 self.assertRaisesRegex(ValueError, "TLS Secret changed"):
+                deployment.upgrade("istio", expected_revision=7)
+            helm.assert_not_called()
+
+    def test_published_image_optionality_requires_boolean(self):
+        for invalid in ("false", "true", 0, 1, None, []):
+            lock = copy.deepcopy(self.lock)
+            lock["images"]["cetirun-vscode"]["optional"] = invalid
+            with self.subTest(optional=invalid), tempfile.TemporaryDirectory() as temporary, \
+                 self.assertRaisesRegex(ValueError, "optional must be boolean"):
+                DEPLOY.published_configuration(self.configuration(), lock, Path(temporary))
+
+    def test_custom_approved_image_limit_matches_operator(self):
+        config = self.configuration()
+        digest = "sha256:" + "a" * 64
+        config["platform"]["values"]["cetirun-operator"]["customRuntime"]["approvedImages"] = [
+            f"mcr.example/custom-{index}@{digest}" for index in range(65)
+        ]
+        with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(ValueError, "more than 64"):
+            DEPLOY.published_configuration(config, self.lock, Path(temporary))
+
+    def test_published_configuration_applies_optional_exclusions(self):
+        config = self.configuration()
+        config["release"] = {"excludeImages": ["cetirun-vscode"]}
+        approved = config["platform"]["values"]["cetirun-operator"]["customRuntime"]["approvedImages"]
+        config["platform"]["values"]["cetirun-operator"]["customRuntime"]["approvedImages"] = [
+            image for image in approved if "cetirun-vscode" not in image
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            resolved, _, _ = DEPLOY.published_configuration(config, self.lock, Path(temporary))
+        self.assertNotIn("cetirun-vscode", {entry["name"] for entry in DEPLOY.release_inventory(resolved)["images"]})
+        for excluded in ("cetirun-portal", "missing-image"):
+            config = self.configuration()
+            config["release"] = {"excludeImages": [excluded]}
+            with tempfile.TemporaryDirectory() as temporary, self.subTest(excluded=excluded), \
+                    self.assertRaisesRegex(ValueError, "optional|unknown"):
+                DEPLOY.published_configuration(config, self.lock, Path(temporary))
+
+    def test_custom_approved_image_limit_accepts_64(self):
+        config = self.configuration()
+        digest = "sha256:" + "a" * 64
+        config["platform"]["values"]["cetirun-operator"]["customRuntime"]["approvedImages"] = [
+            f"mcr.example/custom-{index}@{digest}" for index in range(64)
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            DEPLOY.published_configuration(config, self.lock, Path(temporary))
 
     def test_published_execute_cannot_delegate_an_unguarded_upgrade(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -329,7 +443,10 @@ class PublishedIntegrationTests(unittest.TestCase):
                 deployment.render()
 
     def test_published_inventory_does_not_revert_to_current_checkout(self):
-        result = DEPLOY.release_inventory({"_publishedInventory": {"images": ["future-image"], "charts": ["future-chart"]}})
+        result = DEPLOY.release_inventory({"_publishedInventory": {
+            "images": [{"name": "future-image", "optional": False}],
+            "charts": [{"name": "future-chart"}],
+        }})
         self.assertEqual([item["name"] for item in result["images"]], ["future-image"])
         self.assertEqual([item["name"] for item in result["charts"]], ["future-chart"])
 

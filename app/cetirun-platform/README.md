@@ -669,10 +669,16 @@ certificate is deleted.
 
 If a chart-owned certificate already exists, set `istio.tlsMode: retain`. For
 this mode, the release must already exist, and the Secret ownership must match.
-The helper omits `tls` from the actual override file. It uses `--reuse-values`
-for that Istio upgrade. Helm keeps the prior TLS values, and private-key
-material does not go into the helper's override file. To change the ownership
-mode, you must do a separate migration.
+The helper uses `--reset-values`, so non-TLS configuration is exactly the
+candidate configuration used in the preview. Immediately before the upgrade,
+it reads only the existing certificate and key and checks that the Secret's
+ownership, UID, and resource version remain stable. The post-renderer rechecks
+the Secret metadata and Helm revision immediately before releasing the manifest.
+A TLS-only temporary values
+file (mode `0600`) keeps the certificate in Helm's rendered resources. The file
+is removed after either success or failure; its contents are never placed in
+command arguments, previews, or public reports. Changing Secret ownership is
+a separate operation.
 
 The offline render uses synthetic cookie/TLS values only in a separate
 temporary render file. The helper never applies that manifest. Actual upgrades

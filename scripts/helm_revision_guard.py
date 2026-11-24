@@ -6,7 +6,8 @@
 Helm invokes a post-renderer after rendering and before creating the pending
 release revision. This guard reads the release history at that point and
 passes the rendered manifest through unchanged only when the expected deployed
-revision is still current. A pending or newly completed competing revision is
+revision is still current. Retained TLS additionally requires unchanged Secret
+identity/version after chart rendering. A pending or newly completed competing revision is
 therefore rejected before this invocation writes any resources.
 """
 
@@ -22,7 +23,12 @@ def main(argv=None):
     parser.add_argument("--release", required=True)
     parser.add_argument("--namespace", required=True)
     parser.add_argument("--context", required=True)
+    for field in ("namespace", "name", "uid", "resource-version"):
+        parser.add_argument("--tls-secret-" + field)
     args = parser.parse_args(argv)
+    tls = (args.tls_secret_namespace, args.tls_secret_name, args.tls_secret_uid, args.tls_secret_resource_version)
+    if any(tls) and not all(tls):
+        parser.error("retained TLS requires the complete Secret identity")
     if args.expected_revision < 1:
         parser.error("expected revision must be positive")
     try:
@@ -47,6 +53,20 @@ def main(argv=None):
     except (TypeError, ValueError, KeyError):
         print("helm_revision_guard: invalid release history", file=sys.stderr)
         return 2
+    if all(tls):
+        try:
+            result = subprocess.run(
+                ["kubectl", "--context", args.context, "--request-timeout=15s", "get", "secret", args.tls_secret_name,
+                 "--namespace", args.tls_secret_namespace, "--ignore-not-found", "-o", "jsonpath={.metadata}"],
+                capture_output=True, text=True, check=False, timeout=30)
+            metadata = json.loads(result.stdout) if result.returncode == 0 else None
+            if (not isinstance(metadata, dict) or metadata.get("uid") != args.tls_secret_uid or
+                    metadata.get("resourceVersion") != args.tls_secret_resource_version or metadata.get("deletionTimestamp")):
+                print("helm_revision_guard: retained TLS Secret changed", file=sys.stderr)
+                return 3
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            print("helm_revision_guard: unable to read retained TLS Secret metadata", file=sys.stderr)
+            return 2
     sys.stdout.buffer.write(sys.stdin.buffer.read())
     return 0
 

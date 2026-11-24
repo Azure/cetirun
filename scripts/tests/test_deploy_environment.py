@@ -457,6 +457,19 @@ class EnvironmentTests(unittest.TestCase):
         with self.assertRaisesRegex(deploy.Blocked, "existing_runtime_values_transition"):
             deploy.verify_operator_runtime_transition(driver, snap, {"args": operator_args(), "env": entries})
 
+    def test_chart_repository_switch_is_blocked_before_version_shortcuts(self):
+        for default in ("0.2.0", "0.2.1"):
+            with self.subTest(default=default):
+                current = operator_args(version=default)
+                current[0] = "--chart-repo-url=oci://registry.example.com/original/helm/cetirun"
+                driver = self.runtime_driver(current)
+                snap = baseline()
+                snap["objects"]["agents/fixture"].update(agentType="custom", chartVersion="0.1.0", suspended=True)
+                with patch.object(deploy.artifacts, "_manifest") as manifest, self.assertRaisesRegex(
+                        deploy.Blocked, "existing_chart_repository_transition_out_of_scope"):
+                    deploy.verify_operator_runtime_transition(driver, snap, {"args": operator_args()})
+                manifest.assert_not_called()
+
     def test_former_default_chart_digest_is_checked_for_retained_explicit_versions(self):
         driver = self.runtime_driver(operator_args(version="0.2.0"))
         candidate = {"args": operator_args()}
@@ -542,6 +555,117 @@ class EnvironmentTests(unittest.TestCase):
         approved.remove(agent["image"])
         with self.assertRaisesRegex(deploy.Blocked, "existing_custom_image_not_approved"):
             deploy.verify_existing_agent_images(driver, old, {}, {})
+
+    def test_capture_associates_memory_init_with_the_owned_agent(self):
+        driver = self.capture_driver()
+        original = driver.kubectl
+        def read(*args):
+            result = json.loads(original(*args))
+            if args[:2] == ("get", "pods"):
+                result["items"][0]["spec"]["containers"][0]["name"] = "cetirun"
+                result["items"][0]["spec"]["initContainers"] = [
+                    {"name": "memory-assets", "image": "registry.example.com/memory@sha256:" + "a" * 64}]
+            return json.dumps(result)
+        driver.kubectl = read
+        pod = deploy.capture(driver)["objects"]["pods/cetirun-agent/gateway"]
+        self.assertEqual(pod["runtimeAgentUID"], "agent-uid")
+        self.assertTrue(pod["isRuntimePod"])
+        self.assertEqual(pod["memoryInitImages"], ["registry.example.com/memory@sha256:" + "a" * 64])
+
+    def test_republished_chart_memory_init_is_checked_before_runtime_rollout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = "registry.example.com/memory@sha256:" + "a" * 64
+            (root / "values.yaml").write_text(yaml.safe_dump({"memoryContext": {"image": image}}))
+            snap = baseline()
+            agent = snap["objects"]["agents/fixture"]
+            pod = {"runtimeAgentUID": agent["uid"], "isRuntimePod": True, "memoryInitImages": [image]}
+            snap["objects"]["pods/runtime/main"] = pod
+            # Auxiliary Pods have no Memory init and are not runtime candidates.
+            snap["objects"]["pods/runtime/proxy"] = {"runtimeAgentUID": agent["uid"], "memoryInitImages": []}
+            candidate = {"args": operator_args()}
+            for runtime in ("openclaw", "hermes", "custom"):
+                for version in ("", "0.2.1", "0.1.0"):
+                    agent.update(agentType=runtime, chartVersion=version)
+                    for previous in ([image], [image.replace("a" * 64, "b" * 64)], [""], [image, image], []):
+                        pod["memoryInitImages"] = previous
+                        with self.subTest(runtime=runtime, version=version, previous=previous):
+                            if version == "0.1.0" or previous == [image]:
+                                deploy.verify_memory_runtime_images(snap, candidate, {"cetirun": root}, {"version": "0.2.1"})
+                            else:
+                                with self.assertRaisesRegex(deploy.Blocked, "existing_memory_init_rollout"):
+                                    deploy.verify_memory_runtime_images(snap, candidate, {"cetirun": root}, {"version": "0.2.1"})
+            # An explicit unchanged override takes priority over chart defaults.
+            agent["chartVersion"] = "0.2.1"
+            pod["memoryInitImages"] = ["registry.example.com/override@sha256:" + "b" * 64]
+            deploy.verify_memory_runtime_images(snap, {"args": operator_args(image=pod["memoryInitImages"][0])},
+                                                {"cetirun": root}, {"version": "0.2.1"})
+
+    def custom_home_fixture(self):
+        snap = baseline()
+        agent = snap["objects"]["agents/fixture"]
+        agent.update(agentType="custom", name="fixture", chartVersion="0.1.0", suspended=True,
+                     customOwnershipRequired=True)
+        storage = {"storageClass": "retained", "storageSize": "1Gi", "accessMode": "ReadWriteOnce"}
+        driver = self.runtime_driver()
+        driver.values["platform"]["cetirun-operator"] = {"customRuntime": {"enabled": True, **storage}}
+        record = {"uid": "record-uid", "resourceVersion": "7", "ownerReferences": [
+            {"apiVersion": "cetirun.microsoft.com/v1alpha1", "kind": "Agent", "name": agent["name"], "uid": agent["uid"]}]}
+        receipt = {"agentName": "fixture", "agentUID": agent["uid"], "namespace": "cetirun-fixture",
+                   "namespaceUID": "namespace-uid", "release": "cetirun-fixture",
+                   "home": "data-cetirun-fixture-0", "homeClaim": storage}
+        driver.resource.side_effect = lambda kind, *args: {"uid": "namespace-uid"} if kind == "namespace" else record
+        driver.selected_fields.return_value = [json.dumps(receipt), "true"]
+        snap["objects"]["pvc/cetirun-fixture/data-cetirun-fixture-0"] = {
+            "homeStorage": {"storageClass": "retained", "storageSize": "1024Mi", "accessModes": ["ReadWriteOnce"]}}
+        return driver, snap, receipt, record
+
+    def test_retained_custom_home_accepts_same_contract_and_rejects_changes(self):
+        for suspended in (False, True):
+            for field, changed in (("storageClass", "replacement"), ("storageSize", "2Gi"),
+                                   ("accessMode", "ReadWriteMany"), ("enabled", False)):
+                with self.subTest(suspended=suspended, field=field):
+                    driver, snap, _, _ = self.custom_home_fixture()
+                    snap["objects"]["agents/fixture"]["suspended"] = suspended
+                    deploy.verify_custom_home_preservation(driver, snap)
+                    config = driver.values["platform"]["cetirun-operator"]["customRuntime"]
+                    config["storageSize"] = "1024Mi"
+                    deploy.verify_custom_home_preservation(driver, snap)
+                    config[field] = changed
+                    with self.assertRaisesRegex(deploy.Blocked, "existing_custom_home_transition"):
+                        deploy.verify_custom_home_preservation(driver, snap)
+                    # A temporarily absent PVC does not erase the retained contract.
+                    del snap["objects"]["pvc/cetirun-fixture/data-cetirun-fixture-0"]
+                    with self.assertRaisesRegex(deploy.Blocked, "existing_custom_home_transition"):
+                        deploy.verify_custom_home_preservation(driver, snap)
+
+    def test_custom_home_receipts_require_identity_and_stable_narrow_reads(self):
+        for mutation in ("missing", "mutable", "identity", "namespace", "home", "owner", "replaced", "pvc"):
+            with self.subTest(mutation=mutation):
+                driver, snap, receipt, record = self.custom_home_fixture()
+                if mutation == "missing":
+                    driver.resource.side_effect = None
+                    driver.resource.return_value = None
+                elif mutation == "mutable":
+                    driver.selected_fields.return_value[1] = "false"
+                elif mutation in ("identity", "namespace", "home"):
+                    receipt[{"identity": "agentUID", "namespace": "namespaceUID", "home": "home"}[mutation]] = "foreign"
+                    driver.selected_fields.return_value[0] = json.dumps(receipt)
+                elif mutation == "owner":
+                    record["ownerReferences"][0]["uid"] = "foreign"
+                elif mutation == "replaced":
+                    driver.resource.side_effect = [record, {**record, "uid": "replacement"}]
+                else:
+                    snap["objects"]["pvc/cetirun-fixture/data-cetirun-fixture-0"]["homeStorage"]["storageClass"] = "foreign"
+                with self.assertRaises(deploy.Blocked):
+                    deploy.verify_custom_home_preservation(driver, snap)
+                if mutation != "missing":
+                    self.assertEqual(driver.selected_fields.call_args.args[2], ("data.ownership", "immutable"))
+        # Sandbox Custom and not-yet-provisioned Custom have no ordinary receipt.
+        snap["objects"]["agents/fixture"]["customOwnershipRequired"] = False
+        driver.resource.side_effect = None
+        driver.resource.return_value = None
+        deploy.verify_custom_home_preservation(driver, snap)
 
     def test_copilot_proxy_rollout_is_blocked_for_any_runtime_chart(self):
         old = baseline()
@@ -765,6 +889,7 @@ class EnvironmentTests(unittest.TestCase):
         cases += [(True, False, False, code) for code in (
             "existing_agent_image_not_qualified", "existing_copilot_proxy_rollout_out_of_scope",
             "cetiadmin_installation_transition_out_of_scope", "existing_memory_override_transition_out_of_scope",
+            "existing_memory_init_rollout_out_of_scope", "existing_custom_home_transition_out_of_scope",
             "retained_chart_tag_changed", "tag_changed_after_plan")]
         for apply, conflict, failure, runtime_block in cases:
             with self.subTest(apply=apply, conflict=conflict, failure=failure, runtime_block=runtime_block), tempfile.TemporaryDirectory() as directory:
@@ -829,7 +954,8 @@ class EnvironmentTests(unittest.TestCase):
                     self.assertIn({"stage": "upgrade_istio", "status": "PASS"}, result["stages"])
 
     def test_new_claim_is_pinned_between_upgrades_and_through_failure_reporting(self):
-        for replacement_at in ("collision", "before_broker", "before_platform", "acceptance", "failed_broker", None):
+        for replacement_at in ("collision", "before_broker", "before_platform", "acceptance", "failed_broker",
+                               "early_platform_claim", "platform_claim", None):
             with self.subTest(replacement_at=replacement_at), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 config, kube = inputs()
@@ -845,6 +971,10 @@ class EnvironmentTests(unittest.TestCase):
                 driver.documents = {name: [] for name in deploy.platform.CHARTS}
                 driver.documents["istio"] = [{"apiVersion": "v1", "kind": "PersistentVolumeClaim",
                                               "metadata": {"name": "sessions", "namespace": "istio"}}]
+                if replacement_at in ("early_platform_claim", "platform_claim"):
+                    driver.documents["platform"] = [{"kind": "StatefulSet", "metadata": {"name": "ingestor"},
+                        "spec": {"replicas": 1, "ordinals": {"start": 1}, "volumeClaimTemplates": [
+                            {"metadata": {"name": "data"}}]}}]
                 driver.scratch = root / "work/deployment"
                 driver.resource.return_value = {"uid": "synthetic-cluster"}
                 live = baseline()
@@ -863,6 +993,11 @@ class EnvironmentTests(unittest.TestCase):
                         live["objects"][key] = {"uid": "first-claim", "specHash": "pending", "generation": None,
                                                 "deleting": False, "ready": False, "bound": False,
                                                 "claimContractHash": "storage", "volumeName": ""}
+                    if ((name == "broker" and replacement_at == "early_platform_claim") or
+                            (name == "platform" and replacement_at == "platform_claim")):
+                        live["objects"]["pvc/platform/data-ingestor-1"] = {
+                            "uid": "new-ordinal", "specHash": "storage", "generation": None,
+                            "deleting": False, "ready": False, "bound": True}
                     if name == "broker" and replacement_at == "failed_broker":
                         live["objects"][key]["uid"] = "replacement"
                         raise ValueError("synthetic broker failure")
@@ -901,19 +1036,19 @@ class EnvironmentTests(unittest.TestCase):
                      patch.object(deploy, "stable_acceptance", side_effect=lambda *a, **k: acceptance(*a, **k, window=0)), \
                      redirect_stdout(io.StringIO()):
                     code = deploy.run(args)
-                self.assertEqual(code, int(replacement_at is not None))
+                self.assertEqual(code, int(replacement_at not in (None, "platform_claim")))
                 if replacement_at == "collision":
                     self.assertEqual(upgrades, [])
                 elif replacement_at == "before_broker":
                     self.assertEqual(upgrades, ["istio"])
-                elif replacement_at in ("before_platform", "failed_broker"):
+                elif replacement_at in ("before_platform", "failed_broker", "early_platform_claim"):
                     self.assertEqual(upgrades, ["istio", "broker"])
                 else:
                     self.assertEqual(upgrades, list(deploy.platform.CHARTS))
                 report = json.loads(args.report.read_text())
                 if replacement_at == "collision":
                     self.assertEqual(report["preservationAfterFailure"], "PASS")
-                elif replacement_at:
+                elif replacement_at and replacement_at != "platform_claim":
                     self.assertEqual(report["preservationAfterFailure"], "UNVERIFIED")
 
     def test_workflow_uses_only_manual_default_branch_and_report_allowlist(self):

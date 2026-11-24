@@ -35,6 +35,17 @@ CLUSTER_KINDS = {"Namespace", "CustomResourceDefinition", "ClusterRole", "Cluste
                  "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding", "StorageClass", "PersistentVolume"}
 CHARTS = {"istio": "infra/istio", "broker": "app/cetirun-agent-broker/chart",
           "platform": "app/cetirun-platform"}
+# Published artifact names are deliberately kept in one place.  Every chart
+# lock and Helm operation must address the same package; local aliases are not
+# allowed to drift between render, preflight, and upgrade.
+CHART_PACKAGES = {"istio": "cetirun-istio", "broker": "cetirun-agent-broker", "platform": "cetirun-platform"}
+
+
+def chart_package(name):
+    try:
+        return CHART_PACKAGES[name]
+    except KeyError as exc:
+        raise ValueError(f"unknown chart release {name}") from exc
 AGENT_ACCOUNT_FIELDS = ("metadata.name", "spec.agent.type", "spec.team", "spec.sandboxRef",
                         "spec.helm.values.serviceAccount.name", "spec.helm.values.serviceAccount.role",
                         "spec.helm.values.serviceAccount.automountToken")
@@ -706,13 +717,21 @@ def published_configuration(path, artifacts, scratch, *, domain=None, registry=N
         if release.get(key) not in (None, "", expected):
             raise ValueError(f"environment release.{key} conflicts with artifact lock")
         release[key] = expected
+    # Retain optionality from the release inventory.  Published deployments
+    # still validate exclusions even though they do not consult the checkout's
+    # mutable inventory.
+    if any(type(entry.get("optional", False)) is not bool for entry in (artifacts.get("images") or {}).values()):
+        raise ValueError("published image optional must be boolean")
     source["_publishedInventory"] = {
-        "images": sorted((artifacts.get("images") or {}).keys()),
-        "charts": sorted((artifacts.get("charts") or {}).keys()),
+        "images": [
+            {"name": name, "optional": entry.get("optional", False)}
+            for name, entry in sorted((artifacts.get("images") or {}).items())
+        ],
+        "charts": [{"name": name} for name in sorted((artifacts.get("charts") or {}))],
     }
     # Artifact inventory uses package names; the deployment driver uses logical
     # release names. Keep aliases explicit so no local chart can be selected.
-    chart_aliases = {"cetirun-platform": "platform", "cetirun-agent-broker": "broker", "cetirun-istio": "istio"}
+    chart_aliases = {package: logical for logical, package in CHART_PACKAGES.items()}
     logical_roots = {chart_aliases.get(name, name): root for name, root in roots.items()}
     config, values = configuration(source, domain=domain, registry=lock_registry,
                                    version=version, coordinate_origins=coordinate_origins,
@@ -1029,6 +1048,8 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
     custom = operator["customRuntime"]
     if not custom["approvedImages"] or any(not re.fullmatch(r"\S+@sha256:[0-9a-f]{64}", image) for image in custom["approvedImages"]):
         raise ValueError("Custom runtime requires explicitly qualified approvedImages pinned by digest")
+    if len(custom["approvedImages"]) > 64:
+        raise ValueError("Custom runtime approvedImages cannot contain more than 64 images")
     skills = mapping(config.get("sharedSkills"), "sharedSkills")
     for field in ("storageClassName", "resourceGroup", "storageAccount", "containerName"):
         required(skills, field)
@@ -1154,8 +1175,18 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
 def release_inventory(config):
     published = config.get("_publishedInventory")
     if isinstance(published, dict):
-        return {kind: [{"name": name, "path": ""} for name in published.get(kind, [])]
-                for kind in ("images", "charts")}
+        excluded = set(config.get("release", {}).get("excludeImages", []))
+        result = {}
+        for kind in ("images", "charts"):
+            entries = published.get(kind, [])
+            normalized = [copy.deepcopy(entry) for entry in entries]
+            result[kind] = [
+                entry for entry in normalized
+                if kind != "images" or entry.get("name") not in excluded
+            ]
+            for entry in result[kind]:
+                entry.setdefault("path", "")
+        return result
     return RELEASE.selected_inventory(RELEASE.inventory(), config["release"].get("excludeImages", []))
 
 
@@ -1169,6 +1200,15 @@ def image_references(value, name):
 
 def validate_excluded_images(config):
     excluded = set(config["release"].get("excludeImages", []))
+    published = config.get("_publishedInventory")
+    if isinstance(published, dict):
+        entries = {entry["name"]: entry for entry in published.get("images", [])}
+        for name in excluded:
+            entry = entries.get(name)
+            if entry is None:
+                raise ValueError(f"excludeImages names an unknown image: {name}")
+            if entry.get("optional", False) is not True:
+                raise ValueError(f"excludeImages can only exclude optional images: {name}")
     references = copy.deepcopy(config)
     references["release"].pop("excludeImages", None)
     # This is availability metadata, not a configured image consumer.
@@ -1418,9 +1458,8 @@ class Deployment:
                                                if self.published_artifacts else {})
             chart_archives = {}
             if self.published_artifacts:
-                aliases = {"cetirun-platform": "platform", "cetirun-agent-broker": "broker", "cetirun-istio": "istio"}
                 for package_name, entry in self.published_artifacts.get("charts", {}).items():
-                    logical = aliases.get(package_name, package_name)
+                    logical = next((name for name, package in CHART_PACKAGES.items() if package == package_name), package_name)
                     archive = Path(entry.get("path", "")).resolve()
                     expected = entry.get("sha256")
                     if archive.is_file() and isinstance(expected, str) and "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest() == expected:
@@ -2150,10 +2189,9 @@ class Deployment:
         if admin["enabled"] and admin["runtime"].get("image"):
             self.inspect_image(admin["runtime"]["image"])
         if self.published_artifacts:
-            aliases = {"cetirun-platform": "platform", "cetirun-agent-broker": "broker", "cetirun-istio": "istio"}
             locked_charts = self.published_artifacts.get("charts", {})
             for logical, chart_path in CHARTS.items():
-                package_name = {value: key for key, value in aliases.items()}.get(logical, logical)
+                package_name = chart_package(logical)
                 lock = locked_charts.get(package_name)
                 archive = Path(lock.get("path", "")).resolve() if isinstance(lock, dict) else None
                 expected = lock.get("sha256") if isinstance(lock, dict) else None
@@ -2192,13 +2230,37 @@ class Deployment:
             if c["istio"].get("mode", "manage") == "external":
                 raise ValueError("External Istio requires the existing OAuth2 mesh provider")
 
+    def retained_tls_values(self):
+        """Carry only the chart-owned TLS material into a reset-values upgrade."""
+        section = self.config["istio"]
+        namespace = section["ingressNamespace"]
+        before = self.resource("secret", "cetirun-tls", namespace)
+        owner = (before or {}).get("annotations", {})
+        if (not before or not before.get("uid") or before.get("deletionTimestamp") or
+                (owner.get("meta.helm.sh/release-name"), owner.get("meta.helm.sh/release-namespace")) !=
+                (section["release"], section["namespace"])):
+            raise ValueError("retained TLS Secret ownership is unavailable")
+        tls = {"enabled": True}
+        for key, field in (("cert", r"tls\.crt"), ("key", r"tls\.key")):
+            encoded = self.kubectl("get", "secret", "cetirun-tls", "--namespace", namespace, "-o",
+                                   "jsonpath={.data." + field + "}")
+            try:
+                tls[key] = base64.b64decode(encoded, validate=True).decode("ascii")
+                if not tls[key]:
+                    raise ValueError()
+            except (ValueError, UnicodeError):
+                raise ValueError("retained TLS Secret material is unavailable") from None
+        after = self.resource("secret", "cetirun-tls", namespace)
+        if not after or any(before.get(key) != after.get(key) for key in ("uid", "resourceVersion")):
+            raise ValueError("retained TLS Secret changed during read")
+        return {"tls": tls}, before
+
     def upgrade(self, name, values=None, *, expected_revision=None):
         if self.published_artifacts and (type(expected_revision) is not int or expected_revision < 1):
             raise ValueError("published upgrade requires an explicit expected release revision")
         section = self.config[name]
         if self.published_artifacts:
-            aliases = {"platform": "cetirun-platform", "broker": "cetirun-agent-broker", "istio": "cetirun-istio"}
-            package_name = aliases[name]
+            package_name = chart_package(name)
             entry = self.published_artifacts.get("charts", {}).get(package_name, {})
             archive = Path(entry.get("path", "")).resolve()
             expected = entry.get("sha256")
@@ -2225,20 +2287,43 @@ class Deployment:
             args.append("--install")
         args += [section["release"], str(self.charts[name]), "--namespace", section["namespace"],
                 "--values", str(self.files[values or name]), "--timeout", timeout]
-        if self.published_artifacts:
+        retained, tls_pin = None, None
+        if name == "istio" and section.get("tlsMode") == "retain":
+            retained, tls_pin = self.retained_tls_values()
+            if not tls_pin.get("resourceVersion"):
+                raise ValueError("retained TLS Secret version is unavailable")
+            if not self.published_artifacts:
+                history = json.loads(self.helm("history", section["release"], "--namespace", section["namespace"],
+                                               "--max", "1", "-o", "json"))
+                if (not isinstance(history, list) or len(history) != 1 or history[0].get("status") != "deployed" or
+                        not str(history[0].get("revision", "")).isdigit() or int(history[0]["revision"]) < 1):
+                    raise ValueError("retained TLS requires a deployed release revision")
+                expected_revision = int(history[0]["revision"])
+        if self.published_artifacts or retained:
             guard = ROOT / "scripts" / "helm_revision_guard.py"
             args += ["--post-renderer", str(guard)]
             guard_args = ["--expected-revision", str(expected_revision), "--release", section["release"],
                           "--namespace", section["namespace"], "--context", self.config["target"]["context"]]
+            if tls_pin:
+                guard_args += ["--tls-secret-namespace", section["ingressNamespace"], "--tls-secret-name", "cetirun-tls",
+                               "--tls-secret-uid", tls_pin["uid"], "--tls-secret-resource-version", tls_pin["resourceVersion"]]
             for argument in guard_args:
                 args.append("--post-renderer-args=" + argument)
-        if name == "istio" and section.get("tlsMode") == "retain":
-            args.append("--reuse-values")
-        else:
-            args.append("--reset-values")
+        # Reusing live values silently merges removed selectors and other
+        # settings into the upgrade. Only chart-owned TLS is retained; every
+        # non-TLS value comes from exactly the candidate that was previewed.
+        args.append("--reset-values")
         if not self.config["release"].get("clientOpenAPIValidation", True):
             args.append("--disable-openapi-validation")
-        self.helm(*args)
+        if retained:
+            # TemporaryFile is mode 0600 and removed on both success and error.
+            # Never put TLS material in argv, previews or the public report.
+            with tempfile.NamedTemporaryFile(mode="w", dir=self.scratch, suffix="-retained-tls.json") as tls_file:
+                json.dump(retained, tls_file)
+                tls_file.flush()
+                self.helm(*args, "--values", tls_file.name)
+        else:
+            self.helm(*args)
         if name == "platform":
             self.check_retained_postgresql()
 

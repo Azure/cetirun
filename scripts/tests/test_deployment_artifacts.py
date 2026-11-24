@@ -43,7 +43,7 @@ class DeploymentArtifactTests(unittest.TestCase):
             (source / "scripts").mkdir()
             (source / "app/cetirun-chart").mkdir(parents=True)
             (source / "app/cetirun-chart/Chart.yaml").write_text("version: 0.2.1\n")
-            inventory = {"schemaVersion": 1, "images": [{"name": "cetirun-operator"}],
+            inventory = {"schemaVersion": 1, "images": [{"name": "cetirun-operator", "optional": True}],
                          "charts": [{"name": "chart", "path": "app/cetirun-chart"}]}
             (source / "scripts/release-artifacts.json").write_text(json.dumps(inventory))
             chart_file = Path(directory) / "chart-0.2.1.tgz"
@@ -62,6 +62,17 @@ class DeploymentArtifactTests(unittest.TestCase):
             self.assertEqual(result["sourceSHA"], "d" * 40)
             self.assertEqual(result["charts"]["chart"]["path"], str(chart_file))
             self.assertEqual(result["version"], "0.2.1")
+            self.assertTrue(result["images"]["cetirun-operator"]["optional"])
+            for invalid in ("false", "true", 0, 1, None, []):
+                inventory["images"][0]["optional"] = invalid
+                (source / "scripts/release-artifacts.json").write_text(json.dumps(inventory))
+                with self.subTest(optional=invalid), \
+                     patch.object(subprocess, "check_output", side_effect=["", ("d" * 40) + "\n"]), \
+                     patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout=("d" * 40) + "\n")), \
+                     patch.object(ARTIFACTS, "_image") as download, \
+                     self.assertRaisesRegex(ARTIFACTS.ArtifactError, "optional must be boolean"):
+                    ARTIFACTS.resolve(source, Path(directory) / "invalid", "v0.2.1")
+                download.assert_not_called()
 
     def test_receipt_is_read_from_source_verified_image_config(self):
         receipt = {"cetirun-platform": "sha256:" + "e" * 64}

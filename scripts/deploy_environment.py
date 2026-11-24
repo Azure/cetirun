@@ -13,6 +13,7 @@ from contextlib import redirect_stderr, redirect_stdout
 import copy
 from datetime import datetime, timezone
 import hashlib
+from fractions import Fraction
 import json
 import os
 from pathlib import Path
@@ -188,32 +189,43 @@ def installation_claim_keys(deployment):
     return claims, tuple(prefixes)
 
 
-def planned_claim_keys(deployment):
+def planned_claim_releases(deployment):
     """Only claims explicitly created by managed rendered resources may appear.
 
     Volume references to external claims are not permission to create claims.
     StatefulSet additions use the rendered ordinal range, never a name prefix.
     """
-    claims = set()
+    claims = {}
     for name in managed_release_names(deployment):
         namespace = deployment.config[name]["namespace"]
         for document in managed_documents(deployment.documents[name]):
             meta, spec = document.get("metadata", {}), document.get("spec", {})
             ns = meta.get("namespace", namespace)
             if document.get("kind") == "PersistentVolumeClaim":
-                claims.add("pvc/" + ns + "/" + meta["name"])
+                keys = ["pvc/" + ns + "/" + meta["name"]]
             elif document.get("kind") == "StatefulSet":
                 start = spec.get("ordinals", {}).get("start", 0)
-                for claim in spec.get("volumeClaimTemplates", []):
-                    for ordinal in range(start, start + spec.get("replicas", 1)):
-                        claims.add(f"pvc/{ns}/{claim['metadata']['name']}-{meta['name']}-{ordinal}")
+                keys = [f"pvc/{ns}/{claim['metadata']['name']}-{meta['name']}-{ordinal}"
+                        for claim in spec.get("volumeClaimTemplates", [])
+                        for ordinal in range(start, start + spec.get("replicas", 1))]
+            else:
+                continue
+            for key in keys:
+                if key in claims and claims[key] != name:
+                    raise Blocked("planned_claim_release_ambiguous")
+                claims[key] = name
     return claims
+
+
+def planned_claim_keys(deployment):
+    return set(planned_claim_releases(deployment))
 
 
 def capture(deployment, *, require_deployed=True):
     """Read exact identities and spec hashes; do not save credentials or HOME."""
     snapshot = {"objects": {}, "releases": {}}
     runtime_namespaces = set()
+    namespace_agents = {}
     agent_uids = set()
     agent_namespaces = set()
     candidate_namespaces = {}
@@ -223,6 +235,7 @@ def capture(deployment, *, require_deployed=True):
             meta, spec, status = row["metadata"], row.get("spec", {}), row.get("status", {})
             if resource == "agents.cetirun.microsoft.com" and status.get("namespace"):
                 runtime_namespaces.add(status["namespace"])
+                namespace_agents[status["namespace"]] = meta["uid"]
                 agent_namespaces.add(status["namespace"])
             if resource == "agents.cetirun.microsoft.com":
                 agent_uids.add(meta.get("uid"))
@@ -238,11 +251,16 @@ def capture(deployment, *, require_deployed=True):
                 "image": spec.get("agent", {}).get("image", ""),
                 "chartVersion": spec.get("helm", {}).get("version", ""),
                 "suspended": spec.get("suspended", False),
+                "name": meta["name"],
+                "customOwnershipRequired": "cetirun.microsoft.com/custom-runtime-ownership" in meta.get("finalizers", []),
             }
             if resource == "pvc":
                 snapshot["objects"][key].update(
                     claimContractHash=digest({field: value for field, value in spec.items() if field != "volumeName"}),
-                    volumeName=spec.get("volumeName", ""))
+                    volumeName=spec.get("volumeName", ""),
+                    homeStorage={"storageClass": spec.get("storageClassName", ""),
+                                 "storageSize": spec.get("resources", {}).get("requests", {}).get("storage", ""),
+                                 "accessModes": spec.get("accessModes", [])})
     # status.namespace is written only after the runtime becomes ready. Resolve
     # an already-created namespace from the immutable Agent ownership metadata
     # so a Pod cannot be missed during that interval.
@@ -270,6 +288,7 @@ def capture(deployment, *, require_deployed=True):
                 raise Blocked("agent_namespace_unattributed")
             if attributed_uid:
                 runtime_namespaces.add(meta.get("name"))
+                namespace_agents[meta.get("name")] = attributed_uid
                 agent_namespaces.add(meta.get("name"))
     # PVCs from unrelated workloads must not make an otherwise safe upgrade
     # fail. Retain only claims referenced by installed manifests and claims in
@@ -310,6 +329,10 @@ def capture(deployment, *, require_deployed=True):
                 "ready": bool(statuses) and all(item.get("ready") for item in statuses), "bound": None,
                 "agentType": "", "image": "", "suspended": False,
                 "copilotProxyImage": proxies[0] if is_proxy else None,
+                "runtimeAgentUID": namespace_agents.get(namespace),
+                "isRuntimePod": any(container.get("name") == "cetirun" for container in row["spec"].get("containers", [])),
+                "memoryInitImages": [container.get("image", "") for container in row["spec"].get("initContainers", [])
+                                     if container.get("name") == "memory-assets"],
             }
     snapshot["releases"] = release_snapshot(deployment, require_deployed=require_deployed)
     return snapshot
@@ -442,6 +465,8 @@ def verify_operator_runtime_transition(deployment, snapshot, operator):
     new_enabled = candidate["memory-context-enabled"] == "true" or bool(new_image)
     if old_image != new_image or old_enabled != new_enabled:
         raise Blocked("existing_memory_override_transition_out_of_scope")
+    if current["chart-repo-url"] != candidate["chart-repo-url"]:
+        raise Blocked("existing_chart_repository_transition_out_of_scope")
     old_version, new_version = current["chart-version"], candidate["chart-version"]
     if old_version == new_version:
         return
@@ -465,6 +490,102 @@ def verify_operator_runtime_transition(deployment, snapshot, operator):
         raise Blocked("retained_chart_digest_unverified") from error
     if actual != old_digest:
         raise Blocked("retained_chart_tag_changed")
+
+
+def verify_memory_runtime_images(snapshot, operator, roots, lock):
+    """Compare effective chart Memory images before an Agent can reconcile."""
+    affected = {item["uid"] for item in snapshot["objects"].values()
+                if item.get("agentType") and item.get("chartVersion", "") in ("", lock["version"])}
+    pods = [item for item in snapshot["objects"].values()
+            if item.get("runtimeAgentUID") in affected and (item.get("isRuntimePod") or item.get("memoryInitImages"))]
+    if not pods:
+        return
+    arguments = runtime_arguments(operator.get("args", []))
+    image = arguments.get("memory-context-image", "")
+    enabled = arguments["memory-context-enabled"] == "true" or bool(image)
+    if enabled and not image:
+        values = yaml.safe_load((roots["cetirun"] / "values.yaml").read_text())
+        image = values.get("memoryContext", {}).get("image", "")
+    expected = [image] if enabled else []
+    if (enabled and not image) or any(item["memoryInitImages"] != expected for item in pods):
+        raise Blocked("existing_memory_init_rollout_out_of_scope")
+
+
+def storage_quantity(value):
+    """Compare retained Kubernetes storage quantities without rounding units."""
+    match = re.fullmatch(r"([+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))([eE][+-]?[0-9]+|[KMGTPE]i|[numkMGTPE]?)", str(value))
+    if not match or len(str(value)) > 64:
+        raise Blocked("custom_home_storage_unverified")
+    number, suffix = match.groups()
+    if suffix.endswith("i"):
+        scale = Fraction(1024) ** ("KMGTPE".index(suffix[0]) + 1)
+    else:
+        exponent = int(suffix[1:]) if len(suffix) > 1 else {"n": -9, "u": -6, "m": -3, "": 0,
+                      "k": 3, "M": 6, "G": 9, "T": 12, "P": 15, "E": 18}[suffix]
+        if abs(exponent) > 63:
+            raise Blocked("custom_home_storage_unverified")
+        scale = Fraction(10) ** exponent
+    result = Fraction(number) * scale
+    if result <= 0:
+        raise Blocked("custom_home_storage_unverified")
+    return result
+
+
+def verify_custom_home_preservation(deployment, snapshot):
+    """Retained provider HOME must remain usable with the candidate settings."""
+    agents = [item for item in snapshot["objects"].values() if item.get("agentType") == "custom"]
+    if not agents:
+        return
+    namespace = deployment.config["platform"]["namespace"]
+    desired = platform.get_value(deployment.values["platform"], "cetirun-operator.customRuntime") or {}
+    for item in agents:
+        name = item["name"]
+        record = "custom-ownership-" + hashlib.sha256(item["uid"].encode()).hexdigest()[:32]
+        before = deployment.resource("configmap", record, namespace)
+        if before is None:
+            if item.get("customOwnershipRequired"):
+                raise Blocked("custom_home_binding_unavailable")
+            # Sandbox Custom does not use this provider. A new ordinary Custom
+            # Agent may also not have established its first binding yet.
+            continue
+        raw, immutable = deployment.selected_fields("configmap", record, ("data.ownership", "immutable"), namespace)
+        after = deployment.resource("configmap", record, namespace)
+        if (not before.get("uid") or before.get("deletionTimestamp") or not after or
+                any(before.get(key) != after.get(key) for key in ("uid", "resourceVersion"))):
+            raise Blocked("custom_home_binding_changed")
+        try:
+            receipt = json.loads(raw)
+        except (ValueError, TypeError):
+            raise Blocked("custom_home_binding_unavailable") from None
+        runtime_namespace = "cetirun-" + name
+        home = "data-" + runtime_namespace[:63].rstrip("-") + "-0"
+        owners = before.get("ownerReferences", [])
+        valid_owner = (len(owners) == 1 and owners[0].get("apiVersion") == "cetirun.microsoft.com/v1alpha1"
+                       and owners[0].get("kind") == "Agent" and owners[0].get("name") == name
+                       and owners[0].get("uid") == item["uid"])
+        if (not isinstance(receipt, dict) or immutable != "true" or not valid_owner or
+                any(receipt.get(key) != value for key, value in {
+                    "agentName": name, "agentUID": item["uid"], "namespace": runtime_namespace,
+                    "release": runtime_namespace, "home": home}.items()) or not receipt.get("namespaceUID")):
+            raise Blocked("custom_home_binding_unavailable")
+        live_namespace = deployment.resource("namespace", runtime_namespace)
+        if (not live_namespace or live_namespace.get("uid") != receipt["namespaceUID"] or
+                live_namespace.get("deletionTimestamp")):
+            raise Blocked("custom_home_binding_changed")
+        claim = receipt.get("homeClaim")
+        if not isinstance(claim, dict) or set(claim) != {"storageClass", "storageSize", "accessMode"}:
+            raise Blocked("custom_home_storage_unverified")
+        if (not desired.get("enabled") or claim["storageClass"] != desired.get("storageClass") or
+                claim["accessMode"] != desired.get("accessMode") or
+                storage_quantity(claim["storageSize"]) != storage_quantity(desired.get("storageSize"))):
+            raise Blocked("existing_custom_home_transition_out_of_scope")
+        pvc = snapshot["objects"].get("pvc/" + runtime_namespace + "/" + home)
+        if pvc is not None:
+            storage = pvc.get("homeStorage", {})
+            if (storage.get("storageClass") != claim["storageClass"] or
+                    storage.get("accessModes") != [claim["accessMode"]] or
+                    storage_quantity(storage.get("storageSize")) != storage_quantity(claim["storageSize"])):
+                raise Blocked("custom_home_storage_unverified")
 
 
 def verify_cetiadmin_transition(deployment, operator, lock):
@@ -503,6 +624,8 @@ def verify_runtime_preservation(deployment, snapshot, roots, lock):
     verify_existing_agent_images(deployment, snapshot, roots, lock)
     operator = rendered_operator(deployment)
     verify_operator_runtime_transition(deployment, snapshot, operator)
+    verify_memory_runtime_images(snapshot, operator, roots, lock)
+    verify_custom_home_preservation(deployment, snapshot)
     proxy_image = next((item.get("value", "") for item in operator.get("env", [])
                         if item.get("name") == "AI_GATEWAY_COPILOT_PROXY_IMAGE"), "")
     for item in snapshot["objects"].values():
@@ -833,8 +956,9 @@ def run(args):
             stage = "preflight"
             deployment.preflight()
             summary["changes"] = compare_manifests(deployment)
-            allowed_additions = planned_claim_keys(deployment) - baseline["objects"].keys()
-            summary["plannedPVCAdditions"] = len(allowed_additions)
+            planned_additions = {key: name for key, name in planned_claim_releases(deployment).items()
+                                 if key not in baseline["objects"]}
+            summary["plannedPVCAdditions"] = len(planned_additions)
             summary["entryBefore"] = verify_entry(config["domain"])
             summary["stages"].append({"stage": "preflight", "status": "PASS"})
             private_write(output, json.dumps(summary, indent=2) + "\n")
@@ -864,11 +988,14 @@ def run(args):
                     return int(expected_releases[name]["revision"])
 
                 def after_upgrade(name, values=None):
-                    chart_names = {"istio": "cetirun-istio", "broker": "cetirun-agent-broker", "platform": "cetirun-platform"}
                     expected_releases[name] = {"revision": str(int(expected_releases[name]["revision"]) + 1),
-                                               "chart": chart_names[name] + "-" + lock["version"], "status": "deployed"}
+                                               "chart": platform.chart_package(name) + "-" + lock["version"], "status": "deployed"}
                     if release_snapshot(deployment) != expected_releases:
                         raise Blocked("helm_revision_changed_after_upgrade")
+                    # Only the release that creates a claim can authorize its
+                    # first appearance. A future platform ordinal appearing
+                    # during Broker's upgrade is an unrelated claim, not ours.
+                    allowed_additions.update(key for key, owner in planned_additions.items() if owner == name)
                     # Record newly created claims immediately, not only when
                     # the next release or final acceptance starts.
                     observe_preservation(baseline, observed, capture(deployment), allowed_additions=allowed_additions)
