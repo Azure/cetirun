@@ -415,6 +415,8 @@ class EnvironmentTests(unittest.TestCase):
         deploy.verify_existing_agent_images(driver, snap, {}, {"version": "0.2.1"})
         self.assertEqual(snap, before)
         driver.kubectl.assert_not_called()
+        with self.assertRaisesRegex(deploy.Blocked, "existing_agent_runtime_image_unpinned"):
+            deploy.verify_existing_agent_images(driver, baseline(""), {}, {"version": "0.2.1"})
         snap["objects"]["agents/fixture"]["agentType"] = "custom"
         with self.assertRaisesRegex(deploy.Blocked, "existing_custom_image_not_approved"):
             deploy.verify_existing_agent_images(driver, snap, {}, {"version": "0.2.1"})

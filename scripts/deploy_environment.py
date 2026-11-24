@@ -363,6 +363,8 @@ def verify_existing_agent_images(deployment, snapshot, roots, lock):
         if runtime == "custom" and item["image"] not in approved:
             raise Blocked("existing_custom_image_not_approved")
         if deployment.config.get("_infrastructureOnly"):
+            if runtime in ("openclaw", "hermes") and not item.get("image"):
+                raise Blocked("existing_agent_runtime_image_unpinned")
             # An unchanged runtime is qualified by its retained chart, not by
             # the unrelated runtime chart bundled with this control-plane
             # release. Exact runtime configuration and live objects are
