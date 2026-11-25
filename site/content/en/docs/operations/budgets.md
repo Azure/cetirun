@@ -135,8 +135,12 @@ and model since midnight UTC:
 ```kusto
 GatewayRequests()
 | where Timestamp > startofday(now()) and CallOrigin != "health_check"
-| summarize Calls = count(), Spend = sum(Spend) by Agent, Owner, Team, Model
+| summarize Calls = count(), Spend = sum(Spend) by Agent, Owner, Team, Model, CopilotRoute
 ```
+
+`CopilotRoute` is `true` for the calls that a GitHub Copilot route of the owner
+answered. The subscription of the owner paid for them, and the budget counts
+them at the list price of the model.
 
 The metric `litellm_remaining_api_key_budget_metric` shows the remaining budget
 of each key. Counters such as `litellm_spend_metric_total` restart from zero

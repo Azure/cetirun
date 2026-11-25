@@ -405,17 +405,51 @@ class AdxScriptTests(unittest.TestCase):
 
     def test_gateway_daily_usage_reads_only_its_table_and_follows_it(self):
         create, retention, caching = kusto_commands("cetirun-gateway-usage.kql")
-        self.assertTrue(create.startswith(".create ifnotexists materialized-view with (backfill = true"))
-        self.assertIn(" GatewayDailyUsage on table Gateway {", create)
+        self.assertTrue(create.startswith(".create ifnotexists materialized-view with (folder = "))
+        # No backfill: Kusto refuses it while earlier rows of the table are outside
+        # the hot cache, which would fail the script on every existing database.
+        self.assertNotIn("backfill", create)
+        self.assertIn(" GatewayDailyUsageV2 on table Gateway {", create)
         # A materialized view reads its source table only.
         self.assertEqual(re.findall(r"^ {4}(\w+)$", create, re.M), ["Gateway"])
+        self.assertTrue(retention.startswith(".alter materialized-view GatewayDailyUsageV2 policy retention"))
         self.assertIn("__RETENTION_DAYS__.00:00:00", retention)
-        self.assertTrue(caching.startswith(".alter materialized-view GatewayDailyUsage policy caching"))
+        self.assertTrue(caching.startswith(".alter materialized-view GatewayDailyUsageV2 policy caching"))
+        # The view of earlier templates keeps its rows: the script leaves it alone.
+        commands = "\n".join(kusto_commands("cetirun-gateway-usage.kql"))
+        self.assertNotRegex(commands, r"\bGatewayDailyUsage\b(?!V2)")
         module = (ROOT / "infra/cluster/modules/adx.bicep").read_text()
         line = next(text for text in module.splitlines() if text.startswith("var logsFunctions"))
         # After the script that creates the Gateway table, with the retention of the template.
         self.assertLess(line.index("adx/cetirun-logs.kql"), line.index("adx/cetirun-gateway-usage.kql"))
         self.assertIn("'__RETENTION_DAYS__', string(gatewayUsageRetentionDays)", line)
+
+    def test_gateway_daily_usage_groups_by_identities_and_copilot_routes(self):
+        create = kusto_commands("cetirun-gateway-usage.kql")[0]
+        aggregations, keys = create.split("\n        by ", 1)
+        # Agents by their UID and users by the user ID of the key: names and
+        # aliases can repeat.
+        for key in ("AgentUid = tostring(Metadata['cetirun_agent_uid'])", "Agent = tostring(Metadata['cetirun_agent'])",
+                    "UserId = tostring(Body['user_id'])", "Owner = tostring(Metadata['cetirun_user'])",
+                    "Model = tostring(Body['model'])", "ProviderModel = tostring(Body['provider_model'])",
+                    "Provider = tostring(Body['provider'])",
+                    "CopilotRoute = tostring(Body['deployment_id']) startswith \"cetirun-copilot-\""):
+            self.assertIn(key, keys)
+        for aggregation in ("Calls = count()", "Spend = sum(toreal(Body['spend']))",
+                            "CacheCreationTokens = sum(tolong(Body['cache_creation_tokens']))"):
+            self.assertIn(aggregation, aggregations)
+
+    def test_copilot_routes_are_told_apart_by_the_operators_prefix(self):
+        operator = (ROOT / "app/cetirun-operator/internal/controller/ai_gateway_copilot.go").read_text()
+        prefix = re.search(r'aiGatewayCopilotGroupPrefix = "([^"]+)"', operator)[1]
+        # A Copilot route's ID is the prefix, the Agent UID, the model and a revision.
+        self.assertIn('fmt.Sprintf("%s%s-%s-%s", aiGatewayCopilotGroupPrefix, instance.UID, model, revision)', operator)
+        # The request log names the deployment by LiteLLM's model ID, which is the route's ID.
+        request_log = (ROOT / "app/cetirun-ai-gateway/cetirun_ai_gateway/request_log.py").read_text()
+        self.assertIn('"deployment_id": clip(payload.get("model_id"))', request_log)
+        for name in ("cetirun-gateway-usage.kql", "cetirun-logs.kql"):
+            self.assertIn(f"CopilotRoute = tostring(Body['deployment_id']) startswith \"{prefix}\"",
+                          (ADX_SCRIPTS / name).read_text())
 
     def test_audit_messages_land_whole_and_expand_into_events(self):
         table, mapping, function = kusto_commands("cetirun-audit.kql")

@@ -52,6 +52,10 @@
         ProviderModel = tostring(Body['provider_model']),
         Provider = tostring(Body['provider']),
         DeploymentId = tostring(Body['deployment_id']),
+        // The owner's GitHub Copilot route answered the call: the operator
+        // registers these routes with deployment IDs that start with this
+        // prefix. These calls use the owner's Copilot subscription.
+        CopilotRoute = tostring(Body['deployment_id']) startswith "cetirun-copilot-",
         ApiBase = tostring(Body['api_base']),
         DurationMs = toreal(Body['duration_ms']),
         TimeToFirstTokenMs = toreal(Body['time_to_first_token_ms']),

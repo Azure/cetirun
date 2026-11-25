@@ -206,9 +206,15 @@ database. The AI Gateway's metric labels include key aliases, user IDs, and
 Team names. With an alert receiver, the alerter sends that receiver the
 cluster name and the failed checks of the collection. Retention is a property
 of each database: the cluster template sets 90 days for logs, 30 days for
-metrics, and 14 days for Agent logs. Successful collection still depends on
-the deployed collectors, permissions, and settings. Source configuration alone
-does not prove that a live cluster collects data.
+metrics, and 14 days for Agent logs. The materialized view
+`GatewayDailyUsageV2` in `CetiRunLogs` has its own retention, 400 days by
+default. It keeps the calls, tokens, and spend of each day per Agent, owner
+alias, AI Gateway user ID, Team, and model. Since CetiRun v0.2.0, this user ID
+is the owner's Entra tenant and object IDs. The view `GatewayDailyUsage` of
+earlier cluster templates keeps its rows until an administrator drops it.
+Successful collection still depends on the deployed collectors, permissions,
+and settings. Source configuration alone does not prove that a live cluster
+collects data.
 
 With the cluster template parameter `adxAuditLogs`, the AKS API server sends
 its audit events through an Event Hub, which keeps each message for one day,
@@ -363,9 +369,10 @@ encrypted GitHub and Google tokens. The owner can remove them on the
 
 The cluster template sets the retention of each Azure Data Explorer database
 of the ADX-Mon collection: 90 days for logs, 30 days for metrics, and 14 days
-for Agent logs. Databases that already exist, exports, and other stores can
-have different retention. CetiRun does not implement one global deletion
-schedule across these systems.
+for Agent logs. The daily AI Gateway usage view in the logs database keeps
+400 days. Databases that already exist, exports, and other stores can have
+different retention. CetiRun does not implement one global deletion schedule
+across these systems.
 
 Source: [OAuth2 Proxy configuration](infra/istio/templates/ingress/oauth2-proxy-deployment.yaml),
 [theme storage](app/cetirun-portal/web/src/context/ThemeContext.tsx),

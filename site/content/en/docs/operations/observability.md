@@ -176,8 +176,8 @@ The cluster template creates these functions:
 
 | Database | Function | Rows |
 |---|---|---|
-| `CetiRunLogs` | `GatewayRequests()` | One AI Gateway call with its Agent, owner, Team, model, tokens, spend, routing and outcome. No request or response content. `CallOrigin` is `health_check` for LiteLLM's own probes, the origin of the classifier for the classifier call of a router, and empty for a client's call |
-| `CetiRunLogs` | `GatewayDailyUsage`, a materialized view | The AI Gateway calls, failed calls, tokens and spend of one day per cluster, Agent, owner, Team, model and call origin. It keeps 400 days by default, longer than the request log |
+| `CetiRunLogs` | `GatewayRequests()` | One AI Gateway call with its Agent, owner, Team, model, tokens, spend, routing and outcome. No request or response content. `CallOrigin` is `health_check` for LiteLLM's own probes, the origin of the classifier for the classifier call of a router, and empty for a client's call. `CopilotRoute` is `true` when a GitHub Copilot route of the owner answered the call |
+| `CetiRunLogs` | `GatewayDailyUsageV2`, a materialized view | The AI Gateway calls, failed calls, tokens and spend of one day per cluster, Agent, AI Gateway user, owner, Team, model, provider and provider model, GitHub Copilot route and call origin, from the creation of the view. It keeps 400 days by default, longer than the request log |
 | `CetiRunLogs` | `KubeEvents()` | One Kubernetes event version |
 | `CetiRunLogs` | `AgentInventoryHistory()`, `AgentInventory()` | Each record of an Agent's namespace, owner, Team and Agent Policy; the current Agents |
 | `CetiRunLogs` | `InventorySnapshots()` | One complete inventory snapshot of a kind, per cluster |
@@ -199,10 +199,34 @@ And the spend of each Team by month, also for months before the retention of
 the request log:
 
 ```kusto
-GatewayDailyUsage
+GatewayDailyUsageV2
 | where CallOrigin != "health_check"
 | summarize Spend = sum(Spend) by Month = startofmonth(Day), Team
 ```
+
+The name of an Agent and the alias of an owner can repeat. A new Agent can get
+the name of a deleted Agent, and users from two domains can have the same
+alias. To count each Agent or user once, group by `AgentUid` or `UserId`.
+`UserId` is the AI Gateway user of the key:
+
+- Since CetiRun v0.2.0, the owner's Entra tenant and object IDs, as
+  `<tenant>/<object>`. An Agent without them has `agent:<Agent UID>`.
+- Before v0.2.0, the owner's alias. The rows of these calls keep it.
+
+`CopilotRoute` separates the calls that the owner's GitHub Copilot
+subscription paid for. Their `Spend` is the list price that the AI Gateway
+charges to the budget. Refer to
+[What the budget counts](../budgets/#what-the-budget-counts). For example, the
+spend of the shared models for each user by month:
+
+```kusto
+GatewayDailyUsageV2
+| where CallOrigin != "health_check" and not(CopilotRoute)
+| summarize Spend = sum(Spend), Owners = make_set(Owner) by Month = startofmonth(Day), UserId
+```
+
+Earlier cluster templates created the view `GatewayDailyUsage`, without these
+columns. Refer to [Azure Data Explorer](../infrastructure/#azure-data-explorer).
 
 `CollectionHealth()` checks the last 15 minutes by default:
 
