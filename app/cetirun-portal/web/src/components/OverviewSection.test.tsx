@@ -458,4 +458,18 @@ describe("OverviewSection", () => {
     expect(block().queryByRole("button", { name: "Restart Agent" })).toBeNull();
   });
 
+  it("shows the key's budget also while the Agent is suspended", () => {
+    const aiGateway: Instance["aiGateway"] = {
+      routed: false, sharedModels: true, githubCopilot: false, models: [],
+      budget: { budgetUSD: "50", spendUSD: "12.4", duration: "1mo", state: "suspended" },
+    };
+    const view = renderInRouter(<OverviewSection instance={{ ...baseInstance, phase: "Suspended", suspended: true, aiGateway }} />);
+    expect(screen.queryByRole("heading", { name: "Models" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "Usage" })).toBeInTheDocument();
+    expect(screen.getByText("Spent 12.40 of 50.00 USD this month.")).toBeInTheDocument();
+
+    view.rerender(<OverviewSection instance={{ ...baseInstance, aiGateway: { ...aiGateway, budget: undefined } }} />);
+    expect(screen.queryByRole("heading", { name: "Usage" })).toBeNull();
+  });
+
 });

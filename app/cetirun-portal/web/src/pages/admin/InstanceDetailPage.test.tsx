@@ -302,4 +302,20 @@ describe("InstanceDetailPage", () => {
     expect(await screen.findByText("pods: Namespace access is unavailable")).toBeInTheDocument();
     expect(screen.getByText("No pods found.")).toBeInTheDocument();
   });
+
+  it("shows the key's budget only after the operator has read it", async () => {
+    const view = renderPage();
+    expect(await screen.findByRole("heading", { name: "Configuration" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Usage" })).not.toBeInTheDocument();
+    view.unmount();
+
+    vi.mocked(adminInstances.getAdminInstance).mockResolvedValue({ ...agent, suspended: true,
+      aiGatewayBudget: { budgetUSD: "50", spendUSD: "12.4", duration: "1mo", resetAt: "2026-12-01T00:00:00Z", state: "suspended" },
+    });
+    renderPage();
+    const usage = (await screen.findByRole("heading", { name: "Usage" })).closest("section")!;
+    expect(within(usage).getByText("Spent 12.40 of 50.00 USD this month.")).toBeInTheDocument();
+    expect(within(usage).getByText("Resets 2026-12-01 00:00 UTC.")).toBeInTheDocument();
+    expect(within(usage).getByText("Suspended")).toHaveClass("status-label");
+  });
 });

@@ -41,4 +41,24 @@ describe("admin InstanceListPage", () => {
     expect(screen.queryByRole("link", { name: "research" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "support" })).toBeInTheDocument();
   });
+
+  it("shows each key's spend against its budget and why the AI Gateway refuses it", async () => {
+    vi.mocked(adminInstances.listAllInstances).mockResolvedValue([
+      { name: "research", alias: "alice", uid: "1", agent: { type: "openclaw" }, ready: true, phase: "Ready", createdAt: "2026-01-01T00:00:00Z",
+        aiGatewayBudget: { budgetUSD: "50", spendUSD: "12.4", duration: "1mo", state: "active" } },
+      { name: "support", alias: "bob", uid: "2", agent: { type: "hermes" }, ready: true, phase: "Ready", createdAt: "2026-01-01T00:00:00Z",
+        aiGatewayBudget: { budgetUSD: "10", spendUSD: "10.02", duration: "1mo", state: "budgetReached" } },
+      { name: "draft", alias: "carol", uid: "3", agent: { type: "custom" }, ready: false, phase: "Pending", createdAt: "2026-01-01T00:00:00Z" },
+    ]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={client}><MemoryRouter><InstanceListPage /></MemoryRouter></QueryClientProvider>);
+    expect(await screen.findByRole("columnheader", { name: "Spent (USD)" })).toBeInTheDocument();
+    const row = (name: string) => screen.getByRole("link", { name }).closest("tr")!;
+    expect(within(row("research")).getByText("12.40 of 50.00")).toBeInTheDocument();
+    expect(within(row("research")).queryByText("Budget reached")).not.toBeInTheDocument();
+    expect(within(row("support")).getByText("10.02 of 10.00")).toBeInTheDocument();
+    expect(within(row("support")).getByText("Budget reached")).toHaveClass("status-label");
+    // Before the operator has read a key, the cell has no numbers.
+    expect(within(row("draft")).queryByText(/ of /)).not.toBeInTheDocument();
+  });
 });

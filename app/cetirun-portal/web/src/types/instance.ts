@@ -133,6 +133,25 @@ export interface AIGatewayInfo {
   modelRouters?: { name: string; granted: boolean; reason?: string }[];
   /** Limits the Agent's policy sets on its key; absent when there are none. */
   rateLimits?: AgentPolicyRateLimits;
+  /** The current period of the key's budget; absent before the operator read the key. */
+  budget?: AIGatewayBudget;
+}
+
+/** Why the AI Gateway refuses the calls of an Agent's key, or active. */
+export type AIGatewayKeyState = "active" | "budgetReached" | "suspended" | "noModelAccess" | "blocked";
+
+/** The current period of an Agent key's budget, as the AI Gateway reported it. */
+export interface AIGatewayBudget {
+  /** Decimal USD amounts, as the AI Gateway reports them. */
+  budgetUSD?: string;
+  spendUSD?: string;
+  /** Length of the period, such as 1mo. */
+  duration?: string;
+  /** When the next period starts (RFC 3339). */
+  resetAt?: string;
+  /** When the operator last checked the key in the AI Gateway (RFC 3339). */
+  checkedAt?: string;
+  state: AIGatewayKeyState;
 }
 
 export interface ModelAccess {

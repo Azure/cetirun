@@ -20,14 +20,29 @@ import {
 } from "@fluentui/react-components";
 import { listAllInstances, type AdminInstanceSummary } from "../../api/adminInstance";
 import { agentTypeLabel } from "../../utils/instance";
+import { budgetAmounts, keyStateText } from "../../utils/budget";
 import { GovernanceNotice } from "../../components/GovernanceNotice";
 import { AgentPhase, lifecycleState, type LifecycleState } from "../../components/Lifecycle";
+import { StatusLabel } from "../../components/StatusLabel";
+import type { AIGatewayBudget } from "../../types/instance";
 
 /** The glyph is green only when the Agent is ready, whatever its phase says. */
 function listedState(instance: AdminInstanceSummary): LifecycleState {
   if (instance.ready) return "ready";
   const state = lifecycleState(instance.phase);
   return state === "ready" ? "waiting" : state;
+}
+
+/** The spend of the key against its budget, and why the AI Gateway refuses the key. */
+function BudgetCell({ budget }: { budget?: AIGatewayBudget }) {
+  if (!budget) return <>—</>;
+  const state = keyStateText(budget.state);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
+      <span>{budgetAmounts(budget)}</span>
+      {state && <StatusLabel tone={state.tone} size="small">{state.label}</StatusLabel>}
+    </div>
+  );
 }
 
 function formatAge(createdAt?: string): string {
@@ -87,7 +102,7 @@ export function InstanceListPage() {
           <Field label="Type"><Select aria-label="Type" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="">All types</option>{types.map((type) => <option key={type} value={type}>{agentTypeLabel(type)}</option>)}</Select></Field>
           <Field label="Phase"><Select aria-label="Phase" value={phaseFilter} onChange={(event) => setPhaseFilter(event.target.value)}><option value="">All phases</option>{phases.map((phase) => <option key={phase} value={phase}>{phase}</option>)}</Select></Field>
         </div>
-        <div className="portal-table-scroll"><Table aria-label="All agents" style={{ minWidth: 940 }}>
+        <div className="portal-table-scroll"><Table aria-label="All agents" style={{ minWidth: 1080 }}>
           <TableHeader>
             <TableRow>
               <TableHeaderCell>Name</TableHeaderCell>
@@ -96,6 +111,7 @@ export function InstanceListPage() {
               <TableHeaderCell style={{ width: 120 }}>Team</TableHeaderCell>
               <TableHeaderCell style={{ width: 96 }}>Agent</TableHeaderCell>
               <TableHeaderCell style={{ width: 190 }}>Status</TableHeaderCell>
+              <TableHeaderCell style={{ width: 140 }}>Spent (USD)</TableHeaderCell>
               <TableHeaderCell style={{ width: 56 }}>Age</TableHeaderCell>
               <TableHeaderCell style={{ width: 104 }}>Actions</TableHeaderCell>
             </TableRow>
@@ -103,7 +119,7 @@ export function InstanceListPage() {
           <TableBody>
             {agents.length === 0 && (
               <TableRow>
-                <TableCell colSpan={8}>
+                <TableCell colSpan={9}>
                   <Text>{data.length === 0 ? "No agents." : "No agents match the filters."}</Text>
                 </TableCell>
               </TableRow>
@@ -119,6 +135,7 @@ export function InstanceListPage() {
                   <AgentPhase phase={ins.phase || "Unknown"} state={listedState(ins)} />
                   <GovernanceNotice instance={ins} compact />
                 </TableCell>
+                <TableCell><BudgetCell budget={ins.aiGatewayBudget} /></TableCell>
                 <TableCell>{formatAge(ins.createdAt)}</TableCell>
                 <TableCell><Link to={`/admin/instances/${encodeURIComponent(ins.name)}`}>View details</Link></TableCell>
               </TableRow>

@@ -139,6 +139,28 @@ example, this occurs for a router when one of its tier models does not reason.
 Hermes sends its own reasoning effort to each model. The AI Gateway removes the
 effort from a request when no deployment that can answer the request reasons.
 
+### Spend and budget
+
+The **Usage** section on the **Overview** tab shows the spend of the Agent's
+key in the current month, its budget, and when the budget resets. The numbers
+come from the AI Gateway. The operator reads them about every ten minutes, and
+the section shows when it last checked the key. The spend is the count of the
+AI Gateway, not an invoice. The section does not calculate a remaining amount.
+
+When the AI Gateway refuses the calls of the key, the section shows why:
+
+| Label | Cause |
+| --- | --- |
+| **Budget reached** | The spend reached the budget. The AI Gateway refuses the calls until the budget resets. |
+| **Suspended** | The Agent is suspended. |
+| **No model access** | The Agent Policy of the Team grants the Agent no model. |
+| **Blocked by an administrator** | An administrator blocked the key in the AI Gateway console. |
+
+The section shows only the budget of the key. A platform administrator can
+also set a budget on the AI Gateway team of a Team in the console. When that
+budget runs out, the AI Gateway refuses the calls, and the section shows no
+label.
+
 ### When the budget runs out
 
 Each Agent's key has a monthly budget in US dollars. For an Agent of a

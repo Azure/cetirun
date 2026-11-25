@@ -45,6 +45,9 @@ type AIGatewayResponse struct {
 	// RateLimits are the limits the Agent's policy sets on its key. Only
 	// the single-Agent read fills them in.
 	RateLimits *AgentPolicyRateLimitsDTO `json:"rateLimits,omitempty"`
+	// Budget is the current period of the key's budget, as the operator last
+	// read it from the Gateway, or nil before the first read.
+	Budget *AIGatewayBudgetResponse `json:"budget,omitempty"`
 }
 
 // AIGatewayCopilotResponse describes the Agent's GitHub Copilot proxy.
@@ -138,6 +141,7 @@ func aiGatewayResponse(instance *cetirunv1alpha1.Agent) *AIGatewayResponse {
 		}
 	}
 	applyModelRouterNames(resp, status)
+	resp.Budget = aiGatewayBudget(instance)
 	return resp
 }
 
