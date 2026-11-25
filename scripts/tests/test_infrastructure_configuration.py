@@ -121,6 +121,37 @@ class InfrastructureWiringTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "active Portal"):
                         self.driver.check_infrastructure_wiring()
 
+    def test_marketplace_catalog_matches_worker_in_both_portal_topologies(self):
+        for standalone in (False, True):
+            with self.subTest(standalone=standalone):
+                self.setUp()
+                if standalone:
+                    self.driver.config["portal"] = {"namespace": "portal-ns"}
+                    self.driver.values["portal"] = {}
+                    self.driver.documents["portal"] = [self.driver.documents["platform"].pop()]
+                    self.set_env(self.broker, "PORTAL_NAMESPACE", "portal-ns")
+                worker = {"name": "skill-marketplace", "args": ["--namespace=platform"]}
+                self.driver.documents["platform"].append(self.workload("marketplace", worker))
+                self.portal["env"].extend([
+                    {"name": "SKILL_MARKETPLACE_ENABLED", "value": "true"},
+                    {"name": "SKILL_MARKETPLACE_CATALOG_NAMESPACE", "value": "platform"}])
+                self.driver.check_infrastructure_wiring()
+                self.set_env(self.portal, "SKILL_MARKETPLACE_CATALOG_NAMESPACE", "wrong")
+                with self.assertRaisesRegex(ValueError, "worker's catalog namespace"):
+                    self.driver.check_infrastructure_wiring()
+                self.set_env(self.portal, "SKILL_MARKETPLACE_CATALOG_NAMESPACE", "platform")
+                self.set_env(self.portal, "SKILL_MARKETPLACE_ENABLED", "false")
+                with self.assertRaisesRegex(ValueError, "worker's catalog namespace"):
+                    self.driver.check_infrastructure_wiring()
+                self.set_env(self.portal, "SKILL_MARKETPLACE_ENABLED", "true")
+                worker["args"] = ["--namespace=wrong"]
+                with self.assertRaisesRegex(ValueError, "worker's catalog namespace"):
+                    self.driver.check_infrastructure_wiring()
+                self.driver.documents["platform"].pop()
+                with self.assertRaisesRegex(ValueError, "skill-marketplace Deployment is unavailable"):
+                    self.driver.check_infrastructure_wiring()
+                self.driver.kubectl.assert_not_called()
+
     def test_management_key_requires_same_secret_and_key(self):
         for field in ("AI_GATEWAY_MASTER_KEY_SECRET", "AI_GATEWAY_MASTER_KEY_SECRET_KEY"):
             with self.subTest(field=field):
@@ -332,6 +363,25 @@ class InfrastructureReviewContracts(unittest.TestCase):
         self.assertIsNone(self.driver.rendered_control("cetirun-portal", "portal"))
         self.driver.resource.assert_not_called()
         self.driver.kubectl.assert_not_called()
+
+    def test_existing_control_accepts_omitted_literal_but_not_ambiguous_or_external_values(self):
+        field = "CONNECTIONS_MCP_URL"
+        self.driver.resource = Mock(return_value={"uid": "operator-uid"})
+        for entries, expected in (([], ""), ([{"name": field}], ""),
+                                  ([{"name": field, "value": ""}], ""),
+                                  ([{"name": field, "value": "https://mcp.example.com"}], "https://mcp.example.com")):
+            with self.subTest(entries=entries):
+                self.driver.kubectl.return_value = json.dumps(entries)
+                control = self.driver.current_control("cetirun-operator", "manager", (field,))
+                self.assertEqual(control["env"][field], expected)
+        for entries in ([{"name": field}, {"name": field}],
+                        [{"name": field, "valueFrom": {"secretKeyRef": {"name": "mcp", "key": "url"}}}],
+                        [{"name": field, "value": None}], [{"name": field, "value": False}],
+                        [None], {"name": field}):
+            with self.subTest(entries=entries):
+                self.driver.kubectl.return_value = json.dumps(entries)
+                with self.assertRaisesRegex(ValueError, "Cannot inspect existing CONNECTIONS_MCP_URL"):
+                    self.driver.current_control("cetirun-operator", "manager", (field,))
 
     def test_provider_reference_preserved_for_identical_environment_backed_routes(self):
         self.driver.config["modelRouting"] = {"mode": "preserve"}
@@ -610,6 +660,36 @@ class PublishedInfrastructureRenderTests(unittest.TestCase):
                     self.assertNotIn(binding[1], proposed["data"])
                     with self.assertRaisesRegex(ValueError, "remove a required database, salt, or master key"):
                         driver.check_gateway_database_binding()
+
+    def test_standalone_portal_catalog_mismatch_is_rejected_after_chart_render(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            source = self.source_fixture(scratch)
+            operator = source["platform"]["values"]["cetirun-operator"]
+            operator["sandboxAdmission"]["podsEnabled"] = True
+            operator["sandboxSources"].update(enabled=True, nativeExecution=True,
+                bootstrapOwnedPrerequisites=True, platformConfigMapName="sandbox-platform",
+                skillsClaimName="team-skills", skillsCatalogConfigMapName="")
+            operator["skillMarketplace"].update(enabled=True,
+                repository={"url": "https://git.example.com/skills.git", "auth": "none"},
+                storage={"resourceGroup": "example-skills-rg", "storageAccount": "exampleskills",
+                         "containerName": "marketplace", "storageClassName": "blob-nfs"})
+            source["portal"]["values"]["skillMarketplace"] = {
+                "enabled": True, "catalogNamespace": source["platform"]["namespace"]}
+            config, values, roots = DEPLOY.infrastructure_configuration(source, self.lock, scratch / "compile")
+            render = scratch / "render"
+            render.mkdir()
+            driver = DEPLOY.Deployment(config, values, render, published_artifacts=self.lock, chart_roots=roots)
+            driver.kubectl = Mock(side_effect=AssertionError("Offline render must not read Kubernetes"))
+            driver.render()
+            _, worker = driver.rendered_component("platform", "skill-marketplace")
+            self.assertIn("--namespace=" + source["platform"]["namespace"], worker["args"])
+            values["portal"]["skillMarketplace"]["catalogNamespace"] = "wrong-catalog"
+            with self.assertRaisesRegex(ValueError, "worker's catalog namespace"):
+                driver.render()
+            _, portal = driver.rendered_component("portal", "portal")
+            self.assertEqual(driver.literal_environment(portal)["SKILL_MARKETPLACE_CATALOG_NAMESPACE"], "wrong-catalog")
+            driver.kubectl.assert_not_called()
 
     def test_independent_gateway_does_not_require_platform_render_or_routing_reads(self):
         with tempfile.TemporaryDirectory() as temporary:

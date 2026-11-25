@@ -1769,6 +1769,16 @@ class Deployment:
         account = portal_doc["spec"]["template"]["spec"].get("serviceAccountName") or "default"
         if (broker_env.get("PORTAL_NAMESPACE"), broker_env.get("PORTAL_SERVICE_ACCOUNT")) != (namespace, account):
             raise ValueError("Broker caller policy must reference the active Portal namespace and ServiceAccount")
+        marketplace_enabled = any(item.get("name") == "skill-marketplace"
+                                  for doc in self.documents["platform"] if doc.get("kind") == "Deployment"
+                                  for item in doc.get("spec", {}).get("template", {}).get("spec", {}).get("containers", []))
+        if marketplace_enabled or portal_env.get("SKILL_MARKETPLACE_ENABLED") == "true":
+            _, worker = self.rendered_component("platform", "skill-marketplace")
+            namespaces = [arg.removeprefix("--namespace=") for arg in worker.get("args", [])
+                          if arg.startswith("--namespace=")]
+            if (portal_env.get("SKILL_MARKETPLACE_ENABLED") != "true" or namespaces != [operator_namespace]
+                    or portal_env.get("SKILL_MARKETPLACE_CATALOG_NAMESPACE") != operator_namespace):
+                raise ValueError("Active Portal Skill Marketplace must read the worker's catalog namespace")
         if portal_env.get("FEATURE_AGENT_TOOLS_ENABLED") == "true":
             runtime_sets = []
             for env in (operator_env, portal_env, broker_env):
@@ -1975,9 +1985,11 @@ class Deployment:
             encoded = self.kubectl("get", "deployment", name, "--namespace", namespace, "-o",
                                   "jsonpath-as-json={" + prefix + '.env[?(@.name=="' + field + '")]}')
             entries = json.loads(encoded or "[]")
-            if not isinstance(entries, list) or len(entries) > 1 or any("valueFrom" in item or not isinstance(item.get("value"), str) for item in entries):
+            if not isinstance(entries, list) or len(entries) > 1 or any(
+                    not isinstance(item, dict) or "valueFrom" in item or not isinstance(item.get("value", ""), str)
+                    for item in entries):
                 raise ValueError(f"Cannot inspect existing {field} control value; external references need a separate approved procedure")
-            values[field] = entries[0]["value"] if entries else ""
+            values[field] = entries[0].get("value", "") if entries else ""
         try:
             arguments = json.loads(args or "[]")
         except ValueError as error:
