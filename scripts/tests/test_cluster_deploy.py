@@ -40,11 +40,30 @@ fi
 FAKE_AZ = """#!/usr/bin/env sh
 echo "az $*" >> "$CALLS_LOG"
 case "$1 $2" in
-  "extension add")
+  "aks update")
+    if [ "$3" = "--help" ]; then
+      [ "$FAKE_GATEWAY_UNSUPPORTED" = "1" ] && exit 1
+      echo --enable-gateway-api
+    fi
     if [ "$REPLACE_PARAMETERS" = "1" ]; then
       echo '{"parameters":{"kubernetesVersion":{"value":"1.34"}}}' > "$PARAM_FILE"
     fi ;;
-  "feature show") echo Registered ;;
+  "account show")
+    if [ "$FAKE_WRONG_TENANT" = "1" ]; then
+      echo '{"id":"11111111-1111-1111-1111-111111111111","tenantId":"wrong"}'
+    else
+      echo '{"id":"11111111-1111-1111-1111-111111111111","tenantId":"22222222-2222-2222-2222-222222222222"}'
+    fi ;;
+  "aks get-credentials")
+    touch "$KUBECONFIG"
+    python3 -c 'import os, stat; assert stat.S_IMODE(os.stat(os.environ["KUBECONFIG"]).st_mode) == 0o600'
+    [ "$FAKE_CREDENTIAL_FAILURE" = "1" ] && exit 1 ;;
+  "feature show")
+    if [ "$FAKE_FEATURE_PENDING" = "1" ]; then echo Registering; exit 0; fi
+    if [ "$FAKE_REGISTER_FEATURE" = "1" ] && [ ! -f "$FEATURE_REGISTERED" ]; then echo NotRegistered; else echo Registered; fi ;;
+  "feature register") touch "$FEATURE_REGISTERED" ;;
+  "provider show")
+    if [ "$FAKE_PROVIDER_PENDING" = "1" ]; then echo Registering; else echo Registered; fi ;;
   "group show") echo westus3 ;;
   "deployment group")
     if [ "$3" = "show" ]; then
@@ -68,13 +87,24 @@ with open(os.environ["CALLS_LOG"], "a") as log:
 ' "$@" || exit 1
       echo '{}'
     fi ;;
-  "aks show") echo https://issuer.example.invalid/ ;;
+  "aks show")
+    case "$*" in
+      *oidcIssuerProfile*) echo https://issuer.example.invalid/ ;;
+      *) echo '{"id":"/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/example-rg/providers/Microsoft.ContainerService/managedClusters/example-cluster","fqdn":"cluster.example.invalid"}' ;;
+    esac ;;
 esac
 exit 0
 """
 
 FAKE_KUBECTL = """#!/usr/bin/env sh
 echo "kubectl $*" >> "$CALLS_LOG"
+if [ "$1 $2" = "config view" ]; then
+  if [ "$FAKE_WRONG_CLUSTER" = "1" ]; then
+    echo '{"clusters":[{"cluster":{"server":"https://wrong.example.invalid"}}]}'
+  else
+    echo '{"clusters":[{"cluster":{"server":"https://cluster.example.invalid"}}]}'
+  fi
+fi
 if [ "$1 $2" = "get configmap" ]; then
   [ -n "$FAKE_KUBECTL_FAIL" ] && exit 1
   case "$*" in
@@ -105,10 +135,11 @@ def shipped_log_settings():
 class ClusterDeployTests(unittest.TestCase):
     def run_deploy(self, existing_settings=None, kubectl_fails=False, *,
                    parameters=None, default_version="1.37", bicep_fails=False,
-                   json_parameters=False, replace_parameters=False):
+                   json_parameters=False, replace_parameters=False, extra_env=None):
         with tempfile.TemporaryDirectory() as directory:
             temp = pathlib.Path(directory)
-            for name, body in (("az", FAKE_AZ), ("kubectl", FAKE_KUBECTL), ("bicep", FAKE_BICEP)):
+            for name, body in (("az", FAKE_AZ), ("kubectl", FAKE_KUBECTL), ("bicep", FAKE_BICEP),
+                               ("sleep", "#!/usr/bin/env sh\nexec /usr/bin/sleep 1\n")):
                 stub = temp / name
                 stub.write_text(body, encoding="utf-8")
                 stub.chmod(0o755)
@@ -128,6 +159,10 @@ class ClusterDeployTests(unittest.TestCase):
                 "CALLS_LOG": str(calls),
                 "FAKE_SETTINGS": str(temp / "settings.toml"),
                 "RESOURCE_GROUP": "example-rg",
+                "AZURE_SUBSCRIPTION_ID": "11111111-1111-1111-1111-111111111111",
+                "AZURE_TENANT_ID": "22222222-2222-2222-2222-222222222222",
+                "KUBECONFIG": str(temp / "kubeconfig"),
+                "FEATURE_REGISTERED": str(temp / "feature-registered"),
                 "LOCATION": "westus3",
                 "PARAM_FILE": str(parameter_file),
                 "FAKE_TEMPLATE": str(temp / "template.json"),
@@ -137,6 +172,7 @@ class ClusterDeployTests(unittest.TestCase):
                 "REPLACE_PARAMETERS": "1" if replace_parameters else "0",
                 "TMPDIR": str(temp),
             }
+            environment.update(extra_env or {})
             if existing_settings is not None:
                 (temp / "settings.toml").write_text(existing_settings, encoding="utf-8")
             result = subprocess.run(["bash", str(DEPLOY)], capture_output=True, text=True, env=environment,
@@ -159,6 +195,94 @@ class ClusterDeployTests(unittest.TestCase):
         self.assertIn(f"--bicep-file {ROOT / 'infra/cluster/main.bicep'}", calls[0])
         self.assertIn("--no-restore", calls[0])
         self.assertIn("--stdout", calls[0])
+
+    def test_every_resource_call_has_explicit_subscription(self):
+        result, calls = self.run_deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for call in calls:
+            if call.startswith("az ") and "--help" not in call:
+                self.assertIn("--subscription 11111111-1111-1111-1111-111111111111", call)
+        credentials = next(c for c in calls if c.startswith("az aks get-credentials"))
+        self.assertIn("--file ", credentials)
+        self.assertNotIn("az account set", "\n".join(calls))
+        self.assertNotIn("az extension add", "\n".join(calls))
+
+    def test_wrong_tenant_stops_before_cloud_writes(self):
+        result, calls = self.run_deploy(extra_env={"FAKE_WRONG_TENANT": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("subscription/tenant", result.stderr)
+        self.assertEqual([c for c in calls if c.startswith("az ")],
+                         ["az account show --subscription 11111111-1111-1111-1111-111111111111 -o json"])
+
+    def test_wrong_cluster_stops_before_kubernetes_writes(self):
+        result, calls = self.run_deploy(extra_env={"FAKE_WRONG_CLUSTER": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("explicit AKS target", result.stderr)
+        self.assert_no_settings_written(calls)
+
+    def test_unsupported_cli_stops_without_installing_extensions(self):
+        result, calls = self.run_deploy(extra_env={"FAKE_GATEWAY_UNSUPPORTED": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("pinned Azure CLI", result.stderr)
+        self.assertFalse(any(c.startswith("az group create") for c in calls))
+        self.assertFalse(any(c.startswith("az extension add") for c in calls))
+
+    def test_unsafe_kubeconfig_paths_stop_before_azure_calls(self):
+        for path in ("relative", "/tmp/one:/tmp/two", str(pathlib.Path.home() / ".kube/config")):
+            with self.subTest(path=path):
+                result, calls = self.run_deploy(extra_env={"KUBECONFIG": path})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(any(c.startswith(("az ", "kubectl ")) for c in calls))
+
+    def test_feature_and_provider_registration_precede_deployment(self):
+        result, calls = self.run_deploy(extra_env={"FAKE_REGISTER_FEATURE": "1"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        feature = next(i for i, c in enumerate(calls) if c.startswith("az feature register"))
+        provider = next(i for i, c in enumerate(calls) if c.startswith("az provider register"))
+        ready = next(i for i, c in enumerate(calls) if c.startswith("az provider show"))
+        create = next(i for i, c in enumerate(calls) if c.startswith("az group create"))
+        self.assertLess(feature, provider)
+        self.assertLess(provider, ready)
+        self.assertLess(ready, create)
+
+    def test_previously_registered_feature_still_propagates_provider(self):
+        result, calls = self.run_deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(c.startswith("az feature register") for c in calls))
+        self.assertTrue(any(c.startswith("az provider register") for c in calls))
+        self.assertTrue(any(c.startswith("az provider show") for c in calls))
+
+    def test_failed_credential_command_leaves_private_permissions(self):
+        result, calls = self.run_deploy(extra_env={"FAKE_CREDENTIAL_FAILURE": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("AssertionError", result.stderr)
+        self.assert_no_settings_written(calls)
+
+    def test_registration_timeouts_stop_before_resource_group_writes(self):
+        for variable in ("FAKE_FEATURE_PENDING", "FAKE_PROVIDER_PENDING"):
+            with self.subTest(variable=variable):
+                result, calls = self.run_deploy(extra_env={variable: "1", "GATEWAY_REGISTRATION_TIMEOUT": "1"})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("registration is still pending", result.stderr)
+                self.assertFalse(any(c.startswith("az group create") for c in calls))
+
+    def test_hardlink_to_default_kubeconfig_is_rejected_without_modifying_it(self):
+        # Exercise the actual local guard with synthetic files. Do not inspect
+        # or link the developer's real kubeconfig or change their HOME.
+        guard = DEPLOY.read_text().split("<<'PYCONFIG'\n", 1)[1].split("\nPYCONFIG", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            default = root / ".kube/config"
+            default.parent.mkdir()
+            default.write_text("synthetic-default")
+            alias = root / "private-config"
+            os.link(default, alias)
+            script = "from pathlib import Path\nPath.home = classmethod(lambda cls: Path(" + repr(directory) + "))\n" + guard
+            result = subprocess.run([sys.executable, "-c", script],
+                                    env={**os.environ, "KUBECONFIG": str(alias)}, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("outside the default kubeconfig", result.stderr)
+            self.assertEqual(default.read_text(), "synthetic-default")
 
     def test_an_outdated_template_default_also_stops_before_writes(self):
         self.assert_preflight_blocked(*self.run_deploy(default_version="1.34"))
@@ -212,7 +336,7 @@ class ClusterDeployTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         created = [i for i, c in enumerate(calls) if c == f"kubectl create -f {SETTINGS_FILE}"]
         self.assertEqual(len(created), 1, calls)
-        gateway_api = [i for i, c in enumerate(calls) if c.startswith("az aks update")]
+        gateway_api = [i for i, c in enumerate(calls) if c.startswith("az aks update") and "--help" not in c]
         self.assertTrue(gateway_api and created[0] < gateway_api[0], calls)
 
     def test_the_shipped_settings_pass_the_check(self):
@@ -235,7 +359,7 @@ class ClusterDeployTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_no_settings_written(calls)
         self.assertIn("multiline", result.stderr)
-        self.assertTrue([c for c in calls if c.startswith("az aks update")], calls)
+        self.assertTrue([c for c in calls if c.startswith("az aks update") and "--help" not in c], calls)
 
     def test_existing_settings_that_keep_collection_on_stop_the_script(self):
         cases = {
@@ -250,13 +374,13 @@ class ClusterDeployTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1, result.stdout)
                 self.assertIn("left unchanged", result.stderr)
                 self.assert_no_settings_written(calls)
-                self.assertFalse([c for c in calls if c.startswith("az aks update")], calls)
+                self.assertFalse([c for c in calls if c.startswith("az aks update") and "--help" not in c], calls)
 
     def test_settings_that_cannot_be_read_stop_the_script(self):
         result, calls = self.run_deploy(kubectl_fails=True)
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assert_no_settings_written(calls)
-        self.assertFalse([c for c in calls if c.startswith("az aks update")], calls)
+        self.assertFalse([c for c in calls if c.startswith("az aks update") and "--help" not in c], calls)
 
 
 @unittest.skipUnless(shutil.which("bicep"), "Bicep CLI is required for compilation regression tests")
@@ -301,6 +425,17 @@ def template_resources(node):
 
 @unittest.skipUnless(shutil.which("bicep"), "Bicep CLI is required for compilation regression tests")
 class CompiledMonitoringTests(unittest.TestCase):
+    def test_every_pool_uses_coredns_without_node_local_redirection(self):
+        compiled = subprocess.run(["bicep", "build", str(ROOT / "infra/cluster/modules/aks-cluster.bicep"),
+                                   "--stdout", "--no-restore"], capture_output=True, text=True, check=True)
+        cluster = next(resource for resource in template_resources(json.loads(compiled.stdout))
+                       if resource["type"] == "Microsoft.ContainerService/managedClusters")
+        pools = cluster["properties"]["agentPoolProfiles"]
+        self.assertEqual({pool["name"] for pool in pools}, {"system", "agent", "agent2"})
+        for pool in pools:
+            with self.subTest(pool=pool["name"]):
+                self.assertEqual(pool["localDNSProfile"], {"mode": "Disabled"})
+
     def test_azure_monitor_is_off_and_azure_data_explorer_is_the_default(self):
         compiled = subprocess.run(["bicep", "build", str(ROOT / "infra/cluster/main.bicep"), "--stdout", "--no-restore"],
                                   capture_output=True, text=True, check=True)

@@ -10,8 +10,16 @@ result that later steps use, and a check. Most results are inputs of the
 environment file of `make deploy`. [Install CetiRun](../../getting-started/platform/)
 describes `make deploy` and the environment file.
 
+Prepare the Azure and Entra dependencies first, then run `make deploy` to
+install the platform. It does not create AKS, the shared-skills storage,
+Entra applications, or the Key Vault key. The cluster helper can create the
+ADX infrastructure; wait for its complete run, including Gateway API setup,
+before installing the platform.
+
 The checks are connected, read-only commands, unless the step says otherwise.
-Replace the example names with the names of your environment.
+Replace the example names with the names of your environment. Use the private
+kubeconfig for that environment for every Kubernetes and Helm command, and
+pass the target subscription to every Azure resource command.
 
 ## Before you start
 
@@ -21,6 +29,15 @@ Replace the example names with the names of your environment.
 | Read the cluster requirements, the user names, the tools, and the permissions that each step needs | [Prepare the environment](../../getting-started/platform/#prepare-the-environment) |
 | Compare the default node pools with the vCPU quota of the region | [Check the vCPU quota](../capacity/#check-the-vcpu-quota) |
 | Select one cluster, domain, and environment file for each environment | [Environments and namespaces](../../getting-started/platform/#environments-and-namespaces) |
+| Record the target subscription/tenant and original default contexts. Prepare a private kubeconfig and configuration directory outside the repository | [Connect to the cluster](../infrastructure/#connect-to-the-cluster) |
+| For a test environment, set both minimum and maximum pool counts and account for admission replica placement | [Small test environment](../infrastructure/#small-test-environment) |
+
+Reuse configuration structure across environments, but create the identities,
+federated credentials, encryption resources, and installation credentials for
+the new environment. Model-service access can be shared when its owner has
+authorized that use. Replace all example IDs, image references, and resource
+names with verified inputs. Keep secrets and environment-specific deployment
+records outside the repository.
 
 ## Before the first make deploy
 
@@ -46,6 +63,35 @@ Replace the example names with the names of your environment.
 | 13 | With `publicTLS`, run `make deploy-verify`. Then examine the releases, and send a test request to the AI Gateway | [Verify the deployment](../../getting-started/platform/#8-verify-the-deployment) | `make deploy-verify` reports `verified`, and `helm list` shows the three releases as `deployed` |
 | 14 | Test a first Agent with two test accounts | [Test a first Agent](../../getting-started/platform/#test-a-first-agent) | Each test gives its expected result |
 | 15 | Give users access | [Give users access](../../getting-started/platform/#9-give-users-access) | A user in an allowed group can sign in |
+
+Run the plan, deployment, and verification sequentially. `make deploy-verify`
+refuses an active Helm operation. With `publicTLS`, it checks public DNS, the
+served TLS certificate, the sign-in redirect and PKCE parameters, health,
+readiness, and unauthenticated API protection. It does not complete a browser
+login or send an Agent conversation.
+
+Before handoff, record these separate acceptance results:
+
+- The deployed release revisions, current workload readiness, and actual
+  image identities against the selected release artifacts.
+- Synthetic Agent creation, the required Kata runtime, Bound HOME claims,
+  and read-only shared-skills mounts. If Custom is enabled, include an
+  approved Custom runtime image.
+- Model calls using the Agent's own model grant. Test `auto` separately when
+  configured. A model call does not establish native chat or tool access.
+- An owner-authenticated browser session and a separate account's access
+  denial, as [Test a first Agent](../../getting-started/platform/#test-a-first-agent)
+  describes. Mark these untested when no user session is available.
+- [Suspend and resume](../agent-lifecycle/#suspend-and-resume-an-agent) of a
+  synthetic Agent, including completed Pod termination, route withdrawal,
+  and preserved HOME/PVC identity after resume. A content persistence claim
+  also needs a bounded write/read check using synthetic data.
+- Actual [log and metric ingestion](../observability/) and collection
+  health. Ready collector Pods alone do not prove ingestion.
+
+Keep the source SHA, artifact identities, private configuration, commands and
+results, release history, recovery steps, and checks not run. Verify that the
+default Azure subscription/tenant and global Kubernetes context are unchanged.
 
 ## After the first make deploy
 

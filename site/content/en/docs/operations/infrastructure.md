@@ -45,10 +45,19 @@ value.
 | Managed Istio traffic redirection | `InitContainers`. Kata VM-isolated Agent Pods do not start with CNI chaining |
 | Availability zones | `1`, `2`, `3` on all three pools |
 | Networking | Azure CNI overlay, Cilium, load-balancer outbound |
+| DNS forwarding | LocalDNS disabled on every pool; workloads use CoreDNS |
 | Pod / Service / DNS ranges | `10.244.0.0/16`, `172.16.0.0/16`, `172.16.0.10` |
 | Monitoring | ADX-Mon into a new Kusto cluster (`adxMode: create`); Container Insights and managed Prometheus off |
 | Automatic upgrades | `patch` channel for Kubernetes, `NodeImage` channel for the node OS |
 | Add-ons | Key Vault Secrets Provider, with rotation of the mounted secrets every 2 minutes |
+
+The template explicitly disables AKS LocalDNS. CetiRun's network policies
+allow DNS to CoreDNS Pods and deny unapproved link-local destinations. AKS can
+otherwise enable LocalDNS by default, which redirects queries to a node-local
+address and prevents protected workloads, including Connections MCP, from
+starting. Keep this setting on new pools as well. Changing LocalDNS on an
+existing pool can roll its nodes; inspect its current settings and plan that
+operation separately. Do not relax Agent isolation to work around DNS failures.
 
 With the automatic upgrade channels, AKS installs Kubernetes patch versions
 and new node images without a manual step. An upgrade drains each node, so the
@@ -100,14 +109,17 @@ its minimum and maximum. For a small test cluster, set lower minimum counts in
 the parameter file. You can also select smaller VM sizes from the allowed
 values in `main.bicep`.
 
+### Small test environment
+
 By default, the platform workloads other than OAuth2 Proxy do not tolerate the
 taint of the system pool. They run on the `agent` and `agent2` pools, so keep
 at least one node in the `agent` pool. A pool with a minimum of 0 gets a node
 only when a Pod must have one. That Pod then waits some minutes for the node.
-For example:
+Set maximum counts as well as minimums to bound test capacity. For example,
+this configuration starts with two nodes and allows at most six:
 
 ```bicep
-using '<path-to-your-clone>/infra/cluster/main.bicep'
+using '../cetirun/infra/cluster/main.bicep'
 
 param resourceGroupName = 'example-rg'
 param location = 'your-approved-region'
@@ -115,13 +127,27 @@ param clusterName = 'example-cluster'
 param dnsPrefix = 'example-cluster'
 param nodeResourceGroup = 'example-rg-nodes'
 param kubernetesVersion = '1.37'
-param systemNodePoolVmSize = 'Standard_D4ds_v6'
-param agentNodePoolVmSize = 'Standard_D8ds_v6'
-param agent2NodePoolVmSize = 'Standard_D8ds_v6'
-param systemNodePoolMinCount = 2
+param skuTier = 'Standard'
+param systemNodePoolVmSize = 'Standard_D4as_v5'
+param agentNodePoolVmSize = 'Standard_D8as_v5'
+param agent2NodePoolVmSize = 'Standard_D8as_v5'
+param systemNodePoolMinCount = 1
+param systemNodePoolMaxCount = 2
 param agentNodePoolMinCount = 1
+param agentNodePoolMaxCount = 3
 param agent2NodePoolMinCount = 0
+param agent2NodePoolMaxCount = 1
 ```
+
+Save the parameter file outside the repository and adjust `using` relative to
+that file's directory. Bicep does not accept an absolute `using` path. Verify
+that the region offers the selected VM sizes and supports Kata on them.
+
+The initial two nodes use 12 vCPUs. Admission replica placement can require
+another Kata node even before user Agents are created; three nodes in this
+example use 20 vCPUs. The configured maximum is 40 vCPUs across six nodes.
+Reserve the corresponding regional and VM-family quota. One system node and
+a Dev/Test ADX SKU are test choices, not a production availability design.
 
 Before you create Agents, examine the installed `kata-vm-isolation`
 RuntimeClass and its scheduling rules. The agent chart does not create that
@@ -159,9 +185,13 @@ kubelogin. On this cluster, kubectl uses kubelogin to get its Entra tokens.
 
 You must also set `RESOURCE_GROUP` and `LOCATION`. `LOCATION` sets only the
 location of a new resource group. The cluster region comes from `location` in
-the parameter file. `PARAM_FILE` selects the parameters that you examined. The
-helper uses the current Azure subscription and does not select one. Confirm
-that scope independently.
+the parameter file. `PARAM_FILE` selects the parameters that you examined.
+Set `AZURE_SUBSCRIPTION_ID` and `AZURE_TENANT_ID` to the intended target. The
+helper verifies this pair and passes the subscription to every resource
+command. It never changes the default Azure subscription. Set `KUBECONFIG` to
+one absolute private file outside the default kubeconfig, in a directory that
+already exists. The helper restricts that file to mode `0600` and checks its
+API endpoint against the returned AKS resource before writing Kubernetes objects.
 
 The helper does these steps:
 
@@ -170,12 +200,16 @@ The helper does these steps:
    compilation or version errors before any Azure operation. It saves the
    validated inputs in a private temporary directory, uses those same inputs
    for validation and deployment, and removes the directory on exit.
-2. It installs or updates `aks-preview`. If necessary, it registers the managed
-   Gateway API preview feature. Then it waits for the registration without a
-   time limit.
+2. It checks that the installed CLI supports `--enable-gateway-api`; it does
+   not install or upgrade extensions. If necessary, it registers the managed
+   Gateway API preview feature and waits up to `GATEWAY_REGISTRATION_TIMEOUT`
+   seconds (900 by default). A timeout leaves registration pending; inspect the
+   actual state before rerunning. It re-registers the provider and waits with the
+   same bound, including after a previous run registered the feature.
 3. It creates or updates the resource group.
 4. It validates and creates the Bicep deployment.
-5. It fetches credentials with `--overwrite-existing`.
+5. It fetches credentials into the explicit private `KUBECONFIG` with
+   `--overwrite-existing` and verifies the target before any Kubernetes write.
 6. It creates the Container Insights agent settings in `kube-system`, for the
    case that Container Insights is enabled later. The template disables it.
    These settings are in `infra/cluster/container-azm-ms-agentconfig.yaml`.
@@ -220,14 +254,16 @@ resource group and cluster.
 the parameters:
 
 ```bash
+AZURE_SUBSCRIPTION_ID="<subscription-id>" AZURE_TENANT_ID="<tenant-id>" \
+KUBECONFIG=/absolute/private/kubeconfig \
 RESOURCE_GROUP=example-rg LOCATION=your-approved-region \
 PARAM_FILE=/absolute/path/cluster.bicepparam \
   bash infra/cluster/deploy.sh
 ```
 
 This is not a dry run. The helper changes cloud resources, the subscription
-feature registration, and the local Kubernetes configuration. The local version
-preflight runs first, but extension, feature, and resource-group writes still
+feature registration, and the selected private Kubernetes configuration. The
+local version preflight runs first, but feature and resource-group writes still
 occur **before Azure deployment validation**. A later validation failure does
 not mean that nothing changed. Gateway API enablement is a side effect of the
 helper. CetiRun's routing templates use Istio `Gateway` and `VirtualService`
