@@ -126,6 +126,38 @@ kubectl get events -n cetirun-system --field-selector type=Warning --sort-by=.la
 Read the logs of a platform component privately. The logs of the Portal and of
 OAuth2 Proxy can contain user identities.
 
+### Internal certificate verification fails
+
+An internal certificate can pass ordinary `openssl verify` and still fail a
+native client's strict X.509 validation. `Missing Authority Key Identifier`
+or a strict preflight failure can indicate a missing leaf AKI or CA SKI.
+The [certificate issuance example](../agent-identity/#3-prepare-namespaces-and-tls)
+includes these extensions.
+
+Verify the chain with `openssl verify -x509_strict`, the intended server or
+client purpose, and the configured hostname or client URI. Inspect public
+certificate metadata rather than printing private keys. An error such as
+`UNABLE_TO_VERIFY_LEAF_SIGNATURE` can also mean the calling container has no
+configured CA trust; it does not identify a missing extension by itself.
+Follow the [certificate rotation procedure](../certificates/) to repair trust
+and issuance without disabling certificate validation.
+
+### Native MCP warnings during startup
+
+Connections MCP rejects a workload while its Agent is not Ready. Hermes can
+therefore report `unauthenticated` and park its initial MCP connection during
+startup. The bundled runtime retries a parked connection; its recovery log
+can follow the retry and keepalive intervals. Inspect the current Agent
+readiness and later main-container logs before treating the first warning
+as a persistent failure. Do not relax the Ready requirement to suppress it.
+
+OpenClaw's `doctor` init container does not mount the main container's MCP
+CA and workload-token projections. A certificate warning from that init
+container alone does not establish a failure in the main runtime. Check the
+main container's configured trust, readiness, and subsequent MCP discovery.
+Successful discovery still does not establish that an owner-authenticated
+conversation or an external tool operation has passed.
+
 ## Agent status
 
 Start with the status and the events. Then examine only the layer that fails.
