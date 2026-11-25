@@ -1232,8 +1232,10 @@
                     "default": true
                 },
                 "initialDelaySeconds": {
-                    "type": "integer",
-                    "default": 30
+                    "type": ["integer", "null"],
+                    "minimum": 0,
+                    "default": null,
+                    "description": "Null selects 3 seconds for ordinary Hermes without a RuntimeClass when the startup probe is enabled, or 30 for other built-in profiles including CetiAdmin"
                 },
                 "periodSeconds": {
                     "type": "integer",

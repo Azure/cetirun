@@ -167,6 +167,9 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 	if startup, ok := chrt.Values["startupProbe"].(map[string]any); ok {
 		startup["failureThreshold"] = 30
 	}
+	if readiness, ok := chrt.Values["readinessProbe"].(map[string]any); ok {
+		readiness["initialDelaySeconds"] = 30
+	}
 	if gateway, ok := chrt.Values["aiGateway"].(map[string]any); ok {
 		if proxy, ok := gateway["copilotProxy"].(map[string]any); ok {
 			delete(proxy, "replicaCount")
@@ -675,6 +678,12 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
                     "minimum": 1,
                     "default": null,
                     "description": "Null selects 60 for common-executor OpenClaw Sandboxes, otherwise 30; explicit positive integers are preserved"`,
+				`"type": "integer",
+                    "default": 30`},
+			{`"type": ["integer", "null"],
+                    "minimum": 0,
+                    "default": null,
+                    "description": "Null selects 3 seconds for ordinary Hermes without a RuntimeClass when the startup probe is enabled, or 30 for other built-in profiles including CetiAdmin"`,
 				`"type": "integer",
                     "default": 30`},
 			{"                        \"replicaCount\": {\"type\": [\"integer\", \"null\"], \"minimum\": 0, \"maximum\": 1, \"default\": null},\n", ""},

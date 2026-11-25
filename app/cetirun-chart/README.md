@@ -331,9 +331,12 @@ initialization continues. Other built-in paths keep 30 failures, for example
 retained single-start OpenClaw and Hermes. An explicit positive integer
 overrides either default. This also applies to `30`.
 
-Liveness/readiness checks and their timings stay unchanged. Standard OpenClaw
+OpenClaw liveness and readiness timings stay unchanged. Standard OpenClaw
 Agents keep their HTTP probes. Hermes Agents and OpenClaw Sandbox Agents use
-exec probes.
+exec probes. An ordinary Hermes Agent with `runtimeClassName: ""` and its
+startup probe enabled now defaults to a 3-second readiness delay instead of
+30 seconds. CetiAdmin and Sandbox Agents keep the previous delay. To keep it
+on an ordinary Hermes Agent as well, set `readinessProbe.initialDelaySeconds: 30`.
 
 The startup probe starts after init containers finish. It is not a deadline for
 doctor or credential retirement. It does not extend the acceptance bound of a
