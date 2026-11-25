@@ -971,6 +971,17 @@ make deploy-plan DEPLOY_CONFIG="$PWD/app/cetirun-platform/ci/deployment-example.
 It does not connect to the target in the file. `make bicep-check` compiles the
 templates without a registry restore. It does not check Azure resources.
 
+For an infrastructure Action retaining a private auxiliary image, the protected
+deployment configuration can supply `auxiliaryManifestReceipts`: a mapping from
+each `sha256:<digest>` to the base64 encoding of its exact raw OCI manifest bytes,
+obtained using authorized registry access. Include both the index and its
+linux/amd64 child manifest. The helper verifies their hashes and relationship;
+digest-to-child declarations alone are not accepted. Receipts are limited to
+32 KiB decoded in total and must also fit GitHub's 48 KiB environment-secret
+limit together with the remaining configuration. They are not published in the
+deployment report. Missing receipts use the existing public registry lookup;
+the Action does not read or forward Kubernetes image-pull credentials.
+
 ### Memory Context
 
 ```bash

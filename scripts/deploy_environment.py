@@ -35,7 +35,7 @@ except ImportError:  # Direct script invocation.
 
 CONFIG_KEYS = {"target", "release", "domain", "identityRealm", "ownerAlias", "identity",
                "istio", "broker", "platform", "portal", "sharedSkills", "skillMarketplace",
-               "observability", "modelRouting", "publicTLS"}
+               "observability", "modelRouting", "publicTLS", "auxiliaryManifestReceipts"}
 PRESERVED = ("agents.cetirun.microsoft.com", "teams.cetirun.microsoft.com",
              "agentpolicies.cetirun.microsoft.com", "sandboxes.cetirun.microsoft.com", "pvc")
 
@@ -1139,6 +1139,7 @@ def auxiliary_image_identity(image, actual, lock_entry=None):
 
 
 _AUX_MANIFEST_MAX_BYTES = 2 * 1024 * 1024
+_AUX_RECEIPTS_MAX_BYTES = 32 * 1024
 _AUX_MANIFEST_ACCEPT = ", ".join((
     "application/vnd.oci.image.index.v1+json",
     "application/vnd.docker.distribution.manifest.list.v2+json",
@@ -1146,8 +1147,34 @@ _AUX_MANIFEST_ACCEPT = ", ".join((
     "application/vnd.docker.distribution.manifest.v2+json"))
 
 
-def _auxiliary_manifest(repository, digest):
+def auxiliary_manifest_receipts(config):
+    """Verify raw OCI bytes supplied through protected deployment configuration."""
+    supplied = config.get("auxiliaryManifestReceipts", {})
+    if not isinstance(supplied, dict) or len(supplied) > 32:
+        raise Blocked("auxiliary_manifest_receipts_invalid")
+    verified, total = {}, 0
+    for digest, encoded in supplied.items():
+        if (not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
+                or not isinstance(encoded, str) or len(encoded) > _AUX_RECEIPTS_MAX_BYTES * 2):
+            raise Blocked("auxiliary_manifest_receipts_invalid")
+        try:
+            body = base64.b64decode(encoded, validate=True)
+            total += len(body)
+            if total > _AUX_RECEIPTS_MAX_BYTES or "sha256:" + hashlib.sha256(body).hexdigest() != digest:
+                raise ValueError("invalid receipt")
+            document = json.loads(body)
+            if not isinstance(document, dict) or type(document.get("schemaVersion")) is not int or document["schemaVersion"] != 2:
+                raise ValueError("invalid receipt")
+        except (ValueError, UnicodeDecodeError):
+            raise Blocked("auxiliary_manifest_receipts_invalid") from None
+        verified[digest] = document
+    return verified
+
+
+def _auxiliary_manifest(repository, digest, verified_receipts=None):
     """Fetch one immutable registry manifest with bounded, sanitized errors."""
+    if verified_receipts and digest in verified_receipts:
+        return verified_receipts[digest]
     registry, name = repository.split("/", 1)
     request = Request("https://" + registry + "/v2/" + name + "/manifests/" + digest,
                       headers={"Accept": _AUX_MANIFEST_ACCEPT, "User-Agent": "cetirun-deployment/1"})
@@ -1170,7 +1197,7 @@ def _auxiliary_manifest(repository, digest):
     return document
 
 
-def auxiliary_image_receipt(image):
+def auxiliary_image_receipt(image, verified_receipts=None):
     """Resolve an immutable image reference to its verified platform child."""
     if "@" not in image:
         return None
@@ -1180,9 +1207,11 @@ def auxiliary_image_receipt(image):
         repository = repository.rsplit(":", 1)[0]
     if not re.fullmatch(r"[^/]+/.+", repository) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
         raise Blocked("auxiliary_image_reference_invalid")
-    manifest = _auxiliary_manifest(repository, digest)
+    manifest = _auxiliary_manifest(repository, digest, verified_receipts)
     children = manifest.get("manifests", [])
     if not children:
+        if not isinstance(manifest.get("config"), dict):
+            raise Blocked("auxiliary_platform_manifest_unavailable")
         return {"digest": digest, "platformDigest": digest}
     candidates = [item for item in children
                   if item.get("platform", {}).get("os") == "linux"
@@ -1191,7 +1220,7 @@ def auxiliary_image_receipt(image):
     if len(candidates) != 1:
         raise Blocked("auxiliary_platform_manifest_ambiguous")
     child_digest = candidates[0]["digest"]
-    child = _auxiliary_manifest(repository, child_digest)
+    child = _auxiliary_manifest(repository, child_digest, verified_receipts)
     if not isinstance(child.get("config"), dict) and not child.get("layers"):
         raise Blocked("auxiliary_platform_manifest_unavailable")
     return {"digest": digest, "platformDigest": child_digest}
@@ -1200,6 +1229,7 @@ def auxiliary_image_receipt(image):
 def collect_auxiliary_image_receipts(deployment):
     """Collect receipts before Helm writes; keyed by the exact image reference."""
     receipts = {}
+    verified = auxiliary_manifest_receipts(deployment.config)
     for documents in deployment.documents.values():
         for document in documents:
             for item in platform.walk(document):
@@ -1210,7 +1240,7 @@ def collect_auxiliary_image_receipts(deployment):
                         if basename in CONTROL_PLANE_IMAGES or "@" not in image:
                             continue
                         if image not in receipts:
-                            receipts[image] = auxiliary_image_receipt(image)
+                            receipts[image] = auxiliary_image_receipt(image, verified)
     return receipts
 
 

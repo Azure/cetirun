@@ -299,6 +299,97 @@ class InfrastructureWiringTests(unittest.TestCase):
 
 
 
+class InfrastructureReviewContracts(unittest.TestCase):
+    def setUp(self):
+        fixture = InfrastructureWiringTests()
+        fixture.setUp()
+        self.driver, self.gateway, self.gateway_doc = fixture.driver, fixture.gateway, fixture.gateway_doc
+        self.driver.values["platform"]["cetirun-ai-gateway"] = {}
+
+    @staticmethod
+    def routing_document(router=None, *, provider=False):
+        import yaml
+        params = {"model": "azure/backend"}
+        if provider:
+            params["api_key"] = "os.environ/PROVIDER_KEY"
+        return {"kind": "ConfigMap", "metadata": {"name": "gateway-config", "labels": {
+                "app.kubernetes.io/name": "cetirun-ai-gateway"}},
+                "data": {"config.yaml": yaml.safe_dump({"model_list": [{"model_name": "shared", "litellm_params": params}],
+                                                       "router_settings": router or {}})}}
+
+    def test_owned_portal_uses_rendered_name_and_disabled_portal_is_not_read(self):
+        portal = self.driver.documents["platform"][-1]
+        portal["metadata"].update(name="portal-override", namespace="portal-custom")
+        self.driver.resource = Mock(return_value={"uid": "portal-uid"})
+        self.driver.kubectl.return_value = "[]"
+        self.assertIsNotNone(self.driver.current_control("cetirun-portal", "portal", ("CONFIGURATION_COORDINATION_UID",)))
+        self.driver.resource.assert_called_with("Deployment", "portal-override", "portal-custom")
+        self.assertIn("FEATURE_AGENT_TOOLS_ENABLED", self.driver.rendered_control("cetirun-portal", "portal")["env"])
+        self.driver.values["platform"]["cetirun-portal"]["enabled"] = False
+        self.driver.resource.reset_mock()
+        self.driver.kubectl.reset_mock()
+        self.assertIsNone(self.driver.current_control("cetirun-portal", "portal", ()))
+        self.assertIsNone(self.driver.rendered_control("cetirun-portal", "portal"))
+        self.driver.resource.assert_not_called()
+        self.driver.kubectl.assert_not_called()
+
+    def test_provider_reference_preserved_for_identical_environment_backed_routes(self):
+        self.driver.config["modelRouting"] = {"mode": "preserve"}
+        model = self.routing_document(provider=True)
+        self.driver.documents["platform"].append(model)
+        self.gateway["envFrom"] = [{"secretRef": {"name": "provider-credentials"}}]
+        live = copy.deepcopy(self.gateway_doc)
+        live_container = live["spec"]["template"]["spec"]["containers"][0]
+        live_container["envFrom"][0]["secretRef"]["optional"] = False
+        self.driver.kubectl.side_effect = lambda *args: json.dumps(model if args[1] == "configmap" else live)
+        self.driver.check_model_routing()
+        original = copy.deepcopy(self.gateway["envFrom"])
+        for sources in ([{"secretRef": {"name": "different-provider"}}],
+                        [{"secretRef": {"name": "provider-credentials", "optional": True}}],
+                        [{"secretRef": {"name": "provider-credentials"}, "prefix": "OTHER_"}],
+                        original + [{"secretRef": {"name": "shadowing-provider"}}]):
+            with self.subTest(sources=sources):
+                self.gateway["envFrom"] = sources
+                with self.assertRaisesRegex(ValueError, "provider Secret binding"):
+                    self.driver.check_model_routing()
+        self.gateway["envFrom"] = original
+        self.gateway["env"].append({"name": "PROVIDER_KEY", "value": "synthetic-only"})
+        with self.assertRaisesRegex(ValueError, "provider Secret binding"):
+            self.driver.check_model_routing()
+
+    def test_owned_salt_secret_must_still_render_the_referenced_key(self):
+        secret = {"kind": "Secret", "metadata": {"name": "gateway-auth"}, "data": {"master-key": "c3ludGhldGlj"}}
+        self.driver.documents["platform"].append(secret)
+        with self.assertRaisesRegex(ValueError, "remove a required database or salt key"):
+            self.driver.check_gateway_database_binding()
+        secret["data"]["salt-key"] = "c3ludGhldGlj"
+        self.driver.check_gateway_database_binding()
+        self.assertTrue(all(call.args[:2] == ("get", "deployment") for call in self.driver.kubectl.call_args_list))
+
+    def test_affinity_checks_and_per_model_overrides_are_preserved(self):
+        self.driver.config["modelRouting"] = {"mode": "preserve"}
+        checks = ["responses_api_deployment_check", "encrypted_content_affinity", "deployment_affinity"]
+        baseline = {"optional_pre_call_checks": checks, "model_group_affinity_config": {"shared": checks[:2]}}
+        live = self.routing_document(baseline)
+        self.driver.kubectl.return_value = json.dumps(live)
+        for router in ({}, {**baseline, "optional_pre_call_checks": checks[1:]},
+                       {**baseline, "model_group_affinity_config": {}},
+                       {**baseline, "model_group_affinity_config": {"shared": []}}):
+            with self.subTest(router=router):
+                self.driver.documents["platform"] = [self.routing_document(router)]
+                with self.assertRaisesRegex(ValueError, "model routes"):
+                    self.driver.check_model_routing()
+        self.driver.documents["platform"] = [live]
+        self.driver.check_model_routing()
+        self.assertEqual(self.driver._model_routing(self.routing_document()),
+                         self.driver._model_routing(self.routing_document({"optional_pre_call_checks": None,
+                                                                           "model_group_affinity_config": None})))
+        for invalid in ({"optional_pre_call_checks": "encrypted_content_affinity"},
+                        {"model_group_affinity_config": {"shared": True}}):
+            with self.assertRaisesRegex(ValueError, "affinity"):
+                self.driver._model_routing(self.routing_document(invalid))
+
+
 class PublishedInfrastructureRenderTests(unittest.TestCase):
     """Compile and render an infrastructure-only upgrade from real archives."""
 
@@ -454,6 +545,29 @@ class PublishedInfrastructureRenderTests(unittest.TestCase):
             gateway["postgresql"]["bundled"]["enabled"] = True
             with self.assertRaisesRegex(ValueError, "storageClass"):
                 DEPLOY.infrastructure_configuration(source, self.lock, scratch / "invalid")
+
+    def test_rendered_salt_self_reference_cannot_remove_the_owned_key(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            source = self.source_fixture(scratch)
+            auth = source["platform"]["values"]["cetirun-ai-gateway"]["auth"]
+            auth["masterKey"]["existingSecret"] = ""
+            auth["saltKey"]["existingSecret"] = ""
+            config, values, roots = DEPLOY.infrastructure_configuration(source, self.lock, scratch / "compile")
+            render = scratch / "render"
+            render.mkdir()
+            driver = DEPLOY.Deployment(config, values, render, published_artifacts=self.lock, chart_roots=roots)
+            driver.render()
+            old_gateway, _ = driver.rendered_component("platform", "gateway")
+            binding = driver.database_binding(old_gateway)["LITELLM_SALT_KEY"]
+            driver.kubectl = Mock(return_value=json.dumps(old_gateway))
+            driver.check_gateway_database_binding()
+            values["platform"]["cetirun-ai-gateway"]["auth"]["saltKey"]["existingSecret"] = binding[0]
+            driver.render()
+            candidate, _ = driver.rendered_component("platform", "gateway")
+            self.assertEqual(driver.database_binding(candidate)["LITELLM_SALT_KEY"], binding)
+            with self.assertRaisesRegex(ValueError, "remove a required database or salt key"):
+                driver.check_gateway_database_binding()
 
     def test_independent_gateway_does_not_require_platform_render_or_routing_reads(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -317,6 +317,16 @@ class InfrastructureAdmissionTests(DeploymentFixture, unittest.TestCase):
         deployment.config["_infrastructureOnly"] = True
         return deployment
 
+    def test_existing_controls_skip_coordination_without_an_owned_portal(self):
+        deployment = self.installed()
+        deployment.values["platform"]["cetirun-portal"]["enabled"] = False
+        deployment.documents["platform"] = [doc for doc in deployment.documents["platform"]
+                                             if doc.get("metadata", {}).get("name") != "cetirun-portal"]
+        with patch.object(deployment, "current_control", wraps=deployment.current_control) as current:
+            deployment.check_existing_controls()
+        self.assertFalse(any(call.args[0] == "cetirun-portal" for call in current.call_args_list))
+        self.assertFalse(deployment.writes)
+
     def test_server_only_and_partial_registration_sets_fail_before_writes(self):
         deployment = self.installed()
         objects = copy.deepcopy(deployment.objects)

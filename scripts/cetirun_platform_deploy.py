@@ -1957,9 +1957,15 @@ class Deployment:
 
     def current_control(self, name, container, environment):
         namespace = self.config["platform"]["namespace"]
-        if name == "cetirun-portal" and "portal" in self.config:
-            namespace = self.config["portal"]["namespace"]
-            name = self.portal_deployment_name()
+        if name == "cetirun-portal":
+            portal_name = self.portal_deployment_name()
+            if portal_name:
+                release = "portal" if "portal" in self.config else "platform"
+                document, _ = self.rendered_component(release, "portal")
+                namespace = document["metadata"].get("namespace", self.config[release]["namespace"])
+                name = portal_name
+            elif self.config.get("_infrastructureOnly"):
+                return None
         if self.resource("Deployment", name, namespace) is None:
             return None
         prefix = '.spec.template.spec.containers[?(@.name=="' + container + '")]'
@@ -1981,14 +1987,17 @@ class Deployment:
         return {"args": arguments, "env": values}
 
     def portal_deployment_name(self):
-        documents = self.documents.get("portal", self.documents["platform"])
-        return next(doc["metadata"]["name"] for doc in documents if doc["kind"] == "Deployment"
-                    and any(item["name"] == "portal" for item in doc["spec"]["template"]["spec"]["containers"]))
+        if "portal" not in self.config and not self.values["platform"]["cetirun-portal"].get("enabled", True):
+            return None
+        document, _ = self.rendered_component("portal" if "portal" in self.config else "platform", "portal")
+        return document["metadata"]["name"]
 
     def rendered_control(self, name, container):
         release = "platform"
-        if name == "cetirun-portal" and "portal" in self.config:
-            release, name = "portal", self.portal_deployment_name()
+        if name == "cetirun-portal":
+            release, name = "portal" if "portal" in self.config else "platform", self.portal_deployment_name()
+            if name is None:
+                return None
         deployment = next(doc for doc in self.documents[release] if doc["kind"] == "Deployment" and doc["metadata"]["name"] == name)
         spec = next(item for item in deployment["spec"]["template"]["spec"]["containers"] if item["name"] == container)
         return {"args": spec.get("args", []), "env": {item["name"]: item.get("value", "") for item in spec.get("env", [])}}
@@ -2093,8 +2102,8 @@ class Deployment:
                     raise ValueError(f"Preserve existing Broker storage identity field {field}, including when native MCP is disabled")
 
         coordination = ("CONFIGURATION_COORDINATION_NAMESPACE", "CONFIGURATION_COORDINATION_NAME", "CONFIGURATION_COORDINATION_UID")
-        old_portal = self.current_control("cetirun-portal", "portal", coordination)
         new_portal = self.rendered_control("cetirun-portal", "portal")
+        old_portal = self.current_control("cetirun-portal", "portal", coordination) if new_portal is not None else None
         if old_portal:
             for field in coordination:
                 if old_portal["env"][field] and old_portal["env"][field] != new_portal["env"].get(field, ""):
@@ -2177,6 +2186,18 @@ class Deployment:
         if type(failover) is not bool or not isinstance(strategy, str) or not strategy:
             raise ValueError("Existing AI Gateway same-model failover settings are not usable")
         routes = {"model_list": models, "enable_weighted_failover": failover, "routing_strategy": strategy}
+        def affinity_checks(value):
+            checks = [] if value is None else value
+            if not isinstance(checks, list) or not all(isinstance(item, str) and item for item in checks):
+                raise ValueError("Existing AI Gateway affinity checks are not usable")
+            return checks
+
+        routes["optional_pre_call_checks"] = affinity_checks(router.get("optional_pre_call_checks"))
+        groups = router.get("model_group_affinity_config")
+        groups = {} if groups is None else groups
+        if not isinstance(groups, dict) or not all(isinstance(key, str) and key for key in groups):
+            raise ValueError("Existing AI Gateway model affinity overrides are not usable")
+        routes["model_group_affinity_config"] = {key: affinity_checks(value) for key, value in groups.items()}
         for field in ("fallbacks", "context_window_fallbacks"):
             entries = router.get(field)
             if entries is None:
@@ -2209,8 +2230,33 @@ class Deployment:
             live = json.loads(raw)
         except json.JSONDecodeError as error:
             raise ValueError("Existing AI Gateway model configuration is not valid JSON") from error
-        if self._model_routing(live) != self._model_routing(rendered):
+        routes = self._model_routing(rendered)
+        if self._model_routing(live) != routes:
             raise ValueError("Infrastructure deployment would change chart-managed AI Gateway model routes")
+        variables = {value.removeprefix("os.environ/") for model in routes["model_list"]
+                     for item in walk(model.get("litellm_params", {})) for value in item.values()
+                     if isinstance(value, str) and value.startswith("os.environ/")}
+        if variables:
+            gateway_doc, gateway_container = self.rendered_component("platform", "gateway")
+            current = json.loads(self.kubectl("get", "deployment", gateway_doc["metadata"]["name"],
+                                            "--namespace", namespace, "-o", "json"))
+            containers = [item for item in current.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+                          if item.get("name") == "gateway"]
+            if len(containers) != 1 or self.provider_secret_binding(containers[0], variables) != self.provider_secret_binding(gateway_container, variables):
+                raise ValueError("Infrastructure deployment would change the Gateway provider Secret binding")
+
+    @staticmethod
+    def provider_secret_binding(container, variables):
+        """The chart imports one required provider Secret without key remapping."""
+        sources = container.get("envFrom", [])
+        if len(sources) != 1 or any(entry.get("name") in variables for entry in container.get("env", [])):
+            raise ValueError("Gateway provider Secret binding is unavailable or ambiguous")
+        source = sources[0]
+        reference = source.get("secretRef", {})
+        if (source.get("prefix") or "configMapRef" in source or not resource_name(reference.get("name"))
+                or reference.get("optional", False) is not False):
+            raise ValueError("Gateway provider Secret binding must be required and unprefixed")
+        return reference["name"]
 
     def check_external_istio(self, document):
         kind, metadata = document["kind"], document["metadata"]
@@ -2380,8 +2426,15 @@ class Deployment:
             live = json.loads(raw)
         except json.JSONDecodeError as error:
             raise ValueError("Existing Gateway Deployment is not valid JSON") from error
-        if self.database_binding(live) != self.database_binding(rendered):
+        bindings = self.database_binding(rendered)
+        if self.database_binding(live) != bindings:
             raise ValueError("Infrastructure deployment would change the Gateway DATABASE_URL or LITELLM_SALT_KEY Secret binding")
+        for secret_name, key in bindings.values():
+            proposed = [doc for doc in self.documents["platform"] if doc.get("kind") == "Secret"
+                        and doc.get("metadata", {}).get("name") == secret_name
+                        and doc["metadata"].get("namespace", self.config["platform"]["namespace"]) == namespace]
+            if proposed and (len(proposed) != 1 or not (proposed[0].get("data", {}).get(key) or proposed[0].get("stringData", {}).get(key))):
+                raise ValueError("Rendered Gateway Secret would remove a required database or salt key")
 
     def installed_objects(self, name):
         """API version, kind and name of each object of the installed release that helm upgrade builds first: the

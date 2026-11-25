@@ -486,6 +486,19 @@ class EnvironmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(deploy.Blocked, "bootstrap_out_of_scope"):
             deploy.credentials(Path(directory), yaml.safe_dump(config), yaml.safe_dump(kube))
 
+    def test_environment_accepts_raw_manifest_receipts_but_rejects_unknown_fields(self):
+        config, kube = inputs()
+        raw = json.dumps({"schemaVersion": 2, "config": {"digest": "sha256:" + "a" * 64}}).encode()
+        manifest_digest = "sha256:" + deploy.hashlib.sha256(raw).hexdigest()
+        config["auxiliaryManifestReceipts"] = {manifest_digest: base64.b64encode(raw).decode()}
+        with tempfile.TemporaryDirectory() as directory:
+            parsed = deploy.credentials(Path(directory), yaml.safe_dump(config), yaml.safe_dump(kube))
+            verified = deploy.auxiliary_manifest_receipts(parsed)
+            self.assertIn(manifest_digest, verified)
+        config["unknownReceiptField"] = {}
+        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(deploy.Blocked, "unknown_environment_fields"):
+            deploy.credentials(Path(directory), yaml.safe_dump(config), yaml.safe_dump(kube))
+
     def test_nested_inline_secrets_are_rejected_but_secret_references_allowed(self):
         for value in ({"models": [{"api_key": "test-provider-key"}]}, {"oauth": {"clientSecret": "test-oauth"}},
                       {"cookieSecret": "test-cookie"}, {"tls": {"key": "test-key"}}, {"env": {"KEY": "-----BEGIN PRIVATE KEY-----"}}):
