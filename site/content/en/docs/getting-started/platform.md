@@ -381,6 +381,14 @@ resource. Record the deployment name, the endpoint of the resource, for example
 `https://<resource>.services.ai.azure.com`, and its key. Refer to
 [Foundry Models sold by Azure](https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure).
 
+An existing authorized OpenAI-compatible proxy can also serve Decision-1.
+Set its model to `openai/<proxy-model>`, its `api_base` to the proxy endpoint,
+and its key to a provider Secret environment reference. Keep
+`model_info.base_model: azure_ai/Microsoft-Decision-1` and
+`model_info.mode: evaluation` so pricing and classifier discovery keep the
+same contract. Verify that the proxy actually serves Decision-1; configuration
+validation alone does not make a model call.
+
 A subscription can have no quota for this model. Before you deploy it, find
 the entries of Microsoft-Decision-1 in the output of
 `az cognitiveservices usage list --location <region>`. If their limit is 0,
