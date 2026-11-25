@@ -9,9 +9,10 @@ from pathlib import Path
 import tempfile
 import unittest
 import json
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from scripts.tests import test_published_deployment as _published_fixture
+from scripts import deploy_environment as ENV_DEPLOY
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
@@ -65,11 +66,14 @@ class InfrastructureWiringTests(unittest.TestCase):
             {"name": "AI_GATEWAY_MASTER_KEY_SECRET_KEY", "value": "master-key"},
             {"name": "CONNECTIONS_MCP_RUNTIME_TYPES", "value": "hermes,openclaw,custom"}]}
         self.gateway = {"name": "gateway", "env": [self.secret("LITELLM_MASTER_KEY", "gateway-auth", "master-key"),
-                                                     self.secret("DATABASE_URL", "external-db", "url")]}
+                                                     self.secret("DATABASE_URL", "external-db", "url"),
+                                                     self.secret("LITELLM_SALT_KEY", "gateway-auth", "salt-key")]}
         self.portal = {"name": "portal", "env": [
             {"name": "FEATURE_AGENT_TOOLS_ENABLED", "value": "true"},
             {"name": "CONNECTIONS_MCP_RUNTIME_TYPES", "value": "custom,hermes,openclaw"}]}
         self.broker = {"name": "broker", "env": [
+            {"name": "OPERATOR_NAMESPACE", "value": "platform"},
+            {"name": "OPERATOR_SERVICE_ACCOUNT", "value": "portal-account"},
             {"name": "PORTAL_NAMESPACE", "value": "platform"},
             {"name": "PORTAL_SERVICE_ACCOUNT", "value": "portal-account"},
             {"name": "CONNECTIONS_MCP_RUNTIME_TYPES", "value": "hermes,custom,openclaw"}]}
@@ -126,6 +130,23 @@ class InfrastructureWiringTests(unittest.TestCase):
                     self.driver.check_infrastructure_wiring()
                 self.driver.kubectl.assert_not_called()
 
+    def test_broker_operator_caller_is_required_even_with_portal_disabled(self):
+        for portal_enabled in (True, False):
+            for field in ("OPERATOR_NAMESPACE", "OPERATOR_SERVICE_ACCOUNT"):
+                with self.subTest(portal_enabled=portal_enabled, field=field):
+                    self.setUp()
+                    self.driver.values["platform"]["cetirun-portal"]["enabled"] = portal_enabled
+                    self.set_env(self.broker, field, "different")
+                    with self.assertRaisesRegex(ValueError, "Operator namespace and ServiceAccount"):
+                        self.driver.check_infrastructure_wiring()
+                    self.driver.kubectl.assert_not_called()
+
+    def test_custom_operator_identity_matches_broker_without_active_portal(self):
+        self.driver.values["platform"]["cetirun-portal"]["enabled"] = False
+        self.driver.documents["platform"][0]["spec"]["template"]["spec"]["serviceAccountName"] = "custom-operator"
+        self.set_env(self.broker, "OPERATOR_SERVICE_ACCOUNT", "custom-operator")
+        self.driver.check_infrastructure_wiring()
+
     def test_gateway_reference_is_effective_render_including_generated_auth_secret(self):
         self.set_env(self.operator, "AI_GATEWAY_MASTER_KEY_SECRET", "renamed-gateway-auth")
         self.gateway["env"][0]["valueFrom"]["secretKeyRef"]["name"] = "renamed-gateway-auth"
@@ -172,6 +193,18 @@ class InfrastructureWiringTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "change the Gateway DATABASE_URL"):
                     self.driver.check_gateway_database_binding()
 
+    def test_database_encryption_secret_name_or_key_change_is_rejected(self):
+        for field in ("name", "key"):
+            with self.subTest(field=field):
+                live = copy.deepcopy(self.gateway_doc)
+                gateway = live["spec"]["template"]["spec"]["containers"][0]
+                salt = next(entry for entry in gateway["env"] if entry["name"] == "LITELLM_SALT_KEY")
+                salt["valueFrom"]["secretKeyRef"][field] = "different"
+                self.driver.kubectl.return_value = json.dumps(live)
+                with self.assertRaisesRegex(ValueError, "LITELLM_SALT_KEY"):
+                    self.driver.check_gateway_database_binding()
+                self.assertTrue(all(call.args[:2] == ("get", "deployment") for call in self.driver.kubectl.call_args_list))
+
     def test_migration_consumer_cannot_use_another_database(self):
         self.gateway_doc["spec"]["template"]["spec"]["initContainers"][0]["env"][0]["valueFrom"]["secretKeyRef"]["key"] = "different"
         with self.assertRaisesRegex(ValueError, "migration DATABASE_URL"):
@@ -195,7 +228,7 @@ class InfrastructureWiringTests(unittest.TestCase):
                 elif variant == "duplicate":
                     entries.append(copy.deepcopy(entries[1]))
                 else:
-                    entries.pop()
+                    entries.pop(1)
                 with self.assertRaisesRegex(ValueError, "DATABASE_URL"):
                     self.driver.check_gateway_database_binding()
 
@@ -238,6 +271,32 @@ class InfrastructureWiringTests(unittest.TestCase):
                 empty = {**candidate, "router_settings": {field: []}}
                 self.assertEqual(DEPLOY.Deployment._model_routing(document(candidate)),
                                  DEPLOY.Deployment._model_routing(document(empty)))
+
+    def test_same_model_failover_and_strategy_remain_effective(self):
+        import yaml
+        self.driver.config["modelRouting"] = {"mode": "preserve"}
+        self.driver.values["platform"]["cetirun-ai-gateway"] = {}
+        models = [{"model_name": "primary", "litellm_params": {"model": "azure/first"}},
+                  {"model_name": "primary", "litellm_params": {"model": "azure/second"}}]
+        def document(router):
+            return {"kind": "ConfigMap", "metadata": {"name": "gateway-config", "labels": {
+                    "app.kubernetes.io/name": "cetirun-ai-gateway"}},
+                    "data": {"config.yaml": yaml.safe_dump({"model_list": models, "router_settings": router})}}
+        live = document({"routing_strategy": "simple-shuffle", "enable_weighted_failover": True})
+        self.driver.kubectl.return_value = json.dumps(live)
+        for router in ({"routing_strategy": "simple-shuffle"},
+                       {"routing_strategy": "simple-shuffle", "enable_weighted_failover": False},
+                       {"routing_strategy": "least-busy", "enable_weighted_failover": True}):
+            with self.subTest(router=router):
+                self.driver.documents["platform"] = [document(router)]
+                with self.assertRaisesRegex(ValueError, "model routes"):
+                    self.driver.check_model_routing()
+        self.driver.documents["platform"] = [live]
+        self.driver.check_model_routing()
+        self.assertEqual(DEPLOY.Deployment._model_routing(document({})),
+                         DEPLOY.Deployment._model_routing(document({"enable_weighted_failover": False,
+                                                                   "routing_strategy": "simple-shuffle"})))
+
 
 
 class PublishedInfrastructureRenderTests(unittest.TestCase):
@@ -369,6 +428,60 @@ class PublishedInfrastructureRenderTests(unittest.TestCase):
             self.assertTrue(all(call.kwargs["expected_revision"] == 7 for call in deployment.upgrade.call_args_list))
             after.assert_any_call("portal", None)
             deployment.ready.assert_any_call("portal")
+
+    def test_external_postgresql_ignores_unused_bundled_storage_class(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            source = self.source_fixture(scratch)
+            gateway = source["platform"]["values"]["cetirun-ai-gateway"]
+            gateway["postgresql"]["bundled"]["enabled"] = False
+            gateway["postgresql"]["bundled"]["persistence"]["storageClass"] = ""
+            gateway["postgresql"]["urlSecret"] = {"existingSecret": "external-db", "key": "url"}
+            config, values, roots = DEPLOY.infrastructure_configuration(source, self.lock, scratch / "compile")
+            render = scratch / "render"
+            render.mkdir()
+            driver = DEPLOY.Deployment(config, values, render, published_artifacts=self.lock, chart_roots=roots)
+            driver.render()
+            refs = driver.references()
+            self.assertNotIn(("StorageClass", "", "", ""), refs)
+            self.assertIn(("Secret", config["platform"]["namespace"], "external-db", "url"), refs)
+            self.assertFalse(any(doc.get("kind") == "StatefulSet" and "postgresql" in doc["metadata"]["name"]
+                                 for doc in driver.documents["platform"]))
+            # Even a nonempty unused bundled class must not be queried.
+            values["platform"]["cetirun-ai-gateway"]["postgresql"]["bundled"]["persistence"]["storageClass"] = "unused-db-class"
+            self.assertNotIn(("StorageClass", "", "unused-db-class", ""), driver.references())
+            # The bundled case still requires explicit storage selection.
+            gateway["postgresql"]["bundled"]["enabled"] = True
+            with self.assertRaisesRegex(ValueError, "storageClass"):
+                DEPLOY.infrastructure_configuration(source, self.lock, scratch / "invalid")
+
+    def test_independent_gateway_does_not_require_platform_render_or_routing_reads(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            source = self.source_fixture(scratch)
+            gateway = source["platform"]["values"]["cetirun-ai-gateway"]
+            gateway["enabled"] = False
+            gateway["postgresql"]["bundled"]["persistence"]["storageClass"] = ""
+            config, values, roots = DEPLOY.infrastructure_configuration(source, self.lock, scratch / "compile")
+            render = scratch / "render"
+            render.mkdir()
+            driver = DEPLOY.Deployment(config, values, render, published_artifacts=self.lock, chart_roots=roots)
+            driver.render()
+            driver.kubectl = Mock(side_effect=AssertionError("External Gateway must not be read"))
+            driver.check_model_routing()
+            driver.check_gateway_database_binding()
+            with patch.object(ENV_DEPLOY, "collect_auxiliary_image_receipts", return_value={}):
+                self.assertEqual(ENV_DEPLOY.audit_rendered_images(driver, self.lock), 4)
+                incomplete_lock = copy.deepcopy(self.lock)
+                del incomplete_lock["images"]["cetirun-ai-gateway"]
+                with self.assertRaisesRegex(ENV_DEPLOY.Blocked, "artifacts_missing"):
+                    ENV_DEPLOY.audit_rendered_images(driver, incomplete_lock)
+                # Enabled owned components may not vanish from the render.
+                values["platform"]["cetirun-ai-gateway"]["enabled"] = True
+                with self.assertRaisesRegex(ENV_DEPLOY.Blocked, "images_missing"):
+                    ENV_DEPLOY.audit_rendered_images(driver, self.lock)
+            with self.assertRaisesRegex(ValueError, "model configuration is unavailable"):
+                driver.check_model_routing()
 
     def test_rejects_missing_retained_runtime_chart_digest(self):
         with tempfile.TemporaryDirectory() as temporary:

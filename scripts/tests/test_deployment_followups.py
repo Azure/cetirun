@@ -308,5 +308,86 @@ class RetainedPostgresqlTests(DeploymentFixture, unittest.TestCase):
         self.assertFalse(deployment.writes)
 
 
+@unittest.skipUnless(shutil.which("helm"), "requires existing Helm")
+class InfrastructureAdmissionTests(DeploymentFixture, unittest.TestCase):
+    def installed(self):
+        deployment = self.deployment()
+        deployment.execute()  # Synthetic API only; creates the real rendered registrations.
+        deployment.writes.clear()
+        deployment.config["_infrastructureOnly"] = True
+        return deployment
+
+    def test_server_only_and_partial_registration_sets_fail_before_writes(self):
+        deployment = self.installed()
+        objects = copy.deepcopy(deployment.objects)
+        bases = {("validatingwebhookconfiguration", "", "cetirun-sandbox-admission"),
+                 ("mutatingwebhookconfiguration", "", "cetirun-sandbox-admission")}
+        webhooks = {key for key in objects if key[0] in ("validatingwebhookconfiguration", "mutatingwebhookconfiguration")}
+        retained_sets = [set()]
+        retained_sets += [{key} for key in bases]
+        retained_sets.append(webhooks - bases)
+        for retained in retained_sets:
+            with self.subTest(retained=retained):
+                deployment.objects = {key: copy.deepcopy(value) for key, value in objects.items()
+                                      if key not in webhooks or key in retained}
+                with self.assertRaisesRegex(ValueError, "installed admission registrations"):
+                    deployment.preflight()
+                self.assertFalse(deployment.enforced)
+                self.assertFalse(deployment.writes)
+        deployment.objects = objects
+        deployment.preflight()
+        self.assertTrue(deployment.enforced)
+        self.assertFalse(deployment.writes)
+
+    def test_candidate_must_keep_enforcement_and_both_rendered_registrations(self):
+        deployment = self.installed()
+        admission = deployment.values["platform"]["cetirun-operator"]["sandboxAdmission"]
+        admission["enforce"] = False
+        with self.assertRaisesRegex(ValueError, "rendered admission enforcement"):
+            deployment.preflight()
+        admission["enforce"] = True
+        documents = deployment.documents["platform"]
+        for kind in ("ValidatingWebhookConfiguration", "MutatingWebhookConfiguration"):
+            with self.subTest(kind=kind):
+                deployment.documents["platform"] = [doc for doc in documents if not (
+                    doc.get("kind") == kind and doc["metadata"]["name"] == "cetirun-sandbox-admission")]
+                with self.assertRaisesRegex(ValueError, "rendered admission registrations"):
+                    deployment.preflight()
+                self.assertFalse(deployment.writes)
+        deployment.documents["platform"] = documents
+        deployment.preflight()
+
+    def test_registered_webhooks_require_correct_service_trust_and_rules(self):
+        deployment = self.installed()
+        for kind in ("validatingwebhookconfiguration", "mutatingwebhookconfiguration"):
+            key = (kind, "", "cetirun-sandbox-admission")
+            original = copy.deepcopy(deployment.live[key])
+            mutations = [lambda hook: hook.update(name="unrelated.example.com"),
+                         lambda hook: hook.update(failurePolicy="Ignore"),
+                         lambda hook: hook.update(rules=[]),
+                         lambda hook: hook["rules"][0].update(resources=["unrelated"]),
+                         lambda hook: hook["clientConfig"]["service"].update(namespace="other"),
+                         lambda hook: hook["clientConfig"]["service"].update(path="/unrelated"),
+                         lambda hook: hook["clientConfig"].update(caBundle="different-ca"),
+                         lambda hook: hook.update(objectSelector={"matchLabels": {"skip": "true"}}),
+                         lambda hook: hook.update(namespaceSelector={"matchLabels": {"skip": "true"}}),
+                         lambda hook: hook.setdefault("matchConditions", []).append({"name": "skip", "expression": "false"}),
+                         lambda hook: hook.update(matchPolicy="Exact")]
+            for index, mutate in enumerate(mutations):
+                with self.subTest(kind=kind, mutation=index):
+                    deployment.live[key] = copy.deepcopy(original)
+                    mutate(deployment.live[key]["webhooks"][0])
+                    with self.assertRaisesRegex(ValueError, "admission registration"):
+                        deployment.preflight()
+                    self.assertFalse(deployment.writes)
+            deployment.live[key] = original
+            hook = deployment.live[key]["webhooks"][0]
+            hook.pop("matchPolicy", None)  # Kubernetes defaults to Equivalent.
+            hook.update(objectSelector={}, namespaceSelector={})
+            hook["matchConditions"].reverse()  # Conditions are an unordered conjunction.
+        deployment.preflight()
+        self.assertFalse(deployment.writes)
+
+
 if __name__ == "__main__":
     unittest.main()

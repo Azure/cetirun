@@ -767,6 +767,10 @@ def deployment_charts(config):
     return {**CHARTS, **({"portal": "app/cetirun-portal/chart"} if "portal" in config else {})}
 
 
+def bundled_postgresql_enabled(gateway):
+    return gateway.get("enabled", True) and gateway["postgresql"]["bundled"]["enabled"]
+
+
 def infrastructure_configuration(path, artifacts, scratch):
     """Compile existing-installation values without selecting Agent runtimes.
 
@@ -884,15 +888,18 @@ def infrastructure_configuration(path, artifacts, scratch):
     }
     if len(audiences) != 1 or None in audiences:
         raise ValueError("Operator, MCP and Broker workload token audiences must match")
-    persistence = ai["postgresql"]["bundled"]["persistence"]
-    required(persistence, "size")
     retained = config["platform"].get("postgresqlStorage")
-    if retained is not None:
-        if (set(retained) != {"mode", "storageClassName"} or retained.get("mode") != "retain-default"
-                or not resource_name(retained.get("storageClassName")) or persistence.get("storageClass") != ""):
-            raise ValueError("retain-default requires the retained PVC class and an explicit empty claim-template storageClass")
-    else:
-        required(persistence, "storageClass")
+    if bundled_postgresql_enabled(ai):
+        persistence = ai["postgresql"]["bundled"]["persistence"]
+        required(persistence, "size")
+        if retained is not None:
+            if (set(retained) != {"mode", "storageClassName"} or retained.get("mode") != "retain-default"
+                    or not resource_name(retained.get("storageClassName")) or persistence.get("storageClass") != ""):
+                raise ValueError("retain-default requires the retained PVC class and an explicit empty claim-template storageClass")
+        else:
+            required(persistence, "storageClass")
+    elif retained is not None:
+        raise ValueError("postgresqlStorage requires an enabled bundled Gateway database")
     if ai["providerCredentials"].get("inline"):
         raise ValueError("Provider credentials must use an existing Secret")
     for entry in ai["models"]:
@@ -1746,13 +1753,18 @@ class Deployment:
             namespace = self.config["platform"]["namespace"]
             if actual != expected or operator_doc["metadata"].get("namespace", namespace) != gateway_doc["metadata"].get("namespace", namespace):
                 raise ValueError("Operator and Gateway management-key Secret references must match")
+        _, broker = self.rendered_component("broker", "broker")
+        broker_env = self.literal_environment(broker)
+        operator_namespace = operator_doc["metadata"].get("namespace", self.config["platform"]["namespace"])
+        operator_account = operator_doc["spec"]["template"]["spec"].get("serviceAccountName") or "default"
+        if (broker_env.get("OPERATOR_NAMESPACE"), broker_env.get("OPERATOR_SERVICE_ACCOUNT")) != (operator_namespace, operator_account):
+            raise ValueError("Broker caller policy must reference the Operator namespace and ServiceAccount")
         portal_release = "portal" if "portal" in self.config else "platform"
         portal_values = self.values["portal"] if portal_release == "portal" else self.values["platform"]["cetirun-portal"]
         if portal_release == "platform" and not portal_values.get("enabled", True):
             return
         portal_doc, portal = self.rendered_component(portal_release, "portal")
-        _, broker = self.rendered_component("broker", "broker")
-        portal_env, broker_env = self.literal_environment(portal), self.literal_environment(broker)
+        portal_env = self.literal_environment(portal)
         namespace = portal_doc["metadata"].get("namespace", self.config[portal_release]["namespace"])
         account = portal_doc["spec"]["template"]["spec"].get("serviceAccountName") or "default"
         if (broker_env.get("PORTAL_NAMESPACE"), broker_env.get("PORTAL_SERVICE_ACCOUNT")) != (namespace, account):
@@ -1812,13 +1824,14 @@ class Deployment:
             if operator["sandboxAdmission"].get(field):
                 refs.add(("ConfigMap", c["platform"]["namespace"], operator["sandboxAdmission"][field], ""))
         ai = p["cetirun-ai-gateway"]
-        for entry in ai["models"]:
+        for entry in ai["models"] if ai.get("enabled", True) else []:
             for value in entry.get("litellm_params", {}).values():
                 if isinstance(value, str) and value.startswith("os.environ/"):
                     refs.add(("Secret", c["platform"]["namespace"], ai["providerCredentials"]["existingSecret"], value.removeprefix("os.environ/")))
-        storage_classes = [operator["customRuntime"]["storageClass"], c["sharedSkills"]["storageClassName"],
-                           c["platform"].get("postgresqlStorage", {}).get("storageClassName")
-                           or ai["postgresql"]["bundled"]["persistence"]["storageClass"]]
+        storage_classes = [operator["customRuntime"]["storageClass"], c["sharedSkills"]["storageClassName"]]
+        if bundled_postgresql_enabled(ai):
+            storage_classes.append(c["platform"].get("postgresqlStorage", {}).get("storageClassName")
+                                   or ai["postgresql"]["bundled"]["persistence"]["storageClass"])
         marketplace = operator["skillMarketplace"]
         if marketplace.get("enabled"):
             # The repository credentials stay in an existing Secret of the platform namespace.
@@ -2000,6 +2013,7 @@ class Deployment:
             return
         admission = operator["sandboxAdmission"]
         has_webhook, has_pod_rules = False, False
+        registrations = {}
         for kind, name in (("ValidatingWebhookConfiguration", "cetirun-sandbox-admission"),
                            ("ValidatingWebhookConfiguration", "cetirun-sandbox-pods"),
                            ("ValidatingWebhookConfiguration", "cetirun-sandbox-placement"),
@@ -2014,6 +2028,7 @@ class Deployment:
             webhooks = json.loads(self.kubectl("get", kind, name, "-o", "jsonpath={.webhooks}"))
             if not isinstance(webhooks, list) or not webhooks:
                 raise ValueError(f"Cannot inspect existing admission protection: {name}")
+            registrations[(kind, name)] = webhooks
             for webhook in webhooks:
                 for rule in webhook.get("rules", []):
                     if any(group in ("", "*") for group in rule.get("apiGroups", [])):
@@ -2023,7 +2038,12 @@ class Deployment:
         old_admission = self.current_control("cetirun-sandbox-admission", "admission", ("CETIRUN_SANDBOX_ADMISSION",))
         if has_webhook and old_admission is None:
             raise ValueError("Cannot inspect existing admission configuration behind the installed webhooks")
-        self.enforced = has_webhook or old_admission is not None
+        if self.config.get("_infrastructureOnly"):
+            self.enforced = False
+            self.check_infrastructure_admission(registrations)
+            self.enforced = True
+        else:
+            self.enforced = has_webhook or old_admission is not None
         new_admission = self.rendered_control("cetirun-sandbox-admission", "admission")
         if old_admission is not None:
             old = self.control_json(old_admission, "CETIRUN_SANDBOX_ADMISSION", required=True)
@@ -2087,6 +2107,53 @@ class Deployment:
             if not native["enabled"] or native["operatorNamespace"] != old_mcp["env"]["OPERATOR_NAMESPACE"] or not current_peer or native["peerUID"] != current_peer:
                 raise ValueError("Preserve existing native MCP peer identity and operator namespace")
 
+    def check_infrastructure_admission(self, registrations):
+        """Require installed enforcing registrations, not merely a ready server."""
+        admission = self.values["platform"]["cetirun-operator"]["sandboxAdmission"]
+        if admission.get("enabled") is not True or admission.get("enforce") is not True:
+            raise ValueError("Infrastructure deployment requires rendered admission enforcement")
+        pairs = (("ValidatingWebhookConfiguration", "sandbox-configuration.cetirun.microsoft.com",
+                  "/validate-sandbox-configuration", ("agents", "teams", "sandboxes", "agentpolicies")),
+                 ("MutatingWebhookConfiguration", "sandbox-agent.cetirun.microsoft.com", "/mutate-sandbox-agent", ("agents",)))
+        for kind, hook_name, path, resources in pairs:
+            name = "cetirun-sandbox-admission"
+            documents = [doc for doc in self.documents["platform"]
+                         if doc.get("kind") == kind and doc.get("metadata", {}).get("name") == name]
+            if len(documents) != 1:
+                raise ValueError("Infrastructure deployment requires both rendered admission registrations")
+            rendered = [hook for hook in documents[0].get("webhooks", []) if hook.get("name") == hook_name]
+            installed = [hook for hook in registrations.get((kind, name), []) if hook.get("name") == hook_name]
+            if len(rendered) != 1 or len(installed) != 1:
+                raise ValueError("Infrastructure deployment requires both installed admission registrations")
+            for field, default in (("objectSelector", {}), ("namespaceSelector", {}),
+                                   ("matchConditions", []), ("matchPolicy", "Equivalent")):
+                candidate = rendered[0].get(field) or default
+                current = installed[0].get(field) or default
+                if field == "matchConditions":
+                    candidate = sorted(candidate, key=lambda value: json.dumps(value, sort_keys=True))
+                    current = sorted(current, key=lambda value: json.dumps(value, sort_keys=True))
+                if current != candidate:
+                    raise ValueError("Infrastructure admission registration must retain its request matching")
+            expected_service = {"name": name, "namespace": self.config["platform"]["namespace"], "path": path, "port": 443}
+            for hook in (rendered[0], installed[0]):
+                client = hook.get("clientConfig", {})
+                service = {**client.get("service", {})}
+                service.setdefault("port", 443)
+                if (hook.get("failurePolicy") != "Fail" or client.get("url") or service != expected_service
+                        or not client.get("caBundle") or client.get("caBundle") != rendered[0].get("clientConfig", {}).get("caBundle")):
+                    raise ValueError("Infrastructure admission registration must retain its enforcing service and CA")
+                required = [(operation, resource) for resource in resources for operation in ("CREATE", "UPDATE")]
+                if kind == "ValidatingWebhookConfiguration":
+                    required += [("DELETE", resource) for resource in resources if resource != "agents"]
+                for operation, resource in required:
+                    if not any(rule.get("scope", "*") in ("Cluster", "*")
+                               and any(value in rule.get("operations", []) for value in (operation, "*"))
+                               and any(value in rule.get("apiGroups", []) for value in ("cetirun.microsoft.com", "*"))
+                               and any(value in rule.get("apiVersions", []) for value in ("v1alpha1", "*"))
+                               and any(value in rule.get("resources", []) for value in (resource, "*", "*/*"))
+                               for rule in hook.get("rules", [])):
+                        raise ValueError("Infrastructure admission registration is missing required enforcement rules")
+
     @staticmethod
     def _model_routing(document):
         """Return chart-managed models and effective fallback mappings."""
@@ -2100,7 +2167,13 @@ class Deployment:
             raise ValueError("Existing AI Gateway model configuration has no usable model list")
         if not isinstance(router, dict):
             raise ValueError("Existing AI Gateway router settings are not usable")
-        routes = {"model_list": models}
+        failover = router.get("enable_weighted_failover")
+        if failover is None:
+            failover = False
+        strategy = router.get("routing_strategy", "simple-shuffle")
+        if type(failover) is not bool or not isinstance(strategy, str) or not strategy:
+            raise ValueError("Existing AI Gateway same-model failover settings are not usable")
+        routes = {"model_list": models, "enable_weighted_failover": failover, "routing_strategy": strategy}
         for field in ("fallbacks", "context_window_fallbacks"):
             entries = router.get(field)
             if entries is None:
@@ -2114,7 +2187,10 @@ class Deployment:
         """Preserve chart-managed routes when modelRouting.mode=preserve."""
         if not self.config.get("_infrastructureOnly") or self.config.get("modelRouting", {}).get("mode") != "preserve":
             return
-        chart_name = (self.values["platform"]["cetirun-ai-gateway"].get("nameOverride") or "cetirun-ai-gateway")[:63].rstrip("-")
+        gateway = self.values["platform"]["cetirun-ai-gateway"]
+        if gateway.get("enabled", True) is False:
+            return  # A separate release's routing is outside these manifests.
+        chart_name = (gateway.get("nameOverride") or "cetirun-ai-gateway")[:63].rstrip("-")
         matches = [doc for doc in self.documents["platform"] if doc.get("kind") == "ConfigMap"
                    and doc.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/name") == chart_name
                    and "config.yaml" in doc.get("data", {})]
@@ -2281,10 +2357,11 @@ class Deployment:
             if container.get("name") == "migrate" or any(entry.get("name") == "DATABASE_URL" for entry in container.get("env", [])):
                 if self.secret_environment_binding(container, "DATABASE_URL") != expected:
                     raise ValueError("Gateway and migration DATABASE_URL Secret bindings must match")
-        return expected
+        return {"DATABASE_URL": expected,
+                "LITELLM_SALT_KEY": self.secret_environment_binding(gateways[0], "LITELLM_SALT_KEY")}
 
     def check_gateway_database_binding(self):
-        """Preserve the database identity even when no bundled PVC exists."""
+        """Preserve the database and its encryption-key binding without Secret reads."""
         if not self.config.get("_infrastructureOnly"):
             return
         if self.values["platform"].get("cetirun-ai-gateway", {}).get("enabled", True) is False:
@@ -2301,7 +2378,7 @@ class Deployment:
         except json.JSONDecodeError as error:
             raise ValueError("Existing Gateway Deployment is not valid JSON") from error
         if self.database_binding(live) != self.database_binding(rendered):
-            raise ValueError("Infrastructure deployment would change the Gateway DATABASE_URL Secret binding")
+            raise ValueError("Infrastructure deployment would change the Gateway DATABASE_URL or LITELLM_SALT_KEY Secret binding")
 
     def installed_objects(self, name):
         """API version, kind and name of each object of the installed release that helm upgrade builds first: the
@@ -2516,7 +2593,9 @@ class Deployment:
         elif owns_tls and c["istio"].get("mode", "manage") == "manage":
             raise ValueError("The Istio release owns cetirun-tls; use tlsMode=retain or a separately approved ownership migration")
         database = "cetirun-ai-gateway-postgresql"
-        if self.resource("PersistentVolumeClaim", f"data-{database}-0", c["platform"]["namespace"]) and not self.resource("Secret", database, c["platform"]["namespace"]):
+        if (bundled_postgresql_enabled(self.values["platform"]["cetirun-ai-gateway"])
+                and self.resource("PersistentVolumeClaim", f"data-{database}-0", c["platform"]["namespace"])
+                and not self.resource("Secret", database, c["platform"]["namespace"])):
             raise ValueError("Retained PostgreSQL data has no password Secret; refusing to generate a replacement")
         self.check_retained_postgresql()
         self.check_gateway_database_binding()

@@ -6,7 +6,7 @@
 import copy
 import json
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from scripts import deploy_environment as deploy
 
@@ -112,6 +112,24 @@ class ProxyOwnershipTests(unittest.TestCase):
             with self.assertRaisesRegex(deploy.Blocked, "ownership_changed"):
                 self.verify()
             container["image"] = original
+
+    def test_disabled_operator_proxy_still_checks_foreign_workload_ownership(self):
+        self.snapshot["objects"]["pods/agent-ns/proxy-pod"] = self.record
+        with patch.object(deploy, "verify_existing_agent_images"), \
+             patch.object(deploy, "verify_operator_runtime_transition"), \
+             patch.object(deploy, "published_runtime_agents", return_value=([], False)), \
+             patch.object(deploy, "verify_custom_home_preservation"), \
+             patch.object(deploy, "verify_cetiadmin_transition"), \
+             patch.object(deploy, "rendered_operator", return_value={"env": []}):
+            deploy.verify_runtime_preservation(self.driver, self.snapshot, {}, {})
+            self.driver.helm.assert_called_once_with("get", "manifest", "foreign-release", "--namespace", "agent-ns")
+            self.controller["metadata"]["annotations"]["meta.helm.sh/release-name"] = "cetirun-fixture"
+            with self.assertRaisesRegex(deploy.Blocked, "ownership_unavailable"):
+                deploy.verify_runtime_preservation(self.driver, self.snapshot, {}, {})
+            self.controller["metadata"]["annotations"]["meta.helm.sh/release-name"] = "foreign-release"
+            self.pod["metadata"]["ownerReferences"] = []
+            with self.assertRaisesRegex(deploy.Blocked, "ownership_unavailable"):
+                deploy.verify_runtime_preservation(self.driver, self.snapshot, {}, {})
 
     def test_foreign_pod_is_still_protected_by_preservation(self):
         self.assertTrue(self.verify())

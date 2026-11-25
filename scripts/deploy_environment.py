@@ -896,7 +896,7 @@ def verify_runtime_preservation(deployment, snapshot, roots, lock):
     for item in snapshot["objects"].values():
         image = item.get("copilotProxyImage")
         if image is not None and (not proxy_image or image != proxy_image):
-            if (not deployment.config.get("_infrastructureOnly") or not proxy_image or
+            if (not deployment.config.get("_infrastructureOnly") or
                     not verify_foreign_copilot_proxy(deployment, item, snapshot)):
                 raise Blocked("existing_copilot_proxy_rollout_out_of_scope")
     verify_cetiadmin_transition(deployment, operator, lock)
@@ -1265,7 +1265,18 @@ def audit_rendered_images(deployment, lock):
                             if image != lock["images"][name]["reference"]:
                                 raise Blocked("rendered_image_not_locked")
                             observed.add(name)
-    required = CONTROL_PLANE_IMAGES
+    if not CONTROL_PLANE_IMAGES <= lock["images"].keys():
+        raise Blocked("required_control_plane_artifacts_missing")
+    required = CONTROL_PLANE_IMAGES.copy()
+    if deployment.config.get("_infrastructureOnly") is True:
+        # The complete artifact lock stays mandatory. Only active components
+        # owned by these releases must appear in this installation's render.
+        values = deployment.values["platform"]
+        for name in ("cetirun-ai-gateway", "cetirun-portal", "cetirun-connections-mcp"):
+            if name == "cetirun-portal" and "portal" in deployment.config:
+                continue
+            if values[name].get("enabled", True) is False:
+                required.remove(name)
     if not required <= observed:
         raise Blocked("required_control_plane_images_missing")
     return len(observed)
