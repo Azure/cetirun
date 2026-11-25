@@ -2105,10 +2105,15 @@ class PublicTLSPreflightTests(unittest.TestCase):
         self.openssl("verify", "-CAfile", str(self.directory / "issuer.pem"),
                      "-purpose", "sslserver", "-verify_hostname", host, str(leaf_path))
         deployment = self.deployment("missing-aki")
-        deployment.values["platform"]["cetirun-operator"]["sandboxAdmission"]["caBundle"] = base64.b64encode(ca.encode()).decode()
-        deployment.public_certificate = lambda *_args: leaf
-        with self.assertRaisesRegex(ValueError, "openssl verify failed"):
-            deployment.execute()
+        admission = deployment.values["platform"]["cetirun-operator"]["sandboxAdmission"]
+        admission["caBundle"] = base64.b64encode(ca.encode()).decode()
+        with patch.object(deployment, "public_certificate", side_effect=[
+            leaf, AssertionError("Admission verification must fail before another certificate lookup"),
+        ]) as public_certificate:
+            with self.assertRaisesRegex(ValueError, "openssl verify failed"):
+                deployment.execute()
+            public_certificate.assert_called_once_with(
+                deployment.config["platform"]["namespace"], admission["tlsSecretName"], "tls.crt")
         self.assertEqual(deployment.writes, [])
 
     def test_ingress_hostname_mismatch_is_rejected(self):
