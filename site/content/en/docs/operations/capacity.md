@@ -71,15 +71,21 @@ the Dsv6 family:
 - 15 `agent` nodes with 16 vCPUs
 - 3 `agent2` nodes with 32 vCPUs
 
-Before you deploy, compare these numbers with the vCPU quota of the region:
+Before you deploy, compare these numbers with the vCPU quota of the region in
+the target subscription:
 
 ```bash
-az vm list-usage --location your-approved-region --output table
+az vm list-usage --subscription "<subscription-id>" \
+  --location your-approved-region --output table
 ```
 
 Examine the total regional vCPUs and the vCPUs of the Dsv6 family. For a
 smaller cluster, set lower minimum counts or smaller VM sizes in the parameter
 file. Refer to [Infrastructure](../infrastructure/#cluster-parameter-file).
+Also reserve quota for surge nodes during upgrades, beyond the steady-state
+pool maxima. The template sets `maxSurge: '33%'` on every pool; refer to the
+[small test environment example](../infrastructure/#small-test-environment)
+for the calculation.
 
 ## Platform workloads
 

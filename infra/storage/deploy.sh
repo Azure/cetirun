@@ -106,25 +106,19 @@ else
     echo "Detected subnet: $AKS_SUBNET_ID"
   fi
 
-  # Validate the full ARM identity before reducing it to CLI name arguments.
-  # A foreign subscription must never redirect a same-name target subnet write.
+  # Validate the full ARM identity and use the same ID for the subnet update
+  # and storage deployment. Do not reinterpret it as separate CLI name arguments.
   python3 - "$AKS_SUBNET_ID" "$AZURE_SUBSCRIPTION_ID" <<'PYSUBNET'
 import re, sys
-match = re.fullmatch(r'/subscriptions/([^/\s]+)/resourceGroups/([^/\s]+)/providers/Microsoft.Network/virtualNetworks/([^/\s]+)/subnets/([^/\s]+)', sys.argv[1], re.IGNORECASE)
+match = re.fullmatch(r'/subscriptions/([^/\s]+)/resourceGroups/([^/\s]+)/providers/Microsoft\.Network/virtualNetworks/([^/\s]+)/subnets/([^/\s]+)', sys.argv[1], re.IGNORECASE)
 if not match or match[1].lower() != sys.argv[2].lower():
     raise SystemExit('Error: AKS_SUBNET_ID must be a subnet ARM ID in the explicit target subscription.')
 PYSUBNET
 
   # Ensure Microsoft.Storage service endpoint is enabled on the subnet (required for NFS v3)
   echo "Ensuring Microsoft.Storage service endpoint on subnet..."
-  SUBNET_NAME="$(basename "$AKS_SUBNET_ID")"
-  VNET_ID="$(echo "$AKS_SUBNET_ID" | sed 's|/subnets/.*||')"
-  VNET_NAME="$(basename "$VNET_ID")"
-  SUBNET_RG="$(echo "$AKS_SUBNET_ID" | grep -oP 'resourceGroups/\K[^/]+')"
-  az_target network vnet subnet update \
-    --resource-group "$SUBNET_RG" \
-    --vnet-name "$VNET_NAME" \
-    --name "$SUBNET_NAME" \
+  az network vnet subnet update \
+    --ids "$AKS_SUBNET_ID" \
     --service-endpoints Microsoft.Storage \
     -o none
 

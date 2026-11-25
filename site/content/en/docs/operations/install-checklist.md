@@ -29,7 +29,7 @@ pass the target subscription to every Azure resource command.
 | Read the cluster requirements, the user names, the tools, and the permissions that each step needs | [Prepare the environment](../../getting-started/platform/#prepare-the-environment) |
 | Compare the default node pools with the vCPU quota of the region | [Check the vCPU quota](../capacity/#check-the-vcpu-quota) |
 | Select one cluster, domain, and environment file for each environment | [Environments and namespaces](../../getting-started/platform/#environments-and-namespaces) |
-| Record the target subscription/tenant and original default contexts. Prepare a private kubeconfig and configuration directory outside the repository | [Connect to the cluster](../infrastructure/#connect-to-the-cluster) |
+| Record and verify the target subscription/tenant and original default contexts. Prepare a private kubeconfig and configuration directory outside the repository | [Select the Azure target](../infrastructure/#select-the-azure-target) and [Connect to the cluster](../infrastructure/#connect-to-the-cluster) |
 | For a test environment, set both minimum and maximum pool counts and account for admission replica placement | [Small test environment](../infrastructure/#small-test-environment) |
 
 Reuse configuration structure across environments, but create the identities,

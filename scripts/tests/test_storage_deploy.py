@@ -82,7 +82,11 @@ class StorageDeployTests(unittest.TestCase):
         result, calls = self.run_deploy()
         self.assertEqual(result.returncode, 0, result.stderr)
         for args in calls:
-            self.assertEqual(args[args.index("--subscription") + 1], SUBSCRIPTION)
+            if args[:4] == ["network", "vnet", "subnet", "update"]:
+                subnet = args[args.index("--ids") + 1]
+                self.assertEqual(subnet.split("/")[2], SUBSCRIPTION)
+            else:
+                self.assertEqual(args[args.index("--subscription") + 1], SUBSCRIPTION)
         self.assertFalse(any(args[:2] == ["account", "set"] for args in calls))
 
     def test_subnet_restricted_storage_is_verified_through_arm(self):
@@ -114,6 +118,8 @@ class StorageDeployTests(unittest.TestCase):
         for subnet in (
             f"/subscriptions/{TENANT}/resourceGroups/example-nodes/providers/Microsoft.Network/virtualNetworks/example-vnet/subnets/aks-subnet",
             f"/subscriptions/{SUBSCRIPTION}/resourceGroups/example-nodes/providers/Microsoft.Network/virtualNetworks/example-vnet/subnets/",
+            f"/subscriptions/{SUBSCRIPTION}/resourceGroups/example-nodes/providers/MicrosoftXNetwork/virtualNetworks/example-vnet/subnets/aks-subnet",
+            f"/subscriptions/{SUBSCRIPTION}/resourceGroups/example-nodes/providers/Microsoft-Network/virtualNetworks/example-vnet/subnets/aks-subnet",
         ):
             with self.subTest(subnet=subnet):
                 result, calls = self.run_deploy(AKS_SUBNET_ID=subnet)
@@ -121,6 +127,26 @@ class StorageDeployTests(unittest.TestCase):
                 self.assertIn("subnet ARM ID", result.stderr)
                 self.assertFalse(any(args[:3] == ["network", "vnet", "subnet"] for args in calls))
                 self.assertFalse(any(args[:2] == ["deployment", "group"] for args in calls))
+
+    def test_subnet_update_and_deployment_use_the_same_resource_id(self):
+        for subnet in (
+            f"/subscriptions/{SUBSCRIPTION}/resourceGroups/example-nodes/providers/Microsoft.Network/virtualNetworks/example-vnet/subnets/aks-subnet",
+            f"/subscriptions/{SUBSCRIPTION}/resourceGroups/example-nodes/providers/Microsoft.Network/virtualNetworks/example-vnet/Subnets/aks-subnet",
+            f"/SUBSCRIPTIONS/{SUBSCRIPTION}/RESOURCEGROUPS/Example-Nodes/PROVIDERS/microsoft.network/VIRTUALNETWORKS/Example-VNet/SUBNETS/Example-Subnet",
+        ):
+            with self.subTest(subnet=subnet):
+                result, calls = self.run_deploy(AKS_SUBNET_ID=subnet)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                updates = [args for args in calls if args[:4] == ["network", "vnet", "subnet", "update"]]
+                self.assertEqual(len(updates), 1)
+                self.assertEqual(updates[0][updates[0].index("--ids") + 1], subnet)
+                for option in ("--resource-group", "--vnet-name", "--name", "--subscription"):
+                    self.assertNotIn(option, updates[0])
+                deployments = [args for args in calls if args[:2] == ["deployment", "group"] and args[2] in ("validate", "create")]
+                self.assertEqual([args[2] for args in deployments], ["validate", "create"])
+                for args in deployments:
+                    allowed = [value.split("=", 1)[1] for value in args if value.startswith("allowedSubnetIds=")]
+                    self.assertEqual([json.loads(value) for value in allowed], [[subnet]])
 
     def test_deployment_keeps_compiled_snapshot_after_parameter_source_changes(self):
         result, calls = self.run_deploy(MUTATE_STORAGE_PARAMETERS="1")

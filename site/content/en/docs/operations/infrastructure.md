@@ -11,6 +11,23 @@ deployment. Before you provision resources, make sure that your Azure
 subscription and region support the selected Kubernetes version and VM sizes.
 Also make sure that they support the zones, preview features, and API version.
 
+## Select the Azure target
+
+Use an Azure CLI session authenticated to the intended tenant. Set the target
+before running the resource and permission examples on this page:
+
+```bash
+export AZURE_SUBSCRIPTION_ID="<subscription-id>"
+export AZURE_TENANT_ID="<tenant-id>"
+az account show --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --query '{subscription:id,tenant:tenantId}' --output json
+```
+
+Confirm that the returned subscription and tenant match these values. Every
+Azure resource command below passes the subscription explicitly. The `az ad`
+commands use the tenant of the signed-in session. These variables do not
+change the default Azure subscription.
+
 ## Source map
 
 | Source | Role |
@@ -73,7 +90,7 @@ It rejects older versions, prereleases, and values it cannot resolve to a stable
 See [Install CetiRun](../../getting-started/platform/#platform-chart) and
 [Policy-bound Teams](../policy-teams/). To see the Kubernetes versions of a
 region, run
-`az aks get-versions --location your-approved-region --output table`.
+`az aks get-versions --subscription "$AZURE_SUBSCRIPTION_ID" --location your-approved-region --output table`.
 If the region does not offer a stable compatible version, stop and select a
 region/version that does; do not fall back to an older version. This default
 change does not upgrade existing clusters. Plan any existing-cluster upgrade
@@ -87,7 +104,8 @@ Before you deploy, list the revisions of the region and their compatible
 Kubernetes versions:
 
 ```bash
-az aks mesh get-revisions --location your-approved-region --output table
+az aks mesh get-revisions --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --location your-approved-region --output table
 ```
 
 After the deployment, read the installed revision. The names of the managed
@@ -95,7 +113,8 @@ Istio resources contain it, and it is the `istio.revision` input of
 `make deploy`:
 
 ```bash
-az aks show --resource-group example-rg --name example-cluster \
+az aks show --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --resource-group example-rg --name example-cluster \
   --query serviceMeshProfile.istio.revisions --output tsv
 ```
 
@@ -145,9 +164,19 @@ that the region offers the selected VM sizes and supports Kata on them.
 
 The initial two nodes use 12 vCPUs. Admission replica placement can require
 another Kata node even before user Agents are created; three nodes in this
-example use 20 vCPUs. The configured maximum is 40 vCPUs across six nodes.
-Reserve the corresponding regional and VM-family quota. One system node and
-a Dev/Test ADX SKU are test choices, not a production availability design.
+example use 20 vCPUs. The steady-state maximum is 40 vCPUs across six nodes.
+
+Each pool also configures `maxSurge: '33%'` for upgrades. AKS rounds the surge
+node count up, so the pool maxima of 2, 3, and 1 each need one extra node:
+4 vCPUs for `system`, 8 for `agent`, and 8 for `agent2`. At the steady-state
+maximum, upgrading one pool at a time needs up to 48 vCPUs. If surge nodes
+for all three pools overlap, the cluster needs 60 vCPUs. Reserve this upgrade
+capacity in both the regional vCPU quota and the Dasv5 family quota, in
+addition to other resources using those quotas. A quota of 40 vCPUs cannot
+support a surge upgrade when the pools are at their maxima.
+
+One system node and a Dev/Test ADX SKU are test choices, not a production
+availability design.
 
 Before you create Agents, examine the installed `kata-vm-isolation`
 RuntimeClass and its scheduling rules. The agent chart does not create that
@@ -232,14 +261,17 @@ group. **Connected, mutating:**
 1. If the resource group does not exist, create it:
 
    ```bash
-   az group create --name example-rg --location your-approved-region --output none
+   az group create --subscription "$AZURE_SUBSCRIPTION_ID" \
+     --name example-rg --location your-approved-region --output none
    ```
 
 2. Assign the role at the scope of the resource group:
 
    ```bash
-   RESOURCE_GROUP_ID=$(az group show --name example-rg --query id --output tsv)
-   az role assignment create --role 'Azure Kubernetes Service RBAC Cluster Admin' \
+   RESOURCE_GROUP_ID=$(az group show --subscription "$AZURE_SUBSCRIPTION_ID" \
+     --name example-rg --query id --output tsv)
+   az role assignment create --subscription "$AZURE_SUBSCRIPTION_ID" \
+     --role 'Azure Kubernetes Service RBAC Cluster Admin' \
      --assignee-object-id "$(az ad signed-in-user show --query id --output tsv)" \
      --assignee-principal-type User --scope "$RESOURCE_GROUP_ID" --output none
    ```
@@ -271,6 +303,9 @@ resources.
 
 ## Connect to the cluster
 
+Use the subscription and tenant verified in
+[Select the Azure target](#select-the-azure-target) for these commands.
+
 The template enables Microsoft Entra authentication with Azure RBAC for
 Kubernetes authorization. As a result, each person who runs kubectl, Helm, or
 `make deploy` must have an Azure role for the Kubernetes API of the cluster.
@@ -283,9 +318,11 @@ administrators, assign the role at the scope of the cluster.
 **Connected, mutating:**
 
 ```bash
-CLUSTER_ID=$(az aks show --resource-group example-rg --name example-cluster \
+CLUSTER_ID=$(az aks show --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --resource-group example-rg --name example-cluster \
   --query id --output tsv)
-az role assignment create --role 'Azure Kubernetes Service RBAC Cluster Admin' \
+az role assignment create --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --role 'Azure Kubernetes Service RBAC Cluster Admin' \
   --assignee-object-id "<administrator-object-id>" \
   --assignee-principal-type User --scope "$CLUSTER_ID" --output none
 ```
@@ -298,7 +335,8 @@ kubectl gets its tokens through kubelogin from the Azure CLI sign-in.
 `az aks install-cli` installs kubectl and kubelogin:
 
 ```bash
-az aks get-credentials --resource-group example-rg --name example-cluster \
+az aks get-credentials --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --resource-group example-rg --name example-cluster \
   --file /absolute/private/kubeconfig
 export KUBECONFIG=/absolute/private/kubeconfig
 kubelogin convert-kubeconfig -l azurecli
@@ -365,19 +403,24 @@ them. The commands use the names that the earlier template gave them. The
 `monitor-control-service` the first time. **Connected, mutating:**
 
 ```bash
-CLUSTER_ID=$(az aks show --resource-group example-rg --name example-cluster \
+CLUSTER_ID=$(az aks show --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --resource-group example-rg --name example-cluster \
   --query id --output tsv)
-az monitor data-collection rule association delete --yes \
+az monitor data-collection rule association delete --subscription "$AZURE_SUBSCRIPTION_ID" --yes \
   --name ContainerInsightsExtension --resource "$CLUSTER_ID"
-az monitor data-collection rule association delete --yes \
+az monitor data-collection rule association delete --subscription "$AZURE_SUBSCRIPTION_ID" --yes \
   --name MSProm-your-approved-region-example-cluster --resource "$CLUSTER_ID"
-az monitor data-collection rule delete --yes --resource-group example-rg \
+az monitor data-collection rule delete --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --yes --resource-group example-rg \
   --name MSCI-your-approved-region-example-cluster
-az monitor data-collection rule delete --yes --resource-group example-rg \
+az monitor data-collection rule delete --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --yes --resource-group example-rg \
   --name example-cluster-prometheus
-az monitor log-analytics workspace delete --yes --resource-group example-rg \
+az monitor log-analytics workspace delete --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --yes --resource-group example-rg \
   --workspace-name example-cluster-logs
-az monitor account delete --yes --resource-group example-rg \
+az monitor account delete --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --yes --resource-group example-rg \
   --name example-cluster-prometheus
 ```
 
