@@ -405,7 +405,10 @@ class AdxScriptTests(unittest.TestCase):
 
     def test_gateway_daily_usage_reads_only_its_table_and_follows_it(self):
         create, retention, caching = kusto_commands("cetirun-gateway-usage.kql")
-        self.assertTrue(create.startswith(".create ifnotexists materialized-view with (backfill = true"))
+        self.assertTrue(create.startswith(".create ifnotexists materialized-view with (folder = "))
+        # No backfill: Kusto refuses it while earlier rows of the table are outside
+        # the hot cache, which would fail the script on every existing database.
+        self.assertNotIn("backfill", create)
         self.assertIn(" GatewayDailyUsageV2 on table Gateway {", create)
         # A materialized view reads its source table only.
         self.assertEqual(re.findall(r"^ {4}(\w+)$", create, re.M), ["Gateway"])

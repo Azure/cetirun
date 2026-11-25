@@ -177,7 +177,7 @@ The cluster template creates these functions:
 | Database | Function | Rows |
 |---|---|---|
 | `CetiRunLogs` | `GatewayRequests()` | One AI Gateway call with its Agent, owner, Team, model, tokens, spend, routing and outcome. No request or response content. `CallOrigin` is `health_check` for LiteLLM's own probes, the origin of the classifier for the classifier call of a router, and empty for a client's call. `CopilotRoute` is `true` when a GitHub Copilot route of the owner answered the call |
-| `CetiRunLogs` | `GatewayDailyUsageV2`, a materialized view | The AI Gateway calls, failed calls, tokens and spend of one day per cluster, Agent, AI Gateway user, owner, Team, model, provider and provider model, GitHub Copilot route and call origin. It keeps 400 days by default, longer than the request log |
+| `CetiRunLogs` | `GatewayDailyUsageV2`, a materialized view | The AI Gateway calls, failed calls, tokens and spend of one day per cluster, Agent, AI Gateway user, owner, Team, model, provider and provider model, GitHub Copilot route and call origin, from the creation of the view. It keeps 400 days by default, longer than the request log |
 | `CetiRunLogs` | `KubeEvents()` | One Kubernetes event version |
 | `CetiRunLogs` | `AgentInventoryHistory()`, `AgentInventory()` | Each record of an Agent's namespace, owner, Team and Agent Policy; the current Agents |
 | `CetiRunLogs` | `InventorySnapshots()` | One complete inventory snapshot of a kind, per cluster |

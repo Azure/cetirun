@@ -15,7 +15,12 @@
 // users can also have, and Kusto cannot change how a view groups its rows.
 // Where an earlier template created it, it stays and keeps its rows; this
 // script does not create or change it.
-.create ifnotexists materialized-view with (backfill = true, folder = "CetiRun", docString = "Daily AI Gateway calls, tokens and spend per cluster, Agent UID and name, AI Gateway user and owner alias, Team, model, provider model, provider, GitHub Copilot route and call origin. CallOrigin is health_check for LiteLLM's own probes.") GatewayDailyUsageV2 on table Gateway {
+//
+// The view counts the rows that arrive after its creation. Kusto refuses to
+// fill a new view with the earlier rows (backfill) while some of them are
+// outside the hot cache, which is the case for a Gateway table older than the
+// hot cache period; the script would then fail at every deployment.
+.create ifnotexists materialized-view with (folder = "CetiRun", docString = "Daily AI Gateway calls, tokens and spend per cluster, Agent UID and name, AI Gateway user and owner alias, Team, model, provider model, provider, GitHub Copilot route and call origin, from the creation of the view. CallOrigin is health_check for LiteLLM's own probes.") GatewayDailyUsageV2 on table Gateway {
     Gateway
     | where Container == "gateway" and tostring(Body['log_type']) == "cetirun.ai_gateway.request"
     | extend Metadata = Body['key_metadata']
