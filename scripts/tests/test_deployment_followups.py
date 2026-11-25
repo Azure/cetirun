@@ -40,6 +40,35 @@ class ToolchainTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("helm"), "requires existing Helm")
 class ArtifactPreflightTests(DeploymentFixture, unittest.TestCase):
+    def test_infrastructure_retains_private_approvals_without_requiring_registry_access(self):
+        deployment = self.deployment()
+        deployment.execute()  # Seed only the synthetic cluster's installed state.
+        deployment.writes.clear()
+        deployment.commands.clear()
+        deployment.verified_image_digests.clear()
+        approvals = deployment.values["platform"]["cetirun-operator"]["customRuntime"]["approvedImages"]
+        original = copy.deepcopy(approvals)
+        deployment.fail = approvals[0]
+        deployment.config["_infrastructureOnly"] = True
+        deployment.preflight()
+        inspections = [command[-1] for command in deployment.commands
+                       if command[:4] == ["docker", "buildx", "imagetools", "inspect"]]
+        self.assertTrue(inspections)
+        self.assertFalse(set(approvals) & set(inspections))
+        self.assertEqual(approvals, original)
+        self.assertFalse(deployment.writes)
+        # Full deployment still verifies runtime candidates.
+        deployment.config["_infrastructureOnly"] = False
+        with self.assertRaisesRegex(ValueError, "Synthetic failure"):
+            deployment.preflight()
+        # Infrastructure artifacts remain required, including on repeat checks.
+        deployment.config["_infrastructureOnly"] = True
+        deployment.verified_image_digests.clear()
+        deployment.fail = inspections[0]
+        with self.assertRaisesRegex(ValueError, "Synthetic failure"):
+            deployment.preflight()
+        self.assertFalse(deployment.writes)
+
     def test_incompatible_kubectl_stops_before_artifact_checks_or_writes(self):
         deployment = self.deployment()
         original = deployment.kubectl
@@ -159,6 +188,22 @@ class RetainedPostgresqlTests(DeploymentFixture, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "explicit empty"):
             self.configure(self.config)
 
+    def test_api_populated_pvc_type_metadata_does_not_change_storage(self):
+        deployment = self.retained()
+        template = self.state["templates"][0]
+        template.update(apiVersion="v1", kind="PersistentVolumeClaim")
+        original = copy.deepcopy(self.state)
+        deployment.check_retained_postgresql()
+        self.assertEqual(self.state, original)
+        self.assertFalse(deployment.writes)
+        for field, value in (("apiVersion", "unexpected/v1"), ("kind", "UnexpectedClaim")):
+            old = template[field]
+            template[field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "immutable storage change"):
+                deployment.check_retained_postgresql()
+            template[field] = old
+        self.assertFalse(deployment.writes)
+
     def test_claim_template_and_bound_volume_changes_are_rejected(self):
         deployment = self.retained()
         initial = copy.deepcopy(self.state)
@@ -260,6 +305,110 @@ class RetainedPostgresqlTests(DeploymentFixture, unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "identity changed while checking"):
                 deployment.check_retained_postgresql()
         self.assertIsNone(deployment.retained_database_pin)
+        self.assertFalse(deployment.writes)
+
+
+@unittest.skipUnless(shutil.which("helm"), "requires existing Helm")
+class InfrastructureAdmissionTests(DeploymentFixture, unittest.TestCase):
+    def installed(self):
+        deployment = self.deployment()
+        deployment.execute()  # Synthetic API only; creates the real rendered registrations.
+        deployment.writes.clear()
+        deployment.config["_infrastructureOnly"] = True
+        return deployment
+
+    def test_existing_controls_skip_coordination_without_an_owned_portal(self):
+        deployment = self.installed()
+        deployment.values["platform"]["cetirun-portal"]["enabled"] = False
+        deployment.documents["platform"] = [doc for doc in deployment.documents["platform"]
+                                             if doc.get("metadata", {}).get("name") != "cetirun-portal"]
+        with patch.object(deployment, "current_control", wraps=deployment.current_control) as current:
+            deployment.check_existing_controls()
+        self.assertFalse(any(call.args[0] == "cetirun-portal" for call in current.call_args_list))
+        self.assertFalse(deployment.writes)
+
+    def test_server_only_and_partial_registration_sets_fail_before_writes(self):
+        deployment = self.installed()
+        objects = copy.deepcopy(deployment.objects)
+        bases = {("validatingwebhookconfiguration", "", "cetirun-sandbox-admission"),
+                 ("mutatingwebhookconfiguration", "", "cetirun-sandbox-admission")}
+        webhooks = {key for key in objects if key[0] in ("validatingwebhookconfiguration", "mutatingwebhookconfiguration")}
+        retained_sets = [set()]
+        retained_sets += [{key} for key in bases]
+        retained_sets.append(webhooks - bases)
+        for retained in retained_sets:
+            with self.subTest(retained=retained):
+                deployment.objects = {key: copy.deepcopy(value) for key, value in objects.items()
+                                      if key not in webhooks or key in retained}
+                with self.assertRaisesRegex(ValueError, "installed admission registrations"):
+                    deployment.preflight()
+                self.assertFalse(deployment.enforced)
+                self.assertFalse(deployment.writes)
+        deployment.objects = objects
+        deployment.preflight()
+        self.assertTrue(deployment.enforced)
+        self.assertFalse(deployment.writes)
+
+    def test_candidate_must_keep_enforcement_and_both_rendered_registrations(self):
+        deployment = self.installed()
+        admission = deployment.values["platform"]["cetirun-operator"]["sandboxAdmission"]
+        admission["enforce"] = False
+        with self.assertRaisesRegex(ValueError, "rendered admission enforcement"):
+            deployment.preflight()
+        admission["enforce"] = True
+        documents = deployment.documents["platform"]
+        for kind in ("ValidatingWebhookConfiguration", "MutatingWebhookConfiguration"):
+            with self.subTest(kind=kind):
+                deployment.documents["platform"] = [doc for doc in documents if not (
+                    doc.get("kind") == kind and doc["metadata"]["name"] == "cetirun-sandbox-admission")]
+                with self.assertRaisesRegex(ValueError, "rendered admission registrations"):
+                    deployment.preflight()
+                self.assertFalse(deployment.writes)
+        deployment.documents["platform"] = documents
+        deployment.preflight()
+
+    def test_registered_webhooks_require_correct_service_trust_and_rules(self):
+        deployment = self.installed()
+        for kind in ("validatingwebhookconfiguration", "mutatingwebhookconfiguration"):
+            key = (kind, "", "cetirun-sandbox-admission")
+            original = copy.deepcopy(deployment.live[key])
+            mutations = [lambda hook: hook.update(name="unrelated.example.com"),
+                         lambda hook: hook.update(failurePolicy="Ignore"),
+                         lambda hook: hook.update(rules=[]),
+                         lambda hook: hook["rules"][0].update(resources=["unrelated"]),
+                         lambda hook: hook["rules"][0].update(scope="Namespaced"),
+                         lambda hook: hook["clientConfig"]["service"].update(namespace="other"),
+                         lambda hook: hook["clientConfig"]["service"].update(path="/unrelated"),
+                         lambda hook: hook["clientConfig"].update(caBundle="different-ca"),
+                         lambda hook: hook.update(objectSelector={"matchLabels": {"skip": "true"}}),
+                         lambda hook: hook.setdefault("matchConditions", []).append({"name": "skip", "expression": "false"}),
+                         lambda hook: hook.update(matchPolicy="Exact")]
+            for index, mutate in enumerate(mutations):
+                with self.subTest(kind=kind, mutation=index):
+                    deployment.live[key] = copy.deepcopy(original)
+                    mutate(deployment.live[key]["webhooks"][0])
+                    with self.assertRaisesRegex(ValueError, "admission registration"):
+                        deployment.preflight()
+                    self.assertFalse(deployment.writes)
+            deployment.live[key] = original
+            hook = deployment.live[key]["webhooks"][0]
+            hook.pop("matchPolicy", None)  # Kubernetes defaults to Equivalent.
+            hook.update(objectSelector={}, namespaceSelector={})
+            hook["matchConditions"].reverse()  # Conditions are an unordered conjunction.
+        deployment.preflight()
+        self.assertFalse(deployment.writes)
+
+    def test_namespace_selector_does_not_filter_cluster_scoped_governance(self):
+        deployment = self.installed()
+        for kind in ("validatingwebhookconfiguration", "mutatingwebhookconfiguration"):
+            hook = deployment.live[(kind, "", "cetirun-sandbox-admission")]["webhooks"][0]
+            self.assertTrue(all(rule["scope"] == "Cluster" for rule in hook["rules"]))
+            # Hosted clusters can add namespace exclusions; unlike an object
+            # selector, these do not filter Agent/Team/Sandbox/Policy CRDs.
+            hook["namespaceSelector"] = {"matchExpressions": [
+                {"key": "example.com/managed-namespace", "operator": "DoesNotExist"}]}
+        deployment.preflight()
+        self.assertTrue(deployment.enforced)
         self.assertFalse(deployment.writes)
 
 

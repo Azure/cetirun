@@ -46,6 +46,84 @@ def operator_args(version="0.2.1", image="", chart_digest="sha256:" + "a" * 64):
 
 
 class EnvironmentTests(unittest.TestCase):
+    def test_failure_location_exposes_only_allowlisted_source_coordinates(self):
+        try:
+            deploy.reject_downgrade({}, "private-value")
+        except ValueError as error:
+            location = deploy.public_failure_location(error)
+            trace = deploy.public_failure_trace(error)
+        self.assertEqual(set(location), {"file", "line"})
+        self.assertEqual(location["file"], "scripts/deploy_environment.py")
+        self.assertIsInstance(location["line"], int)
+        self.assertNotIn("private-value", json.dumps(location))
+        self.assertTrue(trace)
+        self.assertLessEqual(len(trace), 8)
+        self.assertTrue(all(set(frame) == {"file", "line"} for frame in trace))
+        self.assertNotIn("private-value", json.dumps(trace))
+        try:
+            raise ValueError("private external exception")
+        except ValueError as error:
+            self.assertIsNone(deploy.public_failure_location(error))
+
+    def test_command_failure_category_never_contains_operands_or_output(self):
+        for command, code in ((["helm", "--kube-context", "private-context", "list", "--namespace", "private-ns"], "helm_list_failed"),
+                              (["kubectl", "--context", "private-context", "--request-timeout=15s", "get", "secret", "private-secret"], "kubectl_get_failed"),
+                              (["docker", "buildx", "imagetools", "inspect", "private-image"], "image_inspection_failed"),
+                              (["openssl", "x509", "-in", "private-file"], "certificate_inspection_failed"),
+                              (["helm", "private-operation"], "deployment_command_failed")):
+            error = deploy.platform.DeploymentCommandError("private failure details", command)
+            self.assertEqual(error.public_code, code)
+            self.assertNotIn("private", error.public_code)
+
+    def test_release_snapshot_selects_one_release_without_hiding_failed_or_pending(self):
+        driver = Mock()
+        driver.config = {name: {"release": name, "namespace": "shared"} for name in deploy.platform.CHARTS}
+        for status in ("deployed", "failed", "pending-upgrade", "pending-rollback", "uninstalling", "uninstalled"):
+            def helm(*args):
+                selector = args[args.index("--selector") + 1]
+                release = selector.split("name=", 1)[1].split(",", 1)[0]
+                self.assertEqual(selector, "owner=helm,name=" + release + ",status!=superseded")
+                self.assertIn("--all", args)
+                return json.dumps([{"name": release, "status": status, "revision": "8", "chart": "chart-0.2.2"}])
+            driver.helm.side_effect = helm
+            with self.subTest(status=status):
+                rows = deploy.release_snapshot(driver, require_deployed=False)
+                self.assertTrue(all(row["status"] == status for row in rows.values()))
+                if status == "deployed":
+                    deploy.release_snapshot(driver)
+                else:
+                    with self.assertRaisesRegex(deploy.Blocked, "existing_helm_release_not_deployed"):
+                        deploy.release_snapshot(driver)
+
+    def test_infrastructure_preflight_still_rejects_current_pending_revision(self):
+        config = {"_infrastructureOnly": True,
+                  "target": {"cluster": "fixture", "server": "https://cluster.example.com", "clusterUID": "cluster-uid"},
+                  "istio": {"revision": "test", "controlPlaneNamespace": "mesh", "controlPlaneDeployment": "control",
+                            "ingressNamespace": "mesh", "ingressDeployment": "ingress", "ingressServiceAccount": "ingress"},
+                  "platform": {"release": "platform", "namespace": "platform"}}
+        driver = deploy.platform.Deployment(config, {}, Path("unused"))
+        driver.chart_specs = {"platform": Path("unused")}
+        driver.resource = Mock(return_value={"uid": "cluster-uid", "labels": {"istio.io/rev": "test"}})
+        driver.kubectl = Mock(return_value="fixture\nhttps://cluster.example.com")
+        driver.check_kubectl_version = Mock()
+        driver.helm = Mock(return_value=json.dumps([{"status": "pending-upgrade", "revision": "8"}]))
+        with self.assertRaisesRegex(ValueError, "unfinished operation"):
+            driver.preflight()
+        args = driver.helm.call_args.args
+        self.assertEqual(args[args.index("--selector") + 1], "owner=helm,name=platform,status!=superseded")
+        self.assertIn("--pending", args)
+        self.assertFalse(any(call.args[0] in ("apply", "patch", "delete", "create") for call in driver.kubectl.call_args_list))
+
+    def infrastructure_driver(self, arguments=None, env=None):
+        driver = self.runtime_driver(arguments)
+        driver.config["_infrastructureOnly"] = True
+        document = {"kind": "Deployment", "metadata": {"name": "cetirun-operator", "uid": "operator-uid", "resourceVersion": "7"},
+                    "spec": {"template": {"spec": {"containers": [{"name": "manager", "args": arguments or operator_args(),
+                                                                  "env": env or []}]}}}}
+        driver.documents = {"platform": [copy.deepcopy(document)]}
+        driver.kubectl.return_value = json.dumps(document)
+        return driver
+
     def runtime_driver(self, arguments=None):
         driver = Mock()
         driver.config = {"platform": {"namespace": "platform"}}
@@ -61,8 +139,18 @@ class EnvironmentTests(unittest.TestCase):
                  "status": {}}
         if ready:
             agent["status"]["namespace"] = "cetirun-agent"
-        pod = {"metadata": {"name": "gateway", "uid": pod_uid}, "spec": {"containers": [{"name": "gateway"}]},
+        pod = {"metadata": {"name": "gateway", "uid": pod_uid,
+                             "labels": {"cetirun.microsoft.com/agent-uid": "agent-uid"}},
+               "spec": {"containers": [{"name": "cetirun", "image": "registry.example.com/runtime"}]},
                "status": {"containerStatuses": [{"name": "gateway", "ready": True}]}}
+        pod["metadata"]["ownerReferences"] = [{"apiVersion": "apps/v1", "kind": "StatefulSet",
+                                                  "name": "cetirun-agent", "uid": "statefulset-uid",
+                                                  "controller": True}]
+        statefulset = {"metadata": {"name": "cetirun-agent", "namespace": "cetirun-agent", "uid": "statefulset-uid",
+                                     "ownerReferences": [{"apiVersion": "cetirun.microsoft.com/v1alpha1",
+                                                           "kind": "Agent", "name": "agent", "uid": "agent-uid",
+                                                           "controller": True}]},
+                       "spec": {"template": {"spec": copy.deepcopy(pod["spec"])}}}
         namespace = {"metadata": {"name": "cetirun-agent", "uid": "namespace-uid",
                                    "annotations": {"cetirun.microsoft.com/agent-uid": "agent-uid"},
                                    "ownerReferences": [{"apiVersion": "cetirun.microsoft.com/v1alpha1",
@@ -83,6 +171,8 @@ class EnvironmentTests(unittest.TestCase):
                     return json.dumps({"items": [namespace]})
                 if args[:2] == ("get", "pods"):
                     return json.dumps({"items": [pod]})
+                if args[:2] == ("get", "statefulset"):
+                    return json.dumps(statefulset)
                 if args[:2] == ("get", "pvc"):
                     return json.dumps({"items": pvc_items})
                 return json.dumps({"items": []})
@@ -396,6 +486,19 @@ class EnvironmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(deploy.Blocked, "bootstrap_out_of_scope"):
             deploy.credentials(Path(directory), yaml.safe_dump(config), yaml.safe_dump(kube))
 
+    def test_environment_accepts_raw_manifest_receipts_but_rejects_unknown_fields(self):
+        config, kube = inputs()
+        raw = json.dumps({"schemaVersion": 2, "config": {"digest": "sha256:" + "a" * 64}}).encode()
+        manifest_digest = "sha256:" + deploy.hashlib.sha256(raw).hexdigest()
+        config["auxiliaryManifestReceipts"] = {manifest_digest: base64.b64encode(raw).decode()}
+        with tempfile.TemporaryDirectory() as directory:
+            parsed = deploy.credentials(Path(directory), yaml.safe_dump(config), yaml.safe_dump(kube))
+            verified = deploy.auxiliary_manifest_receipts(parsed)
+            self.assertIn(manifest_digest, verified)
+        config["unknownReceiptField"] = {}
+        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(deploy.Blocked, "unknown_environment_fields"):
+            deploy.credentials(Path(directory), yaml.safe_dump(config), yaml.safe_dump(kube))
+
     def test_nested_inline_secrets_are_rejected_but_secret_references_allowed(self):
         for value in ({"models": [{"api_key": "test-provider-key"}]}, {"oauth": {"clientSecret": "test-oauth"}},
                       {"cookieSecret": "test-cookie"}, {"tls": {"key": "test-key"}}, {"env": {"KEY": "-----BEGIN PRIVATE KEY-----"}}):
@@ -405,11 +508,124 @@ class EnvironmentTests(unittest.TestCase):
                                           "models": [{"api_key": "os.environ/AZURE_KEY"}],
                                           "tls": {"secretName": "existing-tls"}})
 
-    def test_existing_agent_registry_conflict_including_missing_pin(self):
-        registry = "mcr.microsoft.com/aks/ai-runtime/cetirun"
-        self.assertEqual(deploy.registry_conflicts(baseline(), registry), 0)
-        self.assertEqual(deploy.registry_conflicts(baseline("registry.example.com/hermes-gateway:old"), registry), 1)
-        self.assertEqual(deploy.registry_conflicts(baseline(""), registry), 1)
+    def test_infrastructure_does_not_apply_new_runtime_profiles_to_retained_agents(self):
+        driver = self.infrastructure_driver()
+        lock = {"version": "0.2.1", "registry": "mcr.microsoft.com/aks/ai-runtime/cetirun",
+                "charts": {"cetirun": {"digest": "sha256:" + "a" * 64}}}
+        driver.values["platform"]["cetirun-operator"] = {"customRuntime": {"approvedImages": []}}
+        snap = baseline("registry.example.com/hermes-gateway@sha256:" + "b" * 64)
+        snap["objects"]["agents/fixture"]["chartVersion"] = "0.1.7"
+        before = copy.deepcopy(snap)
+        deploy.verify_existing_agent_images(driver, snap, {}, lock)
+        self.assertEqual(snap, before)
+        driver.kubectl.assert_not_called()
+        with self.assertRaisesRegex(deploy.Blocked, "existing_agent_runtime_image_unpinned"):
+            deploy.verify_existing_agent_images(driver, baseline(""), {}, lock)
+        snap["objects"]["agents/fixture"]["agentType"] = "custom"
+        with self.assertRaisesRegex(deploy.Blocked, "existing_custom_image_not_approved"):
+            deploy.verify_existing_agent_images(driver, snap, {}, lock)
+
+    def test_infrastructure_preserves_external_runtime_chart_and_memory_exactly(self):
+        arguments = operator_args(version="0.1.7", image="registry.example.com/memory@sha256:" + "b" * 64)
+        arguments[0] = "--chart-repo-url=oci://registry.example.com/runtime/cetirun"
+        driver = self.infrastructure_driver(arguments)
+        candidate = {"args": arguments.copy(), "env": []}
+        with patch.object(deploy.artifacts, "_manifest") as manifest:
+            deploy.verify_operator_runtime_transition(driver, baseline(), candidate)
+            manifest.assert_not_called()
+        for field, replacement in (("chart-version", "0.2.1"), ("chart-digest", "sha256:" + "f" * 64)):
+            changed = copy.deepcopy(candidate)
+            changed["args"] = ["--" + field + "=" + replacement if arg.startswith("--" + field + "=") else arg
+                               for arg in changed["args"]]
+            with self.subTest(field=field), self.assertRaisesRegex(deploy.Blocked, "runtime_chart_transition"):
+                deploy.verify_operator_runtime_transition(driver, baseline(), changed)
+            with self.subTest(field=field, agents=0), self.assertRaisesRegex(deploy.Blocked, "runtime_chart_transition"):
+                deploy.verify_operator_runtime_transition(driver, {"objects": {}}, changed)
+
+    def test_runtime_environment_checks_proxy_and_custom_settings_without_logging_values(self):
+        driver = self.runtime_driver()
+        current = [{"name": "CETIRUN_OPERATOR_IMAGE", "value": "old-control-plane"},
+                   {"name": "AI_GATEWAY_COPILOT_PROXY_IMAGE", "value": "registry.example.com/proxy@sha256:" + "c" * 64},
+                   {"name": "CETIRUN_CUSTOM_RUNTIME", "value": '{"enabled":true,"fsGroup":1024}'}]
+        driver.kubectl.return_value = json.dumps(current)
+        candidate = copy.deepcopy(current)
+        candidate[0]["value"] = "new-control-plane"
+        candidate[2]["value"] = '{"fsGroup":1024,"enabled":true}'
+        candidate.append({"name": "KUBE_FEATURE_WatchListClient", "value": "true"})
+        deploy.verify_runtime_environment(driver, {"env": candidate})
+        for index in (1, 2):
+            changed = copy.deepcopy(candidate)
+            changed[index]["value"] = "changed-private-value" if index == 1 else '{"enabled":false,"fsGroup":1024}'
+            with self.subTest(index=index), self.assertRaisesRegex(deploy.Blocked, "existing_runtime_environment_transition") as error:
+                deploy.verify_runtime_environment(driver, {"env": changed})
+            self.assertNotIn("changed-private-value", str(error.exception))
+        driver.resource.side_effect = [{"uid": "operator", "resourceVersion": "1"},
+                                       {"uid": "replacement", "resourceVersion": "2"}]
+        with self.assertRaisesRegex(deploy.Blocked, "operator_runtime_environment_changed"):
+            deploy.verify_runtime_environment(driver, {"env": candidate})
+
+    def test_runtime_environment_normalizes_empty_literal_but_not_absent_variable(self):
+        name = "AI_GATEWAY_DEFAULT_MODEL"
+        self.assertEqual(deploy.runtime_environment([{"name": name}]),
+                         deploy.runtime_environment([{"name": name, "value": ""}]))
+        self.assertNotEqual(deploy.runtime_environment([]), deploy.runtime_environment([{"name": name}]))
+
+    def test_infrastructure_reads_one_operator_revision_and_preserves_chart_credentials(self):
+        driver = self.infrastructure_driver()
+        document = json.loads(driver.kubectl.return_value)
+        pod = document["spec"]["template"]["spec"]
+        manager = pod["containers"][0]
+        manager["env"] = [{"name": "DOCKER_CONFIG", "value": "/etc/docker"},
+                          {"name": "AI_GATEWAY_DEFAULT_MODEL"}]
+        manager["volumeMounts"] = [{"name": "acr-docker-config", "mountPath": "/etc/docker", "readOnly": True}]
+        pod["volumes"] = [{"name": "acr-docker-config", "secret": {"secretName": "retained-chart-pull",
+                           "items": [{"key": ".dockerconfigjson", "path": "config.json"}], "defaultMode": 420}}]
+        driver.kubectl.return_value = json.dumps(document)
+        driver.documents["platform"] = [copy.deepcopy(document)]
+        candidate = driver.documents["platform"][0]["spec"]["template"]["spec"]["containers"][0]
+        candidate["env"][1]["value"] = ""
+        deploy.verify_operator_runtime_transition(driver, {"objects": {}}, candidate)
+        driver.kubectl.assert_called_once_with("get", "deployment", "cetirun-operator", "--namespace", "platform", "-o", "json")
+        driver.selected_fields.assert_not_called()
+        driver.resource.assert_not_called()
+        for change in ("env", "volumeMounts", "secretName"):
+            changed = copy.deepcopy(document)
+            updated_pod = changed["spec"]["template"]["spec"]
+            updated_manager = updated_pod["containers"][0]
+            if change == "env": updated_manager["env"] = updated_manager["env"][1:]
+            elif change == "volumeMounts": updated_manager.pop("volumeMounts")
+            else: updated_pod["volumes"][0]["secret"]["secretName"] = "replacement-secret"
+            driver.documents["platform"] = [changed]
+            with self.subTest(change=change), self.assertRaises(deploy.Blocked):
+                deploy.verify_operator_runtime_transition(driver, {"objects": {}}, updated_manager)
+
+    def test_infrastructure_preserves_auxiliary_workload_images(self):
+        document = {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "cache"},
+                    "spec": {"template": {"spec": {"containers": [{"name": "cache", "image": "cache.example/valkey:8"}]}}}}
+        driver = Mock()
+        driver.config = {"_infrastructureOnly": True,
+                         **{name: {"release": name, "namespace": name} for name in ("istio", "broker", "platform")}}
+        driver.documents = {name: [copy.deepcopy(document)] for name in ("istio", "broker", "platform")}
+        driver.helm.return_value = yaml.safe_dump(document)
+        deploy.compare_manifests(driver)
+        driver.documents["platform"][0]["spec"]["template"]["spec"]["containers"][0]["image"] = "cache.example/valkey:9"
+        with self.assertRaisesRegex(deploy.Blocked, "auxiliary_image_transition_out_of_scope"):
+            deploy.compare_manifests(driver)
+
+    def test_infrastructure_verifies_retained_auxiliary_digest(self):
+        image = "cache.example/valkey@sha256:" + "a" * 64
+        document = {"kind": "Deployment", "metadata": {"name": "cache"},
+                    "spec": {"selector": {"matchLabels": {"app": "cache"}},
+                             "template": {"spec": {"containers": [{"name": "cache", "image": image}]}}}}
+        driver = Mock()
+        driver.config = {"_infrastructureOnly": True,
+                         **{name: {"release": name, "namespace": name} for name in ("istio", "broker", "platform")}}
+        driver.documents = {name: [document] for name in ("istio", "broker", "platform")}
+        driver.kubectl.return_value = json.dumps({"items": [{"metadata": {"labels": {"app": "cache"}},
+            "spec": {"containers": [{"name": "cache", "image": image}]},
+            "status": {"containerStatuses": [{"name": "cache", "imageID": "cache.example/valkey@sha256:" + "b" * 64}]}}]})
+        with self.assertRaisesRegex(deploy.Blocked, "auxiliary_image_identity_mismatch"):
+            deploy.verify_images(driver, {"images": {}})
 
     def test_current_operator_projection_reads_runtime_args_and_rejects_drift(self):
         driver = self.runtime_driver()
@@ -516,6 +732,7 @@ class EnvironmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             driver = Mock()
+            driver.config = {}
             driver.values = {"platform": {"cetirun-operator": {"customRuntime": {"approvedImages": []}}}}
             old = baseline()
             agent = old["objects"]["agents/fixture"]
@@ -550,27 +767,113 @@ class EnvironmentTests(unittest.TestCase):
         next_image = agent["image"].replace("a" * 64, "b" * 64)
         driver = Mock()
         approved = [agent["image"], next_image]
+        driver.config = {}
         driver.values = {"platform": {"cetirun-operator": {"customRuntime": {"approvedImages": approved}}}}
         deploy.verify_existing_agent_images(driver, old, {}, {})
         approved.remove(agent["image"])
         with self.assertRaisesRegex(deploy.Blocked, "existing_custom_image_not_approved"):
             deploy.verify_existing_agent_images(driver, old, {}, {})
 
-    def test_capture_associates_memory_init_with_the_owned_agent(self):
+    def memory_capture_driver(self, variant="owned", runtime="hermes"):
         driver = self.capture_driver()
         original = driver.kubectl
+        image = "registry.example.com/memory@sha256:" + "a" * 64
         def read(*args):
             result = json.loads(original(*args))
+            if args[:2] == ("get", "agents.cetirun.microsoft.com"):
+                result["items"][0]["spec"]["agent"]["type"] = runtime
+                result["items"][0]["spec"]["suspended"] = True
+            if args[:2] in (("get", "pods"), ("get", "statefulset")):
+                spec = result["items"][0]["spec"] if args[1] == "pods" else result["spec"]["template"]["spec"]
+                spec["initContainers"] = [{"name": "memory-assets", "image": image}]
             if args[:2] == ("get", "pods"):
-                result["items"][0]["spec"]["containers"][0]["name"] = "cetirun"
-                result["items"][0]["spec"]["initContainers"] = [
-                    {"name": "memory-assets", "image": "registry.example.com/memory@sha256:" + "a" * 64}]
+                if variant == "unmarked-foreign":
+                    result["items"][0]["metadata"]["labels"] = {}
+                if variant == "namespace-conflict":
+                    result["items"][0]["metadata"]["annotations"] = {"cetirun.microsoft.com/agent-uid": "other-agent"}
+            if args[:2] == ("get", "statefulset"):
+                if variant in ("unmarked-foreign", "copied-marker"):
+                    result["metadata"]["ownerReferences"][0]["uid"] = "foreign-agent"
+                elif variant == "replaced-controller":
+                    result["metadata"]["uid"] = "replacement"
+                elif variant in ("helm-native", "foreign-release"):
+                    result["metadata"]["ownerReferences"] = []
+                    result["metadata"]["annotations"] = {
+                        "meta.helm.sh/release-name": "cetirun-agent" if variant == "helm-native" else "foreign",
+                        "meta.helm.sh/release-namespace": "cetirun-agent"}
             return json.dumps(result)
         driver.kubectl = read
+        return driver, image
+
+    def test_capture_associates_memory_init_with_owned_custom_and_native_agents(self):
+        for runtime in ("custom", "openclaw", "hermes"):
+            with self.subTest(runtime=runtime):
+                driver, image = self.memory_capture_driver(runtime=runtime)
+                pod = deploy.capture(driver)["objects"]["pods/cetirun-agent/gateway"]
+                self.assertEqual(pod["runtimeAgentUID"], "agent-uid")
+                self.assertTrue(pod["isRuntimePod"])
+                self.assertEqual(pod["memoryInitImages"], [image])
+
+    def test_capture_uses_exact_native_helm_release_for_memory_evidence(self):
+        driver, image = self.memory_capture_driver("helm-native")
+        manifest = json.loads(driver.kubectl("get", "statefulset"))
+        manifest["kind"] = "StatefulSet"
+        driver.helm_manifest = yaml.safe_dump(manifest)
         pod = deploy.capture(driver)["objects"]["pods/cetirun-agent/gateway"]
         self.assertEqual(pod["runtimeAgentUID"], "agent-uid")
-        self.assertTrue(pod["isRuntimePod"])
-        self.assertEqual(pod["memoryInitImages"], ["registry.example.com/memory@sha256:" + "a" * 64])
+        # A manifest that does not contain this primary runtime cannot qualify.
+        manifest["metadata"]["name"] = "other-workload"
+        driver.helm_manifest = yaml.safe_dump(manifest)
+        pod = deploy.capture(driver)["objects"]["pods/cetirun-agent/gateway"]
+        self.assertIsNone(pod["runtimeAgentUID"])
+
+    def test_foreign_workloads_remain_preserved_but_cannot_supply_memory_evidence(self):
+        for variant in ("unmarked-foreign", "copied-marker", "namespace-conflict", "replaced-controller", "foreign-release"):
+            with self.subTest(variant=variant):
+                driver, image = self.memory_capture_driver(variant)
+                snapshot = deploy.capture(driver)
+                pod = snapshot["objects"]["pods/cetirun-agent/gateway"]
+                self.assertIsNone(pod["runtimeAgentUID"])
+                self.assertEqual(pod["memoryInitImages"], [image])
+                agents = [row for row in snapshot["objects"].values() if row.get("agentType")]
+                with self.assertRaisesRegex(deploy.Blocked, "retained_runtime_memory_unverified"):
+                    deploy.verify_memory_runtime_images(snapshot, {"args": operator_args()}, {},
+                                                        {"version": "0.2.1"}, affected_agents=agents)
+                changed = copy.deepcopy(snapshot)
+                changed["objects"]["pods/cetirun-agent/gateway"]["uid"] = "replacement"
+                with self.assertRaisesRegex(deploy.Blocked, "preserved_resource_changed"):
+                    deploy.preservation(snapshot, changed)
+
+    def test_runtime_environment_preserves_legacy_skills_storage_override(self):
+        entries = [{"name": "SKILLS_STORAGE_ACCOUNT", "value": "retainedskills"}]
+        self.assertEqual(deploy.runtime_environment(entries)["SKILLS_STORAGE_ACCOUNT"]["value"], "retainedskills")
+
+    def test_infrastructure_rejects_skills_storage_override_removal(self):
+        driver = self.infrastructure_driver(env=[{"name": "SKILLS_STORAGE_ACCOUNT", "value": "retainedskills"}])
+        with self.assertRaisesRegex(deploy.Blocked, "existing_runtime_environment_transition_out_of_scope"):
+            deploy.verify_operator_runtime_transition(driver, {"objects": {}},
+                                                      {"args": operator_args(), "env": []})
+
+    def broker_ready_driver(self, *, auth_sdk=False, pod_names="istio-proxy auth-sdk"):
+        driver = Mock()
+        driver.config = {"broker": {"namespace": "broker"}}
+        driver.documents = {"broker": [{
+            "kind": "Deployment", "metadata": {"name": "cetirun-agent-broker"},
+            "spec": {"selector": {"matchLabels": {"app": "broker"}},
+                      "template": {"spec": {"containers": ([{"name": "broker"}, {"name": "auth-sdk"}]
+                                                   if auth_sdk else [{"name": "broker"}])}}}
+        }]}
+        driver.kubectl.side_effect = lambda *args: pod_names if args[0:2] == ("get", "pods") else ""
+        return driver
+
+    def test_broker_ready_does_not_require_auth_sdk_when_rendered_disabled(self):
+        deploy.platform.Deployment.ready(self.broker_ready_driver(auth_sdk=False, pod_names="broker istio-proxy"), "broker")
+
+    def test_broker_ready_requires_rendered_auth_sdk_and_istio(self):
+        with self.assertRaisesRegex(ValueError, "Auth SDK"):
+            deploy.platform.Deployment.ready(self.broker_ready_driver(auth_sdk=True, pod_names="broker istio-proxy"), "broker")
+        with self.assertRaisesRegex(ValueError, "Istio sidecar"):
+            deploy.platform.Deployment.ready(self.broker_ready_driver(auth_sdk=False, pod_names="broker"), "broker")
 
     def test_republished_chart_memory_init_is_checked_before_runtime_rollout(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -600,6 +903,23 @@ class EnvironmentTests(unittest.TestCase):
             pod["memoryInitImages"] = ["registry.example.com/override@sha256:" + "b" * 64]
             deploy.verify_memory_runtime_images(snap, {"args": operator_args(image=pod["memoryInitImages"][0])},
                                                 {"cetirun": root}, {"version": "0.2.1"})
+
+    def test_foreign_memory_pod_cannot_satisfy_suspended_agent_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = "registry.example.com/memory@sha256:" + "a" * 64
+            (root / "values.yaml").write_text(yaml.safe_dump({"memoryContext": {"image": image}}))
+            snap = baseline()
+            agent = snap["objects"]["agents/fixture"]
+            agent.update(agentType="hermes", chartVersion="0.2.1", suspended=True)
+            snap["objects"]["pods/foreign/workload"] = {
+                "runtimeAgentUID": None, "isRuntimePod": True, "memoryInitImages": [image]
+            }
+            with self.assertRaisesRegex(deploy.Blocked, "retained_runtime_memory_unverified"):
+                deploy.verify_memory_runtime_images(
+                    snap, {"args": operator_args()}, {"cetirun": root}, {"version": "0.2.1"},
+                    affected_agents=[agent]
+                )
 
     def custom_home_fixture(self):
         snap = baseline()
@@ -673,6 +993,7 @@ class EnvironmentTests(unittest.TestCase):
         image = "registry.example.com/cetirun-ai-gateway@sha256:" + "a" * 64
         old["objects"]["pods/cetirun-agent/proxy"] = {"agentType": "", "copilotProxyImage": image}
         driver = Mock()
+        driver.config = {}
         driver.values = {"platform": {"cetirun-operator": {"customRuntime": {"approvedImages": []}}}}
         operator = {"name": "manager", "image": "operator:2", "env": []}
         driver.documents = {"platform": [{"kind": "Deployment", "metadata": {"name": "cetirun-operator"},
@@ -883,14 +1204,14 @@ class EnvironmentTests(unittest.TestCase):
         with self.assertRaisesRegex(deploy.Blocked, "storage_contract"):
             deploy.compare_manifests(driver)
 
-    def test_plan_never_executes_and_apply_fails_before_write_on_conflict(self):
+    def test_plan_never_executes_and_runtime_guards_still_block_infrastructure_writes(self):
         cases = [(False, False, False, None), (True, True, False, None),
                  (True, False, False, None), (True, False, True, None)]
         cases += [(True, False, False, code) for code in (
             "existing_agent_image_not_qualified", "existing_copilot_proxy_rollout_out_of_scope",
             "cetiadmin_installation_transition_out_of_scope", "existing_memory_override_transition_out_of_scope",
             "existing_memory_init_rollout_out_of_scope", "existing_custom_home_transition_out_of_scope",
-            "retained_chart_tag_changed", "tag_changed_after_plan")]
+            "retained_chart_tag_changed", "tag_changed_after_plan", "final_runtime_drift")]
         for apply, conflict, failure, runtime_block in cases:
             with self.subTest(apply=apply, conflict=conflict, failure=failure, runtime_block=runtime_block), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -926,8 +1247,11 @@ class EnvironmentTests(unittest.TestCase):
                 runtime_effect = deploy.Blocked(runtime_block) if runtime_block else None
                 if runtime_block == "tag_changed_after_plan":
                     runtime_effect = [None, deploy.Blocked("retained_chart_tag_changed")]
+                if runtime_block == "final_runtime_drift":
+                    runtime_effect = [None] * (2 + len(deploy.platform.CHARTS)) + [
+                        deploy.Blocked("existing_runtime_environment_transition_out_of_scope")]
                 with patch.object(deploy.artifacts, "resolve", return_value=lock), \
-                     patch.object(deploy.platform, "published_configuration", return_value=(config, {}, {})), \
+                     patch.object(deploy.platform, "infrastructure_configuration", return_value=(config, {}, {})), \
                      patch.object(deploy.platform, "Deployment", return_value=driver), \
                      patch.object(deploy, "capture", return_value=snap), \
                      patch.object(deploy, "release_snapshot", side_effect=lambda *args, **kwargs: copy.deepcopy(live_releases)), \
@@ -939,10 +1263,10 @@ class EnvironmentTests(unittest.TestCase):
                      patch.object(deploy, "verify_images", return_value=3), \
                      patch.object(deploy, "verify_entry", return_value={"tls": "PASS"}), redirect_stdout(io.StringIO()):
                     code = deploy.run(args)
-                self.assertEqual(code, 1 if conflict or failure or runtime_block else 0)
-                self.assertEqual(driver.execute.call_count, int(apply and not conflict and not runtime_block))
-                if apply and not (conflict or failure or runtime_block):
-                    self.assertEqual(runtime_check.call_count, 2 + len(deploy.platform.CHARTS))
+                self.assertEqual(code, 1 if failure or runtime_block else 0)
+                self.assertEqual(driver.execute.call_count, int(apply and (not runtime_block or runtime_block == "final_runtime_drift")))
+                if apply and not (failure or runtime_block):
+                    self.assertEqual(runtime_check.call_count, 3 + len(deploy.platform.CHARTS))
                 report = (root / "report.json").read_text()
                 for secret in ("synthetic-secret", "synthetic-cluster", "sensitive-spec-hash", "agents/fixture", "portal.example.invalid", "private-upgrade-log"):
                     self.assertNotIn(secret, report)
@@ -1022,7 +1346,7 @@ class EnvironmentTests(unittest.TestCase):
                 # Kubernetes or the stability interval. All external APIs are doubles.
                 acceptance = deploy.stable_acceptance
                 with patch.object(deploy.artifacts, "resolve", return_value=lock), \
-                     patch.object(deploy.platform, "published_configuration", return_value=(config, {}, {})), \
+                     patch.object(deploy.platform, "infrastructure_configuration", return_value=(config, {}, {})), \
                      patch.object(deploy.platform, "Deployment", return_value=driver), \
                      patch.object(deploy, "capture", side_effect=capture), \
                      patch.object(deploy, "release_snapshot", side_effect=lambda *a, **k: copy.deepcopy(live["releases"])), \
@@ -1051,7 +1375,7 @@ class EnvironmentTests(unittest.TestCase):
                 elif replacement_at and replacement_at != "platform_claim":
                     self.assertEqual(report["preservationAfterFailure"], "UNVERIFIED")
 
-    def test_workflow_uses_only_manual_default_branch_and_report_allowlist(self):
+    def test_workflow_uses_only_manual_branch_dispatch_and_report_allowlist(self):
         path = Path(__file__).resolve().parents[2] / ".github/workflows/deploy-environment.yml"
         workflow = yaml.safe_load(path.read_text())
         triggers = workflow.get("on", workflow.get(True))
@@ -1063,7 +1387,8 @@ class EnvironmentTests(unittest.TestCase):
         self.assertFalse(workflow["concurrency"]["cancel-in-progress"])
         self.assertEqual(workflow["permissions"], {"contents": "read"})
         job = workflow["jobs"]["deploy"]
-        self.assertIn("default_branch", job["if"])
+        self.assertEqual(job["if"], "github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/')")
+        self.assertEqual(job["steps"][0]["with"]["ref"], "${{ github.sha }}")
         self.assertEqual(job["environment"], "${{ inputs.environment }}")
         uploads = [step for step in job["steps"] if step.get("uses", "").startswith("actions/upload-artifact")]
         self.assertEqual(len(uploads), 1)

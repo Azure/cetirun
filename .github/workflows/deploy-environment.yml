@@ -1,4 +1,4 @@
-name: Deploy CetiRun environment
+name: Deploy CetiRun infrastructure
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         type: environment
         required: true
       release_tag:
-        description: Published MCR release tag (vX.Y.Z)
+        description: Published MCR control-plane release tag (vX.Y.Z); instance runtimes are retained
         type: string
         required: true
       plan_only:
@@ -26,12 +26,12 @@ concurrency:
 
 jobs:
   deploy:
-    if: github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/')
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     environment: ${{ inputs.environment }}
     steps:
-      - name: Checkout deployment tooling from the dispatched default-branch commit
+      - name: Checkout deployment tooling from the dispatched branch commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -68,7 +68,12 @@ jobs:
         run: |
           "$RUNNER_TEMP/cetirun-venv/bin/python" -B -m unittest \
             scripts.tests.test_deployment_artifacts \
+            scripts.tests.test_deployment_followups \
             scripts.tests.test_published_deployment \
+            scripts.tests.test_infrastructure_configuration \
+            scripts.tests.test_retained_runtime_contract \
+            scripts.tests.test_infrastructure_auxiliary \
+            scripts.tests.test_copilot_proxy_ownership \
             scripts.tests.test_deploy_environment
 
       - name: Preflight and optionally deploy
