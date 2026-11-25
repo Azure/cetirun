@@ -1872,7 +1872,7 @@ class Deployment:
         leaf_file, ca_file = self.scratch / f"{label}-public.pem", self.scratch / f"{label}-ca.pem"
         leaf_file.write_text(certificate)
         ca_file.write_text(ca)
-        command = ["openssl", "verify", "-CAfile", str(ca_file), "-untrusted", str(leaf_file),
+        command = ["openssl", "verify", "-x509_strict", "-CAfile", str(ca_file), "-untrusted", str(leaf_file),
                    "-purpose", "sslclient" if client_uri else "sslserver"]
         if hostname:
             command += ["-verify_hostname", hostname]

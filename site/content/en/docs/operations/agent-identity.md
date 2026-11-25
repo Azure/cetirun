@@ -363,7 +363,10 @@ expose Broker or MCP through the public ingress.
 
 Request these PEM certificates from your private PKI. Leaf certificates must
 have a valid chain, a private key that matches, and the extended key usage
-that the table shows. The charts do not issue certificates.
+that the table shows. Include Subject Key Identifier (SKI) on CA certificates
+and Authority Key Identifier (AKI) on leaves. Native clients use strict X.509
+validation; a chain that passes ordinary `openssl verify` can still fail
+without these extensions. The charts do not issue certificates.
 
 | Material | Required identity | Destination |
 | --- | --- | --- |
@@ -388,6 +391,7 @@ openssl req -x509 -newkey rsa:3072 -nodes -sha256 -days 365 \
   -subj '/CN=CetiRun identity example CA' \
   -addext 'basicConstraints=critical,CA:TRUE' \
   -addext 'keyUsage=critical,keyCertSign,cRLSign' \
+  -addext 'subjectKeyIdentifier=hash' \
   -keyout "$IDENTITY_TLS_DIR/ca.key" -out "$IDENTITY_TLS_DIR/ca.crt"
 
 for leaf in broker-server mcp-server mcp-client; do
@@ -404,12 +408,15 @@ for leaf in broker-server mcp-server mcp-client; do
   esac
   openssl req -new -newkey rsa:3072 -nodes -subj "/CN=$leaf" \
     -keyout "$IDENTITY_TLS_DIR/$leaf.key" -out "$IDENTITY_TLS_DIR/$leaf.csr"
-  printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=%s\nsubjectAltName=%s\n' \
+  printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\nextendedKeyUsage=%s\nsubjectAltName=%s\n' \
     "$leaf_usage" "$leaf_san" > "$IDENTITY_TLS_DIR/$leaf.ext"
   openssl x509 -req -sha256 -days 90 -in "$IDENTITY_TLS_DIR/$leaf.csr" \
     -CA "$IDENTITY_TLS_DIR/ca.crt" -CAkey "$IDENTITY_TLS_DIR/ca.key" \
     -CAcreateserial -extfile "$IDENTITY_TLS_DIR/$leaf.ext" \
     -out "$IDENTITY_TLS_DIR/$leaf.crt"
+  openssl verify -x509_strict -CAfile "$IDENTITY_TLS_DIR/ca.crt" \
+    -purpose "$(if [ "$leaf_usage" = clientAuth ]; then echo sslclient; else echo sslserver; fi)" \
+    "$IDENTITY_TLS_DIR/$leaf.crt"
 done
 ```
 
@@ -831,11 +838,12 @@ component settings, refer to the
 To replace a CA, do these steps in this order:
 
 1. Add the new CA to the trust of every peer, next to the old CA.
-2. Rotate the leaf certificates. Distribute the MCP CA source to Agent
-   workloads, and make sure that new connections work.
-3. Examine Agent reconciliation and the reload/restart conditions of native
-   clients. Server reload alone does not update every client.
-4. Remove the old CA.
+2. Propagate the combined MCP CA bundle to existing Agent workloads before
+   replacing the server leaf. Updating the source Secret alone does not
+   enqueue every Agent. Follow
+   [Propagate a new MCP CA to existing Agents](../certificates/#propagate-a-new-mcp-ca-to-existing-agents).
+3. Rotate the leaf certificates and verify that new connections work.
+4. Remove the old CA and repeat the client trust propagation and verification.
 
 Allow time for the Secret projection and the reload delays. A change of trust
 does not close connections that exist.

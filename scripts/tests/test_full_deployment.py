@@ -2045,7 +2045,8 @@ class PublicTLSPreflightTests(unittest.TestCase):
         cls.serial = 10
         for name in ("issuer", "other-issuer"):
             cls.openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", f"/CN={name}",
-                        "-addext", "basicConstraints=critical,CA:TRUE", "-keyout", str(cls.directory / f"{name}.key"),
+                        "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+                        "-addext", "subjectKeyIdentifier=hash", "-keyout", str(cls.directory / f"{name}.key"),
                         "-out", str(cls.directory / f"{name}.pem"))
 
     @staticmethod
@@ -2053,16 +2054,19 @@ class PublicTLSPreflightTests(unittest.TestCase):
         subprocess.run(["openssl", *args], check=True, capture_output=True, text=True, timeout=30)
 
     @classmethod
-    def certificate(cls, *, host=None, uri=None, days="1", client=False):
+    def certificate(cls, *, host=None, uri=None, days="1", client=False, authority_key_id=True):
         cls.serial += 1
         prefix = cls.directory / str(cls.serial)
         extension = f"URI:{uri}" if uri else f"DNS:{host}"
         cls.openssl("req", "-new", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=synthetic-test",
                     "-addext", f"subjectAltName={extension}", "-addext", f"extendedKeyUsage={'clientAuth' if client else 'serverAuth'}",
+                    "-addext", "basicConstraints=critical,CA:FALSE", "-addext", "keyUsage=critical,digitalSignature,keyEncipherment",
                     "-keyout", f"{prefix}.key", "-out", f"{prefix}.csr")
+        Path(f"{prefix}.ext").write_text("subjectKeyIdentifier=hash\nauthorityKeyIdentifier="
+                                       + ("keyid,issuer" if authority_key_id else "none") + "\n")
         cls.openssl("x509", "-req", "-in", f"{prefix}.csr", "-CA", str(cls.directory / "issuer.pem"),
                     "-CAkey", str(cls.directory / "issuer.key"), "-set_serial", str(cls.serial),
-                    "-days", days, "-copy_extensions", "copy", "-out", f"{prefix}.pem")
+                    "-days", days, "-copy_extensions", "copy", "-extfile", f"{prefix}.ext", "-out", f"{prefix}.pem")
         return Path(f"{prefix}.pem").read_text()
 
     def deployment(self, name):
@@ -2110,6 +2114,27 @@ class PublicTLSPreflightTests(unittest.TestCase):
         deployment.verify_certificate("valid-client", client, ca, client_uri=uri)
         with self.assertRaisesRegex(ValueError, "exactly the configured MCP service URI"):
             deployment.verify_certificate("other-client", client, ca, client_uri=uri + "-other")
+        self.assertEqual(deployment.writes, [])
+
+    def test_missing_authority_key_identifier_stops_before_writes(self):
+        host = "cetirun-sandbox-admission.cetirun-system.svc"
+        ca = (self.directory / "issuer.pem").read_text()
+        leaf = self.certificate(host=host, authority_key_id=False)
+        leaf_path = self.directory / "missing-aki.pem"
+        leaf_path.write_text(leaf)
+        # Ordinary verification accepts this chain, but native Python strict TLS rejects it.
+        self.openssl("verify", "-CAfile", str(self.directory / "issuer.pem"),
+                     "-purpose", "sslserver", "-verify_hostname", host, str(leaf_path))
+        deployment = self.deployment("missing-aki")
+        admission = deployment.values["platform"]["cetirun-operator"]["sandboxAdmission"]
+        admission["caBundle"] = base64.b64encode(ca.encode()).decode()
+        with patch.object(deployment, "public_certificate", side_effect=[
+            leaf, AssertionError("Admission verification must fail before another certificate lookup"),
+        ]) as public_certificate:
+            with self.assertRaisesRegex(ValueError, "openssl verify failed"):
+                deployment.execute()
+            public_certificate.assert_called_once_with(
+                deployment.config["platform"]["namespace"], admission["tlsSecretName"], "tls.crt")
         self.assertEqual(deployment.writes, [])
 
     def test_ingress_hostname_mismatch_is_rejected(self):

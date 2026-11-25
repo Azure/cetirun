@@ -30,8 +30,14 @@ certificate from their mounted Secret without a restart. The clients of a new
 CA must trust it before you replace a leaf certificate.
 
 `make deploy` checks the expiry of the ingress certificate. For the other
-certificates, it runs `openssl verify`, which also refuses an expired
-certificate. The error does not name the certificate. This loop prints only the
+certificates, it runs `openssl verify -x509_strict`, including the configured
+server hostname or client purpose and URI. The CA must include a Subject Key
+Identifier (SKI), and leaves must include an Authority Key Identifier (AKI).
+An expired certificate or a chain accepted only by ordinary, non-strict
+verification stops the deployment. Refer to the
+[internal certificate example](../agent-identity/#3-prepare-namespaces-and-tls).
+
+The error does not name the certificate. This loop prints only the
 public part of each certificate. It shows the subject and the expiry, and it
 reports a certificate that expires within 30 days. Replace `<broker-namespace>`
 first:
@@ -65,6 +71,27 @@ openssl s_client -connect example.com:443 -servername example.com </dev/null 2>/
 ```
 
 With `publicTLS`, do not replace `cetirun-tls`. cert-manager owns it.
+
+### Propagate a new MCP CA to existing Agents
+
+Follow the [CA replacement sequence](../agent-identity/#rotation-shutdown-and-recovery):
+distribute trust in both CAs before rotating leaves, verify new connections,
+and only then remove the old CA.
+
+The Operator copies `connections-mcp-ca` from its namespace into each
+supported native Agent namespace during reconciliation. Updating the source
+Secret alone does not enqueue every existing Agent. For a current Ready
+Agent, use the normal [retained restart](../agent-lifecycle/#restart-an-agent)
+to trigger reconciliation and load the changed trust. Do not patch the Agent's
+StatefulSet or its copied Secret directly. Suspended Agents receive the
+current trust when they resume.
+
+Before rotating the MCP server leaf, verify that each active client has the
+combined CA bundle, that its requested restart has been observed, and that
+its new Pod is Ready. After removing the old CA from the source bundle, repeat
+the propagation and client verification. Server certificate hot reload does
+not replace these client checks. Keep internal certificate renewal separate
+from cert-manager's renewal of the public ingress certificate.
 
 ## Keys and passwords
 
