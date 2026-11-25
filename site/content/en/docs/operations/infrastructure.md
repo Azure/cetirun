@@ -478,8 +478,23 @@ databases, it creates `GatewayDailyUsageV2` next to the earlier view. The
 earlier view keeps its rows and continues to count new calls until you drop it.
 
 To count the earlier days in `GatewayDailyUsageV2` as well, a database admin
-can create it again with backfill. The recreated view counts again every row
-that the `Gateway` table keeps:
+can create it again with backfill. The recreated view counts only the rows that
+the `Gateway` table still keeps, `adxLogsRetentionDays` days. The view keeps its
+days longer, so a view that already has days older than the table loses them
+when you drop it. A warm cache does not bring back rows that the table has
+deleted.
+
+Create the view again only while the table still has every day of the view,
+for example while the view is younger than `adxLogsRetentionDays` days. The
+oldest row of the table must be older than the first day of the view. An empty
+view has no first day:
+
+```kusto
+print TableFrom = toscalar(Gateway | summarize min(Timestamp)),
+    ViewFrom = toscalar(GatewayDailyUsageV2 | summarize min(Day))
+```
+
+When `TableFrom` is earlier than `ViewFrom`, or `ViewFrom` is empty:
 
 1. Keep the `Gateway` table in the hot cache for its retention. For example,
    for 90 days:
