@@ -506,7 +506,8 @@ livenessProbe:
 # -- Readiness probe configuration
 readinessProbe:
   enabled: true
-  initialDelaySeconds: 30
+  # -- Null selects 3 seconds for ordinary Hermes with no RuntimeClass and an enabled startup probe, or 30 for other built-in profiles (including CetiAdmin). An explicit nonnegative delay overrides the default.
+  initialDelaySeconds: null
   periodSeconds: 30
   timeoutSeconds: 10
   failureThreshold: 6

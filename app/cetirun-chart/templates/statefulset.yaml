@@ -1,11 +1,17 @@
-{{- if ne (include "cetirun.agent.type" .) "custom" }}
+{{- $agentType := include "cetirun.agent.type" . }}
+{{- if ne $agentType "custom" }}
 {{- $emptySkills := eq ((.Values.sandboxWorkload | default dict).skillsMode | default "") "empty" }}
 {{- $startupFailureThreshold := .Values.startupProbe.failureThreshold }}
 {{- if eq $startupFailureThreshold nil }}
 {{- $startupFailureThreshold = 30 }}
-{{- if and (eq (include "cetirun.agent.type" .) "openclaw") ((.Values.sandboxWorkload | default dict).reconciled | default false) }}
+{{- if and (eq $agentType "openclaw") ((.Values.sandboxWorkload | default dict).reconciled | default false) }}
 {{- $startupFailureThreshold = 60 }}
 {{- end }}
+{{- end }}
+{{- $readinessDelay := .Values.readinessProbe.initialDelaySeconds }}
+{{- if eq $readinessDelay nil }}
+{{- $ordinaryHermes := and (eq $agentType "hermes") (not .Values.sandboxWorkload) (not .Values.cetiadmin.enabled) }}
+{{- $readinessDelay = ternary 3 30 (and $ordinaryHermes (not .Values.runtimeClassName) .Values.startupProbe.enabled) }}
 {{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
@@ -172,7 +178,7 @@ spec:
           {{- if .Values.readinessProbe.enabled }}
           readinessProbe:
             {{- include "cetirun.agent.healthProbe" (dict "root" . "pathPort" "cetirun.agent.readinessProbePathPort" "timeoutSeconds" .Values.readinessProbe.timeoutSeconds) | nindent 12 }}
-            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            initialDelaySeconds: {{ $readinessDelay }}
             periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
             failureThreshold: {{ .Values.readinessProbe.failureThreshold }}

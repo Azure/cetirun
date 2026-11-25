@@ -349,13 +349,22 @@ tokens through `az account get-access-token`. Refer to
 `hermes.config`, `hermes.env`, and `hermes.gateway` configure Hermes. Model and
 provider values are rendered into the native format of the selected agent.
 
+The main container of each built-in Agent uses these probe defaults:
+
 | Probe | Enabled | Initial delay | Period | Timeout | Failure threshold |
 | --- | --- | --- | --- | --- | --- |
 | Liveness | `true` | 30s | 180s | 180s | 3 |
-| Readiness | `true` | 30s | 30s | 10s | 6 |
+| Readiness | `true` | 3s or 30s (see below) | 30s | 10s | 6 |
 | Startup | `true` | 10s | 10s | 5s | `null`: 60 for common-executor OpenClaw Sandboxes, 30 for other Agents |
 
 An explicit positive `startupProbe.failureThreshold` keeps its value.
+
+With `readinessProbe.initialDelaySeconds` unset or `null`, an ordinary Hermes
+Agent uses 3 seconds when `runtimeClassName: ""` and the startup probe is
+enabled. Other built-in profiles use 30 seconds, including the chart's default
+Kata RuntimeClass, Sandbox Agents and CetiAdmin. Set the delay to `30` to keep
+the previous timing, or to any other nonnegative integer, including `0`.
+The readiness command and its 30-second default period do not change.
 
 OpenClaw uses these paths on the gateway port: `/startupz` for startup,
 `/healthz` for liveness, and `/readyz` for readiness. The Hermes startup and

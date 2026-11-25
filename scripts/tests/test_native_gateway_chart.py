@@ -381,7 +381,7 @@ class NativeGatewayChartTests(unittest.TestCase):
                 self.assertEqual(main["startupProbe"]["timeoutSeconds"], 5)
                 self.assertEqual(main["startupProbe"]["initialDelaySeconds"], 10)
                 self.assertIn("livenessProbe", main)
-                self.assertIn("readinessProbe", main)
+                self.assertEqual(main["readinessProbe"]["initialDelaySeconds"], 30)
                 values["startupProbe"] = {"failureThreshold": 30}
                 explicit = object_of_kind(render(RUNTIME_CHART, values), "StatefulSet")
                 self.assertEqual(explicit["spec"]["template"]["spec"]["containers"][0]["startupProbe"]["failureThreshold"], 30)
@@ -394,6 +394,32 @@ class NativeGatewayChartTests(unittest.TestCase):
             with self.subTest(threshold=threshold):
                 values["startupProbe"] = {"failureThreshold": threshold}
                 render(RUNTIME_CHART, values, error="failureThreshold")
+
+    def test_ordinary_hermes_can_check_readiness_earlier_without_changing_the_probe(self):
+        fixture = native_values()
+        values = {key: fixture[key] for key in ("hermes", "aiGateway", "secrets", "desktop", "ttyd")}
+        values.update(agentType="hermes", runtimeClassName="")
+
+        def readiness(**overrides):
+            sts = object_of_kind(render(RUNTIME_CHART, {**values, **overrides}), "StatefulSet")
+            return sts["spec"]["template"]["spec"]["containers"][0].get("readinessProbe")
+
+        expected = {
+            "exec": {"command": ["/usr/local/bin/hermes-python", "/etc/cetirun/hermes-runtime.py",
+                                 "readiness", "--timeout", "10"]},
+            "initialDelaySeconds": 3, "periodSeconds": 30, "timeoutSeconds": 10,
+            "failureThreshold": 6, "successThreshold": 1,
+        }
+        self.assertEqual(readiness(), expected)
+        self.assertEqual(readiness(readinessProbe={"initialDelaySeconds": None}), expected)
+        for delay in (0, 7, 30):
+            with self.subTest(explicit=delay):
+                self.assertEqual(readiness(readinessProbe={"initialDelaySeconds": delay}),
+                                 {**expected, "initialDelaySeconds": delay})
+        self.assertIsNone(readiness(readinessProbe={"enabled": False}))
+        self.assertEqual(readiness(runtimeClassName="kata-vm-isolation"), {**expected, "initialDelaySeconds": 30})
+        self.assertEqual(readiness(startupProbe={"enabled": False}), {**expected, "initialDelaySeconds": 30})
+        self.assertEqual(readiness(agentType="openclaw")["initialDelaySeconds"], 30)
 
     def test_disabling_native_probes_does_not_render_a_replacement_probe(self):
         values = native_values()

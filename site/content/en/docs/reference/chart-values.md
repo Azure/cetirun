@@ -210,7 +210,7 @@ Source: [app/cetirun-chart/values.yaml]({{< repo "app/cetirun-chart/values.yaml"
 | `livenessProbe.successThreshold` | `1` |  |
 | `readinessProbe` |  | Readiness probe configuration |
 | `readinessProbe.enabled` | `true` |  |
-| `readinessProbe.initialDelaySeconds` | `30` |  |
+| `readinessProbe.initialDelaySeconds` | `null` | Null selects 3 seconds for ordinary Hermes with no RuntimeClass and an enabled startup probe, or 30 for other built-in profiles (including CetiAdmin). An explicit nonnegative delay overrides the default. |
 | `readinessProbe.periodSeconds` | `30` |  |
 | `readinessProbe.timeoutSeconds` | `10` |  |
 | `readinessProbe.failureThreshold` | `6` |  |

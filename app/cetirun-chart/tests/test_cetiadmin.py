@@ -133,6 +133,10 @@ class CetiAdminChartTests(unittest.TestCase):
         self.assertNotIn("cetiadmin-kubernetes", {item["name"] for item in pod["volumes"]})
         self.assertNotIn("command", pod["containers"][0])
 
+    def test_cetiadmin_keeps_the_longer_readiness_delay(self):
+        pod = statefulset(self.rendered(prepared_values()))["spec"]["template"]["spec"]
+        self.assertEqual(pod["containers"][0]["readinessProbe"]["initialDelaySeconds"], 30)
+
     def test_main_environment_has_unique_merge_keys(self):
         for enabled in (False, True):
             with self.subTest(cetiadmin=enabled):
