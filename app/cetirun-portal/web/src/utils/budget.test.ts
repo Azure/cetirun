@@ -9,8 +9,10 @@ describe("AI Gateway budget text", () => {
     ["12.4", "12.40"],
     ["10000", "10,000.00"],
     ["0", "0.00"],
-    ["0.004999", "less than 0.01"],
-    ["0.005", "0.01"],
+    ["0.0005327120000000001", "0.00053"],
+    ["0.0001", "0.0001"],
+    ["0.004999", "0.005"],
+    ["0.01", "0.01"],
     ["n/a", "n/a"],
     ["", ""],
   ])("formats %j as %j", (value, text) => {
@@ -19,6 +21,8 @@ describe("AI Gateway budget text", () => {
 
   it("shows the spend against the budget, without computing a balance", () => {
     expect(budgetAmounts({ budgetUSD: "50", spendUSD: "12.4", state: "active" })).toBe("12.40 of 50.00");
+    // A budget under a cent stays readable next to the spend.
+    expect(budgetAmounts({ budgetUSD: "0.0001", spendUSD: "0.000532712", state: "budgetReached" })).toBe("0.00053 of 0.0001");
     expect(budgetSentence({ budgetUSD: "50", spendUSD: "12.4", duration: "1mo", state: "active" })).toBe("Spent 12.40 of 50.00 USD this month.");
     expect(budgetSentence({ budgetUSD: "50", duration: "7d", state: "active" })).toBe("Spent 0.00 of 50.00 USD this period.");
     expect(budgetSentence({ spendUSD: "3", state: "active" })).toBe("Spent 3.00 USD. The key has no budget.");

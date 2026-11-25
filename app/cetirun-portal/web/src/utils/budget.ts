@@ -5,15 +5,17 @@ import type { StatusTone } from "../components/StatusLabel";
 import type { AIGatewayBudget, AIGatewayKeyState } from "../types/instance";
 
 const usd = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const cents = new Intl.NumberFormat("en-US", { maximumSignificantDigits: 2 });
 
 /**
- * A USD amount of the AI Gateway, rounded to cents. A value that is not a
- * number is shown as the AI Gateway reported it.
+ * A USD amount of the AI Gateway, rounded to cents, or to two significant
+ * digits under a cent. A value that is not a number is shown as the AI
+ * Gateway reported it.
  */
 export function formatUSD(value: string): string {
   const amount = Number(value);
   if (value.trim() === "" || !Number.isFinite(amount)) return value;
-  if (amount > 0 && amount < 0.005) return "less than 0.01";
+  if (amount > 0 && amount < 0.01) return cents.format(amount);
   return usd.format(amount);
 }
 
