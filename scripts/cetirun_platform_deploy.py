@@ -2125,8 +2125,11 @@ class Deployment:
             installed = [hook for hook in registrations.get((kind, name), []) if hook.get("name") == hook_name]
             if len(rendered) != 1 or len(installed) != 1:
                 raise ValueError("Infrastructure deployment requires both installed admission registrations")
-            for field, default in (("objectSelector", {}), ("namespaceSelector", {}),
-                                   ("matchConditions", []), ("matchPolicy", "Equivalent")):
+            # Required governance resources are cluster-scoped CRDs, not
+            # Namespaces. Kubernetes ignores namespaceSelector for them;
+            # managed clusters may inject one without narrowing these rules.
+            for field, default in (("objectSelector", {}), ("matchConditions", []),
+                                   ("matchPolicy", "Equivalent")):
                 candidate = rendered[0].get(field) or default
                 current = installed[0].get(field) or default
                 if field == "matchConditions":

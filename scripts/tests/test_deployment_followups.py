@@ -366,11 +366,11 @@ class InfrastructureAdmissionTests(DeploymentFixture, unittest.TestCase):
                          lambda hook: hook.update(failurePolicy="Ignore"),
                          lambda hook: hook.update(rules=[]),
                          lambda hook: hook["rules"][0].update(resources=["unrelated"]),
+                         lambda hook: hook["rules"][0].update(scope="Namespaced"),
                          lambda hook: hook["clientConfig"]["service"].update(namespace="other"),
                          lambda hook: hook["clientConfig"]["service"].update(path="/unrelated"),
                          lambda hook: hook["clientConfig"].update(caBundle="different-ca"),
                          lambda hook: hook.update(objectSelector={"matchLabels": {"skip": "true"}}),
-                         lambda hook: hook.update(namespaceSelector={"matchLabels": {"skip": "true"}}),
                          lambda hook: hook.setdefault("matchConditions", []).append({"name": "skip", "expression": "false"}),
                          lambda hook: hook.update(matchPolicy="Exact")]
             for index, mutate in enumerate(mutations):
@@ -386,6 +386,19 @@ class InfrastructureAdmissionTests(DeploymentFixture, unittest.TestCase):
             hook.update(objectSelector={}, namespaceSelector={})
             hook["matchConditions"].reverse()  # Conditions are an unordered conjunction.
         deployment.preflight()
+        self.assertFalse(deployment.writes)
+
+    def test_namespace_selector_does_not_filter_cluster_scoped_governance(self):
+        deployment = self.installed()
+        for kind in ("validatingwebhookconfiguration", "mutatingwebhookconfiguration"):
+            hook = deployment.live[(kind, "", "cetirun-sandbox-admission")]["webhooks"][0]
+            self.assertTrue(all(rule["scope"] == "Cluster" for rule in hook["rules"]))
+            # Hosted clusters can add namespace exclusions; unlike an object
+            # selector, these do not filter Agent/Team/Sandbox/Policy CRDs.
+            hook["namespaceSelector"] = {"matchExpressions": [
+                {"key": "example.com/managed-namespace", "operator": "DoesNotExist"}]}
+        deployment.preflight()
+        self.assertTrue(deployment.enforced)
         self.assertFalse(deployment.writes)
 
 
