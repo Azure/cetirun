@@ -97,7 +97,7 @@ param contentWriterClientId string = ''
 param contentViewers array = []
 
 @minValue(1)
-@description('Days of the daily AI Gateway usage view GatewayDailyUsage in the logs database. It can be longer than the logs retention.')
+@description('Days of the daily AI Gateway usage view GatewayDailyUsageV2 in the logs database. It can be longer than the logs retention.')
 param gatewayUsageRetentionDays int = 400
 
 @description('Client (application) ID of the ADX-Mon alerter identity, which runs alert queries. Empty skips its Viewer roles on the logs and metrics databases.')

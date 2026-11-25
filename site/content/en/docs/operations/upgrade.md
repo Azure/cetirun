@@ -92,6 +92,12 @@ newer fields of a CRD. A `strict` admission mode needs an ordered upgrade.
 Refer to the
 [schema and binary upgrade contract]({{< repo "app/cetirun-operator/README.md" >}}#schema-and-binary-upgrades).
 
+`make deploy` does not change the query functions and views in Azure Data
+Explorer. When a new version changes the scripts in
+`infra/cluster/modules/adx/`, run them in their databases, as
+[Prerequisites](../observability/#prerequisites) shows. A new deployment of the
+[cluster template](../infrastructure/#azure-data-explorer) also runs them.
+
 ## Upgrade the Agents
 
 An Operator upgrade does not change the agent chart version of an existing

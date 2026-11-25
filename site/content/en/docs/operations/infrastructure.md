@@ -459,10 +459,27 @@ The outputs `adxContentDatabase` and `adxContentClientId` are
 `content.clientId`. See "Content in Azure Data Explorer" in the
 [AI Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}).
 
-The logs database also gets the materialized view `GatewayDailyUsage`: the AI
-Gateway calls, tokens, and spend of each day per Agent, owner, Team, and model.
-It keeps `adxGatewayUsageRetentionDays` days, 400 by default. This is longer
-than the request log in its source table.
+The logs database also gets the materialized view `GatewayDailyUsageV2`. It
+has the AI Gateway calls, tokens, and spend of each day per Agent, AI Gateway
+user, owner, Team, and model. It shows separately the calls that GitHub
+Copilot routes answered. It keeps `adxGatewayUsageRetentionDays` days, 400 by
+default. This is longer than the request log in its source table. Refer to
+[Query functions](../observability/#query-functions).
+
+Earlier templates created the view `GatewayDailyUsage` instead. It groups only
+by the name of the Agent and the alias of the owner. Kusto cannot change how a
+materialized view groups its rows. When you deploy this template to existing
+databases, it creates `GatewayDailyUsageV2` next to the earlier view. The new
+view starts with the rows that the `Gateway` table still keeps,
+`adxLogsRetentionDays` days.
+
+The earlier view keeps its rows and continues to count new calls until you
+drop it. Its days that are older than the request log are only in that view. A
+database admin can drop it:
+
+```kusto
+.drop materialized-view GatewayDailyUsage
+```
 
 With `adxAlerter` set to `true`, the template also creates the user-assigned
 managed identity `<clusterName>-adx-alerter` for the
