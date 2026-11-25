@@ -1086,14 +1086,15 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
         if (auto.get("model") != "auto_router/complexity_router" or router.get("classifier_type") != "jev"
                 or router.get("jev_classifier_config", {}).get("deployment_name") != "decision-1"):
             raise ValueError("models must configure auto with the existing jev classifier and logical decision-1 deployment")
-        if (not decision.get("litellm_params", {}).get("model", "").startswith("azure_ai/")
+        decision_model = decision.get("litellm_params", {}).get("model", "")
+        if (not isinstance(decision_model, str) or not decision_model.startswith(("azure_ai/", "openai/"))
                 or decision.get("model_info", {}).get("base_model") != "azure_ai/Microsoft-Decision-1"
                 or decision.get("model_info", {}).get("mode") != "evaluation"):
-            raise ValueError("decision-1 needs an explicit azure_ai/<deployment>, base_model azure_ai/Microsoft-Decision-1 and evaluation mode. "
+            raise ValueError("decision-1 needs an explicit azure_ai/<deployment> or openai/<proxy-model>, base_model azure_ai/Microsoft-Decision-1 and evaluation mode. "
                              "LiteLLM prices the model only by that name, and the Operator does not offer an unpriced classifier to auto")
         decision_params = decision["litellm_params"]
-        if not decision_params["model"].removeprefix("azure_ai/"):
-            raise ValueError("decision-1 requires a real Azure deployment name")
+        if not decision_model.split("/", 1)[1].strip("/ \t\r\n") or any(c.isspace() for c in decision_model):
+            raise ValueError("decision-1 requires a real deployment or proxy model name")
         for field in ("api_base", "api_key"):
             required(decision_params, field)
         if "api_version" in decision_params:

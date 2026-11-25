@@ -1184,10 +1184,29 @@ class DeploymentRevisionTests(DeploymentFixture, unittest.TestCase):
                 _, values = self.configure(config)
                 self.assertEqual(values["platform"]["cetirun-ai-gateway"]["models"][2], model)
 
+    def test_decision_accepts_openai_compatible_proxy_with_priced_identity(self):
+        config = copy.deepcopy(self.config)
+        model = config["platform"]["values"]["cetirun-ai-gateway"]["models"][2]
+        model["litellm_params"] = {
+            "model": "openai/decision-1",
+            "api_base": "https://models.example.com/v1",
+            "api_key": "os.environ/PROXY_KEY",
+        }
+        _, values = self.configure(config)
+        self.assertEqual(values["platform"]["cetirun-ai-gateway"]["models"][2], model)
+        for field, value in (("base_model", "openai/decision-1"), ("mode", "chat")):
+            invalid = copy.deepcopy(config)
+            invalid["platform"]["values"]["cetirun-ai-gateway"]["models"][2]["model_info"][field] = value
+            with self.assertRaises(ValueError):
+                self.configure(invalid)
+
     def test_decision_rejects_wrong_model_or_missing_provider_inputs(self):
         for field, value in (("model_info.base_model", "azure_ai/Other-Model"), ("model_info.base_model", "Microsoft-Decision-1"),
                              ("model_info.mode", "chat"),
-                             ("litellm_params.model", "azure_ai/"), ("litellm_params.api_base", ""),
+                             ("litellm_params.model", "azure_ai/"), ("litellm_params.model", "openai/"), ("litellm_params.model", "openai//"),
+                             ("litellm_params.model", "openai/   "),
+                             ("litellm_params.model", "anthropic/decision-1"), ("litellm_params.model", None),
+                             ("litellm_params.api_base", ""),
                              ("litellm_params.api_key", ""), ("litellm_params.api_key", "os.environ/"),
                              ("litellm_params.api_version", False)):
             with self.subTest(field=field, value=value):
