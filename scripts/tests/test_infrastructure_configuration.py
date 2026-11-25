@@ -357,14 +357,49 @@ class InfrastructureReviewContracts(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "provider Secret binding"):
             self.driver.check_model_routing()
 
-    def test_owned_salt_secret_must_still_render_the_referenced_key(self):
-        secret = {"kind": "Secret", "metadata": {"name": "gateway-auth"}, "data": {"master-key": "c3ludGhldGlj"}}
+    def test_owned_gateway_secret_must_still_render_each_required_key(self):
+        secret = {"kind": "Secret", "metadata": {"name": "gateway-auth"},
+                  "data": {"master-key": "c3ludGhldGlj", "salt-key": "c3ludGhldGlj"}}
         self.driver.documents["platform"].append(secret)
-        with self.assertRaisesRegex(ValueError, "remove a required database or salt key"):
-            self.driver.check_gateway_database_binding()
-        secret["data"]["salt-key"] = "c3ludGhldGlj"
+        for key in ("master-key", "salt-key"):
+            with self.subTest(key=key):
+                value = secret["data"].pop(key)
+                with self.assertRaisesRegex(ValueError, "remove a required database, salt, or master key"):
+                    self.driver.check_gateway_database_binding()
+                secret["data"][key] = value
         self.driver.check_gateway_database_binding()
         self.assertTrue(all(call.args[:2] == ("get", "deployment") for call in self.driver.kubectl.call_args_list))
+
+    def test_health_routing_is_preserved_with_identical_models_and_router_settings(self):
+        import yaml
+        self.driver.config["modelRouting"] = {"mode": "preserve"}
+        live = self.routing_document({"enable_weighted_failover": True})
+        config = yaml.safe_load(live["data"]["config.yaml"])
+        config["model_list"].append({"model_name": "shared", "litellm_params": {"model": "azure/second"}})
+        config["general_settings"] = {"enable_health_check_routing": True}
+        live["data"]["config.yaml"] = yaml.safe_dump(config)
+        self.driver.kubectl.return_value = json.dumps(live)
+        for general in ({}, {"enable_health_check_routing": False}, {"enable_health_check_routing": None}):
+            with self.subTest(general=general):
+                candidate = copy.deepcopy(live)
+                candidate["data"]["config.yaml"] = yaml.safe_dump({**config, "general_settings": general})
+                self.driver.documents["platform"] = [candidate]
+                with self.assertRaisesRegex(ValueError, "model routes"):
+                    self.driver.check_model_routing()
+        self.driver.documents["platform"] = [live]
+        self.driver.check_model_routing()
+        omitted = self.routing_document()
+        for general in ({"enable_health_check_routing": False}, {"enable_health_check_routing": None}):
+            document = copy.deepcopy(omitted)
+            document["data"]["config.yaml"] = yaml.safe_dump({**yaml.safe_load(omitted["data"]["config.yaml"]),
+                                                              "general_settings": general})
+            self.assertEqual(self.driver._model_routing(document), self.driver._model_routing(omitted))
+        for invalid in ("true", 1, []):
+            document = copy.deepcopy(live)
+            document["data"]["config.yaml"] = yaml.safe_dump({**config, "general_settings": {
+                "enable_health_check_routing": invalid}})
+            with self.assertRaisesRegex(ValueError, "health-based routing"):
+                self.driver._model_routing(document)
 
     def test_affinity_checks_and_per_model_overrides_are_preserved(self):
         self.driver.config["modelRouting"] = {"mode": "preserve"}
@@ -546,7 +581,7 @@ class PublishedInfrastructureRenderTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "storageClass"):
                 DEPLOY.infrastructure_configuration(source, self.lock, scratch / "invalid")
 
-    def test_rendered_salt_self_reference_cannot_remove_the_owned_key(self):
+    def test_rendered_auth_self_reference_cannot_remove_the_owned_key(self):
         with tempfile.TemporaryDirectory() as temporary:
             scratch = Path(temporary)
             source = self.source_fixture(scratch)
@@ -558,16 +593,23 @@ class PublishedInfrastructureRenderTests(unittest.TestCase):
             render.mkdir()
             driver = DEPLOY.Deployment(config, values, render, published_artifacts=self.lock, chart_roots=roots)
             driver.render()
-            old_gateway, _ = driver.rendered_component("platform", "gateway")
-            binding = driver.database_binding(old_gateway)["LITELLM_SALT_KEY"]
+            old_gateway, old_container = driver.rendered_component("platform", "gateway")
             driver.kubectl = Mock(return_value=json.dumps(old_gateway))
             driver.check_gateway_database_binding()
-            values["platform"]["cetirun-ai-gateway"]["auth"]["saltKey"]["existingSecret"] = binding[0]
-            driver.render()
-            candidate, _ = driver.rendered_component("platform", "gateway")
-            self.assertEqual(driver.database_binding(candidate)["LITELLM_SALT_KEY"], binding)
-            with self.assertRaisesRegex(ValueError, "remove a required database or salt key"):
-                driver.check_gateway_database_binding()
+            for field, environment in (("saltKey", "LITELLM_SALT_KEY"), ("masterKey", "LITELLM_MASTER_KEY")):
+                with self.subTest(field=field):
+                    binding = driver.secret_environment_binding(old_container, environment)
+                    auth = values["platform"]["cetirun-ai-gateway"]["auth"]
+                    for key in ("masterKey", "saltKey"):
+                        auth[key]["existingSecret"] = binding[0] if key == field else ""
+                    driver.render()
+                    _, candidate = driver.rendered_component("platform", "gateway")
+                    self.assertEqual(driver.secret_environment_binding(candidate, environment), binding)
+                    proposed = next(doc for doc in driver.documents["platform"] if doc.get("kind") == "Secret"
+                                    and doc["metadata"]["name"] == binding[0])
+                    self.assertNotIn(binding[1], proposed["data"])
+                    with self.assertRaisesRegex(ValueError, "remove a required database, salt, or master key"):
+                        driver.check_gateway_database_binding()
 
     def test_independent_gateway_does_not_require_platform_render_or_routing_reads(self):
         with tempfile.TemporaryDirectory() as temporary:

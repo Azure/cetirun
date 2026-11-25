@@ -2173,19 +2173,28 @@ class Deployment:
             config = yaml.safe_load(document.get("data", {}).get("config.yaml", ""))
             models = config.get("model_list") if isinstance(config, dict) else None
             router = config.get("router_settings", {}) if isinstance(config, dict) else None
+            general = config.get("general_settings", {}) if isinstance(config, dict) else None
         except yaml.YAMLError as error:
             raise ValueError("Existing AI Gateway model configuration is not valid YAML") from error
         if not isinstance(models, list) or not all(isinstance(item, dict) for item in models):
             raise ValueError("Existing AI Gateway model configuration has no usable model list")
         if not isinstance(router, dict):
             raise ValueError("Existing AI Gateway router settings are not usable")
+        if not isinstance(general, dict):
+            raise ValueError("Existing AI Gateway general settings are not usable")
+        health_routing = general.get("enable_health_check_routing")
+        if health_routing is None:
+            health_routing = False
+        if type(health_routing) is not bool:
+            raise ValueError("Existing AI Gateway health-based routing setting is not usable")
         failover = router.get("enable_weighted_failover")
         if failover is None:
             failover = False
         strategy = router.get("routing_strategy", "simple-shuffle")
         if type(failover) is not bool or not isinstance(strategy, str) or not strategy:
             raise ValueError("Existing AI Gateway same-model failover settings are not usable")
-        routes = {"model_list": models, "enable_weighted_failover": failover, "routing_strategy": strategy}
+        routes = {"model_list": models, "enable_weighted_failover": failover, "routing_strategy": strategy,
+                  "enable_health_check_routing": health_routing}
         def affinity_checks(value):
             checks = [] if value is None else value
             if not isinstance(checks, list) or not all(isinstance(item, str) and item for item in checks):
@@ -2410,7 +2419,7 @@ class Deployment:
                 "LITELLM_SALT_KEY": self.secret_environment_binding(gateways[0], "LITELLM_SALT_KEY")}
 
     def check_gateway_database_binding(self):
-        """Preserve the database and its encryption-key binding without Secret reads."""
+        """Preserve database bindings and required chart-owned Gateway keys."""
         if not self.config.get("_infrastructureOnly"):
             return
         if self.values["platform"].get("cetirun-ai-gateway", {}).get("enabled", True) is False:
@@ -2419,7 +2428,7 @@ class Deployment:
                    for item in doc.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])):
                 raise ValueError("Disabled Gateway unexpectedly rendered a database consumer")
             return
-        rendered, _ = self.rendered_component("platform", "gateway")
+        rendered, gateway = self.rendered_component("platform", "gateway")
         namespace = rendered["metadata"].get("namespace", self.config["platform"]["namespace"])
         raw = self.kubectl("get", "deployment", rendered["metadata"]["name"], "--namespace", namespace, "-o", "json")
         try:
@@ -2429,12 +2438,13 @@ class Deployment:
         bindings = self.database_binding(rendered)
         if self.database_binding(live) != bindings:
             raise ValueError("Infrastructure deployment would change the Gateway DATABASE_URL or LITELLM_SALT_KEY Secret binding")
+        bindings["LITELLM_MASTER_KEY"] = self.secret_environment_binding(gateway, "LITELLM_MASTER_KEY")
         for secret_name, key in bindings.values():
             proposed = [doc for doc in self.documents["platform"] if doc.get("kind") == "Secret"
                         and doc.get("metadata", {}).get("name") == secret_name
                         and doc["metadata"].get("namespace", self.config["platform"]["namespace"]) == namespace]
             if proposed and (len(proposed) != 1 or not (proposed[0].get("data", {}).get(key) or proposed[0].get("stringData", {}).get(key))):
-                raise ValueError("Rendered Gateway Secret would remove a required database or salt key")
+                raise ValueError("Rendered Gateway Secret would remove a required database, salt, or master key")
 
     def installed_objects(self, name):
         """API version, kind and name of each object of the installed release that helm upgrade builds first: the
