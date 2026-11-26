@@ -576,8 +576,10 @@ has yet. Here, the names have the date of the backfill. Use your own date:
 - `GatewayDailyUsageV2Previous20261126` for the current view after the
   replacement.
 
-To list the views of the database, run `.show materialized-views`. Then do
-these steps:
+To list the views of the database, run `.show materialized-views`. Do not
+deploy the cluster template while you do the steps. Each deployment runs
+`cetirun-gateway-usage.kql`, which creates `GatewayDailyUsageV2` again, without
+backfill, when the name is free. Then do these steps:
 
 1. Keep the `Gateway` table in the hot cache for its retention. For example,
    for 90 days:
@@ -633,27 +635,48 @@ these steps:
    .drop materialized-view GatewayDailyUsageV2Backfill20261126
    ```
 
-5. Replace the view, and keep the current view under the other name. Run the
-   two commands one after the other. Queries of `GatewayDailyUsageV2` fail
-   between them:
+5. Replace the view, and keep the current view under the other name. Run both
+   renames in one script. Select the whole command before you run it:
 
    ```kusto
+   .execute database script with (ThrowOnErrors = true) <|
    .rename materialized-view GatewayDailyUsageV2 to GatewayDailyUsageV2Previous20261126
-   ```
-
-   ```kusto
    .rename materialized-view GatewayDailyUsageV2Backfill20261126 to GatewayDailyUsageV2
    ```
 
-   If the first command fails, the current view keeps its name. Drop the second
-   view as in step 4. If the second command fails, rename
-   `GatewayDailyUsageV2Previous20261126` back to `GatewayDailyUsageV2`.
+   The script stops at the first command that fails. It does not undo the
+   commands before it.
 6. Remove the caching policy of the table. The policy of the database applies
    again:
 
    ```kusto
    .delete table Gateway policy caching
    ```
+
+If the script of step 5 fails, list the views before you give the name
+`GatewayDailyUsageV2` to one of them:
+
+```kusto
+.show materialized-views
+| where Name startswith "GatewayDailyUsageV2"
+| project Name, EffectiveDateTime
+```
+
+- Without `GatewayDailyUsageV2Previous20261126`, the first rename failed, and
+  nothing was replaced. Drop the second view as in step 4.
+- With `GatewayDailyUsageV2Previous20261126`, the first rename ran. A
+  `GatewayDailyUsageV2` next to it is a view that a deployment created without
+  backfill. Its `EffectiveDateTime` is after the start of step 5. It counts
+  only the calls since its creation, which the two other views also count.
+  Drop it.
+
+After the first rename, give the name to the second view to complete the
+replacement, or to the previous view to undo it. For example, to undo the
+replacement:
+
+```kusto
+.rename materialized-view GatewayDailyUsageV2Previous20261126 to GatewayDailyUsageV2
+```
 
 Later deployments of the template keep the replaced view, because the template
 creates `GatewayDailyUsageV2` only when it is missing. They leave
