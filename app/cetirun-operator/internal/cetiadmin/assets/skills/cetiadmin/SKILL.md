@@ -46,6 +46,21 @@ Hermes terminal does not require an exec exception. Cross-Pod `kubectl exec`
 requires both target RBAC and current admission approval. Protected Sandbox
 targets do not inherit the ordinary-target exec or Pod deletion path.
 
+Your own Pod has the NetworkPolicy of a standard Agent. It allows egress to
+DNS, istiod, the AI Gateway, Connections MCP when it is configured, the
+Kubernetes API server, and public addresses outside the blocked ranges. By
+default, the blocked ranges include the private ranges, so the other Pod and
+Service addresses of the cluster are blocked, for example the Portal and OAuth2
+Proxy. Inside the cluster, the public host name of the platform resolves to an
+address that reaches the ingress Pods, which is blocked too. So a failed
+`curl` or TLS handshake from your Pod is not evidence of a fault in the
+platform, a route, or the ingress. Judge health from Kubernetes evidence
+instead: rollout state, readiness, endpoints, Events, and bounded logs. To
+check an endpoint of an ordinary target, use an authorized `kubectl exec` to
+its loopback address. Check exec permission with
+`kubectl --context cetiadmin auth can-i create pods --subresource=exec -n <namespace>`.
+The form `create pods/exec` asks about a Pod named `exec`, so it always says no.
+
 ## Preserve the automation tiers
 
 Perform these actions without another confirmation when they fall within the

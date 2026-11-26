@@ -162,7 +162,11 @@ namespaces; examples such as `cetirun-system`, `cetirun-portal`,
 
 Bindings grant specific resources, not the old wildcard API rules. Optional
 CRD absence is not applicable; an installed but unreadable API is a permission
-gap. Do not describe that gap as a healthy empty result.
+gap. Do not describe that gap as a healthy empty result. A component whose
+Pods, endpoints, or logs you cannot read is `unknown`, even when its
+configuration objects exist: a webhook configuration that points to a Service
+does not show that the server behind it is ready. Name the missing access, for
+example `list pods` in its namespace, and that `platformReadNamespaces` grants it.
 
 Allowed writes are limited to admitted Agent creation/updates, eligible ordinary
 Pod restart/exec, exact native-auth fields, confirmed PVC growth, target Events,

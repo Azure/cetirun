@@ -23,10 +23,17 @@ stop without repairs or external delivery and record the reason locally.
    `--previous` logs when a failure needs them.
 3. Check PVC binding, storage Events, Service endpoints, EndpointSlices, and
    the generated routes. Measure disk use with `df` only where ordinary-target
-   exec is authorized. PVC capacity is not a disk-use measurement.
+   exec is authorized. PVC capacity is not a disk-use measurement. Check exec
+   with `kubectl --context cetiadmin auth can-i create pods --subresource=exec -n <namespace>`;
+   the form `create pods/exec` asks about a Pod named `exec` and always says
+   no. Check again on each run; a recorded permission gap can be out of date.
 4. Read Operator, Portal, Istio, CoreDNS, and other platform component status
    only in the configured `platformReadNamespaces`. Include node, scheduling,
-   storage, API health, and optional diagnostic APIs when relevant.
+   storage, API health, and optional diagnostic APIs when relevant. Judge each
+   component from its rollout state, readiness, endpoints, Events, and bounded
+   logs. By default, your Pod's egress policy blocks requests to platform
+   Services and to the public host name, so a failed request from it is not
+   evidence. A component that you cannot read is unknown, not healthy.
 
 For example, after resolving the exact variables from current API objects:
 

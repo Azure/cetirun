@@ -285,6 +285,13 @@ namespaces and alert the administrator. Include relevant node, API health,
 route, certificate, and DNS observations. Do not restart, scale, or edit the
 platform, its permissions, or CetiAdmin itself.
 
+Base each component's verdict on its rollout state, ready replicas, endpoints,
+Events, and bounded logs. A failed request from your own Pod to a platform
+Service or to the public host name is not evidence: by default, your Pod's
+egress policy blocks both. Such a failure does not contradict Ready Pods with
+ready endpoints and clean logs. A component that you cannot read is
+`unknown`, not healthy.
+
 ## Failure branch index
 
 | Failure | Autonomous scope | Escalation |
