@@ -14,6 +14,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"helm.sh/helm/v3/pkg/registry"
@@ -111,9 +112,8 @@ func statusRegistry(t *testing.T, status int) string {
 // Class comes from what the registry client returned, for real failures of
 // the registry client.
 func TestChartDownloadErrorClassFromTheRegistryClient(t *testing.T) {
-	closed := httptest.NewServer(http.NotFoundHandler())
-	closedHost := strings.TrimPrefix(closed.URL, "http://")
-	closed.Close()
+	// Binding port zero assigns a nonzero port, so no test server can reuse this destination.
+	const refusedHost = "127.0.0.1:0"
 	for name, tc := range map[string]struct {
 		host string
 		want ChartDownloadClass
@@ -122,7 +122,7 @@ func TestChartDownloadErrorClassFromTheRegistryClient(t *testing.T) {
 		"forbidden":    {statusRegistry(t, http.StatusForbidden), ChartDownloadUnauthorized},
 		"not found":    {statusRegistry(t, http.StatusNotFound), ChartDownloadNotFound},
 		"server error": {statusRegistry(t, http.StatusServiceUnavailable), ChartDownloadNetwork},
-		"refused":      {closedHost, ChartDownloadNetwork},
+		"refused":      {refusedHost, ChartDownloadNetwork},
 		"no such host": {"registry.invalid", ChartDownloadNetwork},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -131,6 +131,9 @@ func TestChartDownloadErrorClassFromTheRegistryClient(t *testing.T) {
 			var download *ChartDownloadError
 			if !errors.As(err, &download) {
 				t.Fatalf("got %T: %v", err, err)
+			}
+			if tc.host == refusedHost && !errors.Is(download.Err, syscall.ECONNREFUSED) {
+				t.Fatalf("expected a refused TCP connection, got %v", download.Err)
 			}
 			if got := download.Class(); got != tc.want {
 				t.Fatalf("Class() = %q, want %q (cause %T: %v)", got, tc.want, download.Err, download.Err)
