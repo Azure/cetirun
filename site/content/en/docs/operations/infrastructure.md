@@ -478,23 +478,13 @@ databases, it creates `GatewayDailyUsageV2` next to the earlier view. The
 earlier view keeps its rows and continues to count new calls until you drop it.
 
 To count the earlier days in `GatewayDailyUsageV2` as well, a database admin
-can create it again with backfill. The recreated view counts only the rows that
-the `Gateway` table still keeps, `adxLogsRetentionDays` days. The view keeps its
-days longer, so a view that already has days older than the table loses them
-when you drop it. A warm cache does not bring back rows that the table has
-deleted.
-
-Create the view again only while the table still has every day of the view,
-for example while the view is younger than `adxLogsRetentionDays` days. The
-oldest row of the table must be older than the first day of the view. An empty
-view has no first day:
-
-```kusto
-print TableFrom = toscalar(Gateway | summarize min(Timestamp)),
-    ViewFrom = toscalar(GatewayDailyUsageV2 | summarize min(Day))
-```
-
-When `TableFrom` is earlier than `ViewFrom`, or `ViewFrom` is empty:
+can build a second view with backfill. The second view counts only the rows
+that the `Gateway` table still keeps. The table deletes each row
+`adxLogsRetentionDays` days after its ingestion, but the view keeps its days
+for `adxGatewayUsageRetentionDays` days. A warm cache does not bring back rows
+that the table has deleted. Therefore, do not drop `GatewayDailyUsageV2`.
+Replace it only when the second view has at least its calls and spend on every
+day:
 
 1. Keep the `Gateway` table in the hot cache for its retention. For example,
    for 90 days:
@@ -503,21 +493,63 @@ When `TableFrom` is earlier than `ViewFrom`, or `ViewFrom` is empty:
    .alter table Gateway policy caching hot = 90d
    ```
 
-2. Drop the view:
+2. Create the second view. Run
+   `infra/cluster/modules/adx/cetirun-gateway-usage.kql` in the logs database
+   with these changes:
+
+   - Name the view `GatewayDailyUsageV2Backfill` in its three commands.
+   - Replace `__RETENTION_DAYS__`.
+   - Add `backfill = true` to the `with` list of the first command.
+
+   For a large table, add `async` after `.create`. Then wait until
+   `.show operations` reports the operation as `Completed`.
+3. Compare the views. The query must return no rows:
 
    ```kusto
-   .drop materialized-view GatewayDailyUsageV2
+   let Current = GatewayDailyUsageV2
+       | summarize Calls = sum(Calls), Spend = sum(Spend) by Day, Cluster;
+   let Backfill = GatewayDailyUsageV2Backfill
+       | summarize NewCalls = sum(Calls), NewSpend = sum(Spend) by Day, Cluster;
+   Current
+   | join kind=leftouter Backfill on Day, Cluster
+   | where isnull(NewCalls) or NewCalls < Calls or NewSpend < Spend - 0.000001
    ```
 
-3. Run `infra/cluster/modules/adx/cetirun-gateway-usage.kql` in the logs
-   database. Replace `__RETENTION_DAYS__`, and add `backfill = true` to the
-   `with` list of the first command.
-4. Remove the caching policy of the table. The policy of the database applies
+   Each row is a day on which the table has lost some of the calls that
+   `GatewayDailyUsageV2` counted. The value `0.000001` allows for rounding in
+   the sums of the spend. If the query returns rows, keep
+   `GatewayDailyUsageV2`, drop the second view, and continue with step 5:
+
+   ```kusto
+   .drop materialized-view GatewayDailyUsageV2Backfill
+   ```
+
+4. Replace the view, and keep the current view under another name. Run the two
+   commands one after the other. Queries of `GatewayDailyUsageV2` fail between
+   them:
+
+   ```kusto
+   .rename materialized-view GatewayDailyUsageV2 to GatewayDailyUsageV2Previous
+   ```
+
+   ```kusto
+   .rename materialized-view GatewayDailyUsageV2Backfill to GatewayDailyUsageV2
+   ```
+
+5. Remove the caching policy of the table. The policy of the database applies
    again:
 
    ```kusto
    .delete table Gateway policy caching
    ```
+
+Later deployments of the template keep the replaced view, because the template
+creates `GatewayDailyUsageV2` only when it is missing. They leave
+`GatewayDailyUsageV2Previous` as it is. When you no longer need it, drop it:
+
+```kusto
+.drop materialized-view GatewayDailyUsageV2Previous
+```
 
 If you do not need the days that are only in `GatewayDailyUsage`, a database
 admin can drop it:
