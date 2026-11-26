@@ -1349,7 +1349,12 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	workloadReady, workloadResult, err := r.observeWorkload(ctx, instance)
 	setWorkloadReadiness(instance, workloadReady)
 	if !workloadReady {
-		_ = r.updateStatus(ctx, instance)
+		if statusErr := r.updateStatus(ctx, instance); err != nil || statusErr != nil {
+			return workloadResult, stderrors.Join(err, statusErr)
+		}
+		if !reconciledSandbox {
+			err = r.recoverStalledRollout(ctx, instance, team)
+		}
 		return workloadResult, err
 	}
 
