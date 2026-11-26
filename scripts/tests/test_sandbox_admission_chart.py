@@ -679,7 +679,10 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                 volumes = {v["name"]: v for v in pod["volumes"]}
                 self.assertNotIn("operator-only", {v.get("secret", {}).get("secretName") for v in volumes.values()})
                 self.assertEqual("chart-pull" in volumes, bool(secret))
+                self.assertFalse(volumes["admission-tls"]["secret"].get("optional", False))
+                self.assertEqual("--admission-chart-credentials=/var/run/cetirun-chart-pull/config.json" in container["args"], bool(secret))
                 if secret:
+                    self.assertIs(volumes["chart-pull"]["secret"].get("optional"), True)
                     self.assertEqual(volumes["chart-pull"]["secret"]["secretName"], secret)
                     self.assertEqual(volumes["chart-pull"]["secret"]["items"], [{"key": ".dockerconfigjson", "path": "config.json"}])
                     self.assertTrue(next(m["readOnly"] for m in container["volumeMounts"] if m["name"] == "chart-pull"))

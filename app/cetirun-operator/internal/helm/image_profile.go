@@ -68,7 +68,14 @@ func (c *Client) ReadImageProfile(ctx context.Context, version, kind, imageRegis
 		if err != nil {
 			return empty, fmt.Errorf("cannot initialize the configured chart-read credential")
 		}
-		client.Credential = credentials.Credential(store)
+		// ORAS treats a missing file as an empty store. Require the configured
+		// credential even when the registry would serve the chart anonymously.
+		host := repo.Reference.Registry
+		credential, err := store.Get(ctx, credentials.ServerAddressFromRegistry(host))
+		if err != nil || credential == auth.EmptyCredential {
+			return empty, fmt.Errorf("configured chart-read credential is unavailable for the chart registry")
+		}
+		client.Credential = auth.StaticCredential(host, credential)
 	}
 	repo.Client = client
 	repo.MaxMetadataBytes = maxProfileManifest

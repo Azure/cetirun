@@ -474,6 +474,7 @@ spec:
         - name: chart-pull
           secret:
             secretName: {{ $chartPullSecret | quote }}
+            optional: true
             defaultMode: 0440
             items:
               - key: .dockerconfigjson

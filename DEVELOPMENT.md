@@ -1395,6 +1395,9 @@ for these image updates. For a private chart, set
 `sandboxAdmission.chartPullSecretName` to a chart-read-only Docker registry
 Secret in the Operator namespace. Admission does not inherit
 `acrDockerSecret` or any Agent's image pull credentials.
+If the configured Secret or its `.dockerconfigjson` key is missing, the webhook
+can still start. Image lookups fail until the projected file supplies a
+credential for the chart registry. The serving TLS Secret remains required.
 The webhook reads one Helm chart layer, not the Agent image. Its limits are
 64 KiB for the OCI manifest, 4 MiB for the compressed chart and 8 MiB
 after expansion. An unreadable or oversized chart does not authorize a write.
