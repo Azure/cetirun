@@ -300,10 +300,12 @@ Entra Workload ID. Microsoft documents these commands for an AKS cluster that
 already exists:
 
 ```bash
-az aks update --resource-group "<resource-group>" --name "<cluster-name>" \
+az aks update --subscription "<subscription-id>" \
+  --resource-group "<resource-group>" --name "<cluster-name>" \
   --enable-oidc-issuer --enable-workload-identity
 
-AKS_OIDC_ISSUER="$(az aks show --resource-group "<resource-group>" \
+AKS_OIDC_ISSUER="$(az aks show --subscription "<subscription-id>" \
+  --resource-group "<resource-group>" \
   --name "<cluster-name>" --query oidcIssuerProfile.issuerUrl --output tsv)"
 printf '%s\n' "$AKS_OIDC_ISSUER"
 ```

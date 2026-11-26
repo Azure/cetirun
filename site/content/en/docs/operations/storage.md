@@ -103,14 +103,17 @@ the outputs. With a [private endpoint](#private-endpoint), the helper skips the
 subnet steps.
 
 ```bash
+AZURE_SUBSCRIPTION_ID="<subscription-id>" AZURE_TENANT_ID="<tenant-id>" \
 RESOURCE_GROUP=example-rg AKS_CLUSTER_NAME=example-cluster \
 PARAM_FILE=/absolute/path/storage.bicepparam \
   bash infra/storage/deploy.sh
 ```
 
 You must set `RESOURCE_GROUP` and `AKS_CLUSTER_NAME` even when you supply a
-subnet. The helper uses the current Azure subscription. The tools that it must
-have include GNU-compatible `grep -P`.
+subnet. Set `AZURE_SUBSCRIPTION_ID` and `AZURE_TENANT_ID` explicitly; the helper
+verifies this pair and passes the subscription to every resource command. It
+never changes the default Azure subscription. The required tools include
+Python 3, the pinned Bicep CLI on `PATH`, and GNU-compatible `grep -P`.
 
 Review the subnet update carefully. It supplies `Microsoft.Storage` to
 `--service-endpoints`. Do not expect that it keeps unrelated endpoint
@@ -118,11 +121,14 @@ configuration. It also overrides `allowedSubnetIds` with the **single** resolved
 subnet and replaces any list in the parameter file. For multi-subnet access, a
 separately reviewed deployment is necessary.
 
-The subnet write occurs before Bicep validation. To examine the result, the
-helper runs commands such as `az storage container show --auth-mode login` at
-the end. This command must have Blob data-plane authorization and network
-access from the workstation. This call can fail after the resources were
-provisioned successfully. A successful call does not prove an NFS mount.
+The helper compiles and snapshots the Bicep inputs locally before the subnet
+write. Local compilation or parameter-file parsing errors stop before a
+network change. The subnet write still precedes connected Azure deployment
+validation. The helper uses the
+same compiled JSON for validation and deployment, then reads the container
+through `az storage container-rm show`. This control-plane verification works
+when the workstation is outside the NFS subnet allowlist. It does not prove an
+NFS mount; verify a workload mount separately.
 
 ### Private endpoint
 
@@ -138,11 +144,10 @@ so that nodes resolve the account to the private address. The helper does not
 create the zone or the link.
 
 `PUBLIC_NETWORK_ACCESS` is `Enabled` by default. `Disabled` leaves only private
-endpoints, so the helper requires `PRIVATE_ENDPOINT_SUBNET_ID` with it. With
-`Disabled`, the helper reads the container through Azure Resource Manager
-instead of the Blob data plane.
+endpoints, so the helper requires `PRIVATE_ENDPOINT_SUBNET_ID` with it. The helper verifies the container through Azure Resource Manager in both modes.
 
 ```bash
+AZURE_SUBSCRIPTION_ID="<subscription-id>" AZURE_TENANT_ID="<tenant-id>" \
 RESOURCE_GROUP=example-rg AKS_CLUSTER_NAME=example-cluster \
 PARAM_FILE=/absolute/path/storage.bicepparam \
 PRIVATE_ENDPOINT_SUBNET_ID="/subscriptions/<subscription-id>/resourceGroups/example-network-rg/providers/Microsoft.Network/virtualNetworks/example-vnet/subnets/example-nodes" \
