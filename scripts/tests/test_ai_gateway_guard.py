@@ -361,6 +361,11 @@ class AuthenticationError(Exception):
         super().__init__(self.message)
 
 
+class CallerCredentialAuthenticationError(AuthenticationError):
+    """Shaped like LiteLLM 1.110.1's: the 401 for the calling user's own provider connection, such as
+    LiteLLM's per-user GitHub Copilot sign-in, when it is missing or was refused."""
+
+
 # What an Azure OpenAI resource answers once key authentication is turned off on it.
 AZURE_KEY_REFUSED = ("AzureException AuthenticationError - Access denied due to invalid subscription key or wrong API "
                      "endpoint. Make sure to provide a valid key for an active subscription and use a correct regional "
@@ -2160,13 +2165,36 @@ class GuardTest(unittest.TestCase):
     # ----- a provider that refused the Gateway's credentials -----
 
     def credentials_refused(self, error, caller, request_data=None, litellm_has_class=True):
-        """What the failure hook answers for the error, with LiteLLM's AuthenticationError known to the guard."""
+        """What the failure hook answers for the error, with LiteLLM's AuthenticationError and its subclass for
+        the caller's own connection known to the guard."""
         if litellm_has_class:
             self.module.litellm.AuthenticationError = AuthenticationError
-        elif hasattr(self.module.litellm, "AuthenticationError"):
-            del self.module.litellm.AuthenticationError
+            self.module.litellm.CallerCredentialAuthenticationError = CallerCredentialAuthenticationError
+        else:
+            for name in ("AuthenticationError", "CallerCredentialAuthenticationError"):
+                if hasattr(self.module.litellm, name):
+                    delattr(self.module.litellm, name)
         return asyncio.run(self.guard.async_post_call_failure_hook(
             {"model": "gpt-6-sol"} if request_data is None else request_data, error, caller))
+
+    def test_a_refusal_of_the_callers_own_connection_keeps_its_answer(self):
+        # LiteLLM's per-user GitHub Copilot sign-in: the calling user's connection is missing or was refused,
+        # and LiteLLM's 401 tells the caller to connect again. The Gateway's credentials are not the cause.
+        message = "The GitHub Copilot connection synthetic-connection was rejected. Connect it again."
+        for caller in (AGENT_KEY, Key(["gpt-5"], key_alias="console-key")):
+            with self.subTest(caller=caller.key_alias):
+                error = CallerCredentialAuthenticationError(message, "github_copilot", "gpt-5")
+                with self.assertNoLogs(LOGGER, level="WARNING"):
+                    self.assertIsNone(self.credentials_refused(error, caller, {"model": "gpt-5"}))
+                self.assertEqual((error.status_code, error.message, error.args),
+                                 (401, "litellm.AuthenticationError: " + message,
+                                  ("litellm.AuthenticationError: " + message,)))
+        # A LiteLLM without the subclass has no such connections: its refusals are the provider's.
+        del self.module.litellm.CallerCredentialAuthenticationError
+        self.module.litellm.AuthenticationError = AuthenticationError
+        answer = asyncio.run(self.guard.async_post_call_failure_hook(
+            {"model": "gpt-5"}, AuthenticationError("Unauthorized", "azure", "gpt-5"), AGENT_KEY))
+        self.assertEqual(answer.status_code, 502)
 
     def test_a_refused_provider_key_is_a_platform_error_for_an_agent(self):
         error = AuthenticationError(AZURE_KEY_REFUSED, "azure", "gpt-6-sol")

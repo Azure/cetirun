@@ -2247,10 +2247,13 @@ these actions:
   that a CetiRun administrator must fix the provider configuration of the model.
   For an Agent's GitHub Copilot route, it says that the owner can sign in to
   GitHub Copilot again. This applies to Chat Completions, Responses, and
-  Anthropic Messages requests. The AI Gateway logs a warning with the provider,
-  the model, the provider's message, and the key's alias. After the refusal,
-  LiteLLM puts the deployment in cooldown for a few seconds, and refuses
-  requests for the model in this time with a 429
+  Anthropic Messages requests. A refusal of the calling user's own provider
+  connection keeps LiteLLM's 401 and its message, which tells the caller to
+  connect again: LiteLLM raises `CallerCredentialAuthenticationError` for its
+  per-user GitHub Copilot sign-in. The AI Gateway logs a warning with the
+  provider, the model, the provider's message, and the key's alias. After the
+  refusal, LiteLLM puts the deployment in cooldown for a few seconds, and
+  refuses requests for the model in this time with a 429
   (`all_deployments_in_cooldown`) that does not say why. When the router
   recorded each deployment's cooldown after such a refusal, the AI Gateway
   answers these requests with the same 502. A cooldown after another error

@@ -111,7 +111,10 @@ runtime chart).
 
 A provider that refuses the Gateway's own credentials for a deployment (LiteLLM's
 AuthenticationError, HTTP 401) is answered with 502 and a CetiRun message
-instead. The calling key passed the Gateway's checks, so the provider's 401 is
+instead. A refusal of the calling user's own provider connection
+(CallerCredentialAuthenticationError, for LiteLLM's per-user GitHub Copilot
+sign-in) is about the caller, and keeps LiteLLM's 401 and message. The calling
+key passed the Gateway's checks, so the provider's 401 is
 not about it, but clients read a 401 as their own key being wrong: Hermes asks
 the user to update an API key that the user cannot change. The message says that
 the key is not the cause, and who can fix the credentials: a CetiRun
@@ -1736,9 +1739,15 @@ def provider_credentials_refusal(error, request_data, caller):
 
     LiteLLM raises AuthenticationError, with the provider it called, only for a provider's 401: a key
     the Gateway does not accept is refused before any model is called, with another error. So the
-    calling key is not the cause, and the answer must not read as a refused key."""
+    calling key is not the cause, and the answer must not read as a refused key. Its subclass
+    CallerCredentialAuthenticationError is about the caller: the calling user's own provider connection,
+    such as LiteLLM's per-user GitHub Copilot sign-in, is missing or was refused, and LiteLLM's 401 tells
+    the caller to connect again. It keeps that answer."""
     refusal = getattr(litellm, "AuthenticationError", None)
     if not (isinstance(refusal, type) and isinstance(error, refusal)):
+        return None
+    caller_scoped = getattr(litellm, "CallerCredentialAuthenticationError", None)
+    if isinstance(caller_scoped, type) and isinstance(error, caller_scoped):
         return None
     provider = getattr(error, "llm_provider", None)
     if not isinstance(provider, str) or not provider:
