@@ -241,8 +241,8 @@ PUBLIC_NETWORK_ACCESS=Disabled \
 
 ### Shared skills storage for `make deploy`
 
-`make deploy` sets `skills.shared: true` for all Agents. Each standard Agent,
-which does not run in a Sandbox, then mounts a static Blob NFS volume. The volume uses the
+`make deploy` sets `skills.shared: true` for all Agents. With the default
+`blob` backend, each standard Agent outside a Sandbox mounts a static Blob NFS volume. The volume uses the
 top-level `sharedSkills` fields of the environment file.
 
 > **Warning:** `make deploy` examines only that the StorageClass exists. It
@@ -261,6 +261,9 @@ Set the four necessary `sharedSkills` fields. Copy three of them from the
 | `sharedSkills.storageClassName` | A Blob NFS StorageClass that exists in the cluster, for example `azureblob-nfs-premium` |
 
 ## NFS security properties
+
+This section describes the default `blob` backend. For mandatory encryption,
+use [Azure Files NFS](#encrypted-azure-files-nfs).
 
 The [storage module]({{< repo "infra/storage/modules/storage-account.bicep" >}})
 sets hierarchical namespace and NFS v3 when it creates the account. It disables

@@ -15,7 +15,7 @@ it in two parts:
 
 - The operator lists the Teams with an Agent Policy and their selected skills
   for the worker. It also gives each Agent of these Teams a read-only claim of
-  a Blob NFS container. When the Agent starts, its HOME initializer copies the
+  the configured NFS storage. When the Agent starts, its HOME initializer copies the
   current release of its Team. The copy is the skills view of the Agent.
 - The worker is the Deployment `cetirun-skill-marketplace` in the operator
   namespace. It runs the operator image in a Pod of its own. It does these
@@ -28,10 +28,10 @@ it in two parts:
   2. It validates each skill of the commit. It lists the valid skills and the
      rejected directories in a catalog.
   3. For each Team that the operator lists, it publishes the selected skills.
-     The result is an immutable release in the Blob NFS container.
+     The result is an immutable release in the configured NFS storage.
 
 The worker runs apart from the operator because it reads repository content,
-holds the repository credentials, and writes to the container. Refer to
+holds the repository credentials, and writes the releases. Refer to
 [Security](#security).
 
 Approval occurs in the repository. The worker publishes the content of the
@@ -300,16 +300,21 @@ If two skills have the same name, the agent type selects one of them. Refer to
 - **`sleep` in Custom images.** The HOME initializer of a Custom Agent runs in
   the image of the Agent. It uses `sleep` while it waits for the release.
   Without `sleep`, it stops with `InitToolsMissing: sleep`.
-- **The Blob CSI driver** and one of its StorageClasses, for example
-  `azureblob-nfs-premium`.
-- **A storage account and an empty container**, as [Storage](#storage) shows.
+- **The CSI driver and an existing StorageClass for the selected backend**:
+  Blob CSI for `blob`, or Azure Files CSI with TLS support for `azure-files-nfs`.
+- **A storage account and an empty container or share**, as [Storage](#storage) shows.
 - **A Git repository** and, for a private repository, its credentials, as
   [The repository and its credentials](#the-repository-and-its-credentials)
   shows.
 
 ### Storage
 
-The worker needs a Blob container of its own. The container must be in a
+For `azure-files-nfs`, provision a dedicated encrypted share as described in
+[Encrypted Azure Files NFS](../storage/#encrypted-azure-files-nfs). Keep it
+separate from the shared skills share. The following instructions describe
+the default `blob` backend.
+
+The Blob worker needs a container of its own. The container must be in a
 storage account with NFS 3.0, such as the Premium BlockBlobStorage account
 that the storage helper creates. Do not use the container of the shared skills
 (`sharedSkills`). `make deploy` refuses it. The two containers serve different
