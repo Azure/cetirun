@@ -140,9 +140,10 @@ the upstream refuses the Gateway's credentials or does not answer, the limits
 fall back to LiteLLM's own table, at once in a replica that starts meanwhile.
 The CetiRun operator puts the limits into each Agent's configuration, so it
 restarted every Agent with the model, and again when the upstream answered.
-The guard keeps the limits an upstream advertised last while it does not
-answer, in the replica and in the Gateway's Redis, which a replica that starts
-meanwhile reads. It forgets them when the upstream answers without them.
+The guard keeps the limits that an upstream advertised last for each deployment
+while it does not answer: in the Gateway's Redis, which every replica reads
+first so that the replicas agree, and in the replica for when Redis does not
+answer. It forgets them when the upstream answers without them.
 
 Encrypted reasoning without the Gateway's mark is removed from Responses API
 requests while encrypted content affinity is on for the model. A client that
@@ -210,6 +211,7 @@ sight. LiteLLM's own rule decides, read from LiteLLM, and each change is logged.
 
 import asyncio
 import base64
+import contextvars
 import datetime
 import hashlib
 import importlib
@@ -546,22 +548,38 @@ def install_savings_provider_lookup():
     return True
 
 
-# LiteLLM's module that asks an OpenAI-compatible upstream for the token limits of its models, and the key
-# under which it keeps the upstream's last listing in its cache (get_openai_compatible_model_info).
+# LiteLLM's module that asks an OpenAI-compatible upstream for the token limits of its models, the key under
+# which it keeps the upstream's last listing in its cache (get_openai_compatible_model_info), and the router
+# registry's module and method that ask it for each deployment.
 UPSTREAM_INFO_MODULE = "litellm.llms.openai_like.model_info"
 UPSTREAM_LISTING_KEY = "upstream_model_info:"
-# The key of the limits an upstream advertised last for a model in the Gateway's Redis: this prefix and a
-# hash of the upstream's models URL and the model. Each answer keeps them 30 more days.
+UPSTREAM_REGISTRY_MODULE = "litellm.router_rust.surface.registry"
+UPSTREAM_REFRESH = "_arefresh_deployment_model_info"
+# The key of the limits an upstream advertised last for a deployment in the Gateway's Redis: this prefix and a
+# hash of the deployment's ID, the upstream's models URL and the model. Each answer keeps them 30 more days.
 UPSTREAM_LIMITS_KEY = "cetirun:upstream-limits:"
 UPSTREAM_LIMITS_TTL = 30 * 24 * 3600
-# The limits each upstream advertised last, in this replica, and the upstreams whose last request failed.
+# The deployment whose limits the router refreshes, in the task that refreshes them.
+REFRESHING_DEPLOYMENT = contextvars.ContextVar("cetirun_refreshing_deployment", default=None)
+# This replica's copy of the limits that each deployment's upstream advertised last, and the deployments whose
+# last request failed.
 KEPT_UPSTREAM_LIMITS = {}
 FAILED_UPSTREAMS = set()
 
 
-def upstream_limits_key(module, api_base, model):
+def upstream_limits_key(module, deployment, api_base, model):
+    """The key of a deployment's kept limits. The deployment's ID scopes them: two deployments with one
+    upstream URL and model can have other credentials or headers, and so other limits. The ID is the
+    configured one, so a changed credential keeps the key; neither the key nor the value holds a credential."""
     url = module.add_path_to_api_base(api_base, "/v1/models")
-    return UPSTREAM_LIMITS_KEY + hashlib.sha256(f"{url}\n{model}".encode("utf-8")).hexdigest()
+    return UPSTREAM_LIMITS_KEY + hashlib.sha256(json.dumps([deployment, url, model]).encode("utf-8")).hexdigest()
+
+
+def deployment_id(raw_deployment):
+    """The ID of a deployment, a model_list entry, or None."""
+    info = field_of(raw_deployment, "model_info")
+    model_id = field_of(info, "id") if info is not None else None
+    return model_id if isinstance(model_id, str) and model_id else None
 
 
 def upstream_answered(module, cache, api_base, headers):
@@ -604,15 +622,21 @@ async def remember_upstream_limits(key, limits):
 
 
 async def recall_upstream_limits(key):
-    if key in KEPT_UPSTREAM_LIMITS:
-        return KEPT_UPSTREAM_LIMITS[key]
+    """The limits kept for a deployment. When Redis answers, its value decides, also when it has none, so the
+    replicas agree; this replica's copy counts only when Redis does not answer or the Gateway has none."""
     redis = shared_redis()
     if redis is None:
-        return None
+        return KEPT_UPSTREAM_LIMITS.get(key)
     try:
-        return token_limits(await redis.async_get_cache(key))
-    except Exception:  # noqa: BLE001
-        return None
+        stored = await redis.async_get_cache(key)
+    except Exception:  # noqa: BLE001  # Redis does not answer
+        return KEPT_UPSTREAM_LIMITS.get(key)
+    limits = token_limits(stored)
+    if limits is None:
+        KEPT_UPSTREAM_LIMITS.pop(key, None)
+    else:
+        KEPT_UPSTREAM_LIMITS[key] = limits
+    return limits
 
 
 async def forget_upstream_limits(key):
@@ -633,17 +657,36 @@ def install_kept_upstream_limits():
     meanwhile, the deployment has the limits of LiteLLM's own table. The CetiRun operator writes the limits
     into the configuration of each Agent with the model, so a refused key restarted every such Agent twice:
     when the upstream stopped answering, and when it answered again. The replacement returns the limits the
-    upstream advertised last when its request fails, from this replica or from the Gateway's Redis, and the
-    router keeps them as it keeps an answer. It forgets them when the upstream answers without them. The
-    router imports the function by name at each refresh, so replacing the module's function is enough.
+    upstream advertised last for the deployment when its request fails, from the Gateway's Redis or, when
+    Redis does not answer, from this replica, and the router keeps them as it keeps an answer. It forgets
+    them when the upstream answers without them. The router imports the function by name at each refresh,
+    so replacing the module's function is enough; the registry's refresh of one deployment names the
+    deployment for it.
     """
     try:
         module = importlib.import_module(UPSTREAM_INFO_MODULE)
+        registry = importlib.import_module(UPSTREAM_REGISTRY_MODULE)
     except Exception:  # noqa: BLE001
         return False
     current = getattr(module, "get_openai_compatible_model_info", None)
     if current is None or not hasattr(module, "_ModelList") or not hasattr(module, "add_path_to_api_base"):
         return False
+    owners = [value for value in vars(registry).values() if isinstance(value, type) and UPSTREAM_REFRESH in vars(value)]
+    if len(owners) != 1:
+        return False
+    owner = owners[0]
+    refresh = vars(owner)[UPSTREAM_REFRESH]
+    if not getattr(refresh, "cetirun_kept_limits", False):
+        async def refresh_deployment(self, raw_deployment, *args, **kwargs):
+            token = REFRESHING_DEPLOYMENT.set(deployment_id(raw_deployment))
+            try:
+                return await refresh(self, raw_deployment, *args, **kwargs)
+            finally:
+                REFRESHING_DEPLOYMENT.reset(token)
+
+        refresh_deployment.cetirun_kept_limits = True
+        refresh_deployment.cetirun_original = refresh
+        setattr(owner, UPSTREAM_REFRESH, refresh_deployment)
     if getattr(current, "cetirun_kept_limits", False):
         return True
     original = current
@@ -651,7 +694,10 @@ def install_kept_upstream_limits():
     async def get_openai_compatible_model_info(*, model, api_base, headers, client, cache):
         limits = await original(model=model, api_base=api_base, headers=headers, client=client, cache=cache)
         try:
-            key = upstream_limits_key(module, api_base, model)
+            deployment = REFRESHING_DEPLOYMENT.get()
+            if deployment is None:
+                return limits
+            key = upstream_limits_key(module, deployment, api_base, model)
             if limits:
                 FAILED_UPSTREAMS.discard(key)
                 await remember_upstream_limits(key, limits)
@@ -665,11 +711,9 @@ def install_kept_upstream_limits():
             if key not in FAILED_UPSTREAMS:
                 FAILED_UPSTREAMS.add(key)
                 verbose_proxy_logger.warning(
-                    "CetiRun guard: the upstream %s did not answer the request for the token limits of the model %s; "
-                    "kept the limits it advertised last: %s", module.add_path_to_api_base(api_base, "/v1/models"),
-                    model, kept)
-            # In this replica only: the time in Redis counts from the upstream's last answer.
-            KEPT_UPSTREAM_LIMITS[key] = dict(kept)
+                    "CetiRun guard: the upstream %s did not answer the request for the token limits of the model %s "
+                    "of the deployment %s; kept the limits it advertised last: %s",
+                    module.add_path_to_api_base(api_base, "/v1/models"), model, deployment, kept)
             return MappingProxyType(dict(kept))
         except Exception:  # noqa: BLE001  # a refresh never fails on this lookup
             return limits
@@ -784,21 +828,25 @@ class ExerciseUpstream:
 
 
 def exercise_kept_upstream_limits():
-    """Whether LiteLLM's router takes an upstream's token limits through the replaced function, so a router
-    that starts while the upstream does not answer has the limits it advertised last, and one that starts
-    after the upstream answered without the model has none."""
+    """Whether LiteLLM's router takes an upstream's token limits through the replaced function, for each
+    deployment on its own: a router that starts while the upstream does not answer has the limits the upstream
+    advertised last for the deployment, and none for another deployment of the same upstream and model; one
+    that starts after the upstream answered without the model has none."""
     router_class = importlib.import_module(ROUTER_MODULE).Router
     change_set = importlib.import_module(ROUTER_API_MODULE).ChangeSet
     advertised = {"max_input_tokens": 1000, "max_output_tokens": 100}
+    other = f"{EXERCISE_MODEL}-other"
+    rounds = (({"data": [{"id": EXERCISE_MODEL, **advertised}]}, (EXERCISE_MODEL,)), (None, (EXERCISE_MODEL, other)),
+              ({"data": [{"id": "other"}]}, (EXERCISE_MODEL,)), (None, (EXERCISE_MODEL,)))
     found = []
-    for listing in ({"data": [{"id": EXERCISE_MODEL, **advertised}]}, None, {"data": [{"id": "other"}]}, None):
+    for listing, ids in rounds:
         router = router_class(model_list=[{
-            "model_name": EXERCISE_MODEL, "model_info": {"id": EXERCISE_MODEL},
+            "model_name": EXERCISE_MODEL, "model_info": {"id": model_id},
             "litellm_params": {"model": f"openai/{EXERCISE_MODEL}", "api_base": "http://127.0.0.1:9/v1",
-                               "api_key": EXERCISE_MODEL}}])
+                               "api_key": EXERCISE_MODEL}} for model_id in ids])
         asyncio.run(router.aapply(change_set(refresh_model_info=True, refresh_client=ExerciseUpstream(listing))))
-        found.append(dict(router.registry().discovered_model_info(EXERCISE_MODEL)))
-    return found == [advertised, advertised, {}, {}]
+        found.append([dict(router.registry().discovered_model_info(model_id)) for model_id in ids])
+    return found == [[advertised], [advertised, {}], [{}], [{}]]
 
 
 def exercise_credentials_answer():

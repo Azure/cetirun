@@ -14,6 +14,7 @@ API it came through, and RouterRateLimitError's message.
 import asyncio
 import base64
 import collections
+import contextlib
 import copy
 import datetime
 import hashlib
@@ -121,6 +122,30 @@ def upstream_info_module():
         return {name: card[name] for name in ("max_input_tokens", "max_output_tokens") if name in card}
 
     module.get_openai_compatible_model_info = get_openai_compatible_model_info
+    return module
+
+
+UPSTREAM_REGISTRY = "litellm.router_rust.surface.registry"
+
+
+def upstream_registry_module():
+    """LiteLLM 1.110.1's router registry module where the upstream token limits are concerned: its registry
+    refreshes the limits of one deployment, a model_list entry, with the upstream's lookup, which it looks up
+    by name at each refresh unless it is given one. This stand-in returns the limits, which LiteLLM's keeps."""
+    module = types.ModuleType(UPSTREAM_REGISTRY)
+
+    class HostRegistry:
+        def __init__(self, cache, lookup=None):
+            self.cache, self.lookup = cache, lookup
+
+        async def _arefresh_deployment_model_info(self, raw_deployment, *, client):
+            params = raw_deployment["litellm_params"]
+            lookup = self.lookup or sys.modules[UPSTREAM_INFO].get_openai_compatible_model_info
+            return await lookup(model=params["model"].split("/", 1)[1], api_base=params["api_base"],
+                                headers={"authorization": "Bearer " + params["api_key"]}, client=client,
+                                cache=self.cache)
+
+    module.HostRegistry = HostRegistry
     return module
 
 
@@ -280,8 +305,8 @@ class Cooldowns:
 class CooldownRouter:
     """A router shaped like LiteLLM 1.110.1's where its cooldowns and its upstream token limits are
     concerned: its health has the cooldowns; its registry has the deployments as model_list entries and the
-    limits it discovered. A refresh looks the upstream's lookup up by name each time, keeps the limits it
-    got, and ignores an empty answer."""
+    limits it discovered. A refresh asks the registry for each deployment's limits, keeps the limits it got,
+    and ignores an empty answer."""
 
     def __init__(self, model_list):
         self.deployments = {entry["model_info"]["id"]: entry for entry in model_list}
@@ -296,17 +321,15 @@ class CooldownRouter:
                                      discovered_model_info=lambda model_id: self.discovered.get(model_id, {}))
 
     def lookup(self):
-        return sys.modules[UPSTREAM_INFO].get_openai_compatible_model_info
+        """The upstream's lookup that the registry uses: None looks it up by name at each refresh."""
+        return None
 
     async def aapply(self, changes):
         if not changes.refresh_model_info:
             return
-        lookup = self.lookup()
+        registry = sys.modules[UPSTREAM_REGISTRY].HostRegistry(self.listings, self.lookup())
         for model_id, entry in self.deployments.items():
-            params = entry["litellm_params"]
-            limits = await lookup(model=params["model"].split("/", 1)[1], api_base=params["api_base"],
-                                  headers={"authorization": "Bearer " + params["api_key"]},
-                                  client=changes.refresh_client, cache=self.listings)
+            limits = await registry._arefresh_deployment_model_info(entry, client=changes.refresh_client)
             if limits:
                 self.discovered[model_id] = dict(limits)
 
@@ -2192,8 +2215,9 @@ class GuardTest(unittest.TestCase):
         # A LiteLLM without the subclass has no such connections: its refusals are the provider's.
         del self.module.litellm.CallerCredentialAuthenticationError
         self.module.litellm.AuthenticationError = AuthenticationError
-        answer = asyncio.run(self.guard.async_post_call_failure_hook(
-            {"model": "gpt-5"}, AuthenticationError("Unauthorized", "azure", "gpt-5"), AGENT_KEY))
+        with self.assertLogs(LOGGER, level="WARNING"):
+            answer = asyncio.run(self.guard.async_post_call_failure_hook(
+                {"model": "gpt-5"}, AuthenticationError("Unauthorized", "azure", "gpt-5"), AGENT_KEY))
         self.assertEqual(answer.status_code, 502)
 
     def test_a_refused_provider_key_is_a_platform_error_for_an_agent(self):
@@ -2462,10 +2486,11 @@ class GuardTest(unittest.TestCase):
     ADVERTISED = {"data": [{"id": "gpt-5.4", "max_input_tokens": 922000, "max_output_tokens": 128000}]}
     LIMITS = {"max_input_tokens": 922000, "max_output_tokens": 128000}
     UPSTREAM = "https://upstream.example.com/v1"
+    DEPLOYMENT = "cetirun-shared-synthetic-terra"
 
     def install_upstream_info(self, replace=True):
         module = upstream_info_module()
-        self.install_modules({UPSTREAM_INFO: vars(module)})
+        self.install_modules({UPSTREAM_INFO: vars(module), UPSTREAM_REGISTRY: vars(upstream_registry_module())})
         if replace:
             self.assertTrue(self.module.install_kept_upstream_limits())
             self.assertTrue(self.module.install_kept_upstream_limits())  # once only
@@ -2476,13 +2501,40 @@ class GuardTest(unittest.TestCase):
         self.install_modules({PROXY_SERVER: {"redis_usage_cache": redis}})
         return redis
 
-    def limits(self, listing, model="gpt-5.4", cache=None, guard=None):
-        """The limits the router gets for the model at a refresh: the upstream answers with listing, or does not
-        answer for None. A router keeps its last listing for minutes; a new cache stands for a later refresh."""
+    def limits(self, listing, model="gpt-5.4", cache=None, guard=None, deployment=DEPLOYMENT,
+               api_key="synthetic-upstream-key", replica=None):
+        """The limits the router gets for a deployment of the model at a refresh: the upstream answers with
+        listing, or does not answer for None. A router keeps its last listing for minutes; a new cache stands
+        for a later refresh. With replica, another replica of the Gateway refreshes them."""
+        if replica is not None:
+            with self.modules_of(replica.modules):
+                return self.limits(listing, model, cache, replica.guard, deployment, api_key)
         guard = guard or self.module
-        return dict(asyncio.run(sys.modules[UPSTREAM_INFO].get_openai_compatible_model_info(
-            model=model, api_base=self.UPSTREAM, headers={"authorization": "Bearer synthetic-upstream-key"},
-            client=guard.ExerciseUpstream(listing), cache=cache or ListingCache())))
+        entry = {"model_name": model, "model_info": {"id": deployment},
+                 "litellm_params": {"model": f"openai/{model}", "api_base": self.UPSTREAM, "api_key": api_key}}
+        registry = sys.modules[UPSTREAM_REGISTRY].HostRegistry(cache or ListingCache())
+        return dict(asyncio.run(registry._arefresh_deployment_model_info(entry, client=guard.ExerciseUpstream(listing))))
+
+    @contextlib.contextmanager
+    def modules_of(self, modules):
+        saved = {name: sys.modules.get(name) for name in modules}
+        sys.modules.update(modules)
+        try:
+            yield
+        finally:
+            for name, module in saved.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
+
+    def replica(self):
+        """Another replica of the Gateway: its own guard and LiteLLM modules, and the same Redis."""
+        replica = types.SimpleNamespace(guard=load_guard(), modules={
+            UPSTREAM_INFO: upstream_info_module(), UPSTREAM_REGISTRY: upstream_registry_module()})
+        with self.modules_of(replica.modules):
+            self.assertTrue(replica.guard.install_kept_upstream_limits())
+        return replica
 
     def test_the_limits_an_upstream_advertised_last_are_kept_while_it_does_not_answer(self):
         self.install_upstream_info()
@@ -2490,11 +2542,14 @@ class GuardTest(unittest.TestCase):
         with self.assertLogs(LOGGER, "WARNING") as logs:
             for _ in range(3):
                 self.assertEqual(self.limits(None), self.LIMITS)
-        # One warning while the upstream does not answer; it names the upstream, not its key.
+        # One warning while the upstream does not answer; it names the upstream and the deployment, not the key.
         self.assertEqual(len(logs.output), 1)
         self.assertIn("the upstream https://upstream.example.com/v1/models did not answer the request for the token "
-                      "limits of the model gpt-5.4; kept the limits it advertised last", logs.output[0])
+                      "limits of the model gpt-5.4 of the deployment cetirun-shared-synthetic-terra; kept the limits it "
+                      "advertised last", logs.output[0])
         self.assertNotIn("synthetic-upstream-key", logs.output[0])
+        # A refused key is another credential of the same deployment: its limits stay.
+        self.assertEqual(self.limits(None, api_key="synthetic-refused-key"), self.LIMITS)
         # A later answer replaces them.
         self.assertEqual(self.limits({"data": [{"id": "gpt-5.4", "max_input_tokens": 1050000}]}),
                          {"max_input_tokens": 1050000})
@@ -2512,6 +2567,38 @@ class GuardTest(unittest.TestCase):
         cache = ListingCache()
         self.limits(self.ADVERTISED, cache=cache)
         self.assertEqual(self.limits(None, model="never-listed", cache=cache), {})
+
+    def test_each_deployment_keeps_its_own_limits(self):
+        # Two deployments of one upstream URL and model, with other credentials, can see other limits.
+        redis = self.shared_redis()
+        self.install_upstream_info()
+        other = {"deployment": "cetirun-shared-synthetic-other", "api_key": "synthetic-other-key"}
+        self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
+        self.assertEqual(self.limits(None, **other), {})
+        self.assertEqual(self.limits({"data": [{"id": "gpt-5.4", "max_input_tokens": 128000}]}, **other),
+                         {"max_input_tokens": 128000})
+        with self.assertLogs(LOGGER, "WARNING"):
+            self.assertEqual(self.limits(None), self.LIMITS)
+            self.assertEqual(self.limits(None, **other), {"max_input_tokens": 128000})
+        # The upstream lists the model no more for one of them: the other keeps its limits.
+        self.assertEqual(self.limits({"data": [{"id": "another-model"}]}, **other), {})
+        self.assertEqual(self.limits(None), self.LIMITS)
+        # Neither the keys nor the values in Redis hold a credential.
+        stored = json.dumps([redis.values, redis.ttls])
+        for credential in ("synthetic-upstream-key", "synthetic-other-key"):
+            self.assertNotIn(credential, stored)
+
+    def test_a_lookup_without_a_deployment_keeps_nothing(self):
+        redis = self.shared_redis()
+        lookup = self.install_upstream_info().get_openai_compatible_model_info
+
+        def call(listing):
+            return dict(asyncio.run(lookup(model="gpt-5.4", api_base=self.UPSTREAM, headers={}, cache=ListingCache(),
+                                           client=self.module.ExerciseUpstream(listing))))
+
+        self.assertEqual(call(self.ADVERTISED), self.LIMITS)
+        self.assertEqual(call(None), {})
+        self.assertEqual((redis.values, self.module.KEPT_UPSTREAM_LIMITS), ({}, {}))
 
     def test_a_replica_that_starts_while_the_upstream_does_not_answer_reads_the_kept_limits(self):
         redis = self.shared_redis()
@@ -2538,6 +2625,23 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(self.limits({"data": [{"id": "another-model"}]}, guard=replica), {})
         self.assertEqual(redis.values, {})
 
+    def test_the_replicas_keep_what_redis_has(self):
+        redis = self.shared_redis()
+        self.install_upstream_info()
+        other = self.replica()
+        self.assertEqual(self.limits(self.ADVERTISED, replica=other), self.LIMITS)
+        self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
+        # This replica sees a smaller window last, just before the upstream stops answering.
+        smaller = {"max_input_tokens": 272000, "max_output_tokens": 128000}
+        self.assertEqual(self.limits({"data": [{"id": "gpt-5.4", **smaller}]}), smaller)
+        with self.assertLogs(LOGGER, "WARNING"):
+            self.assertEqual(self.limits(None, replica=other), smaller)
+            self.assertEqual(self.limits(None), smaller)
+        # The upstream answers this replica without the model: the other replica keeps nothing either.
+        self.assertEqual(self.limits({"data": [{"id": "another-model"}]}), {})
+        self.assertEqual(self.limits(None, replica=other), {})
+        self.assertEqual((other.guard.KEPT_UPSTREAM_LIMITS, redis.values), ({}, {}))
+
     def test_a_redis_that_fails_or_holds_something_else_is_not_used(self):
         redis = self.shared_redis()
         redis.fail = True
@@ -2550,7 +2654,7 @@ class GuardTest(unittest.TestCase):
         replica = load_guard()
         upstream = self.install_upstream_info(replace=False)
         self.assertTrue(replica.install_kept_upstream_limits())
-        key = replica.upstream_limits_key(upstream, self.UPSTREAM, "gpt-5.4")
+        key = replica.upstream_limits_key(upstream, self.DEPLOYMENT, self.UPSTREAM, "gpt-5.4")
         for stored in ({"max_input_tokens": "922000"}, {"max_input_tokens": True}, {"max_input_tokens": 0}, [922000],
                        {}, "not limits"):
             with self.subTest(stored=stored):
@@ -2566,18 +2670,35 @@ class GuardTest(unittest.TestCase):
         self.limits(self.ADVERTISED)
         self.assertEqual(self.limits(None, cache=Unreadable()), {})
 
-    def test_the_replacement_needs_litellms_lookup(self):
+    def test_the_replacement_needs_litellms_lookup_and_registry(self):
         self.assertFalse(self.module.install_kept_upstream_limits())
         module = upstream_info_module()
         del module._ModelList
-        self.install_modules({UPSTREAM_INFO: vars(module)})
+        self.install_modules({UPSTREAM_INFO: vars(module), UPSTREAM_REGISTRY: vars(upstream_registry_module())})
         self.assertFalse(self.module.install_kept_upstream_limits())
+        # A registry that refreshes each deployment otherwise, or in more than one class.
+        registry = upstream_registry_module()
+        registry.Other = type("Other", (), {"_arefresh_deployment_model_info": registry.HostRegistry.__dict__[
+            "_arefresh_deployment_model_info"]})
+        for refreshing in ({}, {"HostRegistry": registry.HostRegistry, "Other": registry.Other}):
+            with self.subTest(classes=sorted(refreshing)):
+                self.install_modules({UPSTREAM_INFO: vars(upstream_info_module()), UPSTREAM_REGISTRY: refreshing})
+                self.assertFalse(self.module.install_kept_upstream_limits())
 
     def test_the_build_checks_that_the_router_takes_the_kept_limits(self):
         self.install_upstream_info()
         self.install_router_modules()
         with self.assertLogs(LOGGER, "WARNING"):
             self.assertIs(self.module.exercise_kept_upstream_limits(), True)
+
+    def test_limits_that_are_not_kept_for_each_deployment_fail_the_build(self):
+        self.install_upstream_info()
+        self.install_router_modules()
+        scoped = self.module.upstream_limits_key
+        self.module.upstream_limits_key = lambda module, deployment, api_base, model: scoped(module, "", api_base, model)
+        self.addCleanup(setattr, self.module, "upstream_limits_key", scoped)
+        with self.assertLogs(LOGGER, "WARNING"):
+            self.assertIs(self.module.exercise_kept_upstream_limits(), False)
 
     def test_a_router_that_holds_its_own_copy_of_the_lookup_fails_the_build(self):
         original = self.install_upstream_info(replace=False).get_openai_compatible_model_info

@@ -2275,18 +2275,22 @@ these actions:
   while the upstream does not answer. LiteLLM asks the upstream of an
   OpenAI-compatible deployment that has an `api_base`, such as one with the
   provider `openai` or `hosted_vllm`, for the limits of its models
-  (`GET /v1/models`) every five minutes. These limits take the
-  place of the limits in LiteLLM's table. LiteLLM forgets them ten minutes
-  after the upstream last answered, and a replica that starts while the
-  upstream does not answer has only the table's limits. The CetiRun operator
-  writes the limits into the configuration of each Agent with the model. So a
-  refused key restarted each such Agent twice: when the upstream stopped
-  answering, and when it answered again. The AI Gateway keeps the limits in the
-  replica and in its Redis, for 30 days after the last answer, so a replica
-  that starts meanwhile uses them too. When the upstream answers without the
-  model, the AI Gateway forgets the limits. Limits that you set in the
-  `model_info` of a model (`max_input_tokens`, `max_output_tokens`) take
-  precedence over the upstream's.
+  (`GET /v1/models`) every five minutes. These limits take the place of the
+  limits in LiteLLM's table. LiteLLM forgets them ten minutes after the
+  upstream last answered, and a replica that starts while the upstream does
+  not answer has only the table's limits. The CetiRun operator writes the
+  limits into the configuration of each Agent with the model. So a refused key
+  restarted each such Agent twice: when the upstream stopped answering, and
+  when it answered again. The AI Gateway keeps the limits of each deployment
+  in its Redis, for 30 days after the last answer, and in the replica. Each
+  replica uses the limits in Redis, so that the replicas agree, also a replica
+  that starts meanwhile. It uses its own copy only when Redis does not answer.
+  The ID of the deployment scopes the limits: two deployments with one
+  upstream URL and model keep their own limits, and a changed credential keeps
+  them. When the upstream answers without the model, the AI Gateway forgets
+  the limits. Limits that you set in the `model_info` of a model
+  (`max_input_tokens`, `max_output_tokens`) take precedence over the
+  upstream's.
 - It shortens the request that a router with a jev classifier sends to its
   decision model. The limit in bytes starts at the number of tokens that the
   model takes. This number is the smallest `model_info.max_input_tokens` of
