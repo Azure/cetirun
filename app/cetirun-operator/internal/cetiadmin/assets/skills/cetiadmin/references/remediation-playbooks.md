@@ -288,14 +288,16 @@ platform, its permissions, or CetiAdmin itself.
 Base each component's verdict on its rollout state, ready replicas, endpoints,
 Events, and bounded logs. By default, your Pod's egress policy blocks the
 platform Services other than the AI Gateway and Connections MCP, and the
-public host name. A request that does not reach the service is not evidence:
-it times out, its connection is refused or reset, its TLS handshake fails, or
-the Istio proxy in your Pod answers `upstream connect error or
-disconnect/reset before headers`. Such a failure does not contradict Ready Pods
-with ready endpoints and clean logs. An answer that the service returned itself
-is evidence, even when its Pods are Ready: an AI Gateway route that answers 503
-with the AI Gateway's own error has failed. Report the route, the status, and
-the start of the body.
+public host name. A request to a blocked destination is not evidence: its
+connection times out, is refused or reset, its TLS handshake fails, or the
+Istio proxy in your Pod answers `upstream connect error or disconnect/reset
+before headers`. Such a failure does not contradict Ready Pods with ready
+endpoints and clean logs. A request to an allowed destination is evidence
+about its route, even when the Pods are Ready. An AI Gateway route that
+answers 503 with the AI Gateway's own error has failed: report the route, the
+status, and the start of the body. A route that gives no answer before your
+timeout, or the Istio proxy's `upstream request timeout`, did not answer:
+report the route and the timeout, without naming a cause in the service.
 
 A component is `unknown` when your access is missing: you cannot read its
 Pods, endpoints, or logs. A container that never started has no logs, and that

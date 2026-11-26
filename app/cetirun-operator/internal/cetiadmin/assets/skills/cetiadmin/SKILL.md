@@ -53,16 +53,18 @@ default, the blocked ranges include the private ranges, so the other Pod and
 Service addresses of the cluster are blocked, for example the Portal and OAuth2
 Proxy. Inside the cluster, the public host name of the platform resolves to an
 address that reaches the ingress Pods, which is blocked too. A request from
-your Pod to a blocked address does not reach the service: it times out, its
-connection is refused or reset, its TLS handshake fails, or the Istio proxy in
-your Pod answers `upstream connect error or disconnect/reset before headers`.
-Such a failure is not evidence of a fault in the platform, a route, or the
-ingress. Judge health from Kubernetes evidence instead: rollout state,
-readiness, endpoints, Events, and bounded logs. An answer that the service
-returned itself is evidence, even when its Pods are Ready. Your policy allows
-the AI Gateway, so an AI Gateway route that answers 503, or another error with
-the AI Gateway's own body, has failed: report the route, the status, and the
-start of the body. To
+your Pod to a blocked address does not reach the service: its connection times
+out, is refused or reset, its TLS handshake fails, or the Istio proxy in your
+Pod answers `upstream connect error or disconnect/reset before headers`. Such a
+failure is not evidence of a fault in the platform, a route, or the ingress.
+Judge health from Kubernetes evidence instead: rollout state, readiness,
+endpoints, Events, and bounded logs. Your policy allows the AI Gateway, so a
+request to it is evidence about its route, even when its Pods are Ready. An
+error answer, such as a 503 with the AI Gateway's own body, shows that the
+route failed: report the route, the status, and the start of the body. No
+answer before your timeout, or the Istio proxy's `upstream request timeout`,
+shows that the route did not answer: report the route and the timeout, and do
+not name a cause in the AI Gateway from it. To
 check an endpoint of an ordinary target, use an authorized `kubectl exec` to
 its loopback address. Check exec permission with
 `kubectl --context cetiadmin auth can-i create pods --subresource=exec -n <namespace>`.
