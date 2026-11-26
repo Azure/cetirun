@@ -576,10 +576,19 @@ has yet. Here, the names have the date of the backfill. Use your own date:
 - `GatewayDailyUsageV2Previous20261126` for the current view after the
   replacement.
 
-To list the views of the database, run `.show materialized-views`. Do not
-deploy the cluster template while you do the steps. Each deployment runs
-`cetirun-gateway-usage.kql`, which creates `GatewayDailyUsageV2` again, without
-backfill, when the name is free. Then do these steps:
+Run the steps only while nothing else changes the view:
+
+- Do not deploy the cluster template. Each deployment runs
+  `cetirun-gateway-usage.kql`, which creates `GatewayDailyUsageV2` again,
+  without backfill, when the name is free.
+- Do not run a second backfill of the view at the same time. Two runs can both
+  pass the comparison against the same view. The later run can then replace the
+  view of the earlier run with a view that lacks rows that the table deleted in
+  between.
+
+Before you start, list the views with `.show materialized-views`. Another
+`GatewayDailyUsageV2Backfill` view shows a run that has not ended. Then do these
+steps:
 
 1. Keep the `Gateway` table in the hot cache for its retention. For example,
    for 90 days:
@@ -604,7 +613,13 @@ backfill, when the name is free. Then do these steps:
    command again later.
 3. Set the policies of the second view. Run the two `.alter` commands of the
    file with the name `GatewayDailyUsageV2Backfill20261126`, and replace
-   `__RETENTION_DAYS__`.
+   `__RETENTION_DAYS__`. Then note the `EffectiveDateTime` of the second view:
+
+   ```kusto
+   .show materialized-view GatewayDailyUsageV2Backfill20261126
+   | project EffectiveDateTime
+   ```
+
 4. Compare the views. The query must return no rows:
 
    ```kusto
@@ -635,8 +650,9 @@ backfill, when the name is free. Then do these steps:
    .drop materialized-view GatewayDailyUsageV2Backfill20261126
    ```
 
-5. Replace the view, and keep the current view under the other name. Run both
-   renames in one script. Select the whole command before you run it:
+5. Right after the comparison, replace the view, and keep the current view
+   under the other name. Run both renames in one script. Select the whole
+   command before you run it:
 
    ```kusto
    .execute database script with (ThrowOnErrors = true) <|
@@ -644,8 +660,9 @@ backfill, when the name is free. Then do these steps:
    .rename materialized-view GatewayDailyUsageV2Backfill20261126 to GatewayDailyUsageV2
    ```
 
-   The script stops at the first command that fails. It does not undo the
-   commands before it.
+   The script stops at the first command that fails, and the commands before
+   it keep their effect. Run it only once. If it fails, or if its result is
+   unknown, check what it did as described after these steps.
 6. Remove the caching policy of the table. The policy of the database applies
    again:
 
@@ -653,8 +670,8 @@ backfill, when the name is free. Then do these steps:
    .delete table Gateway policy caching
    ```
 
-If the script of step 5 fails, list the views before you give the name
-`GatewayDailyUsageV2` to one of them:
+If the script of step 5 fails, or if its result is unknown, list the views
+before you change any of them:
 
 ```kusto
 .show materialized-views
@@ -662,17 +679,31 @@ If the script of step 5 fails, list the views before you give the name
 | project Name, EffectiveDateTime
 ```
 
-- Without `GatewayDailyUsageV2Previous20261126`, the first rename failed, and
-  nothing was replaced. Drop the second view as in step 4.
-- With `GatewayDailyUsageV2Previous20261126`, the first rename ran. A
-  `GatewayDailyUsageV2` next to it is a view that a deployment created without
-  backfill. Its `EffectiveDateTime` is after the start of step 5. It counts
-  only the calls since its creation, which the two other views also count.
-  Drop it.
+Then decide by the views that exist:
 
-After the first rename, give the name to the second view to complete the
-replacement, or to the previous view to undo it. For example, to undo the
-replacement:
+- `GatewayDailyUsageV2Previous20261126` exists, and
+  `GatewayDailyUsageV2Backfill20261126` does not: both renames ran.
+  `GatewayDailyUsageV2` is the second view when its `EffectiveDateTime` is the
+  one that you noted in step 3. Leave it in place. If the time differs, change
+  no view, and determine which view has the name.
+- Both views exist: only the first rename ran. A `GatewayDailyUsageV2` next to
+  them is a view that a deployment created without backfill. Check that its
+  `EffectiveDateTime` is after the start of step 5. This view counts only the
+  calls since its creation, which the two other views also count. Drop it.
+  Then give the name to the second view to complete the replacement, or to the
+  previous view to undo it.
+- `GatewayDailyUsageV2Backfill20261126` exists, and
+  `GatewayDailyUsageV2Previous20261126` does not: the first rename failed, and
+  nothing was replaced. Drop the second view as in step 4.
+
+Drop `GatewayDailyUsageV2` only while the second view still exists. To complete
+the replacement after the first rename:
+
+```kusto
+.rename materialized-view GatewayDailyUsageV2Backfill20261126 to GatewayDailyUsageV2
+```
+
+To undo it:
 
 ```kusto
 .rename materialized-view GatewayDailyUsageV2Previous20261126 to GatewayDailyUsageV2
