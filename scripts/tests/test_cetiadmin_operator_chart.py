@@ -39,7 +39,8 @@ class CetiAdminOperatorChartTests(unittest.TestCase):
         ).stdout
         pem = subprocess.run(
             ["openssl", "req", "-new", "-x509", "-key", "/dev/stdin", "-subj", "/CN=example.test",
-             "-days", "1", "-addext", "basicConstraints=critical,CA:TRUE"],
+             "-days", "1", "-addext", "basicConstraints=critical,CA:TRUE",
+             "-addext", "keyUsage=critical,keyCertSign,cRLSign"],
             input=key, text=True, capture_output=True, check=True, timeout=30,
         ).stdout
         cls.ca_bundle = base64.b64encode(pem.encode()).decode()

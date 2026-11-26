@@ -271,6 +271,33 @@ func hookDeploymentReady(ctx context.Context, kube client.Client, namespace, nam
 	return false, nil
 }
 
+// checkAdmissionCABundle checks each certificate of a webhook CA bundle the way
+// make deploy's strict verification does, and names the first problem it finds.
+func checkAdmissionCABundle(bundle string, now time.Time) error {
+	rest := strings.TrimSpace(bundle)
+	for rest != "" {
+		block, tail := pem.Decode([]byte(rest))
+		if block == nil || block.Type != "CERTIFICATE" || !strings.HasPrefix(rest, "-----BEGIN CERTIFICATE-----") {
+			return fmt.Errorf("CetiAdmin admission CA is not certificate PEM")
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		switch {
+		case err != nil:
+			return fmt.Errorf("CetiAdmin admission CA is not a valid X.509 certificate")
+		case !cert.IsCA:
+			return fmt.Errorf("CetiAdmin admission CA %q is not a CA certificate: it needs basicConstraints CA:TRUE", cert.Subject.String())
+		case cert.KeyUsage&x509.KeyUsageCertSign == 0:
+			return fmt.Errorf("CetiAdmin admission CA %q has no keyUsage keyCertSign: issue it again with "+
+				"keyUsage=critical,keyCertSign,cRLSign; with the same key, the server certificate stays valid", cert.Subject.String())
+		case now.Before(cert.NotBefore) || !now.Before(cert.NotAfter):
+			return fmt.Errorf("CetiAdmin admission CA %q is outside its validity period (%s to %s)", cert.Subject.String(),
+				cert.NotBefore.UTC().Format(time.RFC3339), cert.NotAfter.UTC().Format(time.RFC3339))
+		}
+		rest = strings.TrimSpace(string(tail))
+	}
+	return nil
+}
+
 func hookAdmissionReady(ctx context.Context, kube client.Client, namespace, image string, account ObjectIdentity) (bool, error) {
 	ready, err := hookDeploymentReady(ctx, kube, namespace, "cetirun-sandbox-admission", image)
 	if err != nil || !ready {
@@ -302,16 +329,8 @@ func hookAdmissionReady(ctx context.Context, kube client.Client, namespace, imag
 		if rest == "" {
 			return false, nil
 		}
-		for rest != "" {
-			block, tail := pem.Decode([]byte(rest))
-			if block == nil || block.Type != "CERTIFICATE" || !strings.HasPrefix(rest, "-----BEGIN CERTIFICATE-----") {
-				return false, fmt.Errorf("CetiAdmin admission CA is not certificate PEM")
-			}
-			cert, err := x509.ParseCertificate(block.Bytes)
-			if err != nil || !cert.IsCA || cert.KeyUsage&x509.KeyUsageCertSign == 0 || time.Now().Before(cert.NotBefore) || !time.Now().Before(cert.NotAfter) {
-				return false, fmt.Errorf("CetiAdmin admission CA is invalid or outside its validity period")
-			}
-			rest = strings.TrimSpace(string(tail))
+		if err := checkAdmissionCABundle(rest, time.Now()); err != nil {
+			return false, err
 		}
 	}
 	for _, kind := range []string{"configuration", "workloads", "operations"} {
