@@ -35,6 +35,9 @@ type AdminInstanceDetail struct {
 	// This means a credential reference is configured, not that it was verified.
 	RegistryAuthConfigured bool              `json:"registryAuthConfigured"`
 	Conditions             []ConditionStatus `json:"conditions"`
+	// CetiAdmin marks the Agent that the operator installed for CetiAdmin. The
+	// deployment configures it, so the Portal does not edit or delete it.
+	CetiAdmin bool `json:"cetiAdmin,omitempty"`
 }
 
 type AdminAgentUpdate struct {
@@ -73,6 +76,7 @@ func adminInstanceDetail(instance *api.Agent) AdminInstanceDetail {
 		Model: instance.Spec.Model, TailscaleEnabled: instance.Spec.Tailscale != nil,
 		RegistryAuthConfigured: instance.Spec.Agent.RegistrySecretRef != nil,
 		Conditions:             adminInstanceConditions(instance),
+		CetiAdmin:              kube.IsCetiAdmin(instance),
 	}
 	if instance.Status.LastReconcileTime != nil {
 		resp.LastReconciled = instance.Status.LastReconcileTime.UTC().Format("2006-01-02T15:04:05Z")
@@ -258,12 +262,13 @@ func (h *AdminInstanceHandler) UpdateInstance(w http.ResponseWriter, r *http.Req
 		writeManagementError(w, err)
 		return
 	}
-	if req.UID != instance.UID || req.ResourceVersion != instance.ResourceVersion {
-		writeManagementError(w, kube.ErrInstanceChanged)
-		return
-	}
+	// Before the version: a newer version would be refused in the same way.
 	if kube.IsCetiAdmin(instance) {
 		writeManagementError(w, errCetiAdminManaged)
+		return
+	}
+	if req.UID != instance.UID || req.ResourceVersion != instance.ResourceVersion {
+		writeManagementError(w, kube.ErrInstanceChanged)
 		return
 	}
 	if input.Port.Set && agentconfig.Defaults(instance.Spec.Agent).Type != api.AgentTypeCustom {

@@ -146,6 +146,19 @@ func TestPortalLeavesTheConfigurationOfCetiAdminToTheDeployment(t *testing.T) {
 			admin.UpdateInstance(w, adminCetiAdminRequest(http.MethodPatch, strings.TrimSuffix(version, "}")+`,"model":"gpt-6"}`))
 			return w
 		}},
+		// CetiAdmin's status changes often, so a draft is often older than the Agent: the answer still names the cause.
+		{"administrator saves a stale draft", func(_ *InstanceHandler, admin *AdminInstanceHandler, version string) *httptest.ResponseRecorder {
+			w := httptest.NewRecorder()
+			stale := strings.Replace(version, `"resourceVersion":"`, `"resourceVersion":"0`, 1)
+			admin.UpdateInstance(w, adminCetiAdminRequest(http.MethodPatch, strings.TrimSuffix(stale, "}")+`,"displayName":"Operations"}`))
+			return w
+		}},
+		{"owner saves a stale draft", func(h *InstanceHandler, _ *AdminInstanceHandler, version string) *httptest.ResponseRecorder {
+			w := httptest.NewRecorder()
+			stale := strings.Replace(version, `"resourceVersion":"`, `"resourceVersion":"0`, 1)
+			h.UpdateInstanceByName(w, cetiAdminRequest(http.MethodPatch, "/api/v1/instances/cetiadmin", strings.TrimSuffix(stale, "}")+`,"displayName":"Operations"}`))
+			return w
+		}},
 		{"administrator deletes it", func(_ *InstanceHandler, admin *AdminInstanceHandler, version string) *httptest.ResponseRecorder {
 			w := httptest.NewRecorder()
 			admin.DeleteInstance(w, adminCetiAdminRequest(http.MethodDelete, version))
@@ -175,6 +188,27 @@ func TestPortalLeavesTheConfigurationOfCetiAdminToTheDeployment(t *testing.T) {
 				t.Fatalf("CetiAdmin changed: resourceVersion %s -> %s, spec %+v", before.ResourceVersion, after.ResourceVersion, after.Spec)
 			}
 		})
+	}
+}
+
+func TestTheAdministratorDetailMarksOnlyCetiAdmin(t *testing.T) {
+	ordinary := sampleInstance()
+	ordinary.Name, ordinary.UID = "alice-research", "ordinary-agent-uid"
+	admin := &AdminInstanceHandler{Kube: kube.NewClient(newFakeClient(cetiAdminInstance(), ordinary))}
+	for name, want := range map[string]bool{"cetiadmin": true, "alice-research": false} {
+		r := httptest.NewRequest(http.MethodGet, "/api/v1/admin/instances/"+name, nil)
+		r.SetPathValue("name", name)
+		r = r.WithContext(auth.NewContext(r.Context(), auth.Claims{Alias: "administrator", Subject: "admin-subject", IsAdmin: true}))
+		w := httptest.NewRecorder()
+		admin.GetInstance(w, r)
+		var detail map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil || w.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", name, w.Code, w.Body.String())
+		}
+		cetiAdmin, marked := detail["cetiAdmin"]
+		if want && cetiAdmin != true || !want && marked {
+			t.Errorf("%s: cetiAdmin=%v present=%v, want %v", name, cetiAdmin, marked, want)
+		}
 	}
 }
 

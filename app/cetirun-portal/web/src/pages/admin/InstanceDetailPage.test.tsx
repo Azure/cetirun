@@ -101,6 +101,18 @@ describe("InstanceDetailPage", () => {
     expect(screen.queryByTestId("chart-unavailable-notice")).not.toBeInTheDocument();
   });
 
+  it("offers no edit or deletion of CetiAdmin, which the deployment configures", async () => {
+    vi.mocked(adminInstances.getAdminInstance).mockResolvedValue({ ...agent, name: "cetiadmin", displayName: undefined,
+      agent: { ...agent.agent, type: "hermes", webUI: false }, cetiAdmin: true });
+    renderPage();
+    expect(await screen.findByText(/The platform manages CetiAdmin/)).toHaveTextContent(
+      "The platform manages CetiAdmin. The cetiadmin values of the deployment set its model and its other settings, " +
+      "for example cetiadmin.model.default, so the Portal cannot edit or delete it.");
+    expect(screen.getByRole("heading", { name: "cetiadmin" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+  });
+
   it.each(["hermes", "openclaw"] as const)("shows the %s port as read-only and omits it when saving", async (type) => {
     const builtIn = { ...agent, agent: { ...agent.agent, type, webUI: false } };
     vi.mocked(adminInstances.getAdminInstance).mockResolvedValue(builtIn);
