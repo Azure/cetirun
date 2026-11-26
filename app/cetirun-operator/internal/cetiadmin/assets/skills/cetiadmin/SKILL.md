@@ -52,10 +52,17 @@ Kubernetes API server, and public addresses outside the blocked ranges. By
 default, the blocked ranges include the private ranges, so the other Pod and
 Service addresses of the cluster are blocked, for example the Portal and OAuth2
 Proxy. Inside the cluster, the public host name of the platform resolves to an
-address that reaches the ingress Pods, which is blocked too. So a failed
-`curl` or TLS handshake from your Pod is not evidence of a fault in the
-platform, a route, or the ingress. Judge health from Kubernetes evidence
-instead: rollout state, readiness, endpoints, Events, and bounded logs. To
+address that reaches the ingress Pods, which is blocked too. A request from
+your Pod to a blocked address does not reach the service: it times out, its
+connection is refused or reset, its TLS handshake fails, or the Istio proxy in
+your Pod answers `upstream connect error or disconnect/reset before headers`.
+Such a failure is not evidence of a fault in the platform, a route, or the
+ingress. Judge health from Kubernetes evidence instead: rollout state,
+readiness, endpoints, Events, and bounded logs. An answer that the service
+returned itself is evidence, even when its Pods are Ready. Your policy allows
+the AI Gateway, so an AI Gateway route that answers 503, or another error with
+the AI Gateway's own body, has failed: report the route, the status, and the
+start of the body. To
 check an endpoint of an ordinary target, use an authorized `kubectl exec` to
 its loopback address. Check exec permission with
 `kubectl --context cetiadmin auth can-i create pods --subresource=exec -n <namespace>`.

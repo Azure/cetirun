@@ -286,11 +286,22 @@ route, certificate, and DNS observations. Do not restart, scale, or edit the
 platform, its permissions, or CetiAdmin itself.
 
 Base each component's verdict on its rollout state, ready replicas, endpoints,
-Events, and bounded logs. A failed request from your own Pod to a platform
-Service or to the public host name is not evidence: by default, your Pod's
-egress policy blocks both. Such a failure does not contradict Ready Pods with
-ready endpoints and clean logs. A component that you cannot read is
-`unknown`, not healthy.
+Events, and bounded logs. By default, your Pod's egress policy blocks the
+platform Services other than the AI Gateway and Connections MCP, and the
+public host name. A request that does not reach the service is not evidence:
+it times out, its connection is refused or reset, its TLS handshake fails, or
+the Istio proxy in your Pod answers `upstream connect error or
+disconnect/reset before headers`. Such a failure does not contradict Ready Pods
+with ready endpoints and clean logs. An answer that the service returned itself
+is evidence, even when its Pods are Ready: an AI Gateway route that answers 503
+with the AI Gateway's own error has failed. Report the route, the status, and
+the start of the body.
+
+A component is `unknown` when your access is missing: you cannot read its
+Pods, endpoints, or logs. A container that never started has no logs, and that
+is not missing access. When a Deployment has no available replicas and the Pod
+status gives the reason, for example `ImagePullBackOff`, report the component
+as degraded with that reason, and list the missing logs separately.
 
 ## Failure branch index
 

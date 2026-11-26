@@ -31,9 +31,15 @@ stop without repairs or external delivery and record the reason locally.
    only in the configured `platformReadNamespaces`. Include node, scheduling,
    storage, API health, and optional diagnostic APIs when relevant. Judge each
    component from its rollout state, readiness, endpoints, Events, and bounded
-   logs. By default, your Pod's egress policy blocks requests to platform
-   Services and to the public host name, so a failed request from it is not
-   evidence. A component that you cannot read is unknown, not healthy.
+   logs. By default, your Pod's egress policy blocks the platform Services
+   other than the AI Gateway, and the public host name. A request that times
+   out, is refused or reset, or gets the Istio proxy's `upstream connect error`
+   did not reach the service and is not evidence. An answer that the service
+   returned itself, such as a 503 from an AI Gateway route, is evidence even
+   when the Pods are Ready. A component that you cannot read is unknown, not
+   healthy. A Deployment without available replicas whose Pod status gives the
+   reason, such as `ImagePullBackOff`, is degraded; list its missing logs
+   separately.
 
 For example, after resolving the exact variables from current API objects:
 
