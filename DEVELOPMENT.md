@@ -1373,14 +1373,31 @@ To move registries:
 1. Publish and qualify compatible images and charts at the new coordinates.
 2. In an authorized migration window, update the chart URL of the Operator.
 3. Update the `spec.agent.image` of each built-in Agent together with its
-   `spec.helm.version`. Use `<target-registry>/openclaw-gateway:<appVersion>`
-   or `<target-registry>/hermes-gateway:<appVersion>` from the selected chart.
+   `spec.helm.version`. Use the exact reference from the selected chart. Include
+   `@sha256:...` when its image default includes a digest. A digest-only
+   reference is an alternative only if the profile lists that exact reference.
 
 For Sandbox Agents, use the coordinated configuration change. Do not use a raw
 patch to bypass admission or lifecycle controls. Keep Custom images and
 explicitly qualified digest pins, unless their owners authorize a separate
 migration. A registry change does not show that the images of the two
 registries are equivalent.
+
+For governed Hermes and OpenClaw Agents, native admission checks a changed
+explicit image against the requested chart before the API stores the update.
+An unqualified pin is refused; the previous Agent generation remains in
+effect. A chart lookup failure refuses that update with a retryable dependency
+error. A version-only upgrade still uses the Operator's deployed-image check.
+Policy changes, suspension and deletion do not depend on this registry lookup.
+
+The admission Pods need HTTPS access to the configured runtime chart registry
+for these image updates. For a private chart, set
+`sandboxAdmission.chartPullSecretName` to a chart-read-only Docker registry
+Secret in the Operator namespace. Admission does not inherit
+`acrDockerSecret` or any Agent's image pull credentials.
+The webhook reads one Helm chart layer, not the Agent image. Its limits are
+64 KiB for the OCI manifest, 4 MiB for the compressed chart and 8 MiB
+after expansion. An unreadable or oversized chart does not authorize a write.
 
 ### Release-agent build storage
 

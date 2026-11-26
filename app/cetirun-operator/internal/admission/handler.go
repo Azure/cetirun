@@ -5,6 +5,7 @@ package sandboxadmission
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/cetiadmin"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
@@ -37,6 +39,8 @@ const (
 
 type Handler struct {
 	reader            client.Reader
+	imageProfile      func(context.Context, string, string) (agents.Profile, error)
+	profileReads      chan struct{}
 	config            Config
 	registrations     map[api.SandboxType]sandbox.Registration
 	platformSource    sandboxplatform.Source
@@ -60,7 +64,7 @@ func NewHandler(reader client.Reader, config Config) (*Handler, error) {
 		config.TeamAssignments[i].Users = slices.Clone(config.TeamAssignments[i].Users)
 		config.TeamAssignments[i].Groups = slices.Clone(config.TeamAssignments[i].Groups)
 	}
-	handler := &Handler{reader: reader, config: config, requestTimeout: DefaultPodRequestTimeout}
+	handler := &Handler{reader: reader, config: config, requestTimeout: DefaultPodRequestTimeout, profileReads: make(chan struct{}, 4)}
 	if config.PlatformConfigMapName != "" {
 		handler.platformSource = &sandboxplatform.KubernetesSource{
 			APIReader: reader, Namespace: config.PlatformNamespace, Name: config.PlatformConfigMapName,
@@ -281,7 +285,34 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 	if !response.Allowed {
 		return response
 	}
-	return h.validateAgentAuthorization(request, agent, old, team, resources)
+	response = h.validateAgentAuthorization(request, agent, old, team, resources)
+	if !response.Allowed || !h.config.NativeExecution || controllerRuntimeUpdate || old == nil ||
+		(agent.Spec.Agent.Type != api.AgentTypeHermes && agent.Spec.Agent.Type != api.AgentTypeOpenClaw) ||
+		agent.Spec.Agent.Image == nil || (old.Spec.Agent.Image != nil && *agent.Spec.Agent.Image == *old.Spec.Agent.Image) {
+		return response
+	}
+	// A rejected write leaves the old generation and its authorization intact.
+	// Policy changes, shutdown and unrelated updates never wait for a registry.
+	if h.imageProfile == nil {
+		return dependencyError(ctx, fmt.Errorf("native image profile reader is not configured"))
+	}
+	select {
+	case h.profileReads <- struct{}{}:
+		defer func() { <-h.profileReads }()
+	default:
+		return dependencyError(ctx, fmt.Errorf("native image profile reader is busy"))
+	}
+	profile, err := h.imageProfile(ctx, agent.Spec.Helm.Version, string(agent.Spec.Agent.Type))
+	if errors.Is(err, agents.ErrImageProfileVersion) {
+		return admission.Denied(agents.ErrImageProfileVersion.Error())
+	}
+	if err != nil {
+		return dependencyError(ctx, err)
+	}
+	if !profile.AllowsImage(*agent.Spec.Agent.Image) {
+		return admission.Denied(fmt.Sprintf("spec.agent.image is not qualified for the selected harness profile; the chart default is %q", profile.Image))
+	}
+	return response
 }
 
 func (h *Handler) agentAuthorizationResources(ctx context.Context, operation admissionv1.Operation, agent *api.Agent, team *api.Team) (sandbox.Resources, admission.Response) {

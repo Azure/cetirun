@@ -208,6 +208,9 @@ sandboxAdmission:
   # tls.key. The certificate must cover cetirun-sandbox-admission.<namespace>.svc.
   # This chart does not issue certificates or install cert-manager.
   tlsSecretName: ""
+  # -- Optional chart-read-only dockerconfigjson Secret for native built-in image updates.
+  # Admission does not inherit the Operator's acrDockerSecret or Agent pull credentials.
+  chartPullSecretName: ""
   # -- Base64-encoded PEM CA bundle supplied by the platform issuer. Required
   # when enforce=true. Helm checks encoding/framing, not certificate trust,
   # expiry, CA constraints, or the serving certificate's subject names.

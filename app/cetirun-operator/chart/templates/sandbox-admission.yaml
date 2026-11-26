@@ -1,5 +1,9 @@
 {{- $sandboxSources := include "cetirun-operator.sandboxSourcesConfig" . -}}
 {{- $admission := .Values.sandboxAdmission -}}
+{{- $chartPullSecret := dig "chartPullSecretName" "" $admission -}}
+{{- if or (not (kindIs "string" $chartPullSecret)) (and $chartPullSecret (or (gt (len $chartPullSecret) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $chartPullSecret)))) -}}
+{{- fail "sandboxAdmission.chartPullSecretName must be empty or a valid Secret name" -}}
+{{- end -}}
 {{- $cetiAdmin := include "cetirun-operator.cetiadminAdmission" . -}}
 {{- $placementName := $admission.placementConfigMapName -}}
 {{- $coordinationName := get $admission "coordinationConfigMapName" -}}
@@ -394,6 +398,16 @@ spec:
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=:8080
             - --leader-elect=false
+            {{- if .Values.sandboxSources.nativeExecution }}
+            - --chart-repo-url={{ include "cetirun-operator.chartRepoURL" . }}
+            - --chart-version={{ include "cetirun-operator.chartVersion" . }}
+            {{- with .Values.cetirun.chart.digest }}
+            - --chart-digest={{ . }}
+            {{- end }}
+            {{- if $chartPullSecret }}
+            - --admission-chart-credentials=/var/run/cetirun-chart-pull/config.json
+            {{- end }}
+            {{- end }}
             {{- if $admission.podsEnabled }}
             - {{ printf "--admission-pod-state-namespace=%s" .Values.namespace | quote }}
             {{- if $admission.enforce }}
@@ -441,6 +455,11 @@ spec:
             - name: admission-tls
               mountPath: /var/run/cetirun-admission
               readOnly: true
+            {{- if and .Values.sandboxSources.nativeExecution $chartPullSecret }}
+            - name: chart-pull
+              mountPath: /var/run/cetirun-chart-pull
+              readOnly: true
+            {{- end }}
       volumes:
         - name: admission-tls
           secret:
@@ -451,6 +470,15 @@ spec:
                 path: tls.crt
               - key: tls.key
                 path: tls.key
+        {{- if and .Values.sandboxSources.nativeExecution $chartPullSecret }}
+        - name: chart-pull
+          secret:
+            secretName: {{ $chartPullSecret | quote }}
+            defaultMode: 0440
+            items:
+              - key: .dockerconfigjson
+                path: config.json
+        {{- end }}
       {{- with $admission.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

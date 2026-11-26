@@ -534,6 +534,12 @@ profile's qualification rules. Custom images stay pinned under their image
 approval checks. Agent Policy and lifecycle authorization still apply. An
 operator upgrade alone does not change an Agent's pinned chart or image.
 
+When you change a Sandbox Hermes or OpenClaw image, native admission checks
+the exact reference against the requested chart. If the default includes a
+digest, a tag alone is not that default. A rejected update leaves the previous
+Agent generation in place. It does not prevent the Operator from stopping a
+workload whose policy no longer authorizes it.
+
 Treat model, chart, credential, and agent configuration changes as possibly
 disruptive. Before you change users' Agents, review the backups and test
 the selected configuration.

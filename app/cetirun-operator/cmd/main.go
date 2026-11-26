@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -33,6 +34,7 @@ import (
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	sandboxadmission "github.com/Azure/CetiRun/app/cetirun-operator/internal/admission"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/cetiadmin"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
@@ -71,6 +73,7 @@ func main() {
 	var cetiAdminOutputDir string
 	var cetiAdminHook cetiadmin.HookOptions
 	var admissionCertDir string
+	var admissionChartCredentials string
 	var admissionPort int
 	var admissionPodStateNamespace string
 	var admissionPodTimeout time.Duration
@@ -82,6 +85,7 @@ func main() {
 	flag.StringVar(&cetiAdminHook.ExpectedConfigHash, "cetiadmin-config-hash", "", "SHA256 of the hook's rendered config.json.")
 	flag.DurationVar(&cetiAdminHook.Timeout, "cetiadmin-timeout", 10*time.Minute, "CetiAdmin lifecycle hook deadline.")
 	flag.StringVar(&admissionCertDir, "admission-cert-dir", "", "Directory containing platform-issued tls.crt and tls.key for Sandbox admission.")
+	flag.StringVar(&admissionChartCredentials, "admission-chart-credentials", "", "Optional chart-read-only registry credential file for native image updates.")
 	flag.IntVar(&admissionPort, "admission-port", 9443, "Sandbox admission HTTPS port.")
 	flag.StringVar(&admissionPodStateNamespace, "admission-pod-state-namespace", "", "Protected controller state namespace for optional Sandbox Pod admission.")
 	flag.DurationVar(&admissionPodTimeout, "admission-pod-timeout", sandboxadmission.DefaultPodRequestTimeout, "Total Sandbox admission validation budget; must be shorter than the API-server webhook timeout.")
@@ -138,6 +142,17 @@ func main() {
 		}
 		return
 	}
+	if url := os.Getenv("CETIRUN_CHART_REPO_URL"); url != "" {
+		chartRepoURL = url
+	}
+	if version := os.Getenv("CETIRUN_CHART_VERSION"); version != "" {
+		chartVersion = version
+	}
+	if digest := os.Getenv("CETIRUN_CHART_DIGEST"); digest != "" {
+		chartDigest = digest
+	}
+	chartRef := helmclient.ChartReference{RepoURL: chartRepoURL, Version: chartVersion, Digest: chartDigest}
+	chartRegistry := runtimeRegistry(chartRepoURL)
 	if mode == "sandbox-admission" {
 		config, err := sandboxadmission.ParseConfig(os.Getenv("CETIRUN_SANDBOX_ADMISSION"))
 		if err != nil {
@@ -146,10 +161,21 @@ func main() {
 		}
 		setupLog.Info("Starting Sandbox configuration admission; runtime execution remains disabled",
 			"version", buildinfo.Version, "commit", buildinfo.Commit)
-		if err := sandboxadmission.Run(ctrl.SetupSignalHandler(), ctrl.GetConfigOrDie(), config, sandboxadmission.ServerOptions{
+		options := sandboxadmission.ServerOptions{
 			CertDirectory: admissionCertDir, Port: admissionPort, MetricsAddress: metricsAddr, ProbeAddress: probeAddr,
 			PodStateNamespace: admissionPodStateNamespace, PodRequestTimeout: admissionPodTimeout,
-		}); err != nil {
+		}
+		if config.NativeExecution {
+			if err := chartRef.Validate(); err != nil {
+				setupLog.Error(err, "Invalid native admission chart reference")
+				os.Exit(1)
+			}
+			chartClient := helmclient.NewClient(chartRef)
+			options.ImageProfile = func(ctx context.Context, version, kind string) (agents.Profile, error) {
+				return chartClient.ReadImageProfile(ctx, version, kind, chartRegistry, admissionChartCredentials)
+			}
+		}
+		if err := sandboxadmission.Run(ctrl.SetupSignalHandler(), ctrl.GetConfigOrDie(), config, options); err != nil {
 			setupLog.Error(err, "Sandbox admission server failed")
 			os.Exit(1)
 		}
@@ -161,27 +187,10 @@ func main() {
 	}
 	setupLog.Info("Starting CetiRun Operator", "version", buildinfo.Version, "commit", buildinfo.Commit)
 
-	// Support environment variable overrides for chart configuration.
-	if url := os.Getenv("CETIRUN_CHART_REPO_URL"); url != "" {
-		chartRepoURL = url
-	}
-	if version := os.Getenv("CETIRUN_CHART_VERSION"); version != "" {
-		chartVersion = version
-	}
-	if digest := os.Getenv("CETIRUN_CHART_DIGEST"); digest != "" {
-		chartDigest = digest
-	}
 	if model := os.Getenv("CETIRUN_DEFAULT_MODEL"); model != "" {
 		defaultModel = model
 	}
 
-	chartRef := helmclient.ChartReference{
-		RepoURL: chartRepoURL,
-		Version: chartVersion,
-		Digest:  chartDigest,
-	}
-	// Runtime images share the chart's registry prefix, not just its hostname.
-	chartRegistry := runtimeRegistry(chartRepoURL)
 	if !memoryEnabled {
 		memoryImage = ""
 	}

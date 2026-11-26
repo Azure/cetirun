@@ -76,6 +76,15 @@ func TestInspectChartEndsWhenTheRegistryStalls(t *testing.T) {
 	}
 }
 
+func TestNativeImageProfileHonorsAdmissionDeadline(t *testing.T) {
+	client := NewClient(ChartReference{RepoURL: "oci://" + stalledRegistry(t) + "/helm/cetirun", Version: "1.0.0"})
+	ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+	defer cancel()
+	if _, err := client.ReadImageProfile(ctx, "1.0.0", "hermes", "registry.example.com", ""); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("stalled image update did not observe the webhook deadline: %v", err)
+	}
+}
+
 // Like Helm's default registry transport, the inspection transport retries
 // over plain HTTP when an HTTPS request reaches a plain HTTP registry, and
 // keeps using HTTP.

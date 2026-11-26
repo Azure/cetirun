@@ -17,6 +17,7 @@ import (
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplacement"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -30,6 +31,7 @@ import (
 )
 
 type ServerOptions struct {
+	ImageProfile      func(context.Context, string, string) (agents.Profile, error)
 	CertDirectory     string
 	Host              string
 	Port              int
@@ -95,6 +97,7 @@ func Run(ctx context.Context, restConfig *rest.Config, config Config, options Se
 	if err != nil {
 		return err
 	}
+	handler.imageProfile = options.ImageProfile
 	if options.PodRequestTimeout != 0 {
 		if options.PodRequestTimeout <= 0 || options.PodRequestTimeout >= 30*time.Second {
 			return fmt.Errorf("Sandbox admission request timeout must be positive and less than 30 seconds")

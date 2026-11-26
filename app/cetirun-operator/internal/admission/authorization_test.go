@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	jsonpatch "github.com/evanphx/json-patch/v5"
@@ -465,6 +466,62 @@ func TestNativeControllerImageUpgradeKeepsAuthorizationBoundaries(t *testing.T) 
 			requireResponse(t, response, allowed, "")
 			if response.Allowed && next.Annotations[sandboxbinding.AuthorizationAnnotation] != f.agent.Annotations[sandboxbinding.AuthorizationAnnotation] {
 				t.Fatal("image migration changed durable policy authorization")
+			}
+		})
+	}
+}
+
+func TestNativeExplicitImageUpdateRequiresTargetProfile(t *testing.T) {
+	for _, kind := range []api.AgentType{api.AgentTypeHermes, api.AgentTypeOpenClaw} {
+		t.Run(string(kind), func(t *testing.T) {
+			f := assignedFixture(t)
+			f.handler.config.NativeExecution = true
+			f.policy.Spec.Harnesses.Allowed = []api.AgentType{kind}
+			if err := f.client.Update(t.Context(), f.policy); err != nil {
+				t.Fatal(err)
+			}
+			f.agent.Spec.Agent.Type = kind
+			stampFixtureAuthorization(t, f)
+			repo := "registry.example.com/" + string(kind)
+			f.agent.Spec.Helm.Version = "1.0.0"
+			f.agent.Spec.Agent.Image = ptr.To(repo + ":1.0.0")
+			next := f.agent.DeepCopy()
+			next.Spec.Helm.Version = "2.0.0"
+			tag, digest := repo+":2.0.0", "@sha256:"+strings.Repeat("a", 64)
+			profile := agents.Profile{Image: tag + digest, QualifiedImages: []string{repo + digest, repo + ":also-qualified"}}
+			lookups := 0
+			f.handler.imageProfile = func(_ context.Context, version, typ string) (agents.Profile, error) {
+				lookups++
+				if version != next.Spec.Helm.Version || typ != string(kind) {
+					t.Fatalf("read wrong chart profile: %q %q", version, typ)
+				}
+				return profile, nil
+			}
+			for _, image := range []string{tag, tag + digest, repo + digest, repo + ":also-qualified", repo + "@sha256:" + strings.Repeat("b", 64)} {
+				next.Spec.Agent.Image = &image
+				response := f.handler.Validate(t.Context(), requestFor(t, admissionv1.Update, next, f.agent, "member"))
+				allowed := image == tag+digest || image == repo+digest || image == repo+":also-qualified"
+				message := ""
+				if !allowed {
+					message = profile.Image
+				}
+				requireResponse(t, response, allowed, message)
+			}
+			before := lookups
+			requireResponse(t, f.handler.Validate(t.Context(), requestFor(t, admissionv1.Update, next, f.agent, "outsider")), false, "")
+			next.Spec.Agent.Image = f.agent.Spec.Agent.Image // chart-only default upgrade uses deployed-image provenance
+			requireResponse(t, f.handler.Validate(t.Context(), requestFor(t, admissionv1.Update, next, f.agent, "member")), true, "")
+			if lookups != before {
+				t.Fatal("unrelated or unauthorized updates performed chart I/O")
+			}
+			next.Spec.Agent.Image = ptr.To(tag + digest)
+			f.handler.imageProfile = func(context.Context, string, string) (agents.Profile, error) {
+				return agents.Profile{}, errors.New("synthetic registry read failure")
+			}
+			response := f.handler.Validate(t.Context(), requestFor(t, admissionv1.Update, next, f.agent, "member"))
+			requireResponse(t, response, false, "dependencies are unavailable")
+			if response.Result.Code != 503 {
+				t.Fatalf("expected retryable dependency error, got %d", response.Result.Code)
 			}
 		})
 	}
