@@ -122,7 +122,24 @@ the error and ignores what a failure hook returns. The provider's own message
 goes to the Gateway's log. LiteLLM then keeps the deployment in cooldown for some
 seconds and refuses requests for the model with a 429 that does not say why;
 when the router's record of each such cooldown has the provider's 401, the
-answer is the same 502.
+answer is the same 502. Its OpenAI error code, cetirun_provider_credentials, or
+cetirun_copilot_credentials for an Agent's GitHub Copilot route, tells it from
+other upstream failures: the CetiRun Agent images stop the turn at once for it,
+OpenClaw with its own text for the code and Hermes with its own text and this
+message in the details, where both would otherwise retry a 502 for minutes. It
+says x-should-retry: false, which OpenAI's SDKs follow.
+
+LiteLLM asks the upstream of an OpenAI-compatible deployment that has an
+api_base, such as one with the provider openai or hosted_vllm, for the token
+limits of its models every five minutes, and forgets them ten minutes after
+the upstream last answered. When
+the upstream refuses the Gateway's credentials or does not answer, the limits
+fall back to LiteLLM's own table, at once in a replica that starts meanwhile.
+The CetiRun operator puts the limits into each Agent's configuration, so it
+restarted every Agent with the model, and again when the upstream answered.
+The guard keeps the limits an upstream advertised last while it does not
+answer, in the replica and in the Gateway's Redis, which a replica that starts
+meanwhile reads. It forgets them when the upstream answers without them.
 
 Encrypted reasoning without the Gateway's mark is removed from Responses API
 requests while encrypted content affinity is on for the model. A client that
@@ -191,18 +208,20 @@ sight. LiteLLM's own rule decides, read from LiteLLM, and each change is logged.
 import asyncio
 import base64
 import datetime
+import hashlib
 import importlib
 import inspect
 import json
 import math
 import re
 import sys
+from types import MappingProxyType
 
 import litellm
 from fastapi import HTTPException
 from litellm._logging import verbose_proxy_logger
 from litellm.integrations.custom_logger import CustomLogger
-from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy._types import ProxyException, UserAPIKeyAuth
 
 # A request body field that makes LiteLLM log that request's content.
 DEBUG_PARAMETER = "litellm_request_debug"
@@ -524,6 +543,140 @@ def install_savings_provider_lookup():
     return True
 
 
+# LiteLLM's module that asks an OpenAI-compatible upstream for the token limits of its models, and the key
+# under which it keeps the upstream's last listing in its cache (get_openai_compatible_model_info).
+UPSTREAM_INFO_MODULE = "litellm.llms.openai_like.model_info"
+UPSTREAM_LISTING_KEY = "upstream_model_info:"
+# The key of the limits an upstream advertised last for a model in the Gateway's Redis: this prefix and a
+# hash of the upstream's models URL and the model. Each answer keeps them 30 more days.
+UPSTREAM_LIMITS_KEY = "cetirun:upstream-limits:"
+UPSTREAM_LIMITS_TTL = 30 * 24 * 3600
+# The limits each upstream advertised last, in this replica, and the upstreams whose last request failed.
+KEPT_UPSTREAM_LIMITS = {}
+FAILED_UPSTREAMS = set()
+
+
+def upstream_limits_key(module, api_base, model):
+    url = module.add_path_to_api_base(api_base, "/v1/models")
+    return UPSTREAM_LIMITS_KEY + hashlib.sha256(f"{url}\n{model}".encode("utf-8")).hexdigest()
+
+
+def upstream_answered(module, cache, api_base, headers):
+    """Whether the upstream answered the last request for its models. LiteLLM keeps the listing it read,
+    and an empty listing after a request that failed, under the URL and the request's headers."""
+    url = module.add_path_to_api_base(api_base, "/v1/models")
+    key = UPSTREAM_LISTING_KEY + hashlib.sha256(json.dumps((url, sorted(headers.items()))).encode()).hexdigest()
+    listing = cache.get_cache(key)
+    return isinstance(listing, module._ModelList) and bool(listing.data)
+
+
+def token_limits(value):
+    """The token limits in a stored value, or None for anything else."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    if not isinstance(value, dict) or not value:
+        return None
+    if not all(isinstance(name, str) and isinstance(limit, int) and not isinstance(limit, bool) and limit > 0
+               for name, limit in value.items()):
+        return None
+    return dict(value)
+
+
+def shared_redis():
+    """The proxy's Redis, which the Gateway's replicas share (its shared health checks use it), or None."""
+    return getattr(sys.modules.get(PROXY_SERVER_MODULE), "redis_usage_cache", None)
+
+
+async def remember_upstream_limits(key, limits):
+    KEPT_UPSTREAM_LIMITS[key] = dict(limits)
+    redis = shared_redis()
+    if redis is not None:
+        try:
+            await redis.async_set_cache(key, dict(limits), ttl=UPSTREAM_LIMITS_TTL)
+        except Exception:  # noqa: BLE001  # the replica keeps them
+            pass
+
+
+async def recall_upstream_limits(key):
+    if key in KEPT_UPSTREAM_LIMITS:
+        return KEPT_UPSTREAM_LIMITS[key]
+    redis = shared_redis()
+    if redis is None:
+        return None
+    try:
+        return token_limits(await redis.async_get_cache(key))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def forget_upstream_limits(key):
+    KEPT_UPSTREAM_LIMITS.pop(key, None)
+    redis = shared_redis()
+    if redis is not None:
+        try:
+            await redis.async_delete_cache(key)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def install_kept_upstream_limits():
+    """Keep the token limits an OpenAI-compatible upstream advertised last while it does not answer.
+
+    LiteLLM 1.110.1 asks the upstream of each such deployment for the limits of its models every five
+    minutes, and forgets them ten minutes after the last answer; meanwhile, and in a replica that starts
+    meanwhile, the deployment has the limits of LiteLLM's own table. The CetiRun operator writes the limits
+    into the configuration of each Agent with the model, so a refused key restarted every such Agent twice:
+    when the upstream stopped answering, and when it answered again. The replacement returns the limits the
+    upstream advertised last when its request fails, from this replica or from the Gateway's Redis, and the
+    router keeps them as it keeps an answer. It forgets them when the upstream answers without them. The
+    router imports the function by name at each refresh, so replacing the module's function is enough.
+    """
+    try:
+        module = importlib.import_module(UPSTREAM_INFO_MODULE)
+    except Exception:  # noqa: BLE001
+        return False
+    current = getattr(module, "get_openai_compatible_model_info", None)
+    if current is None or not hasattr(module, "_ModelList") or not hasattr(module, "add_path_to_api_base"):
+        return False
+    if getattr(current, "cetirun_kept_limits", False):
+        return True
+    original = current
+
+    async def get_openai_compatible_model_info(*, model, api_base, headers, client, cache):
+        limits = await original(model=model, api_base=api_base, headers=headers, client=client, cache=cache)
+        try:
+            key = upstream_limits_key(module, api_base, model)
+            if limits:
+                FAILED_UPSTREAMS.discard(key)
+                await remember_upstream_limits(key, limits)
+                return limits
+            if upstream_answered(module, cache, api_base, headers):
+                await forget_upstream_limits(key)
+                return limits
+            kept = await recall_upstream_limits(key)
+            if not kept:
+                return limits
+            if key not in FAILED_UPSTREAMS:
+                FAILED_UPSTREAMS.add(key)
+                verbose_proxy_logger.warning(
+                    "CetiRun guard: the upstream %s did not answer the request for the token limits of the model %s; "
+                    "kept the limits it advertised last: %s", module.add_path_to_api_base(api_base, "/v1/models"),
+                    model, kept)
+            # In this replica only: the time in Redis counts from the upstream's last answer.
+            KEPT_UPSTREAM_LIMITS[key] = dict(kept)
+            return MappingProxyType(dict(kept))
+        except Exception:  # noqa: BLE001  # a refresh never fails on this lookup
+            return limits
+
+    get_openai_compatible_model_info.cetirun_kept_limits = True
+    get_openai_compatible_model_info.cetirun_original = original
+    module.get_openai_compatible_model_info = get_openai_compatible_model_info
+    return True
+
+
 # A deployment ID and provider content to call the replaced functions with.
 EXERCISE_MODEL = "cetirun-exercise"
 EXERCISE_CONTENT = "gAAAAexercise"
@@ -603,6 +756,83 @@ def exercise_credentials_cooldown():
     return found == [None, ("litellm_proxy",)]
 
 
+ROUTER_API_MODULE = "litellm.router_api"
+REQUEST_PROCESSING_MODULE = "litellm.proxy.common_request_processing"
+
+
+class ExerciseUpstream:
+    """The models endpoint of an OpenAI-compatible upstream for the build check: one listing, or a failed
+    request for None."""
+
+    class Response:
+        def __init__(self, listing):
+            self.content = json.dumps(listing).encode("utf-8")
+
+        def raise_for_status(self):
+            return None
+
+    def __init__(self, listing):
+        self.listing = listing
+
+    async def get(self, *args, **kwargs):
+        if self.listing is None:
+            raise ConnectionError(EXERCISE_MODEL)
+        return self.Response(self.listing)
+
+
+def exercise_kept_upstream_limits():
+    """Whether LiteLLM's router takes an upstream's token limits through the replaced function, so a router
+    that starts while the upstream does not answer has the limits it advertised last, and one that starts
+    after the upstream answered without the model has none."""
+    router_class = importlib.import_module(ROUTER_MODULE).Router
+    change_set = importlib.import_module(ROUTER_API_MODULE).ChangeSet
+    advertised = {"max_input_tokens": 1000, "max_output_tokens": 100}
+    found = []
+    for listing in ({"data": [{"id": EXERCISE_MODEL, **advertised}]}, None, {"data": [{"id": "other"}]}, None):
+        router = router_class(model_list=[{
+            "model_name": EXERCISE_MODEL, "model_info": {"id": EXERCISE_MODEL},
+            "litellm_params": {"model": f"openai/{EXERCISE_MODEL}", "api_base": "http://127.0.0.1:9/v1",
+                               "api_key": EXERCISE_MODEL}}])
+        asyncio.run(router.aapply(change_set(refresh_model_info=True, refresh_client=ExerciseUpstream(listing))))
+        found.append(dict(router.registry().discovered_model_info(EXERCISE_MODEL)))
+    return found == [advertised, advertised, {}, {}]
+
+
+def exercise_credentials_answer():
+    """Whether the proxy answers a refusal of the Gateway's credentials as the failure hook means it: it
+    raises the hook's answer as it is, and the handler Starlette finds for the answer writes its status, the
+    Gateway's error code, the message and x-should-retry: false."""
+    processing = importlib.import_module(REQUEST_PROCESSING_MODULE)
+    proxy = importlib.import_module(PROXY_SERVER_MODULE)
+    lookup = importlib.import_module("starlette._exception_handler")._lookup_exception_handler
+    request_class = importlib.import_module("starlette.requests").Request
+    answer = credentials_refusal_answer(("openai",), EXERCISE_MODEL, None)
+
+    class Logging:
+        async def post_call_failure_hook(self, **kwargs):
+            return answer
+
+        async def post_call_response_headers_hook(self, **kwargs):
+            return None
+
+    processor = processing.ProxyBaseLLMRequestProcessing(data={"model": EXERCISE_MODEL})
+    try:
+        asyncio.run(processor.handle_llm_api_exception(e=RuntimeError(EXERCISE_MODEL), user_api_key_dict=UserAPIKeyAuth(),
+                                                       proxy_logging_obj=Logging()))
+        raised = None
+    except Exception as error:  # noqa: BLE001
+        raised = error
+    if raised is not answer:
+        return False
+    handler = lookup(proxy.app.exception_handlers, answer)
+    request = request_class({"type": "http", "method": "POST", "path": "/v1/chat/completions", "headers": [],
+                             "query_string": b""})
+    response = asyncio.run(handler(request, answer))
+    error = json.loads(response.body).get("error") or {}
+    return (response.status_code == PROVIDER_CREDENTIALS_STATUS and error.get("code") == PROVIDER_CREDENTIALS_CODE
+            and error.get("message") == answer.detail and response.headers.get("x-should-retry") == "false")
+
+
 def exercise_patches():
     """Each replaced LiteLLM function, called the way LiteLLM calls it, and the router's records that the
     failure hook reads: True for what works, False or the error otherwise. The image build requires True for
@@ -616,13 +846,20 @@ def exercise_patches():
         "router_alias_listing": exercise_router_alias_listing,
         "savings_provider_lookup": exercise_savings_provider_lookup,
         "credentials_cooldown": exercise_credentials_cooldown,
+        "credentials_answer": exercise_credentials_answer,
+        "kept_upstream_limits": exercise_kept_upstream_limits,
     }
     results = {}
-    for name, exercise in exercises.items():
-        try:
-            results[name] = bool(exercise())
-        except Exception as error:  # noqa: BLE001
-            results[name] = f"{type(error).__name__}: {error}"
+    # The exercises fail requests on purpose; their log lines would read as failures of the build.
+    disabled, verbose_proxy_logger.disabled = verbose_proxy_logger.disabled, True
+    try:
+        for name, exercise in exercises.items():
+            try:
+                results[name] = bool(exercise())
+            except Exception as error:  # noqa: BLE001
+                results[name] = f"{type(error).__name__}: {error}"
+    finally:
+        verbose_proxy_logger.disabled = disabled
     return results
 
 
@@ -1442,11 +1679,40 @@ def replace_message(error, message):
 # The status of the Gateway's answer when a provider refused the Gateway's own credentials: the
 # upstream failed, not the client's request or key.
 PROVIDER_CREDENTIALS_STATUS = 502
+# Its OpenAI error codes, by which a client tells it from other upstream failures: a provider of a shared
+# model, or an Agent's GitHub Copilot route, refused. The type is the one LiteLLM gives a 502. OpenAI's
+# SDKs do not retry an answer with x-should-retry: false.
+PROVIDER_CREDENTIALS_CODE = "cetirun_provider_credentials"
+COPILOT_CREDENTIALS_CODE = "cetirun_copilot_credentials"
+PROVIDER_CREDENTIALS_TYPE = "internal_server_error"
+NO_RETRY = {"x-should-retry": "false"}
 # The providers through which an Agent's GitHub Copilot route reaches GitHub: its Copilot proxy,
 # or GitHub Copilot itself.
 COPILOT_ROUTE_PROVIDERS = frozenset(("litellm_proxy", "github_copilot"))
 # The status that LiteLLM's router records for a deployment that it cooled down after a provider's 401.
 CREDENTIALS_REFUSED_STATUS = "401"
+
+
+class ProviderCredentialsRefused(ProxyException, HTTPException):
+    """The Gateway's answer when a provider refused the Gateway's credentials: 502, one of the Gateway's
+    OpenAI error codes, and x-should-retry: false.
+
+    LiteLLM takes a failure hook's answer only when it is an HTTPException, and it writes the status as the
+    error code of an HTTPException. An answer that is a ProxyException it raises as it is, with its headers,
+    and Starlette finds the proxy's handler for ProxyException first for this class: that handler writes
+    to_dict() as the error. So the answer is both. ProxyException.__init__ would hand its message to
+    HTTPException.__init__ here, so the fields of both are set directly.
+    """
+
+    def __init__(self, detail, code=PROVIDER_CREDENTIALS_CODE):
+        Exception.__init__(self, detail)
+        self.status_code, self.detail, self.headers = PROVIDER_CREDENTIALS_STATUS, detail, dict(NO_RETRY)
+        self.message, self.type, self.param = detail, PROVIDER_CREDENTIALS_TYPE, None
+        self.code, self.openai_code = str(PROVIDER_CREDENTIALS_STATUS), code
+        self.provider_specific_fields = None
+
+    def to_dict(self):
+        return {"message": self.message, "type": self.type, "param": self.param, "code": self.openai_code}
 
 
 def credentials_refusal_answer(providers, model, caller):
@@ -1455,13 +1721,13 @@ def credentials_refusal_answer(providers, model, caller):
     agent = operator_groups(caller) is not None
     key = "The key of this Agent" if agent else "Your key"
     if agent and all(provider in COPILOT_ROUTE_PROVIDERS for provider in providers):
-        detail = (f"CetiRun AI Gateway: the GitHub Copilot route of {named} refused its credentials. {key} is not "
-                  "the cause. The owner of this Agent can sign in to GitHub Copilot again in the Portal. If that "
-                  "does not help, a CetiRun administrator must examine the route.")
-    else:
-        detail = (f"CetiRun AI Gateway: the provider of {named} refused the credentials of the AI Gateway. {key} is "
-                  "not the cause. A CetiRun administrator must fix the provider configuration of the model.")
-    return HTTPException(status_code=PROVIDER_CREDENTIALS_STATUS, detail=detail)
+        return ProviderCredentialsRefused(
+            f"CetiRun AI Gateway: the GitHub Copilot route of {named} refused its credentials. {key} is not the "
+            "cause. The owner of this Agent can sign in to GitHub Copilot again in the Portal. If that does not "
+            "help, a CetiRun administrator must examine the route.", COPILOT_CREDENTIALS_CODE)
+    return ProviderCredentialsRefused(
+        f"CetiRun AI Gateway: the provider of {named} refused the credentials of the AI Gateway. {key} is not the "
+        "cause. A CetiRun administrator must fix the provider configuration of the model.")
 
 
 def provider_credentials_refusal(error, request_data, caller):
@@ -1742,5 +2008,6 @@ PATCHED = {
     "failover_past_affinity": install_failover_past_affinity(),
     "router_alias_listing": install_router_alias_listing(),
     "savings_provider_lookup": install_savings_provider_lookup(),
+    "kept_upstream_limits": install_kept_upstream_limits(),
 }
 hide_router_details()

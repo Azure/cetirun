@@ -2254,7 +2254,36 @@ these actions:
   (`all_deployments_in_cooldown`) that does not say why. When the router
   recorded each deployment's cooldown after such a refusal, the AI Gateway
   answers these requests with the same 502. A cooldown after another error
-  keeps LiteLLM's 429.
+  keeps LiteLLM's 429. The error has the OpenAI error code
+  `cetirun_provider_credentials`, or `cetirun_copilot_credentials` for an
+  Agent's GitHub Copilot route. The answer has the header
+  `x-should-retry: false`, which OpenAI's SDKs follow. The CetiRun Agent images
+  recognize the codes and end the turn instead of retrying it. OpenClaw shows
+  its own text for the code, which says who can fix the credentials. The
+  OpenClaw image changes this with the same script as the budget text
+  (`agents/openclaw/compat/apply-gateway-budget.mjs`), which also changes
+  OpenClaw's check for errors that end a turn. Hermes shows its own error, with
+  this message in the details: the plugin `cetirun-gateway-errors` of the
+  Hermes image classifies the codes as errors that a retry does not fix.
+  Without the codes, OpenClaw retried a 502 for about 90 seconds and Hermes
+  for about five minutes. An Anthropic Messages answer keeps the Anthropic
+  error form (`api_error`), without a code.
+- It keeps the token limits that an OpenAI-compatible upstream advertised last,
+  while the upstream does not answer. LiteLLM asks the upstream of an
+  OpenAI-compatible deployment that has an `api_base`, such as one with the
+  provider `openai` or `hosted_vllm`, for the limits of its models
+  (`GET /v1/models`) every five minutes. These limits take the
+  place of the limits in LiteLLM's table. LiteLLM forgets them ten minutes
+  after the upstream last answered, and a replica that starts while the
+  upstream does not answer has only the table's limits. The CetiRun operator
+  writes the limits into the configuration of each Agent with the model. So a
+  refused key restarted each such Agent twice: when the upstream stopped
+  answering, and when it answered again. The AI Gateway keeps the limits in the
+  replica and in its Redis, for 30 days after the last answer, so a replica
+  that starts meanwhile uses them too. When the upstream answers without the
+  model, the AI Gateway forgets the limits. Limits that you set in the
+  `model_info` of a model (`max_input_tokens`, `max_output_tokens`) take
+  precedence over the upstream's.
 - It shortens the request that a router with a jev classifier sends to its
   decision model. The limit in bytes starts at the number of tokens that the
   model takes. This number is the smallest `model_info.max_input_tokens` of

@@ -16,6 +16,7 @@ import base64
 import collections
 import copy
 import datetime
+import hashlib
 import importlib.util
 import json
 import logging
@@ -38,7 +39,7 @@ class CustomLogger:
 class Key:
     """Stands in for LiteLLM's UserAPIKeyAuth, the key object the proxy authenticated."""
 
-    def __init__(self, models, team_id=None, key_alias=None, token=None, max_budget=None, budget_reset_at=None):
+    def __init__(self, models=None, team_id=None, key_alias=None, token=None, max_budget=None, budget_reset_at=None):
         self.models = models
         self.team_id = team_id
         self.key_alias = key_alias
@@ -57,6 +58,96 @@ class HTTPException(Exception):
         self.headers = headers
 
 
+class ProxyException(Exception):
+    """Shaped like LiteLLM's: an OpenAI error, whose code is the status."""
+
+    def __init__(self, message, type, param, code=None, headers=None, openai_code=None, provider_specific_fields=None):
+        super().__init__(message)
+        self.message, self.type, self.param, self.code = str(message), type, param, str(code)
+        self.headers, self.openai_code = headers or {}, openai_code or code
+        self.provider_specific_fields = provider_specific_fields
+
+    def to_dict(self):
+        return {"message": self.message, "type": self.type, "param": self.param, "code": self.code}
+
+
+UPSTREAM_INFO = "litellm.llms.openai_like.model_info"
+
+
+class ModelList:
+    """Stands in for LiteLLM's _ModelList, the listing of an upstream's models endpoint."""
+
+    def __init__(self, data=()):
+        self.data = tuple(data)
+
+
+class ListingCache:
+    """Stands in for LiteLLM's InMemoryCache."""
+
+    def __init__(self):
+        self.values = {}
+
+    def get_cache(self, key):
+        return self.values.get(key)
+
+    def set_cache(self, key, value, ttl=None):
+        self.values[key] = value
+
+
+def add_path_to_api_base(api_base, path):
+    return api_base.rstrip("/").removesuffix("/v1") + path
+
+
+def upstream_info_module():
+    """LiteLLM 1.110.1's openai_like.model_info: it asks the upstream for its models, keeps the listing it
+    read, or an empty one after a failed request, under the URL and the headers, and returns the model's
+    limits, or none."""
+    module = types.ModuleType(UPSTREAM_INFO)
+    module._ModelList = ModelList
+    module.add_path_to_api_base = add_path_to_api_base
+
+    async def get_openai_compatible_model_info(*, model, api_base, headers, client, cache):
+        url = add_path_to_api_base(api_base, "/v1/models")
+        key = "upstream_model_info:" + hashlib.sha256(json.dumps((url, sorted(headers.items()))).encode()).hexdigest()
+        try:
+            response = await client.get(url=url, headers=dict(headers))
+            response.raise_for_status()
+            listing = json.loads(response.content)["data"]
+        except Exception:  # noqa: BLE001
+            cache.set_cache(key, ModelList(), ttl=60)
+            return {}
+        cache.set_cache(key, ModelList(listing), ttl=300)
+        card = next((card for card in listing if card.get("id") == model), {})
+        return {name: card[name] for name in ("max_input_tokens", "max_output_tokens") if name in card}
+
+    module.get_openai_compatible_model_info = get_openai_compatible_model_info
+    return module
+
+
+class SharedRedis:
+    """Stands in for the proxy's Redis, which the replicas share: each call raises while fail is set."""
+
+    def __init__(self):
+        self.values, self.ttls, self.fail, self.sets = {}, {}, False, 0
+
+    def check(self):
+        if self.fail:
+            raise ConnectionError("synthetic: Redis does not answer")
+
+    async def async_set_cache(self, key, value, **kwargs):
+        self.check()
+        self.sets += 1
+        self.values[key], self.ttls[key] = json.dumps(value), kwargs.get("ttl")
+
+    async def async_get_cache(self, key, **kwargs):
+        self.check()
+        return json.loads(self.values[key]) if key in self.values else None
+
+    async def async_delete_cache(self, key):
+        self.check()
+        self.values.pop(key, None)
+
+
 def load_guard(litellm_attributes=None):
     stubs = {
         "fastapi": types.ModuleType("fastapi"),
@@ -73,6 +164,7 @@ def load_guard(litellm_attributes=None):
     stubs["litellm._logging"].verbose_proxy_logger = logging.getLogger(LOGGER)
     stubs["litellm.integrations.custom_logger"].CustomLogger = CustomLogger
     stubs["litellm.proxy._types"].UserAPIKeyAuth = Key
+    stubs["litellm.proxy._types"].ProxyException = ProxyException
     saved = {name: sys.modules.get(name) for name in stubs}
     sys.modules.update(stubs)
     try:
@@ -186,18 +278,44 @@ class Cooldowns:
 
 
 class CooldownRouter:
-    """A router shaped like LiteLLM 1.110.1's where its cooldowns are concerned: its health has the
-    cooldowns, and its registry the deployments as model_list entries."""
+    """A router shaped like LiteLLM 1.110.1's where its cooldowns and its upstream token limits are
+    concerned: its health has the cooldowns; its registry has the deployments as model_list entries and the
+    limits it discovered. A refresh looks the upstream's lookup up by name each time, keeps the limits it
+    got, and ignores an empty answer."""
 
     def __init__(self, model_list):
         self.deployments = {entry["model_info"]["id"]: entry for entry in model_list}
         self.cooldowns = Cooldowns()
+        self.listings, self.discovered = ListingCache(), {}
 
     def health(self):
         return types.SimpleNamespace(cooldowns=self.cooldowns)
 
     def registry(self):
-        return types.SimpleNamespace(deployment_dict=self.deployments.get)
+        return types.SimpleNamespace(deployment_dict=self.deployments.get,
+                                     discovered_model_info=lambda model_id: self.discovered.get(model_id, {}))
+
+    def lookup(self):
+        return sys.modules[UPSTREAM_INFO].get_openai_compatible_model_info
+
+    async def aapply(self, changes):
+        if not changes.refresh_model_info:
+            return
+        lookup = self.lookup()
+        for model_id, entry in self.deployments.items():
+            params = entry["litellm_params"]
+            limits = await lookup(model=params["model"].split("/", 1)[1], api_base=params["api_base"],
+                                  headers={"authorization": "Bearer " + params["api_key"]},
+                                  client=changes.refresh_client, cache=self.listings)
+            if limits:
+                self.discovered[model_id] = dict(limits)
+
+
+class ChangeSet:
+    """Shaped like LiteLLM's router_api.ChangeSet, for a refresh of the upstreams' token limits."""
+
+    def __init__(self, refresh_model_info=False, refresh_client=None):
+        self.refresh_model_info, self.refresh_client = refresh_model_info, refresh_client
 
 
 def provider_deployment(identifier, model):
@@ -466,7 +584,8 @@ class GuardTest(unittest.TestCase):
     def test_without_litellms_listing_nothing_is_replaced(self):
         self.assertFalse(self.module.install_router_alias_listing())
         self.assertEqual(self.module.PATCHED, {"mark_form": False, "failover_past_affinity": False,
-                                               "router_alias_listing": False, "savings_provider_lookup": False})
+                                               "router_alias_listing": False, "savings_provider_lookup": False,
+                                               "kept_upstream_limits": False})
         # The build's exercise of each replacement fails as well.
         self.assertFalse(any(result is True for result in self.module.exercise_patches().values()))
 
@@ -1811,11 +1930,14 @@ class GuardTest(unittest.TestCase):
         self.install_savings()
         self.install_responses_utils()
         self.install_router_modules()
+        self.install_answer_modules()
+        self.install_upstream_info()
         for install in (self.module.install_mark_form, self.module.install_router_alias_listing,
                         self.module.install_savings_provider_lookup):
             self.assertTrue(install())
         self.assertEqual(self.module.exercise_patches(),
-                         {**dict.fromkeys(self.module.PATCHED, True), "credentials_cooldown": True})
+                         {**dict.fromkeys(self.module.PATCHED, True), "credentials_cooldown": True,
+                          "credentials_answer": True})
 
     def test_items_in_the_gateways_form_are_marked(self):
         self.with_affinity(EncryptedContentAffinityCheck())
@@ -2056,6 +2178,12 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(answer.detail, (
             "CetiRun AI Gateway: the provider of the model gpt-6-sol refused the credentials of the AI Gateway. The key "
             "of this Agent is not the cause. A CetiRun administrator must fix the provider configuration of the model."))
+        # LiteLLM writes a ProxyException's to_dict() as the error, with its status from code: the Agent images
+        # recognize the error by its code, and OpenAI's SDKs do not retry it.
+        self.assertIsInstance(answer, ProxyException)
+        self.assertEqual(answer.to_dict(), {"message": answer.detail, "type": "internal_server_error", "param": None,
+                                            "code": "cetirun_provider_credentials"})
+        self.assertEqual((answer.code, answer.headers), ("502", {"x-should-retry": "false"}))
         for private in ("cetirun-synthetic-agent-0000", "synthetic-hashed-token", "subscription key"):
             self.assertNotIn(private, answer.detail)
         # LiteLLM's Anthropic Messages route answers from the error and ignores what the hook returns, so
@@ -2073,7 +2201,8 @@ class GuardTest(unittest.TestCase):
             with self.subTest(provider=provider):
                 answer = self.credentials_refused(AuthenticationError("Unauthorized", provider, "claude-opus-5.5"),
                                                   AGENT_KEY, {"model": "claude-opus-5.5"})
-                self.assertEqual(answer.status_code, 502)
+                # Its own code: OpenClaw names the owner's sign-in for it, not the administrator.
+                self.assertEqual((answer.status_code, answer.to_dict()["code"]), (502, "cetirun_copilot_credentials"))
                 self.assertEqual(answer.detail, (
                     "CetiRun AI Gateway: the GitHub Copilot route of the model claude-opus-5.5 refused its credentials. "
                     "The key of this Agent is not the cause. The owner of this Agent can sign in to GitHub Copilot "
@@ -2152,6 +2281,8 @@ class GuardTest(unittest.TestCase):
         self.assertEqual((answer.status_code, answer.detail), (502, (
             "CetiRun AI Gateway: the provider of the model gpt-6-sol refused the credentials of the AI Gateway. The key "
             "of this Agent is not the cause. A CetiRun administrator must fix the provider configuration of the model.")))
+        self.assertEqual((answer.to_dict()["code"], answer.headers), ("cetirun_provider_credentials",
+                                                                      {"x-should-retry": "false"}))
         # The error carries the same answer, for LiteLLM's Anthropic Messages route.
         self.assertEqual((str(error), error.status_code, error.type), (answer.detail, 502, None))
         self.assertEqual(logs.output, [
@@ -2207,9 +2338,10 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(error.status_code, 429)
 
     def install_router_modules(self, router=CooldownRouter):
-        """LiteLLM's router modules, with a router and an error shaped like LiteLLM 1.110.1's."""
+        """LiteLLM's router modules, with a router, an error and a change set shaped like LiteLLM 1.110.1's."""
         for name, attribute, value in ((self.module.ROUTER_MODULE, "Router", router),
-                                       (self.module.ROUTER_TYPES_MODULE, "RouterRateLimitError", CooldownError)):
+                                       (self.module.ROUTER_TYPES_MODULE, "RouterRateLimitError", CooldownError),
+                                       (self.module.ROUTER_API_MODULE, "ChangeSet", ChangeSet)):
             module = types.ModuleType(name)
             setattr(module, attribute, value)
             previous = sys.modules.get(name)
@@ -2233,6 +2365,202 @@ class GuardTest(unittest.TestCase):
 
         self.install_router_modules(Router)
         self.assertIs(self.module.exercise_credentials_cooldown(), False)
+
+    # ----- how the proxy answers the refusal of the Gateway's credentials -----
+
+    def install_modules(self, modules):
+        for name, attributes in modules.items():
+            module = types.ModuleType(name)
+            for attribute, value in attributes.items():
+                setattr(module, attribute, value)
+            previous = sys.modules.get(name)
+            sys.modules[name] = module
+            self.addCleanup(lambda name=name, previous=previous: sys.modules.__setitem__(name, previous)
+                            if previous is not None else sys.modules.pop(name, None))
+
+    def install_answer_modules(self, raises_as_is=True, writes_the_code=True):
+        """LiteLLM's request processing and proxy, and Starlette's handler lookup, shaped like LiteLLM 1.110.1:
+        the processing raises a failure hook's answer that is a ProxyException as it is, and converts any
+        other HTTPException; the proxy's handler for ProxyException writes to_dict() with the status of code."""
+
+        class Response:
+            def __init__(self, status_code, content, headers):
+                self.status_code, self.body, self.headers = status_code, json.dumps(content).encode(), dict(headers or {})
+
+        class Processing:
+            def __init__(self, data):
+                self.data = data
+
+            async def handle_llm_api_exception(self, e, user_api_key_dict, proxy_logging_obj, version=None):
+                answer = await proxy_logging_obj.post_call_failure_hook(
+                    user_api_key_dict=user_api_key_dict, original_exception=e, request_data=self.data)
+                await proxy_logging_obj.post_call_response_headers_hook(data=self.data)
+                if raises_as_is and isinstance(answer, ProxyException):
+                    raise answer
+                raise ProxyException(message=answer.detail, type="internal_server_error", param=None,
+                                     code=answer.status_code)
+
+        async def openai_exception_handler(request, exc):
+            error = exc.to_dict() if writes_the_code else {**exc.to_dict(), "code": exc.code}
+            return Response(int(exc.code), {"error": error}, exc.headers)
+
+        async def http_exception_handler(request, exc):
+            return Response(exc.status_code, {"detail": exc.detail}, exc.headers)
+
+        def lookup(handlers, exc):
+            return next((handlers[cls] for cls in type(exc).__mro__ if cls in handlers), None)
+
+        handlers = {ProxyException: openai_exception_handler, HTTPException: http_exception_handler}
+        proxy = dict(vars(sys.modules[PROXY_SERVER])) if PROXY_SERVER in sys.modules else {}
+        self.install_modules({
+            self.module.REQUEST_PROCESSING_MODULE: {"ProxyBaseLLMRequestProcessing": Processing},
+            PROXY_SERVER: {**proxy, "app": types.SimpleNamespace(exception_handlers=handlers)},
+            "starlette._exception_handler": {"_lookup_exception_handler": lookup},
+            "starlette.requests": {"Request": lambda scope: types.SimpleNamespace(scope=scope)},
+        })
+
+    def test_the_build_checks_how_the_proxy_answers_the_refusal(self):
+        self.install_answer_modules()
+        self.assertIs(self.module.exercise_credentials_answer(), True)
+
+    def test_a_proxy_that_answers_the_refusal_otherwise_fails_the_build(self):
+        for changed in ({"raises_as_is": False}, {"writes_the_code": False}):
+            with self.subTest(changed):
+                self.install_answer_modules(**changed)
+                self.assertIs(self.module.exercise_credentials_answer(), False)
+
+    # ----- the token limits an upstream advertised last -----
+
+    ADVERTISED = {"data": [{"id": "gpt-5.4", "max_input_tokens": 922000, "max_output_tokens": 128000}]}
+    LIMITS = {"max_input_tokens": 922000, "max_output_tokens": 128000}
+    UPSTREAM = "https://upstream.example.com/v1"
+
+    def install_upstream_info(self, replace=True):
+        module = upstream_info_module()
+        self.install_modules({UPSTREAM_INFO: vars(module)})
+        if replace:
+            self.assertTrue(self.module.install_kept_upstream_limits())
+            self.assertTrue(self.module.install_kept_upstream_limits())  # once only
+        return sys.modules[UPSTREAM_INFO]
+
+    def shared_redis(self):
+        redis = SharedRedis()
+        self.install_modules({PROXY_SERVER: {"redis_usage_cache": redis}})
+        return redis
+
+    def limits(self, listing, model="gpt-5.4", cache=None, guard=None):
+        """The limits the router gets for the model at a refresh: the upstream answers with listing, or does not
+        answer for None. A router keeps its last listing for minutes; a new cache stands for a later refresh."""
+        guard = guard or self.module
+        return dict(asyncio.run(sys.modules[UPSTREAM_INFO].get_openai_compatible_model_info(
+            model=model, api_base=self.UPSTREAM, headers={"authorization": "Bearer synthetic-upstream-key"},
+            client=guard.ExerciseUpstream(listing), cache=cache or ListingCache())))
+
+    def test_the_limits_an_upstream_advertised_last_are_kept_while_it_does_not_answer(self):
+        self.install_upstream_info()
+        self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
+        with self.assertLogs(LOGGER, "WARNING") as logs:
+            for _ in range(3):
+                self.assertEqual(self.limits(None), self.LIMITS)
+        # One warning while the upstream does not answer; it names the upstream, not its key.
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("the upstream https://upstream.example.com/v1/models did not answer the request for the token "
+                      "limits of the model gpt-5.4; kept the limits it advertised last", logs.output[0])
+        self.assertNotIn("synthetic-upstream-key", logs.output[0])
+        # A later answer replaces them.
+        self.assertEqual(self.limits({"data": [{"id": "gpt-5.4", "max_input_tokens": 1050000}]}),
+                         {"max_input_tokens": 1050000})
+        with self.assertLogs(LOGGER, "WARNING"):
+            self.assertEqual(self.limits(None), {"max_input_tokens": 1050000})
+
+    def test_an_upstream_that_answers_without_the_model_drops_its_kept_limits(self):
+        self.install_upstream_info()
+        self.limits(self.ADVERTISED)
+        self.assertEqual(self.limits({"data": [{"id": "another-model", "max_input_tokens": 1}]}), {})
+        self.assertEqual(self.limits(None), {})
+        # Nothing to keep for a model that the upstream never advertised.
+        self.assertEqual(self.limits(None, model="never-listed"), {})
+        # LiteLLM's own cached listing of the upstream decides whether it answered.
+        cache = ListingCache()
+        self.limits(self.ADVERTISED, cache=cache)
+        self.assertEqual(self.limits(None, model="never-listed", cache=cache), {})
+
+    def test_a_replica_that_starts_while_the_upstream_does_not_answer_reads_the_kept_limits(self):
+        redis = self.shared_redis()
+        self.install_upstream_info()
+        self.limits(self.ADVERTISED)
+        self.assertEqual(list(redis.ttls.values()), [30 * 24 * 3600])
+        # Another replica, with its own guard and LiteLLM, and the same Redis.
+        replica = load_guard()
+        self.install_upstream_info(replace=False)
+        self.assertTrue(replica.install_kept_upstream_limits())
+        with self.assertLogs(LOGGER, "WARNING"):
+            self.assertEqual(self.limits(None, guard=replica), self.LIMITS)
+        # The time in Redis counts from the upstream's last answer, not from the failed requests.
+        self.assertEqual(redis.sets, 1)
+        self.assertEqual(self.limits(None, guard=replica), self.LIMITS)
+        self.assertEqual(redis.sets, 1)
+        # The replica keeps what it read, also when Redis stops answering.
+        redis.fail = True
+        self.assertEqual(self.limits(None, guard=replica), self.LIMITS)
+        redis.fail = False
+        # LiteLLM keeps the same empty listing for an upstream that lists no model as for one that did not
+        # answer, so the limits stay. When the upstream answers without the model, no replica keeps them.
+        self.assertEqual(self.limits({"data": []}, guard=replica), self.LIMITS)
+        self.assertEqual(self.limits({"data": [{"id": "another-model"}]}, guard=replica), {})
+        self.assertEqual(redis.values, {})
+
+    def test_a_redis_that_fails_or_holds_something_else_is_not_used(self):
+        redis = self.shared_redis()
+        redis.fail = True
+        self.install_upstream_info()
+        # The replica still keeps the limits itself.
+        self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
+        with self.assertLogs(LOGGER, "WARNING"):
+            self.assertEqual(self.limits(None), self.LIMITS)
+        redis.fail = False
+        replica = load_guard()
+        upstream = self.install_upstream_info(replace=False)
+        self.assertTrue(replica.install_kept_upstream_limits())
+        key = replica.upstream_limits_key(upstream, self.UPSTREAM, "gpt-5.4")
+        for stored in ({"max_input_tokens": "922000"}, {"max_input_tokens": True}, {"max_input_tokens": 0}, [922000],
+                       {}, "not limits"):
+            with self.subTest(stored=stored):
+                redis.values[key] = json.dumps(stored)
+                self.assertEqual(self.limits(None, guard=replica), {})
+
+    def test_a_failed_lookup_leaves_litellms_answer(self):
+        class Unreadable(ListingCache):
+            def get_cache(self, key):
+                raise RuntimeError("synthetic: a cache LiteLLM keeps otherwise")
+
+        self.install_upstream_info()
+        self.limits(self.ADVERTISED)
+        self.assertEqual(self.limits(None, cache=Unreadable()), {})
+
+    def test_the_replacement_needs_litellms_lookup(self):
+        self.assertFalse(self.module.install_kept_upstream_limits())
+        module = upstream_info_module()
+        del module._ModelList
+        self.install_modules({UPSTREAM_INFO: vars(module)})
+        self.assertFalse(self.module.install_kept_upstream_limits())
+
+    def test_the_build_checks_that_the_router_takes_the_kept_limits(self):
+        self.install_upstream_info()
+        self.install_router_modules()
+        with self.assertLogs(LOGGER, "WARNING"):
+            self.assertIs(self.module.exercise_kept_upstream_limits(), True)
+
+    def test_a_router_that_holds_its_own_copy_of_the_lookup_fails_the_build(self):
+        original = self.install_upstream_info(replace=False).get_openai_compatible_model_info
+
+        class Router(CooldownRouter):
+            def lookup(self):
+                return original
+
+        self.assertTrue(self.module.install_kept_upstream_limits())
+        self.install_router_modules(Router)
+        self.assertIs(self.module.exercise_kept_upstream_limits(), False)
 
     # ----- the model listing of keys the operator issued -----
 

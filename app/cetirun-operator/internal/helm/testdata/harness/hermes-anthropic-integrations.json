@@ -20,6 +20,11 @@
         "default": "test-model",
         "provider": "cetirun-gateway"
       },
+      "plugins": {
+        "enabled": [
+          "cetirun-gateway-errors"
+        ]
+      },
       "providers": {
         "cetirun-gateway": {
           "api": "http://cetirun-ai-gateway.cetirun-system.svc.cluster.local:4000/v1",

@@ -1,0 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+name: cetirun-gateway-errors
+version: "1"
+requires_hermes: ">=0.22.7"
+description: CetiRun AI Gateway errors. Ends a turn instead of retrying it when the AI Gateway answers that a provider refused its credentials.
