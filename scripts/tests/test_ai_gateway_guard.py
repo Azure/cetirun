@@ -152,6 +152,62 @@ class RouterRateLimitError(ValueError):
         super().__init__(message)
 
 
+class CooldownError(ValueError):
+    """Shaped like LiteLLM 1.110.1's RouterRateLimitError for a model in cooldown: the deployments of the
+    request in cooldown, and whether they are all of its deployments, but not why they cool down."""
+
+    status_code = 429
+
+    def __init__(self, model, cooldown_time, enable_pre_call_checks, cooldown_list, model_ids=(),
+                 cooldown_deployments=None):
+        self.model = model
+        self.cooldown_time = cooldown_time
+        self.cooldown_list = cooldown_list
+        self.cooldown_deployments = None if cooldown_deployments is None else tuple(cooldown_deployments)
+        self.all_deployments_in_cooldown = bool(model_ids) and frozenset(model_ids) <= frozenset(cooldown_list)
+        self.type = "all_deployments_in_cooldown" if self.all_deployments_in_cooldown else "rate_limit_error"
+        super().__init__(f"No deployments available for selected model, Try again in {cooldown_time} seconds. All "
+                         f"deployments for selected model are in cooldown. Passed model={model}. pre-call-checks="
+                         f"{enable_pre_call_checks}, cooldown_list={cooldown_list}")
+
+
+class Cooldowns:
+    """The router's record of its cooldowns, shaped like LiteLLM 1.110.1's CooldownCache."""
+
+    def __init__(self):
+        self.records = {}
+
+    def add_deployment_to_cooldown(self, model_id, original_exception, exception_status, cooldown_time):
+        self.records[model_id] = {"exception_received": str(original_exception), "status_code": str(exception_status),
+                                  "timestamp": 0.0, "cooldown_time": cooldown_time}
+
+    async def async_get_active_cooldowns(self, model_ids, parent_otel_span):
+        return [(model_id, self.records[model_id]) for model_id in model_ids if model_id in self.records]
+
+
+class CooldownRouter:
+    """A router shaped like LiteLLM 1.110.1's where its cooldowns are concerned: its health has the
+    cooldowns, and its registry the deployments as model_list entries."""
+
+    def __init__(self, model_list):
+        self.deployments = {entry["model_info"]["id"]: entry for entry in model_list}
+        self.cooldowns = Cooldowns()
+
+    def health(self):
+        return types.SimpleNamespace(cooldowns=self.cooldowns)
+
+    def registry(self):
+        return types.SimpleNamespace(deployment_dict=self.deployments.get)
+
+
+def provider_deployment(identifier, model):
+    return {"model_name": "gpt-6-sol", "litellm_params": {"model": model}, "model_info": {"id": identifier}}
+
+
+AZURE_DEPLOYMENT = provider_deployment("cetirun-shared-gpt-6-sol", "azure/gpt-6-sol")
+COPILOT_DEPLOYMENT = provider_deployment("cetirun-copilot-alice-gpt-6-sol", "litellm_proxy/gpt-6-sol")
+
+
 class ProviderError(Exception):
     """Shaped like LiteLLM's provider exceptions: a message attribute next to the arguments."""
 
@@ -173,6 +229,24 @@ class BudgetExceededError(Exception):
         self.entity_id = entity_id
         self.message = message or f"Budget has been exceeded! Current cost: {current_cost}, Max budget: {max_budget}"
         super().__init__(self.message)
+
+
+class AuthenticationError(Exception):
+    """Shaped like LiteLLM 1.110.1's: a provider's 401, with the provider and the model that it called,
+    and LiteLLM's prefix on the message."""
+
+    def __init__(self, message, llm_provider, model):
+        self.status_code = 401
+        self.message = f"litellm.AuthenticationError: {message}"
+        self.llm_provider = llm_provider
+        self.model = model
+        super().__init__(self.message)
+
+
+# What an Azure OpenAI resource answers once key authentication is turned off on it.
+AZURE_KEY_REFUSED = ("AzureException AuthenticationError - Access denied due to invalid subscription key or wrong API "
+                     "endpoint. Make sure to provide a valid key for an active subscription and use a correct regional "
+                     "API endpoint for your resource.")
 
 
 UTC = datetime.timezone.utc
@@ -1736,10 +1810,12 @@ class GuardTest(unittest.TestCase):
         self.install_listing(proxy_loaded=True, deployed_argument=True)
         self.install_savings()
         self.install_responses_utils()
+        self.install_router_modules()
         for install in (self.module.install_mark_form, self.module.install_router_alias_listing,
                         self.module.install_savings_provider_lookup):
             self.assertTrue(install())
-        self.assertEqual(self.module.exercise_patches(), dict.fromkeys(self.module.PATCHED, True))
+        self.assertEqual(self.module.exercise_patches(),
+                         {**dict.fromkeys(self.module.PATCHED, True), "credentials_cooldown": True})
 
     def test_items_in_the_gateways_form_are_marked(self):
         self.with_affinity(EncryptedContentAffinityCheck())
@@ -1958,6 +2034,205 @@ class GuardTest(unittest.TestCase):
         # Other errors carrying the same words are not LiteLLM's refusal.
         error = self.budget_refused(ProviderError(KEY_BUDGET_MESSAGE), AGENT_KEY)
         self.assertEqual((error.message, str(error)), (KEY_BUDGET_MESSAGE, KEY_BUDGET_MESSAGE))
+
+    # ----- a provider that refused the Gateway's credentials -----
+
+    def credentials_refused(self, error, caller, request_data=None, litellm_has_class=True):
+        """What the failure hook answers for the error, with LiteLLM's AuthenticationError known to the guard."""
+        if litellm_has_class:
+            self.module.litellm.AuthenticationError = AuthenticationError
+        elif hasattr(self.module.litellm, "AuthenticationError"):
+            del self.module.litellm.AuthenticationError
+        return asyncio.run(self.guard.async_post_call_failure_hook(
+            {"model": "gpt-6-sol"} if request_data is None else request_data, error, caller))
+
+    def test_a_refused_provider_key_is_a_platform_error_for_an_agent(self):
+        error = AuthenticationError(AZURE_KEY_REFUSED, "azure", "gpt-6-sol")
+        with self.assertLogs(LOGGER, level="WARNING") as logs:
+            answer = self.credentials_refused(error, AGENT_KEY)
+        self.assertIsInstance(answer, HTTPException)
+        # Not 401: Hermes reads a 401 as its own key being wrong and asks the user to update it.
+        self.assertEqual(answer.status_code, 502)
+        self.assertEqual(answer.detail, (
+            "CetiRun AI Gateway: the provider of the model gpt-6-sol refused the credentials of the AI Gateway. The key "
+            "of this Agent is not the cause. A CetiRun administrator must fix the provider configuration of the model."))
+        for private in ("cetirun-synthetic-agent-0000", "synthetic-hashed-token", "subscription key"):
+            self.assertNotIn(private, answer.detail)
+        # LiteLLM's Anthropic Messages route answers from the error and ignores what the hook returns, so
+        # the error carries the same answer, without the type of the provider's 401.
+        self.assertEqual((error.message, error.args, error.status_code, error.type),
+                         (answer.detail, (answer.detail,), 502, None))
+        # The provider's own text stays in the Gateway's log.
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("the provider azure refused the Gateway's credentials for the model gpt-6-sol", logs.output[0])
+        self.assertIn(AZURE_KEY_REFUSED, logs.output[0])
+        self.assertIn("answered 502 instead of 401 to the key cetirun-synthetic-agent-0000", logs.output[0])
+
+    def test_a_refused_copilot_route_points_the_owner_to_the_sign_in(self):
+        for provider in ("litellm_proxy", "github_copilot"):
+            with self.subTest(provider=provider):
+                answer = self.credentials_refused(AuthenticationError("Unauthorized", provider, "claude-opus-5.5"),
+                                                  AGENT_KEY, {"model": "claude-opus-5.5"})
+                self.assertEqual(answer.status_code, 502)
+                self.assertEqual(answer.detail, (
+                    "CetiRun AI Gateway: the GitHub Copilot route of the model claude-opus-5.5 refused its credentials. "
+                    "The key of this Agent is not the cause. The owner of this Agent can sign in to GitHub Copilot "
+                    "again in the Portal. If that does not help, a CetiRun administrator must examine the route."))
+
+    def test_another_key_is_told_that_its_key_is_not_the_cause(self):
+        # A key from the console reaches no Agent's Copilot route, so a proxy's refusal is about the
+        # provider configuration too.
+        console_key = Key(["gpt-5"], key_alias="console-key")
+        for provider in ("azure", "litellm_proxy"):
+            with self.subTest(provider=provider):
+                answer = self.credentials_refused(AuthenticationError("Unauthorized", provider, "gpt-5"), console_key,
+                                                  {"model": "gpt-5"})
+                self.assertEqual(answer.detail, (
+                    "CetiRun AI Gateway: the provider of the model gpt-5 refused the credentials of the AI Gateway. "
+                    "Your key is not the cause. A CetiRun administrator must fix the provider configuration of the "
+                    "model."))
+        answer = self.credentials_refused(AuthenticationError("Unauthorized", "openai", "gpt-5"), None, {})
+        self.assertTrue(answer.detail.startswith("CetiRun AI Gateway: the provider of the requested model refused"))
+
+    def test_other_errors_keep_their_answer(self):
+        cases = (
+            # LiteLLM sets the provider on every provider error; without one this is not a provider's refusal.
+            (AuthenticationError("Unauthorized", None, "gpt-6-sol"), True),
+            (AuthenticationError("Unauthorized", "", "gpt-6-sol"), True),
+            # Without LiteLLM's class the guard cannot tell a provider's refusal.
+            (AuthenticationError(AZURE_KEY_REFUSED, "azure", "gpt-6-sol"), False),
+            (ProviderError("litellm.AuthenticationError: " + AZURE_KEY_REFUSED), True),
+            (RouterRateLimitError(COOLDOWN_MESSAGE), True),
+        )
+        for error, litellm_has_class in cases:
+            with self.subTest(error=type(error).__name__, provider=getattr(error, "llm_provider", None)):
+                status = getattr(error, "status_code", None)
+                self.assertIsNone(self.credentials_refused(error, AGENT_KEY, litellm_has_class=litellm_has_class))
+                self.assertEqual(getattr(error, "status_code", None), status)
+                self.assertNotIn("CetiRun AI Gateway", str(error))
+        self.module.litellm.BudgetExceededError = BudgetExceededError
+        self.assertIsNone(self.credentials_refused(BudgetExceededError(10.0213, 10.0, KEY_BUDGET_MESSAGE, "key"),
+                                                   AGENT_KEY))
+
+    # ----- a model in cooldown after a provider refused the Gateway's credentials -----
+
+    def cooldown_router(self, deployments, statuses):
+        """The live router, whose deployments cooled down after failures with these statuses (None: no
+        cooldown)."""
+        router = CooldownRouter(list(deployments))
+        for entry, status in zip(deployments, statuses):
+            if status is not None:
+                router.cooldowns.add_deployment_to_cooldown(entry["model_info"]["id"], ProviderError("synthetic"),
+                                                            status, 5)
+        proxy = types.ModuleType(PROXY_SERVER)
+        proxy.llm_router = router
+        sys.modules[PROXY_SERVER] = proxy
+        return router
+
+    @staticmethod
+    def cooldown_error(deployments, cooling=None, named=True):
+        """LiteLLM's error for a request for these deployments, all in cooldown unless cooling names some."""
+        ids = [entry["model_info"]["id"] for entry in deployments]
+        cooling = ids if cooling is None else cooling
+        return CooldownError("gpt-6-sol", 5, False, cooling, model_ids=ids,
+                             cooldown_deployments=[{"model_id": i, "api_base": None} for i in cooling] if named else None)
+
+    def cooled(self, error, caller=AGENT_KEY, request_data=None):
+        return asyncio.run(self.guard.async_post_call_failure_hook(
+            {"model": "gpt-6-sol"} if request_data is None else request_data, error, caller))
+
+    def test_a_model_in_cooldown_after_the_refusal_gets_the_same_answer(self):
+        # LiteLLM cools a deployment down after a provider's 401, and refuses requests for the model with a
+        # 429 meanwhile, which clients retry as a rate limit and which does not say why.
+        self.cooldown_router([AZURE_DEPLOYMENT], [401])
+        error = self.cooldown_error([AZURE_DEPLOYMENT])
+        with self.assertLogs(LOGGER, level="WARNING") as logs:
+            answer = self.cooled(error)
+        self.assertIsInstance(answer, HTTPException)
+        self.assertEqual((answer.status_code, answer.detail), (502, (
+            "CetiRun AI Gateway: the provider of the model gpt-6-sol refused the credentials of the AI Gateway. The key "
+            "of this Agent is not the cause. A CetiRun administrator must fix the provider configuration of the model.")))
+        # The error carries the same answer, for LiteLLM's Anthropic Messages route.
+        self.assertEqual((str(error), error.status_code, error.type), (answer.detail, 502, None))
+        self.assertEqual(logs.output, [
+            f"WARNING:{LOGGER}:CetiRun guard: the model gpt-6-sol is in cooldown after its providers (azure) refused "
+            "the Gateway's credentials; answered 502 instead of 429 to the key cetirun-synthetic-agent-0000"])
+
+    def test_a_cooldown_names_the_routes_and_the_model_like_the_refusal(self):
+        self.cooldown_router([COPILOT_DEPLOYMENT], [401])
+        self.assertTrue(self.cooled(self.cooldown_error([COPILOT_DEPLOYMENT])).detail.startswith(
+            "CetiRun AI Gateway: the GitHub Copilot route of the model gpt-6-sol refused its credentials."))
+        # With a shared deployment in cooldown as well, the administrator must act.
+        self.cooldown_router([COPILOT_DEPLOYMENT, AZURE_DEPLOYMENT], [401, 401])
+        self.assertTrue(self.cooled(self.cooldown_error([COPILOT_DEPLOYMENT, AZURE_DEPLOYMENT])).detail.startswith(
+            "CetiRun AI Gateway: the provider of the model gpt-6-sol refused the credentials of the AI Gateway."))
+        # Without a model in the request, the error names the model; another key is told about its key.
+        self.cooldown_router([AZURE_DEPLOYMENT], [401])
+        answer = self.cooled(self.cooldown_error([AZURE_DEPLOYMENT]), Key(["gpt-6-sol"], key_alias="console-key"), {})
+        self.assertIn("the provider of the model gpt-6-sol refused", answer.detail)
+        self.assertIn("Your key is not the cause.", answer.detail)
+
+    def test_other_cooldowns_keep_litellms_answer(self):
+        azure = AZURE_DEPLOYMENT["model_info"]["id"]
+        cases = {
+            "another failure": ([AZURE_DEPLOYMENT], [429], None),
+            "another failure of one of the deployments": ([AZURE_DEPLOYMENT, COPILOT_DEPLOYMENT], [401, 500], None),
+            "a deployment without a record": ([AZURE_DEPLOYMENT, COPILOT_DEPLOYMENT], [401, None], None),
+            "a deployment of the request not in cooldown": ([AZURE_DEPLOYMENT, COPILOT_DEPLOYMENT], [401, None],
+                                                            [azure]),
+        }
+        for name, (deployments, statuses, cooling) in cases.items():
+            with self.subTest(name):
+                self.cooldown_router(deployments, statuses)
+                error = self.cooldown_error(deployments, cooling)
+                before = (error.status_code, error.type)
+                self.assertIsNone(self.cooled(error))
+                self.assertEqual((error.status_code, error.type), before)
+                self.assertTrue(str(error).startswith("No deployments available for selected model"))
+
+    def test_without_the_routers_records_litellms_answer_stays(self):
+        def unreadable():
+            raise RuntimeError("synthetic: a router that keeps its cooldowns elsewhere")
+
+        error = self.cooldown_error([AZURE_DEPLOYMENT])
+        self.assertIsNone(self.cooled(error))  # no live router
+        router = self.cooldown_router([AZURE_DEPLOYMENT], [401])
+        self.assertIsNone(self.cooled(self.cooldown_error([AZURE_DEPLOYMENT], named=False)))
+        router.health = unreadable
+        self.assertIsNone(self.cooled(self.cooldown_error([AZURE_DEPLOYMENT])))
+        router = self.cooldown_router([AZURE_DEPLOYMENT], [401])
+        router.deployments.clear()  # a deployment that the router no longer has
+        error = self.cooldown_error([AZURE_DEPLOYMENT])
+        self.assertIsNone(self.cooled(error))
+        self.assertEqual(error.status_code, 429)
+
+    def install_router_modules(self, router=CooldownRouter):
+        """LiteLLM's router modules, with a router and an error shaped like LiteLLM 1.110.1's."""
+        for name, attribute, value in ((self.module.ROUTER_MODULE, "Router", router),
+                                       (self.module.ROUTER_TYPES_MODULE, "RouterRateLimitError", CooldownError)):
+            module = types.ModuleType(name)
+            setattr(module, attribute, value)
+            previous = sys.modules.get(name)
+            sys.modules[name] = module
+            self.addCleanup(lambda name=name, previous=previous: sys.modules.__setitem__(name, previous)
+                            if previous is not None else sys.modules.pop(name, None))
+
+    def test_the_build_reads_the_routers_cooldowns_as_the_hook_does(self):
+        self.install_router_modules()
+        self.assertIs(self.module.exercise_credentials_cooldown(), True)
+
+    def test_a_router_that_records_its_cooldowns_otherwise_fails_the_build(self):
+        class RenamedStatus(Cooldowns):
+            def add_deployment_to_cooldown(self, model_id, original_exception, exception_status, cooldown_time):
+                self.records[model_id] = {"status": str(exception_status)}
+
+        class Router(CooldownRouter):
+            def __init__(self, model_list):
+                super().__init__(model_list)
+                self.cooldowns = RenamedStatus()
+
+        self.install_router_modules(Router)
+        self.assertIs(self.module.exercise_credentials_cooldown(), False)
 
     # ----- the model listing of keys the operator issued -----
 

@@ -232,9 +232,10 @@ def gateway(args, environ=None):
     after a deployment refused a request's encrypted reasoning, removes the
     sampling parameters a reasoning model refuses from requests an auto router
     sends it, keeps LiteLLM's list of deployments in cooldown out of the
-    errors callers get, and replaces LiteLLM's message for a request refused
-    because a budget is spent with one that says whose budget it is
-    (cetirun_ai_gateway/guard.py).
+    errors callers get, replaces LiteLLM's message for a request refused
+    because a budget is spent with one that says whose budget it is, and
+    answers a provider's refusal of the Gateway's own credentials with a 502
+    that does not blame the caller's key (cetirun_ai_gateway/guard.py).
 
     The callbacks are registered here, in code, rather than in
     litellm_settings.callbacks. A configured callback depends on how LiteLLM

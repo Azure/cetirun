@@ -2238,6 +2238,23 @@ these actions:
   used its default classifier, for every caller. The Decisions API and a
   router's own classifier calls reach the model as before. A key that the
   operator issued still gets the 403 that is described above.
+- It answers with 502, not with the provider's 401, when a provider refuses the
+  AI Gateway's own credentials for a deployment (LiteLLM's
+  `AuthenticationError`). The calling key passed the AI Gateway's checks, so it
+  is not the cause, but clients read a 401 as their own key being wrong: Hermes
+  asks the user to update an API key that the user cannot change. The message
+  starts with `CetiRun AI Gateway:`. It says that the key is not the cause, and
+  that a CetiRun administrator must fix the provider configuration of the model.
+  For an Agent's GitHub Copilot route, it says that the owner can sign in to
+  GitHub Copilot again. This applies to Chat Completions, Responses, and
+  Anthropic Messages requests. The AI Gateway logs a warning with the provider,
+  the model, the provider's message, and the key's alias. After the refusal,
+  LiteLLM puts the deployment in cooldown for a few seconds, and refuses
+  requests for the model in this time with a 429
+  (`all_deployments_in_cooldown`) that does not say why. When the router
+  recorded each deployment's cooldown after such a refusal, the AI Gateway
+  answers these requests with the same 502. A cooldown after another error
+  keeps LiteLLM's 429.
 - It shortens the request that a router with a jev classifier sends to its
   decision model. The limit in bytes starts at the number of tokens that the
   model takes. This number is the smallest `model_info.max_input_tokens` of

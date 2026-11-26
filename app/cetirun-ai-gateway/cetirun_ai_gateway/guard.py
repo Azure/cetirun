@@ -109,6 +109,21 @@ billing error instead, which the CetiRun OpenClaw image replaces with one about
 the CetiRun budget (agents/openclaw/compat/apply-gateway-budget.mjs of the
 runtime chart).
 
+A provider that refuses the Gateway's own credentials for a deployment (LiteLLM's
+AuthenticationError, HTTP 401) is answered with 502 and a CetiRun message
+instead. The calling key passed the Gateway's checks, so the provider's 401 is
+not about it, but clients read a 401 as their own key being wrong: Hermes asks
+the user to update an API key that the user cannot change. The message says that
+the key is not the cause, and who can fix the credentials: a CetiRun
+administrator for a shared model; for an Agent's GitHub Copilot route (through
+its Copilot proxy), the owner by signing in to GitHub Copilot again. The error
+carries the answer too, because LiteLLM's Anthropic Messages route answers from
+the error and ignores what a failure hook returns. The provider's own message
+goes to the Gateway's log. LiteLLM then keeps the deployment in cooldown for some
+seconds and refuses requests for the model with a 429 that does not say why;
+when the router's record of each such cooldown has the provider's 401, the
+answer is the same 502.
+
 Encrypted reasoning without the Gateway's mark is removed from Responses API
 requests while encrypted content affinity is on for the model. A client that
 keeps no state on the provider, such as OpenClaw, sends every earlier
@@ -173,6 +188,7 @@ user chose or to auto; with a reasoning model each failed, out of the user's
 sight. LiteLLM's own rule decides, read from LiteLLM, and each change is logged.
 """
 
+import asyncio
 import base64
 import datetime
 import importlib
@@ -566,17 +582,40 @@ def exercise_savings_provider_lookup():
     return (identity.model, identity.provider) == (EXERCISE_MODEL, "github_copilot")
 
 
+ROUTER_MODULE = "litellm.router"
+ROUTER_TYPES_MODULE = "litellm.types.router"
+
+
+def exercise_credentials_cooldown():
+    """Whether LiteLLM's router records its cooldowns, and its error for a model in cooldown names the
+    deployments, the way the failure hook reads them (credentials_cooldown)."""
+    router = importlib.import_module(ROUTER_MODULE).Router(model_list=[{
+        "model_name": EXERCISE_MODEL, "model_info": {"id": EXERCISE_MODEL},
+        "litellm_params": {"model": f"litellm_proxy/{EXERCISE_MODEL}", "api_base": "http://127.0.0.1:9",
+                           "api_key": EXERCISE_MODEL}}])
+    error = importlib.import_module(ROUTER_TYPES_MODULE).RouterRateLimitError(
+        model=EXERCISE_MODEL, cooldown_time=5, enable_pre_call_checks=False, cooldown_list=[EXERCISE_MODEL],
+        model_ids=[EXERCISE_MODEL], cooldown_deployments=[{"model_id": EXERCISE_MODEL, "api_base": None}])
+    found = []
+    for status in (429, 401):
+        router.health().cooldowns.add_deployment_to_cooldown(EXERCISE_MODEL, Exception(EXERCISE_MODEL), status, 60)
+        found.append(asyncio.run(credentials_cooldown(error, router)))
+    return found == [None, ("litellm_proxy",)]
+
+
 def exercise_patches():
-    """Each replaced LiteLLM function, called the way LiteLLM calls it: True for a replacement that works,
-    False or the error otherwise. The image build requires True for each, so a LiteLLM upgrade that calls
-    such a function by another name or with other arguments fails the build. Without this check, LiteLLM
-    1.108.3 failed every GET /v1/models with 500 and wrote LiteLLM's form of the mark again.
+    """Each replaced LiteLLM function, called the way LiteLLM calls it, and the router's records that the
+    failure hook reads: True for what works, False or the error otherwise. The image build requires True for
+    each, so a LiteLLM upgrade that calls such a function by another name or with other arguments, or keeps
+    those records otherwise, fails the build. Without this check, LiteLLM 1.108.3 failed every
+    GET /v1/models with 500 and wrote LiteLLM's form of the mark again.
     """
     exercises = {
         "mark_form": exercise_mark_form,
         "failover_past_affinity": exercise_failover_past_affinity,
         "router_alias_listing": exercise_router_alias_listing,
         "savings_provider_lookup": exercise_savings_provider_lookup,
+        "credentials_cooldown": exercise_credentials_cooldown,
     }
     results = {}
     for name, exercise in exercises.items():
@@ -1400,6 +1439,78 @@ def replace_message(error, message):
         pass
 
 
+# The status of the Gateway's answer when a provider refused the Gateway's own credentials: the
+# upstream failed, not the client's request or key.
+PROVIDER_CREDENTIALS_STATUS = 502
+# The providers through which an Agent's GitHub Copilot route reaches GitHub: its Copilot proxy,
+# or GitHub Copilot itself.
+COPILOT_ROUTE_PROVIDERS = frozenset(("litellm_proxy", "github_copilot"))
+# The status that LiteLLM's router records for a deployment that it cooled down after a provider's 401.
+CREDENTIALS_REFUSED_STATUS = "401"
+
+
+def credentials_refusal_answer(providers, model, caller):
+    """The Gateway's answer when the providers of a model's deployments refused the Gateway's credentials."""
+    named = f"the model {model}" if isinstance(model, str) and model else "the requested model"
+    agent = operator_groups(caller) is not None
+    key = "The key of this Agent" if agent else "Your key"
+    if agent and all(provider in COPILOT_ROUTE_PROVIDERS for provider in providers):
+        detail = (f"CetiRun AI Gateway: the GitHub Copilot route of {named} refused its credentials. {key} is not "
+                  "the cause. The owner of this Agent can sign in to GitHub Copilot again in the Portal. If that "
+                  "does not help, a CetiRun administrator must examine the route.")
+    else:
+        detail = (f"CetiRun AI Gateway: the provider of {named} refused the credentials of the AI Gateway. {key} is "
+                  "not the cause. A CetiRun administrator must fix the provider configuration of the model.")
+    return HTTPException(status_code=PROVIDER_CREDENTIALS_STATUS, detail=detail)
+
+
+def provider_credentials_refusal(error, request_data, caller):
+    """The Gateway's answer for a provider that refused the Gateway's credentials for a deployment, or
+    None for any other error.
+
+    LiteLLM raises AuthenticationError, with the provider it called, only for a provider's 401: a key
+    the Gateway does not accept is refused before any model is called, with another error. So the
+    calling key is not the cause, and the answer must not read as a refused key."""
+    refusal = getattr(litellm, "AuthenticationError", None)
+    if not (isinstance(refusal, type) and isinstance(error, refusal)):
+        return None
+    provider = getattr(error, "llm_provider", None)
+    if not isinstance(provider, str) or not provider:
+        return None
+    model = request_data.get("model") if isinstance(request_data, dict) else None
+    return credentials_refusal_answer((provider,), model, caller)
+
+
+def field_of(value, name):
+    """A field of a dict or an attribute of an object, for LiteLLM records that are either."""
+    return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
+
+
+async def credentials_cooldown(error, router):
+    """The providers of the deployments that a cooldown error names, when the router cooled down each of
+    them after its provider refused the Gateway's credentials; None for any other error or cooldown.
+
+    After a provider's 401, LiteLLM cools the deployment down for some seconds, and it refuses requests
+    for the model in this time with RouterRateLimitError (429). The error names the deployments, not why
+    they cool down; the router's record of each cooldown has the status of the failure that started it."""
+    if router is None or getattr(error, "all_deployments_in_cooldown", None) is not True:
+        return None
+    ids = [field_of(info, "model_id") for info in getattr(error, "cooldown_deployments", None) or ()]
+    if not ids or not all(isinstance(model_id, str) and model_id for model_id in ids):
+        return None
+    try:
+        cooldowns = router.health().cooldowns
+        active = dict(await cooldowns.async_get_active_cooldowns(model_ids=ids, parent_otel_span=None))
+        registry = router.registry()
+        found = [deployment_provider(registry.deployment_dict(model_id)) for model_id in ids]
+    except Exception:  # noqa: BLE001  # a request never fails on this lookup
+        return None
+    statuses = {str(field_of(active.get(model_id), "status_code")) for model_id in ids}
+    if statuses != {CREDENTIALS_REFUSED_STATUS} or not all(found):
+        return None
+    return tuple(provider for _, provider, _ in found)
+
+
 class ModelRefused(HTTPException):
     """The refusal of a model the calling key may not use.
 
@@ -1588,7 +1699,35 @@ class Guard(CustomLogger):
         if message is not None:
             replace_message(original_exception, message)
         remove_cooldown_list(original_exception)
-        return None
+        model = request_data.get("model") if isinstance(request_data, dict) else None
+        answered = getattr(original_exception, "status_code", None)
+        refusal = provider_credentials_refusal(original_exception, request_data, user_api_key_dict)
+        if refusal is not None:
+            verbose_proxy_logger.warning(
+                "CetiRun guard: the provider %s refused the Gateway's credentials for the model %s (%s); answered %d "
+                "instead of %s to the key %s", getattr(original_exception, "llm_provider", None), model,
+                str(getattr(original_exception, "message", None) or original_exception)[:500], refusal.status_code,
+                answered, getattr(user_api_key_dict, "key_alias", None))
+        else:
+            providers = await credentials_cooldown(original_exception, live_router())
+            if providers is None:
+                return None
+            model = model or getattr(original_exception, "model", None)
+            refusal = credentials_refusal_answer(providers, model, user_api_key_dict)
+            verbose_proxy_logger.warning(
+                "CetiRun guard: the model %s is in cooldown after its providers (%s) refused the Gateway's "
+                "credentials; answered %d instead of %s to the key %s", model, ", ".join(sorted(set(providers))),
+                refusal.status_code, answered, getattr(user_api_key_dict, "key_alias", None))
+        # LiteLLM answers with an HTTPException that a failure hook returns, in place of the error. Its
+        # Anthropic Messages route answers from the error itself, so the error carries the answer too,
+        # without a type of its own: the type would be the one of the provider's 401 or of the cooldown.
+        replace_message(original_exception, refusal.detail)
+        for name, value in (("status_code", refusal.status_code), ("type", None)):
+            try:
+                setattr(original_exception, name, value)
+            except (AttributeError, TypeError):
+                pass
+        return refusal
 
 
 handler = Guard()
