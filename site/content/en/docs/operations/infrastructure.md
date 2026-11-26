@@ -558,12 +558,26 @@ earlier view keeps its rows and continues to count new calls until you drop it.
 
 To count the earlier days in `GatewayDailyUsageV2` as well, a database admin
 can build a second view with backfill. The second view counts only the rows
-that the `Gateway` table still keeps. The table deletes each row
-`adxLogsRetentionDays` days after its ingestion, but the view keeps its days
-for `adxGatewayUsageRetentionDays` days. A warm cache does not bring back rows
-that the table has deleted. Therefore, do not drop `GatewayDailyUsageV2`.
-Replace it only when the second view has at least its calls and spend on every
-day:
+that the `Gateway` table still keeps. The table deletes its rows about
+`adxLogsRetentionDays` days after their ingestion, but the view keeps its days
+for `adxGatewayUsageRetentionDays` days. The table deletes rows in batches by
+the time of their ingestion, not by their timestamps. It can lose a part of the
+calls of a day or of an Agent and keep the rest. A warm cache does not bring
+back rows that the table has deleted.
+
+Therefore, do not drop `GatewayDailyUsageV2`. Replace it only when the second
+view has at least its counts and its spend in each group of the view. A group
+is one day, cluster, Agent, user, Team, model, route, and call origin.
+
+The steps use two names that no view, table, or function of the logs database
+has yet. Here, the names have the date of the backfill. Use your own date:
+
+- `GatewayDailyUsageV2Backfill20261126` for the second view.
+- `GatewayDailyUsageV2Previous20261126` for the current view after the
+  replacement.
+
+To list the views of the database, run `.show materialized-views`. Then do
+these steps:
 
 1. Keep the `Gateway` table in the hot cache for its retention. For example,
    for 90 days:
@@ -572,50 +586,69 @@ day:
    .alter table Gateway policy caching hot = 90d
    ```
 
-2. Create the second view. Run
+2. Create the second view. Run the first command of
    `infra/cluster/modules/adx/cetirun-gateway-usage.kql` in the logs database
    with these changes:
 
-   - Name the view `GatewayDailyUsageV2Backfill` in its three commands.
-   - Replace `__RETENTION_DAYS__`.
-   - Add `backfill = true` to the `with` list of the first command.
+   - Replace `.create ifnotexists` with `.create async`. Without `ifnotexists`,
+     the creation fails when the name exists.
+   - Add `backfill = true` to the `with` list.
+   - Name the view `GatewayDailyUsageV2Backfill20261126`.
 
-   For a large table, add `async` after `.create`. Then wait until
-   `.show operations` reports the operation as `Completed`.
-3. Compare the views. The query must return no rows:
+   The command returns an operation ID. Run
+   `.show operations <OperationId>` until `State` is not `InProgress`.
+   Continue only when `State` is `Completed`. In another state, such as
+   `Failed` or `Throttled`, the view does not exist. Then stop, or run the
+   command again later.
+3. Set the policies of the second view. Run the two `.alter` commands of the
+   file with the name `GatewayDailyUsageV2Backfill20261126`, and replace
+   `__RETENTION_DAYS__`.
+4. Compare the views. The query must return no rows:
 
    ```kusto
-   let Current = GatewayDailyUsageV2
-       | summarize Calls = sum(Calls), Spend = sum(Spend) by Day, Cluster;
-   let Backfill = GatewayDailyUsageV2Backfill
-       | summarize NewCalls = sum(Calls), NewSpend = sum(Spend) by Day, Cluster;
-   Current
-   | join kind=leftouter Backfill on Day, Cluster
-   | where isnull(NewCalls) or NewCalls < Calls or NewSpend < Spend - 0.000001
+   union
+       (GatewayDailyUsageV2 | extend Sign = -1),
+       (GatewayDailyUsageV2Backfill20261126 | extend Sign = 1)
+   | summarize
+       Calls = sum(Sign * Calls), FailedCalls = sum(Sign * FailedCalls),
+       PromptTokens = sum(Sign * PromptTokens),
+       CompletionTokens = sum(Sign * CompletionTokens),
+       CachedTokens = sum(Sign * CachedTokens),
+       CacheCreationTokens = sum(Sign * CacheCreationTokens),
+       ReasoningTokens = sum(Sign * ReasoningTokens), Spend = sum(Sign * Spend)
+       by Day, Cluster, AgentUid, Agent, UserId, Owner, Team, Model,
+       ProviderModel, Provider, CopilotRoute, CallOrigin
+   | where Calls < 0 or FailedCalls < 0 or PromptTokens < 0
+       or CompletionTokens < 0 or CachedTokens < 0 or CacheCreationTokens < 0
+       or ReasoningTokens < 0 or Spend < -0.000001
    ```
 
-   Each row is a day on which the table has lost some of the calls that
+   Each value is the second view minus `GatewayDailyUsageV2`, in one group of
+   the view. A row is a group in which the table has lost rows that
    `GatewayDailyUsageV2` counted. The value `0.000001` allows for rounding in
    the sums of the spend. If the query returns rows, keep
-   `GatewayDailyUsageV2`, drop the second view, and continue with step 5:
+   `GatewayDailyUsageV2`, drop the second view, and continue with step 6:
 
    ```kusto
-   .drop materialized-view GatewayDailyUsageV2Backfill
+   .drop materialized-view GatewayDailyUsageV2Backfill20261126
    ```
 
-4. Replace the view, and keep the current view under another name. Run the two
-   commands one after the other. Queries of `GatewayDailyUsageV2` fail between
-   them:
+5. Replace the view, and keep the current view under the other name. Run the
+   two commands one after the other. Queries of `GatewayDailyUsageV2` fail
+   between them:
 
    ```kusto
-   .rename materialized-view GatewayDailyUsageV2 to GatewayDailyUsageV2Previous
+   .rename materialized-view GatewayDailyUsageV2 to GatewayDailyUsageV2Previous20261126
    ```
 
    ```kusto
-   .rename materialized-view GatewayDailyUsageV2Backfill to GatewayDailyUsageV2
+   .rename materialized-view GatewayDailyUsageV2Backfill20261126 to GatewayDailyUsageV2
    ```
 
-5. Remove the caching policy of the table. The policy of the database applies
+   If the first command fails, the current view keeps its name. Drop the second
+   view as in step 4. If the second command fails, rename
+   `GatewayDailyUsageV2Previous20261126` back to `GatewayDailyUsageV2`.
+6. Remove the caching policy of the table. The policy of the database applies
    again:
 
    ```kusto
@@ -624,10 +657,11 @@ day:
 
 Later deployments of the template keep the replaced view, because the template
 creates `GatewayDailyUsageV2` only when it is missing. They leave
-`GatewayDailyUsageV2Previous` as it is. When you no longer need it, drop it:
+`GatewayDailyUsageV2Previous20261126` as it is. When you no longer need it,
+drop it:
 
 ```kusto
-.drop materialized-view GatewayDailyUsageV2Previous
+.drop materialized-view GatewayDailyUsageV2Previous20261126
 ```
 
 If you do not need the days that are only in `GatewayDailyUsage`, a database
