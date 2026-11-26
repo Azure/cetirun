@@ -322,6 +322,7 @@ only private endpoints can reach, and disable its public network access. The
 these variables:
 
 ```bash
+AZURE_SUBSCRIPTION_ID="<subscription-id>" AZURE_TENANT_ID="<tenant-id>" \
 RESOURCE_GROUP=example-rg AKS_CLUSTER_NAME=example-cluster \
 PARAM_FILE=/absolute/path/marketplace-storage.bicepparam \
 PRIVATE_ENDPOINT_SUBNET_ID="/subscriptions/<subscription-id>/resourceGroups/example-network-rg/providers/Microsoft.Network/virtualNetworks/example-vnet/subnets/example-nodes" \

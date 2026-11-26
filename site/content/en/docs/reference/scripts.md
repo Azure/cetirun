@@ -236,6 +236,13 @@ Kubernetes, or change another registry.
   prerequisites, then install the operator chart with its packaged CRDs.
 - `app/cetirun-portal/deploy/deploy.sh`: portal namespace injection and Helm.
 
+The cluster and storage helpers share `scripts/bicep_inputs.py` to compile
+Bicep and snapshot the template and parameters before cloud writes. Compilation
+uses the installed Bicep CLI with `--no-restore`. Both helpers deploy the same
+private JSON snapshots even if the source files change during provisioning.
+The cluster helper also checks the Kubernetes version with
+`scripts/validate-cluster-kubernetes.py` before saving those snapshots.
+
 Operator deployment inputs include `REGISTRY`, `VERSION`, `CHART_VERSION`, `NAMESPACE`,
 `RELEASE_NAME`, `LOCAL_CHART`, `IMAGE_REPO`, `IMAGE_TAG`, `IMAGE_DIGEST`,
 `DOMAIN`, `CETIRUN_REPO_URL`, `CETIRUN_CHART_VERSION`, and `HELM_SET_ARGS`.

@@ -16,6 +16,8 @@ For other problems, use these pages:
 The checks on this page connect to Kubernetes, but they do not change it,
 unless a step says otherwise. Do not paste their output into public issues,
 because it can contain names, identities, or Secret values.
+Use the environment's private kubeconfig, and pass the target subscription to
+Azure resource commands.
 
 ## When make deploy fails
 
@@ -86,6 +88,13 @@ stopped during the operation.
 
 Do not delete the Helm release Secrets to force a new run.
 
+With `publicTLS`, an early `deployed` platform revision can contain only the
+certificate bootstrap. Once full platform workloads exist, a rollback to
+that revision can remove them. Inspect the candidate revision's resources
+before choosing it as a recovery target; a successful certificate revision is
+not a known-good full platform release. Keep retained database credentials,
+Agent resources, and PVCs while investigating a failed bootstrap.
+
 ### Release and workload failures
 
 After the preflight, `make deploy` installs the releases in this order:
@@ -112,6 +121,28 @@ kubectl get events -n cetirun-system --field-selector type=Warning --sort-by=.la
   revision: `kubectl get namespace <namespace> --show-labels`.
 - `Broker pods are missing the Auth SDK`: the Broker Pods have no `auth-sdk`
   container. Microsoft delegated access adds this container.
+
+### DNS failures with AKS LocalDNS
+
+If protected workloads such as Connections MCP or Agent sidecars time out
+resolving cluster Services, inspect the node pools' LocalDNS settings. AKS
+can enable LocalDNS by default. It redirects queries to a node-local resolver,
+while the CetiRun policies allow DNS to CoreDNS Pods. This mismatch can prevent
+workloads from starting even when CoreDNS is healthy.
+
+```bash
+az aks nodepool list --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --resource-group example-rg --cluster-name example-cluster \
+  --query '[].{pool:name,mode:localDnsProfile.mode,state:localDnsProfile.state}' \
+  --output table
+```
+
+The [cluster template](../infrastructure/) explicitly disables LocalDNS on
+every pool. Inspect new or separately created pools as well. If a running
+environment needs this setting changed, plan a controlled pool update:
+changing LocalDNS can reimage nodes. Record workload and PVC state first,
+update one pool at a time, and verify recovery before continuing. Preserve
+the existing network isolation instead of adding a broad DNS exception.
 
 ## Platform components
 

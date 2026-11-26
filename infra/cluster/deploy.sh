@@ -3,11 +3,12 @@
 # Licensed under the MIT License.
 
 set -euo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BICEP_FILE="${SCRIPT_DIR}/main.bicep"
 PARAM_FILE="${PARAM_FILE:-${SCRIPT_DIR}/main.bicepparam}"
-DEPLOYMENT_NAME="cetirun-cluster-$(date +%Y%m%d%H%M%S)"
+DEPLOYMENT_NAME="${DEPLOYMENT_NAME:-cetirun-cluster-$(date +%Y%m%d%H%M%S)}"
 # Set to true only for an explicitly authorized bootstrap environment where
 # local AKS admin accounts remain enabled. Default user credentials preserve
 # the normal Azure RBAC path.
@@ -15,6 +16,34 @@ AKS_ADMIN_CREDENTIALS="${AKS_ADMIN_CREDENTIALS:-false}"
 
 RG_NAME="${RESOURCE_GROUP:?RESOURCE_GROUP is required}"
 LOCATION="${LOCATION:?LOCATION is required}"
+AZURE_SUBSCRIPTION_ID="${AZURE_SUBSCRIPTION_ID:?AZURE_SUBSCRIPTION_ID is required}"
+AZURE_TENANT_ID="${AZURE_TENANT_ID:?AZURE_TENANT_ID is required}"
+export KUBECONFIG="${KUBECONFIG:?KUBECONFIG must name a private absolute file}"
+export AZURE_SUBSCRIPTION_ID AZURE_TENANT_ID
+GATEWAY_REGISTRATION_TIMEOUT="${GATEWAY_REGISTRATION_TIMEOUT:-900}"
+if [[ ! "$GATEWAY_REGISTRATION_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Error: GATEWAY_REGISTRATION_TIMEOUT must be a positive number of seconds." >&2
+  exit 1
+fi
+python3 - <<'PYCONFIG'
+import os
+from pathlib import Path
+p = Path(os.environ['KUBECONFIG'])
+default = Path.home() / '.kube/config'
+if (not p.is_absolute() or ':' in str(p) or p.is_symlink()
+        or p.resolve() == default.resolve()
+        or (p.exists() and default.exists() and p.samefile(default))
+        or not p.parent.is_dir()
+        or (p.exists() and not p.is_file())):
+    raise SystemExit('Error: KUBECONFIG must name one private absolute file outside the default kubeconfig.')
+if p.exists():
+    p.chmod(0o600)
+PYCONFIG
+
+# Never select a global subscription. Every resource call carries this target.
+az_target() {
+  az "$@" --subscription "$AZURE_SUBSCRIPTION_ID"
+}
 
 # Check the effective version before extension, feature, or resource writes.
 # Deploy these same compiled inputs even if the source changes while waiting
@@ -42,45 +71,70 @@ agent_setting_is() {
   '
 }
 
-# Pre-flight: ensure aks-preview extension is installed and up-to-date
-# --enable-gateway-api requires aks-preview >= 19.0.0b4
-az extension add --name aks-preview --upgrade --yes 2>/dev/null \
-  || { echo "Error: failed to install/update aks-preview extension"; exit 1; }
-
-# Pre-flight: register Gateway API feature flag if needed
-GATEWAY_STATE="$(az feature show --namespace Microsoft.ContainerService \
-  --name ManagedGatewayAPIPreview --query 'properties.state' -o tsv 2>/dev/null || echo 'NotRegistered')"
-if [[ "$GATEWAY_STATE" != "Registered" ]]; then
-  echo "Registering ManagedGatewayAPIPreview feature flag..."
-  az feature register --namespace Microsoft.ContainerService --name ManagedGatewayAPIPreview
-  az provider register --namespace Microsoft.ContainerService
-  echo "Waiting for feature registration..."
-  while [[ "$(az feature show --namespace Microsoft.ContainerService \
-    --name ManagedGatewayAPIPreview --query 'properties.state' -o tsv)" != "Registered" ]]; do
-    sleep 30
-  done
+# Read-only target and tool checks precede every Azure mutation.
+python3 - <<'PYTARGET'
+import json, os, subprocess
+account = json.loads(subprocess.check_output([
+    'az', 'account', 'show', '--subscription', os.environ['AZURE_SUBSCRIPTION_ID'], '-o', 'json']))
+if (account.get('id', '').lower() != os.environ['AZURE_SUBSCRIPTION_ID'].lower()
+        or account.get('tenantId', '').lower() != os.environ['AZURE_TENANT_ID'].lower()):
+    raise SystemExit('Error: Azure subscription/tenant does not match the explicit target.')
+PYTARGET
+# Gateway API support must already be installed. Capability detection also
+# supports Azure CLI installations whose extension metadata omits a version.
+if ! aks_update_help="$(az aks update --help)" || [[ "$aks_update_help" != *"--enable-gateway-api"* ]]; then
+  echo "Error: install a reviewed, pinned Azure CLI/aks-preview with --enable-gateway-api support before deployment." >&2
+  exit 1
 fi
 
+GATEWAY_STATE="$(az_target feature show --namespace Microsoft.ContainerService \
+  --name ManagedGatewayAPIPreview --query 'properties.state' -o tsv)"
+if [[ "$GATEWAY_STATE" != "Registered" ]]; then
+  echo "Registering ManagedGatewayAPIPreview feature flag..."
+  az_target feature register --namespace Microsoft.ContainerService --name ManagedGatewayAPIPreview -o none
+  registration_started=$SECONDS
+  while [[ "$(az_target feature show --namespace Microsoft.ContainerService \
+    --name ManagedGatewayAPIPreview --query 'properties.state' -o tsv)" != "Registered" ]]; do
+    if (( SECONDS - registration_started >= GATEWAY_REGISTRATION_TIMEOUT )); then
+      echo "Error: feature registration is still pending; inspect its state before rerunning." >&2
+      exit 1
+    fi
+    sleep 15
+  done
+fi
+# Registration can still need propagation when a prior run stopped just after
+# the feature became Registered. Re-register idempotently on every run and
+# wait for the provider before resource deployment.
+az_target provider register --namespace Microsoft.ContainerService -o none
+registration_started=$SECONDS
+while [[ "$(az_target provider show --namespace Microsoft.ContainerService --query registrationState -o tsv)" != "Registered" ]]; do
+  if (( SECONDS - registration_started >= GATEWAY_REGISTRATION_TIMEOUT )); then
+    echo "Error: provider registration is still pending; inspect its state before rerunning." >&2
+    exit 1
+  fi
+  sleep 15
+done
+
 # Create resource group (use existing location if RG already exists)
-RG_LOCATION=$(az group show --name "$RG_NAME" --query location -o tsv 2>/dev/null || echo "$LOCATION")
-az group create --name "$RG_NAME" --location "$RG_LOCATION" --tags project=cetirun
+RG_LOCATION=$(az_target group show --name "$RG_NAME" --query location -o tsv 2>/dev/null || echo "$LOCATION")
+az_target group create --name "$RG_NAME" --location "$RG_LOCATION" --tags project=cetirun
 
 # Validate
-az deployment group validate \
+az_target deployment group validate \
   --resource-group "$RG_NAME" \
   --template-file "${DEPLOYMENT_INPUT_DIR}/template.json" \
   --parameters "@${DEPLOYMENT_INPUT_DIR}/parameters.json" \
   --name "${DEPLOYMENT_NAME}-validate"
 
 # Deploy
-az deployment group create \
+az_target deployment group create \
   --resource-group "$RG_NAME" \
   --template-file "${DEPLOYMENT_INPUT_DIR}/template.json" \
   --parameters "@${DEPLOYMENT_INPUT_DIR}/parameters.json" \
   --name "$DEPLOYMENT_NAME"
 
 # Read cluster name from outputs
-CLUSTER_NAME="$(az deployment group show \
+CLUSTER_NAME="$(az_target deployment group show \
   --resource-group "$RG_NAME" \
   --name "$DEPLOYMENT_NAME" \
   --query 'properties.outputs.clusterName.value' -o tsv)"
@@ -90,11 +144,28 @@ credential_args=()
 if [[ "${AKS_ADMIN_CREDENTIALS}" == "true" ]]; then
   credential_args+=(--admin)
 fi
-az aks get-credentials \
+az_target aks get-credentials \
   --resource-group "$RG_NAME" \
   --name "$CLUSTER_NAME" \
   "${credential_args[@]}" \
+  --file "$KUBECONFIG" \
   --overwrite-existing
+chmod 600 "$KUBECONFIG"
+
+# Verify the credentials resolve to this exact AKS before the first API write.
+python3 - "$RG_NAME" "$CLUSTER_NAME" <<'PYCLUSTER'
+import json, os, subprocess, sys
+from urllib.parse import urlsplit
+cluster = json.loads(subprocess.check_output([
+    'az', 'aks', 'show', '--resource-group', sys.argv[1], '--name', sys.argv[2],
+    '--subscription', os.environ['AZURE_SUBSCRIPTION_ID'], '-o', 'json']))
+expected = f"/subscriptions/{os.environ['AZURE_SUBSCRIPTION_ID']}/resourceGroups/{sys.argv[1]}/providers/Microsoft.ContainerService/managedClusters/{sys.argv[2]}"
+config = json.loads(subprocess.check_output(['kubectl', 'config', 'view', '--minify', '-o', 'json']))
+server = urlsplit(config['clusters'][0]['cluster']['server'])
+hosts = {cluster.get('fqdn'), cluster.get('privateFqdn')}
+if cluster.get('id', '').lower() != expected.lower() or server.scheme != 'https' or server.hostname not in hosts:
+    raise SystemExit('Error: kubeconfig does not match the explicit AKS target.')
+PYCLUSTER
 
 # Container Insights agent settings, in place before anything else runs on the
 # cluster. The cluster template turns Container Insights off, and ADX-Mon
@@ -140,7 +211,7 @@ else
 fi
 
 # Enable Gateway API
-az aks update \
+az_target aks update \
   --resource-group "$RG_NAME" \
   --name "$CLUSTER_NAME" \
   --enable-gateway-api \
@@ -153,5 +224,5 @@ kubectl get pods -n aks-istio-ingress
 # The Azure CLI spells the property issuerUrl; the ARM name in the Bicep
 # template is issuerURL. JMESPath is case-sensitive, so the ARM spelling
 # prints an empty line.
-az aks show --resource-group "$RG_NAME" --name "$CLUSTER_NAME" \
+az_target aks show --resource-group "$RG_NAME" --name "$CLUSTER_NAME" \
   --query 'oidcIssuerProfile.issuerUrl' -o tsv

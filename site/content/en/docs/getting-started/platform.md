@@ -198,9 +198,10 @@ Bicep inputs and helper side effects. The cluster and storage helpers expect
 `.bicepparam` files that you write. The repository does not include these
 files. Set `PARAM_FILE` explicitly to your reviewed file.
 
-The cluster helper installs or updates an Azure CLI extension, registers a
-preview feature, provisions infrastructure, enables Gateway API, and overwrites
-the selected kubeconfig entry. Node-pool defaults are not sized for a small
+The cluster helper requires an explicitly selected subscription, tenant and
+private kubeconfig. It checks the installed Azure CLI capabilities, registers a
+preview feature, provisions infrastructure, enables Gateway API, and writes
+only the selected private kubeconfig entry. Node-pool defaults are not sized for a small
 demonstration environment.
 
 `make deploy` needs a Kusto cluster with the logs, metrics, and Agent logs

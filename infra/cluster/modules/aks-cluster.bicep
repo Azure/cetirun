@@ -125,6 +125,10 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-01-01' = {
       {
         name: 'system'
         mode: 'System'
+        // Network policies authorize CoreDNS Pods, not a node-local DNS proxy.
+        localDNSProfile: {
+          mode: 'Disabled'
+        }
         vmSize: systemNodePoolVmSize
         enableAutoScaling: true
         minCount: systemNodePoolMinCount
@@ -148,6 +152,9 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-01-01' = {
       {
         name: 'agent'
         mode: 'User'
+        localDNSProfile: {
+          mode: 'Disabled'
+        }
         vmSize: agentNodePoolVmSize
         enableAutoScaling: true
         minCount: agentNodePoolMinCount
@@ -172,6 +179,9 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-01-01' = {
       {
         name: 'agent2'
         mode: 'User'
+        localDNSProfile: {
+          mode: 'Disabled'
+        }
         vmSize: agent2NodePoolVmSize
         enableAutoScaling: true
         minCount: agent2NodePoolMinCount

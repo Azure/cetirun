@@ -11,6 +11,23 @@ deployment. Before you provision resources, make sure that your Azure
 subscription and region support the selected Kubernetes version and VM sizes.
 Also make sure that they support the zones, preview features, and API version.
 
+## Select the Azure target
+
+Use an Azure CLI session authenticated to the intended tenant. Set the target
+before running the resource and permission examples on this page:
+
+```bash
+export AZURE_SUBSCRIPTION_ID="<subscription-id>"
+export AZURE_TENANT_ID="<tenant-id>"
+az account show --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --query '{subscription:id,tenant:tenantId}' --output json
+```
+
+Confirm that the returned subscription and tenant match these values. Every
+Azure resource command below passes the subscription explicitly. The `az ad`
+commands use the tenant of the signed-in session. These variables do not
+change the default Azure subscription.
+
 ## Source map
 
 | Source | Role |
@@ -45,10 +62,19 @@ value.
 | Managed Istio traffic redirection | `InitContainers`. Kata VM-isolated Agent Pods do not start with CNI chaining |
 | Availability zones | `1`, `2`, `3` on all three pools |
 | Networking | Azure CNI overlay, Cilium, load-balancer outbound |
+| DNS forwarding | LocalDNS disabled on every pool; workloads use CoreDNS |
 | Pod / Service / DNS ranges | `10.244.0.0/16`, `172.16.0.0/16`, `172.16.0.10` |
 | Monitoring | ADX-Mon into a new Kusto cluster (`adxMode: create`); Container Insights and managed Prometheus off |
 | Automatic upgrades | `patch` channel for Kubernetes, `NodeImage` channel for the node OS |
 | Add-ons | Key Vault Secrets Provider, with rotation of the mounted secrets every 2 minutes |
+
+The template explicitly disables AKS LocalDNS. CetiRun's network policies
+allow DNS to CoreDNS Pods and deny unapproved link-local destinations. AKS can
+otherwise enable LocalDNS by default, which redirects queries to a node-local
+address and prevents protected workloads, including Connections MCP, from
+starting. Keep this setting on new pools as well. Changing LocalDNS on an
+existing pool can roll its nodes; inspect its current settings and plan that
+operation separately. Do not relax Agent isolation to work around DNS failures.
 
 With the automatic upgrade channels, AKS installs Kubernetes patch versions
 and new node images without a manual step. An upgrade drains each node, so the
@@ -64,7 +90,7 @@ It rejects older versions, prereleases, and values it cannot resolve to a stable
 See [Install CetiRun](../../getting-started/platform/#platform-chart) and
 [Policy-bound Teams](../policy-teams/). To see the Kubernetes versions of a
 region, run
-`az aks get-versions --location your-approved-region --output table`.
+`az aks get-versions --subscription "$AZURE_SUBSCRIPTION_ID" --location your-approved-region --output table`.
 If the region does not offer a stable compatible version, stop and select a
 region/version that does; do not fall back to an older version. This default
 change does not upgrade existing clusters. Plan any existing-cluster upgrade
@@ -78,7 +104,8 @@ Before you deploy, list the revisions of the region and their compatible
 Kubernetes versions:
 
 ```bash
-az aks mesh get-revisions --location your-approved-region --output table
+az aks mesh get-revisions --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --location your-approved-region --output table
 ```
 
 After the deployment, read the installed revision. The names of the managed
@@ -86,7 +113,8 @@ Istio resources contain it, and it is the `istio.revision` input of
 `make deploy`:
 
 ```bash
-az aks show --resource-group example-rg --name example-cluster \
+az aks show --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --resource-group example-rg --name example-cluster \
   --query serviceMeshProfile.istio.revisions --output tsv
 ```
 
@@ -100,14 +128,17 @@ its minimum and maximum. For a small test cluster, set lower minimum counts in
 the parameter file. You can also select smaller VM sizes from the allowed
 values in `main.bicep`.
 
+### Small test environment
+
 By default, the platform workloads other than OAuth2 Proxy do not tolerate the
 taint of the system pool. They run on the `agent` and `agent2` pools, so keep
 at least one node in the `agent` pool. A pool with a minimum of 0 gets a node
 only when a Pod must have one. That Pod then waits some minutes for the node.
-For example:
+Set maximum counts as well as minimums to bound test capacity. For example,
+this configuration starts with two nodes and allows at most six:
 
 ```bicep
-using '<path-to-your-clone>/infra/cluster/main.bicep'
+using '../cetirun/infra/cluster/main.bicep'
 
 param resourceGroupName = 'example-rg'
 param location = 'your-approved-region'
@@ -115,13 +146,37 @@ param clusterName = 'example-cluster'
 param dnsPrefix = 'example-cluster'
 param nodeResourceGroup = 'example-rg-nodes'
 param kubernetesVersion = '1.37'
-param systemNodePoolVmSize = 'Standard_D4ds_v6'
-param agentNodePoolVmSize = 'Standard_D8ds_v6'
-param agent2NodePoolVmSize = 'Standard_D8ds_v6'
-param systemNodePoolMinCount = 2
+param skuTier = 'Standard'
+param systemNodePoolVmSize = 'Standard_D4as_v5'
+param agentNodePoolVmSize = 'Standard_D8as_v5'
+param agent2NodePoolVmSize = 'Standard_D8as_v5'
+param systemNodePoolMinCount = 1
+param systemNodePoolMaxCount = 2
 param agentNodePoolMinCount = 1
+param agentNodePoolMaxCount = 3
 param agent2NodePoolMinCount = 0
+param agent2NodePoolMaxCount = 1
 ```
+
+Save the parameter file outside the repository and adjust `using` relative to
+that file's directory. Bicep does not accept an absolute `using` path. Verify
+that the region offers the selected VM sizes and supports Kata on them.
+
+The initial two nodes use 12 vCPUs. Admission replica placement can require
+another Kata node even before user Agents are created; three nodes in this
+example use 20 vCPUs. The steady-state maximum is 40 vCPUs across six nodes.
+
+Each pool also configures `maxSurge: '33%'` for upgrades. AKS rounds the surge
+node count up, so the pool maxima of 2, 3, and 1 each need one extra node:
+4 vCPUs for `system`, 8 for `agent`, and 8 for `agent2`. At the steady-state
+maximum, upgrading one pool at a time needs up to 48 vCPUs. If surge nodes
+for all three pools overlap, the cluster needs 60 vCPUs. Reserve this upgrade
+capacity in both the regional vCPU quota and the Dasv5 family quota, in
+addition to other resources using those quotas. A quota of 40 vCPUs cannot
+support a surge upgrade when the pools are at their maxima.
+
+One system node and a Dev/Test ADX SKU are test choices, not a production
+availability design.
 
 Before you create Agents, examine the installed `kata-vm-isolation`
 RuntimeClass and its scheduling rules. The agent chart does not create that
@@ -159,9 +214,13 @@ kubelogin. On this cluster, kubectl uses kubelogin to get its Entra tokens.
 
 You must also set `RESOURCE_GROUP` and `LOCATION`. `LOCATION` sets only the
 location of a new resource group. The cluster region comes from `location` in
-the parameter file. `PARAM_FILE` selects the parameters that you examined. The
-helper uses the current Azure subscription and does not select one. Confirm
-that scope independently.
+the parameter file. `PARAM_FILE` selects the parameters that you examined.
+Set `AZURE_SUBSCRIPTION_ID` and `AZURE_TENANT_ID` to the intended target. The
+helper verifies this pair and passes the subscription to every resource
+command. It never changes the default Azure subscription. Set `KUBECONFIG` to
+one absolute private file outside the default kubeconfig, in a directory that
+already exists. The helper restricts that file to mode `0600` and checks its
+API endpoint against the returned AKS resource before writing Kubernetes objects.
 
 The helper does these steps:
 
@@ -170,12 +229,16 @@ The helper does these steps:
    compilation or version errors before any Azure operation. It saves the
    validated inputs in a private temporary directory, uses those same inputs
    for validation and deployment, and removes the directory on exit.
-2. It installs or updates `aks-preview`. If necessary, it registers the managed
-   Gateway API preview feature. Then it waits for the registration without a
-   time limit.
+2. It checks that the installed CLI supports `--enable-gateway-api`; it does
+   not install or upgrade extensions. If necessary, it registers the managed
+   Gateway API preview feature and waits up to `GATEWAY_REGISTRATION_TIMEOUT`
+   seconds (900 by default). A timeout leaves registration pending; inspect the
+   actual state before rerunning. It re-registers the provider and waits with the
+   same bound, including after a previous run registered the feature.
 3. It creates or updates the resource group.
 4. It validates and creates the Bicep deployment.
-5. It fetches credentials with `--overwrite-existing`.
+5. It fetches credentials into the explicit private `KUBECONFIG` with
+   `--overwrite-existing` and verifies the target before any Kubernetes write.
 6. It creates the Container Insights agent settings in `kube-system`, for the
    case that Container Insights is enabled later. The template disables it.
    These settings are in `infra/cluster/container-azm-ms-agentconfig.yaml`.
@@ -198,14 +261,17 @@ group. **Connected, mutating:**
 1. If the resource group does not exist, create it:
 
    ```bash
-   az group create --name example-rg --location your-approved-region --output none
+   az group create --subscription "$AZURE_SUBSCRIPTION_ID" \
+     --name example-rg --location your-approved-region --output none
    ```
 
 2. Assign the role at the scope of the resource group:
 
    ```bash
-   RESOURCE_GROUP_ID=$(az group show --name example-rg --query id --output tsv)
-   az role assignment create --role 'Azure Kubernetes Service RBAC Cluster Admin' \
+   RESOURCE_GROUP_ID=$(az group show --subscription "$AZURE_SUBSCRIPTION_ID" \
+     --name example-rg --query id --output tsv)
+   az role assignment create --subscription "$AZURE_SUBSCRIPTION_ID" \
+     --role 'Azure Kubernetes Service RBAC Cluster Admin' \
      --assignee-object-id "$(az ad signed-in-user show --query id --output tsv)" \
      --assignee-principal-type User --scope "$RESOURCE_GROUP_ID" --output none
    ```
@@ -220,20 +286,25 @@ resource group and cluster.
 the parameters:
 
 ```bash
+AZURE_SUBSCRIPTION_ID="<subscription-id>" AZURE_TENANT_ID="<tenant-id>" \
+KUBECONFIG=/absolute/private/kubeconfig \
 RESOURCE_GROUP=example-rg LOCATION=your-approved-region \
 PARAM_FILE=/absolute/path/cluster.bicepparam \
   bash infra/cluster/deploy.sh
 ```
 
 This is not a dry run. The helper changes cloud resources, the subscription
-feature registration, and the local Kubernetes configuration. The local version
-preflight runs first, but extension, feature, and resource-group writes still
+feature registration, and the selected private Kubernetes configuration. The
+local version preflight runs first, but feature and resource-group writes still
 occur **before Azure deployment validation**. A later validation failure does
 not mean that nothing changed. Gateway API enablement is a side effect of the
 helper. CetiRun's routing templates use Istio `Gateway` and `VirtualService`
 resources.
 
 ## Connect to the cluster
+
+Use the subscription and tenant verified in
+[Select the Azure target](#select-the-azure-target) for these commands.
 
 The template enables Microsoft Entra authentication with Azure RBAC for
 Kubernetes authorization. As a result, each person who runs kubectl, Helm, or
@@ -247,9 +318,11 @@ administrators, assign the role at the scope of the cluster.
 **Connected, mutating:**
 
 ```bash
-CLUSTER_ID=$(az aks show --resource-group example-rg --name example-cluster \
+CLUSTER_ID=$(az aks show --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --resource-group example-rg --name example-cluster \
   --query id --output tsv)
-az role assignment create --role 'Azure Kubernetes Service RBAC Cluster Admin' \
+az role assignment create --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --role 'Azure Kubernetes Service RBAC Cluster Admin' \
   --assignee-object-id "<administrator-object-id>" \
   --assignee-principal-type User --scope "$CLUSTER_ID" --output none
 ```
@@ -262,7 +335,8 @@ kubectl gets its tokens through kubelogin from the Azure CLI sign-in.
 `az aks install-cli` installs kubectl and kubelogin:
 
 ```bash
-az aks get-credentials --resource-group example-rg --name example-cluster \
+az aks get-credentials --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --resource-group example-rg --name example-cluster \
   --file /absolute/private/kubeconfig
 export KUBECONFIG=/absolute/private/kubeconfig
 kubelogin convert-kubeconfig -l azurecli
@@ -329,19 +403,24 @@ them. The commands use the names that the earlier template gave them. The
 `monitor-control-service` the first time. **Connected, mutating:**
 
 ```bash
-CLUSTER_ID=$(az aks show --resource-group example-rg --name example-cluster \
+CLUSTER_ID=$(az aks show --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --resource-group example-rg --name example-cluster \
   --query id --output tsv)
-az monitor data-collection rule association delete --yes \
+az monitor data-collection rule association delete --subscription "$AZURE_SUBSCRIPTION_ID" --yes \
   --name ContainerInsightsExtension --resource "$CLUSTER_ID"
-az monitor data-collection rule association delete --yes \
+az monitor data-collection rule association delete --subscription "$AZURE_SUBSCRIPTION_ID" --yes \
   --name MSProm-your-approved-region-example-cluster --resource "$CLUSTER_ID"
-az monitor data-collection rule delete --yes --resource-group example-rg \
+az monitor data-collection rule delete --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --yes --resource-group example-rg \
   --name MSCI-your-approved-region-example-cluster
-az monitor data-collection rule delete --yes --resource-group example-rg \
+az monitor data-collection rule delete --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --yes --resource-group example-rg \
   --name example-cluster-prometheus
-az monitor log-analytics workspace delete --yes --resource-group example-rg \
+az monitor log-analytics workspace delete --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --yes --resource-group example-rg \
   --workspace-name example-cluster-logs
-az monitor account delete --yes --resource-group example-rg \
+az monitor account delete --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --yes --resource-group example-rg \
   --name example-cluster-prometheus
 ```
 
