@@ -59,6 +59,17 @@ func TestCustomSkillConfiguration(t *testing.T) {
 	}
 }
 
+func TestAzureFilesGlobalSkillsRejectTeamBlobOverride(t *testing.T) {
+	values := map[string]any{"skills": map[string]any{
+		"shared": true, "backend": "azure-files-nfs", "shareName": "published",
+		"protocol": "nfs", "resourceGroup": "platform", "storageAccount": "skills",
+	}}
+	team := &api.Team{Spec: api.TeamSpec{SkillStorage: &api.SkillStorageSpec{ContainerName: "legacy"}}}
+	if err := applySkillValues(values, team, api.SkillOverrideSpec{}, "", false); err == nil {
+		t.Fatal("expected Azure Files and Team Blob storage conflict")
+	}
+}
+
 func TestCustomSkillSelectionCannotBeSilentlyIgnored(t *testing.T) {
 	instance := &api.Agent{Spec: api.AgentSpec{Agent: api.HarnessSpec{Type: api.AgentTypeCustom}}}
 	r := &AgentReconciler{}

@@ -279,6 +279,7 @@ Source: [app/cetirun-chart/values.yaml]({{< repo "app/cetirun-chart/values.yaml"
 | `networkPolicy.allowedInternalCIDRs` | `[]` | Internal IPs/CIDRs to explicitly allow despite blockedCIDRs. Each entry needs a cidr and a list of ports. |
 | `networkPolicy.blockedCIDRs` | 6 items | Ranges excluded from the public egress rule. The DNS, platform service and allowedInternalCIDRs rules are separate allow rules. |
 | `skills` |  | Shared skills volume configuration. Auto-creates PV/PVC backed by Azure Blob CSI (NFS by default; Fuse/Fuse2 supported). Protocol, secretName, and mountOptions are install-time-only PV settings. |
+| `skills.backend` | `"blob"` | Storage backend: blob or azure-files-nfs (NFS 4.1 with required TLS). |
 | `skills.shared` | `false` | Enable shared skills PV/PVC |
 | `skills.storageClassName` | `"azureblob-nfs-premium"` | StorageClass for the shared skills PV/PVC |
 | `skills.protocol` | `"nfs"` | Install-time-only Blob CSI protocol. Use fuse2 for HTTPS-only storage accounts. |
@@ -287,6 +288,7 @@ Source: [app/cetirun-chart/values.yaml]({{< repo "app/cetirun-chart/values.yaml"
 | `skills.resourceGroup` | `""` | Azure resource group containing the storage account |
 | `skills.storageAccount` | `""` | Azure storage account name |
 | `skills.containerName` | `"aks-skills"` | Blob container name |
+| `skills.shareName` | `""` | Azure Files NFS share. Set containerName to "" for azure-files-nfs. |
 | `skills.mountPath` | `"/home/vibe/.aks/skills"` | Shared skills are included in $HOME/.agents/skills. A different path adds a read-only alias to the same composed view for native Agents. |
 | `skills.clawHub` | `[]` | ClawHub skill package names (reserved for future init-skills implementation). |
 | `skills.npm` | `[]` | npm package names installed into /home/vibe/.cetirun/skills/npm/\<name> by the init-skills init container. Specs can be bare ("matrix"), scoped ("@scope/name"), or version-pinned ("name@1.2.3"). |
@@ -503,9 +505,11 @@ Source: [app/cetirun-operator/chart/values.yaml]({{< repo "app/cetirun-operator/
 | `skillMarketplace.repository.tokenUsername` | `"x-access-token"` |  |
 | `skillMarketplace.repository.allowInsecureHTTP` | `false` | Allows an http:// URL. Only for tests inside a private network. |
 | `skillMarketplace.storage` |  | The Blob NFS container that holds the Team releases. Use a storage account that only private endpoints can reach: NFS 3.0 has no client authentication. |
+| `skillMarketplace.storage.backend` | `"blob"` |  |
 | `skillMarketplace.storage.resourceGroup` | `""` |  |
 | `skillMarketplace.storage.storageAccount` | `""` |  |
 | `skillMarketplace.storage.containerName` | `""` |  |
+| `skillMarketplace.storage.shareName` | `""` |  |
 | `skillMarketplace.storage.storageClassName` | `"azureblob-nfs-premium"` |  |
 | `skillMarketplace.storage.size` | `"100Gi"` | Capacity of the worker's read-write volume and claim. The storage is part of their names: a change of these values gives the worker a new volume and claim, and the operator moves the Agents' claims. |
 | `skillMarketplace.reservedNames` | `["cetirun-memory", "connected-services"]` | Skill names that the platform or images supply. |

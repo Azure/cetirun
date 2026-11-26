@@ -384,7 +384,11 @@ Validate shared skills configuration
 {{- if not .Values.skills.storageAccount -}}
 {{- fail "skills.storageAccount is required when skills.shared is true" }}
 {{- end -}}
-{{- if not .Values.skills.containerName -}}
+{{- if eq (.Values.skills.backend | default "blob") "azure-files-nfs" -}}
+{{- if not .Values.skills.shareName -}}
+{{- fail "skills.shareName is required when skills.shared is true" }}
+{{- end -}}
+{{- else if not .Values.skills.containerName -}}
 {{- fail "skills.containerName is required when skills.shared is true" }}
 {{- end -}}
 {{- if not .Values.skills.mountPath -}}

@@ -124,6 +124,33 @@ class SkillMarketplacePlatformTests(unittest.TestCase):
         self.assertEqual(volume["spec"]["claimRef"]["name"], claim["metadata"]["name"])
         return claim["metadata"]["name"], volume["metadata"]["name"]
 
+    def test_encrypted_files_writer_and_operator_configuration(self):
+        values = copy.deepcopy(VALUES)
+        storage = {"backend": "azure-files-nfs", "resourceGroup": "example-rg",
+                   "storageAccount": "exampleskills", "shareName": "marketplace",
+                   "storageClassName": "azurefile-csi-premium"}
+        values["cetirun-operator"]["skillMarketplace"]["storage"] = storage
+        objects = self.render(values)
+        names = self.worker_storage(objects)
+        pv = self.find(objects, "PersistentVolume", names[1])["spec"]
+        self.assertEqual(pv["csi"]["driver"], "file.csi.azure.com")
+        self.assertFalse(pv["csi"].get("readOnly", False))
+        self.assertNotIn("nodeStageSecretRef", pv["csi"])
+        self.assertEqual(pv["csi"]["volumeAttributes"], {
+            "resourceGroup": "example-rg", "storageAccount": "exampleskills", "shareName": "marketplace",
+            "protocol": "nfs", "encryptInTransit": "true", "mountPermissions": "0", "fsGroupChangePolicy": "None"})
+        config = json.loads(self.environment(objects, "cetirun-operator")["CETIRUN_SKILL_MARKETPLACE"])
+        self.assertEqual(config["storage"], storage)
+        storage["shareName"] = "another-share"
+        self.assertNotEqual(self.worker_storage(self.render(values)), names)
+        for field, value in (("containerName", "blob-container"), ("encryptInTransit", False),
+                             ("secretName", "account-key"), ("driver", "blob.csi.azure.com"),
+                             ("backend", "unknown")):
+            with self.subTest(field=field):
+                invalid = copy.deepcopy(values)
+                invalid["cetirun-operator"]["skillMarketplace"]["storage"][field] = value
+                self.assertNotEqual(self.helm(invalid).returncode, 0)
+
     def test_a_storage_change_renders_new_worker_storage(self):
         names = self.worker_storage(self.render(VALUES))
         self.assertEqual(self.worker_storage(self.render(VALUES)), names)

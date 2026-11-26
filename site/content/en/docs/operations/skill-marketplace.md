@@ -438,8 +438,13 @@ skillMarketplace:
 | `repository.syncInterval` | No | How often the worker examines the remote, as a duration such as `5m` (the default) or `1h`. At least `30s` |
 | `storage.resourceGroup` | Yes | The resource group of the storage account |
 | `storage.storageAccount` | Yes | The storage account: 3 to 24 lowercase letters and digits |
-| `storage.containerName` | Yes | The container of the releases. It cannot be the `sharedSkills` container |
-| `storage.storageClassName` | Yes | A StorageClass of the Blob CSI driver |
+| `storage.backend` | No | `blob` (default) or `azure-files-nfs` |
+| `storage.containerName` | With `blob` | The container of the releases. It cannot be the `sharedSkills` container |
+| `storage.shareName` | With `azure-files-nfs` | The encrypted NFS share. It cannot be the `sharedSkills` share; leave `containerName` empty |
+| `storage.storageClassName` | Yes | An existing StorageClass for the selected backend |
+
+For Azure Files prerequisites and the trust boundary, see
+[Encrypted Azure Files NFS](../storage/#encrypted-azure-files-nfs).
 
 To move the releases to other storage, change the `storage` fields and run
 `make deploy` again. Refer to [Move to other storage](#move-to-other-storage).

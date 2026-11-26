@@ -9,6 +9,15 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 )
 
+func TestWorkloadValuesRetainsAzureFilesSkillsCoordinates(t *testing.T) {
+	values := map[string]any{"skills": map[string]any{"shared": true, "backend": "azure-files-nfs", "shareName": "published", "protocol": "nfs"}}
+	got := WorkloadValues(values)
+	skills := got["skills"].(map[string]any)
+	if skills["backend"] != "azure-files-nfs" || skills["shareName"] != "published" {
+		t.Fatalf("WorkloadValues dropped Azure Files coordinates: %#v", skills)
+	}
+}
+
 func TestRejectCustomOverrideInjection(t *testing.T) {
 	for _, key := range []string{"runtime", "customBindings", "agentRequest", "command", "initContainers", "sidecars",
 		"extraEnv", "extraEnvFrom", "podSecurityContext", "securityContext", "extraVolumes", "extraVolumeMounts",

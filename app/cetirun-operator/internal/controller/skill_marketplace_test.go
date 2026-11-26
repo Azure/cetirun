@@ -25,6 +25,24 @@ const skillMarketplaceOverrideMessage = "skillOverrides cannot add or remove Ski
 const skillMarketplaceStorage = `"storage":{"resourceGroup":"example-rg","storageAccount":"exampleskills",` +
 	`"containerName":"marketplace","storageClassName":"azureblob-nfs-premium"}`
 
+func TestParseAzureFilesMarketplaceStorage(t *testing.T) {
+	raw := `{"enabled":true,"storage":{"backend":"azure-files-nfs","resourceGroup":"example-rg","storageAccount":"exampleskills","shareName":"marketplace","storageClassName":"azurefiles-premium"}}`
+	config, err := ParseSkillMarketplaceConfig(raw)
+	if err != nil || config.Storage == nil || config.Storage.Backend != "azure-files-nfs" || config.Storage.ShareName != "marketplace" {
+		t.Fatalf("Azure Files config = %+v, %v", config, err)
+	}
+	for _, raw := range []string{
+		strings.Replace(raw, `"shareName":"marketplace"`, `"shareName":"marketplace","containerName":"blob-skills"`, 1),
+		strings.Replace(raw, `"shareName":"marketplace"`, `"shareName":"marketplace","encryptInTransit":false`, 1),
+		`{"enabled":true,"storage":{"backend":"blob","resourceGroup":"example-rg","storageAccount":"exampleskills","containerName":"marketplace","shareName":"other","storageClassName":"azureblob"}}`,
+		`{"enabled":true,"storage":{"backend":"unsupported","resourceGroup":"example-rg","storageAccount":"exampleskills","containerName":"marketplace","storageClassName":"azureblob"}}`,
+	} {
+		if _, err := ParseSkillMarketplaceConfig(raw); err == nil {
+			t.Fatalf("invalid storage accepted: %s", raw)
+		}
+	}
+}
+
 func TestParseSkillMarketplaceConfig(t *testing.T) {
 	for _, test := range []struct {
 		name, raw string

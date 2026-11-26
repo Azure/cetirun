@@ -131,10 +131,32 @@ func TestCustomSkillsStringValuesRemainStrings(t *testing.T) {
 	}
 }
 
+func TestCustomAzureFilesPVIsEncryptedAndReadOnly(t *testing.T) {
+	input := customInput(nil)
+	skills := sharedSkillValues()
+	skills["containerName"] = ""
+	skills["backend"], skills["shareName"] = "azure-files-nfs", "published-skills"
+	input["skills"] = skills
+	p, err := PrepareChart(testChart(t), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects := platformRender(t, p, chartutil.DefaultCapabilities)
+	var pv corev1.PersistentVolume
+	if err := decodeObject(objects["PersistentVolume"], &pv); err != nil {
+		t.Fatal(err)
+	}
+	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != "file.csi.azure.com" || !pv.Spec.CSI.ReadOnly ||
+		pv.Spec.CSI.VolumeAttributes["encryptInTransit"] != "true" ||
+		!reflect.DeepEqual(pv.Spec.MountOptions, []string{"ro"}) {
+		t.Fatalf("unexpected Azure Files PV: %#v", pv.Spec)
+	}
+}
+
 func TestCustomSkillsTamperingIsRejected(t *testing.T) {
 	for _, test := range []struct{ file, from, to string }{
 		{"shared-skills-pv.yaml", "persistentVolumeReclaimPolicy: Retain", "persistentVolumeReclaimPolicy: Delete"},
-		{"shared-skills-pv.yaml", "driver: blob.csi.azure.com", "driver: disk.csi.azure.com"},
+		{"shared-skills-pv.yaml", `driver: {{ ternary "file.csi.azure.com" "blob.csi.azure.com" $files }}`, "driver: disk.csi.azure.com"},
 		{"shared-skills-pv.yaml", "namespace: {{ .Release.Namespace }}", "namespace: other-agent"},
 		{"shared-skills-pvc.yaml", `volumeName: {{ include "cetirun.sharedSkillsPVName" . }}`, "volumeName: foreign-volume"},
 		{"_context.tpl", "subPath: current\n", "subPath: other\n"},

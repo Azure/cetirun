@@ -68,6 +68,36 @@ func TestClaimIsCreatedForProtectedAgentNamespaces(t *testing.T) {
 	}
 }
 
+func TestAzureFilesClaimUsesEncryptedReadOnlyNFS(t *testing.T) {
+	r := &ClaimReconciler{Storage: StorageSource{Backend: "azure-files-nfs", ResourceGroup: "rg", StorageAccount: "account", ShareName: "marketplace", StorageClassName: "premium"}}
+	claim := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Namespace: "cetirun-alice", Name: "skills", UID: "claim"}}
+	pv := r.desiredVolume(&api.Agent{ObjectMeta: metav1.ObjectMeta{UID: "agent-uid"}}, claim)
+	if pv.Spec.CSI.Driver != "file.csi.azure.com" || !pv.Spec.CSI.ReadOnly || pv.Spec.MountOptions[0] != "ro" ||
+		pv.Spec.CSI.VolumeAttributes["shareName"] != "marketplace" || pv.Spec.CSI.VolumeAttributes["encryptInTransit"] != "true" ||
+		pv.Spec.CSI.NodeStageSecretRef != nil {
+		t.Fatalf("unexpected Azure Files PV: %#v", pv.Spec)
+	}
+	if !r.currentStorage(pv) {
+		t.Fatal("the generated Azure Files PV must be current")
+	}
+	for name, mutate := range map[string]func(*corev1.PersistentVolume){
+		"unencrypted": func(v *corev1.PersistentVolume) { v.Spec.CSI.VolumeAttributes["encryptInTransit"] = "false" },
+		"other share": func(v *corev1.PersistentVolume) { v.Spec.CSI.VolumeAttributes["shareName"] = "other" },
+		"blob driver": func(v *corev1.PersistentVolume) { v.Spec.CSI.Driver = "blob.csi.azure.com" },
+		"writable":    func(v *corev1.PersistentVolume) { v.Spec.CSI.ReadOnly = false },
+		"smb":         func(v *corev1.PersistentVolume) { v.Spec.CSI.VolumeAttributes["protocol"] = "smb" },
+		"credential":  func(v *corev1.PersistentVolume) { v.Spec.CSI.NodeStageSecretRef = &corev1.SecretReference{Name: "key"} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := pv.DeepCopy()
+			mutate(changed)
+			if r.currentStorage(changed) {
+				t.Fatal("a volume that violates the selected storage contract must be replaced")
+			}
+		})
+	}
+}
+
 func TestClaimWaitsForTheAgentNamespace(t *testing.T) {
 	agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "alice", UID: "agent-uid"}, Spec: api.AgentSpec{Team: "research"}}
 	kube := newClient(t, agent, team("research", "00000000-0000-4000-8000-000000000001", "policy"))

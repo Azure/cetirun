@@ -1,6 +1,6 @@
 ---
 title: "Storage"
-description: "Configure Azure Disk home volumes and the shared Azure Blob storage for skills."
+description: "Configure Azure Disk home volumes and shared storage for skills."
 weight: 20
 ---
 
@@ -69,6 +69,89 @@ selected runtime registration. They are not inferred from the storage driver.
 This UI behavior is not a CSI qualification. Sandbox admission and the
 controller continue to verify the selected class when configuration is saved
 and before execution.
+
+## Encrypted Azure Files NFS
+
+Use `backend: azure-files-nfs` when skills storage must retain secure-transfer
+requirements. This mode uses Premium Azure Files NFS 4.1 over TLS and a private
+`file` endpoint. It is a platform storage choice for shared skills and the
+Marketplace; it does not change HOME disks or introduce a Team API field.
+
+Provision a new account with `infra/storage`, using
+`storageBackend: azure-files-nfs`, a `shareName`, and an explicit share quota.
+Follow the [storage infrastructure instructions]({{< repo "infra/storage/README.md" >}}).
+The account must disable public access and shared-key access, retain
+`supportsHttpsTrafficOnly: true`, and require NFS encryption in transit in
+`fileServices/default.protocolSettings.nfs.encryptionInTransit.required`.
+The file private DNS zone must resolve the account to its private endpoint
+from every eligible node. NFS TLS uses TCP **2049**, not TCP 443.
+
+Prerequisites include a supported Linux node OS, Azure Files CSI with
+`encryptInTransit` support, and the Azure Files mount proxy/AzNFS helper.
+See [Azure Files encryption in transit](https://learn.microsoft.com/azure/storage/files/files-encryption-in-transit)
+and the [CSI driver parameters](https://github.com/kubernetes-sigs/azurefile-csi-driver/blob/v1.35.11/docs/driver-parameters.md).
+Qualify the installed driver, node image, and runtime together. Ordinary Kata
+host-mounted volumes and confidential-container direct volumes are different
+paths; this configuration does not establish support for `kata-cc`.
+
+Use separate shares for shared skills and Marketplace releases. For example,
+in the complete deployment environment file:
+
+```yaml
+sharedSkills:
+  backend: azure-files-nfs
+  resourceGroup: example-storage-rg
+  storageAccount: exampleskills
+  shareName: shared-skills
+  storageClassName: azurefile-csi-premium
+
+skillMarketplace:
+  repository:
+    url: https://github.com/example/skills.git
+    auth: none
+  storage:
+    backend: azure-files-nfs
+    resourceGroup: example-storage-rg
+    storageAccount: exampleskills
+    shareName: marketplace
+    storageClassName: azurefile-csi-premium
+```
+
+The Marketplace also needs native Sandbox execution; refer to
+[Skill Marketplace](../skill-marketplace/). The named StorageClass must exist,
+but these shares use static PVs and are not dynamically provisioned by that
+class. The complete deployment helper clears the Blob `containerName` default.
+When setting standalone Agent chart values or Operator `helmValues` directly,
+set `skills.containerName: ""` alongside `skills.backend` and `skills.shareName`.
+A nonempty Blob container and a file share cannot be combined. Team
+`spec.skillStorage` overrides remain Blob-specific and are rejected when the
+platform selects Azure Files.
+
+The generated CSI volumes fix `protocol: nfs`, `encryptInTransit: "true"`,
+`mountPermissions: "0"`, and `fsGroupChangePolicy: None`. Agent volumes also set
+CSI read-only and `ro`. The Marketplace writer uses its separate share without
+read-only flags. Arbitrary CSI drivers, TLS overrides, credential Secrets, and
+writable Agent mount options are rejected. No storage-account key or
+per-Agent federated credential is distributed for this backend.
+
+NFS authorizes the trusted node network and POSIX identities; this is not
+per-Agent Azure RBAC. Retain protected PVCs, admission controls, read-only
+mounts, and Marketplace Team subdirectory checks. The module enables root
+squashing. Verify that the writer UID/GID (65532) can create and rename files in
+the destination before enabling synchronization. CSI does not recursively
+change ownership or permissions in this mode. Shared readers must have read
+and directory-traversal permissions on published content.
+
+Changing a backend or share does not migrate data or immutable PVs. Provision
+new storage, publish content, and coordinate claim replacement before moving
+existing Agents. Use Operator and chart artifacts built from a release that
+includes this backend; older images do not gain support from chart values alone.
+
+Before production use, verify the server's required-encryption setting and
+private DNS, then exercise an encrypted writer mount, atomic rename and fsync,
+cross-node readers, denied Agent writes, and the selected Kata runtime. Also
+verify that a mount without TLS is rejected. Offline rendering and a Bound PVC
+alone do not establish these properties.
 
 ## Provision shared Blob NFS
 

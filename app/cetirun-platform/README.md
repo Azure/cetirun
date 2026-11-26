@@ -73,7 +73,7 @@ The file contains these inputs:
 | `broker` | Separate credential namespace/release and Broker Chart values, for example, references to TLS Secrets that exist and references to provider credential Secrets. The helper stops if a provider Secret that the file names does not exist. Remove the providers that you do not register |
 | `platform` | Platform release/namespace and umbrella values, for example, admission, provider credentials, model deployments, and qualified Custom images |
 | `platform.values.cetirun-operator.cetiadmin` | CetiAdmin owner assignment, initial budget, exact API access, optional migration source, and runtime options |
-| `sharedSkills` | Necessary. The shared Skills storage fields that exist in the agent chart: storage class, resource group, account, and container. The helper sets `skills.shared: true` for all Agents. It examines only that the StorageClass exists, so provision the Blob NFS account and container first. Refer to [Storage](../../site/content/en/docs/operations/storage.md#shared-skills-storage-for-make-deploy) |
+| `sharedSkills` | Necessary. The shared Skills storage fields: storage class, resource group, account, and either a Blob container or an Azure Files share (`backend: azure-files-nfs`). The helper sets `skills.shared: true` for all Agents. It examines only that the StorageClass exists, so provision storage first. Refer to [Storage](../../site/content/en/docs/operations/storage.md#shared-skills-storage-for-make-deploy) |
 | `skillMarketplace` | Optional. The Git repository of the [Skill Marketplace](#skill-marketplace), its credentials Secret, and its Blob NFS container |
 | `observability` | The ADX-Mon collection of logs, events, and metrics: the name of this CetiRun cluster in every row, the query URI of the Kusto cluster, its logs, metrics, and Agent logs databases, and the client ID of the ingestor's managed identity. See [Monitoring and logs](../../site/content/en/docs/operations/observability.md) |
 
@@ -1078,3 +1078,12 @@ metadata:
 spec: {}
 EOF
 ```
+
+### Encrypted skills storage
+
+Shared skills and Marketplace storage support `backend: azure-files-nfs` with
+`shareName` instead of `containerName`. Use distinct shares for the two purposes.
+This backend requires Premium Azure Files NFS, required encryption on the file
+service, and a private file endpoint. The generated volumes enforce TLS without
+a credential Secret; Agent mounts are read-only. See the
+[configuration and qualification requirements](../../site/content/en/docs/operations/storage.md#encrypted-azure-files-nfs).

@@ -1,4 +1,5 @@
 {{- if and .Values.skills.shared (not .Values.skills.existingClaim) }}
+{{- $files := eq (.Values.skills.backend | default "blob") "azure-files-nfs" -}}
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -6,7 +7,7 @@ metadata:
   labels:
     {{- include "cetirun.labels" . | nindent 4 }}
   annotations:
-    pv.kubernetes.io/provisioned-by: blob.csi.azure.com
+    pv.kubernetes.io/provisioned-by: {{ ternary "file.csi.azure.com" "blob.csi.azure.com" $files }}
 spec:
   capacity:
     storage: {{ .Values.skills.storageSize | quote }}
@@ -14,22 +15,37 @@ spec:
     - ReadWriteMany
   persistentVolumeReclaimPolicy: Retain
   storageClassName: {{ .Values.skills.storageClassName | quote }}
+  {{- if $files }}
+  mountOptions: ["ro"]
+  {{- else }}
   {{- with .Values.skills.mountOptions }}
   mountOptions:
     {{- toYaml . | nindent 4 }}
+  {{- end }}
   {{- end }}
   claimRef:
     namespace: {{ .Release.Namespace }}
     name: {{ include "cetirun.sharedSkillsPVCName" . }}
   csi:
-    driver: blob.csi.azure.com
+    driver: {{ ternary "file.csi.azure.com" "blob.csi.azure.com" $files }}
     volumeHandle: {{ include "cetirun.sharedSkillsPVName" . }}
+    {{- if $files }}
+    readOnly: true
+    {{- end }}
     volumeAttributes:
       resourceGroup: {{ .Values.skills.resourceGroup | quote }}
       storageAccount: {{ .Values.skills.storageAccount | quote }}
+      {{- if $files }}
+      shareName: {{ .Values.skills.shareName | quote }}
+      protocol: nfs
+      encryptInTransit: "true"
+      mountPermissions: "0"
+      fsGroupChangePolicy: None
+      {{- else }}
       containerName: {{ .Values.skills.containerName | quote }}
       protocol: {{ .Values.skills.protocol | default "nfs" | quote }}
-    {{- if ne (.Values.skills.protocol | default "nfs") "nfs" }}
+      {{- end }}
+    {{- if and (not $files) (ne (.Values.skills.protocol | default "nfs") "nfs") }}
     nodeStageSecretRef:
       name: {{ required "skills.secretName is required for Blob Fuse mounts" .Values.skills.secretName | quote }}
       namespace: {{ .Release.Namespace }}

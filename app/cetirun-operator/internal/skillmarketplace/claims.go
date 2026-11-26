@@ -37,11 +37,13 @@ const (
 // does not enforce it.
 var claimSize = resource.MustParse("1Gi")
 
-// StorageSource is the Blob NFS container that holds the Team releases.
+// StorageSource is the platform-owned storage that holds Team releases.
 type StorageSource struct {
+	Backend          string
 	ResourceGroup    string
 	StorageAccount   string
 	ContainerName    string
+	ShareName        string
 	StorageClassName string
 }
 
@@ -196,7 +198,11 @@ func (r *ClaimReconciler) currentStorage(volume *corev1.PersistentVolume) bool {
 	}
 	attributes := csi.VolumeAttributes
 	return attributes["resourceGroup"] == r.Storage.ResourceGroup && attributes["storageAccount"] == r.Storage.StorageAccount &&
-		attributes["containerName"] == r.Storage.ContainerName
+		attributes["containerName"] == r.Storage.ContainerName && attributes["shareName"] == r.Storage.ShareName &&
+		((r.Storage.Backend == "azure-files-nfs" && csi.Driver == "file.csi.azure.com" && csi.ReadOnly &&
+			attributes["protocol"] == "nfs" && attributes["encryptInTransit"] == "true" && attributes["mountPermissions"] == "0" &&
+			attributes["fsGroupChangePolicy"] == "None" && csi.NodeStageSecretRef == nil && len(volume.Spec.MountOptions) == 1 && volume.Spec.MountOptions[0] == "ro") ||
+			(r.Storage.Backend != "azure-files-nfs" && csi.Driver == "blob.csi.azure.com"))
 }
 
 func labels() map[string]string {
@@ -233,7 +239,7 @@ func (r *ClaimReconciler) desiredVolume(agent *api.Agent, claim *corev1.Persiste
 	for key, value := range claim.Annotations {
 		annotations[key] = value
 	}
-	return &corev1.PersistentVolume{
+	result := &corev1.PersistentVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: VolumeName(agent.UID), Labels: labels(), Annotations: annotations},
 		Spec: corev1.PersistentVolumeSpec{
 			Capacity:                      corev1.ResourceList{corev1.ResourceStorage: claimSize},
@@ -254,6 +260,17 @@ func (r *ClaimReconciler) desiredVolume(agent *api.Agent, claim *corev1.Persiste
 			}},
 		},
 	}
+	if r.Storage.Backend == "azure-files-nfs" {
+		pv := result
+		pv.Spec.CSI.Driver = "file.csi.azure.com"
+		delete(pv.Spec.CSI.VolumeAttributes, "containerName")
+		pv.Spec.CSI.VolumeAttributes["shareName"] = r.Storage.ShareName
+		pv.Spec.CSI.VolumeAttributes["encryptInTransit"] = "true"
+		pv.Spec.CSI.VolumeAttributes["mountPermissions"] = "0"
+		pv.Spec.CSI.VolumeAttributes["fsGroupChangePolicy"] = "None"
+		return pv
+	}
+	return result
 }
 
 // SetupWithManager reconciles each Agent. A new Agent's namespace appears

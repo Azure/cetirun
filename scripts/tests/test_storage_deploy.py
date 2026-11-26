@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import shutil
 
 ROOT = Path(__file__).resolve().parents[2]
 SUBSCRIPTION = "11111111-1111-1111-1111-111111111111"
@@ -27,13 +28,39 @@ if args[:3] in (['deployment', 'group', 'validate'], ['deployment', 'group', 'cr
     for path in [template, parameters]:
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert stat.S_IMODE(template.parent.stat().st_mode) == 0o700
-if args[:2] == ['account', 'show']:
+if 'account' in args and args[args.index('account') + 1:args.index('account') + 2] == ['show'] and '--query' in args:
+    query = args[args.index('--query') + 1]
+    values = {
+        'supportsHttpsTrafficOnly': 'false' if os.environ.get('BAD_HTTPS') else 'true',
+        'publicNetworkAccess': 'Enabled' if os.environ.get('BAD_PUBLIC') else 'Disabled',
+        'allowSharedKeyAccess': 'true' if os.environ.get('BAD_SHARED_KEY') else 'false',
+        'id': '/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/example-rg/providers/Microsoft.Storage/storageAccounts/example-storage',
+    }
+    print(values.get(query, ''))
+elif args[:2] == ['account', 'show']:
     if os.environ.get('MUTATE_STORAGE_PARAMETERS'):
         pathlib.Path(os.environ['PARAM_FILE']).write_text('{"parameters":{"marker":{"value":"changed"}}}')
     print(json.dumps({'id': os.environ['AZURE_SUBSCRIPTION_ID'], 'tenantId': 'wrong' if os.environ.get('WRONG_TENANT') else os.environ['AZURE_TENANT_ID']}))
 elif args[:3] == ['deployment', 'group', 'show']:
     query = args[args.index('--query') + 1]
-    print('https://storage.example.invalid' if 'Endpoint' in query else 'example-storage')
+    if 'shareName' in query:
+        print('aks-skills')
+    else:
+        print('https://storage.example.invalid' if 'Endpoint' in query else 'example-storage')
+elif 'resource' in args and args[args.index('resource') + 1:args.index('resource') + 2] == ['show']:
+    query = args[args.index('--query') + 1]
+    values = {
+        'properties.supportsHttpsTrafficOnly': 'false' if os.environ.get('BAD_HTTPS') else 'true',
+        'properties.publicNetworkAccess': 'Enabled' if os.environ.get('BAD_PUBLIC') else 'Disabled',
+        'properties.allowSharedKeyAccess': 'true' if os.environ.get('BAD_SHARED_KEY') else 'false',
+        'properties.protocolSettings.nfs.encryptionInTransit.required': 'false' if os.environ.get('BAD_NFS_ENCRYPTION') else 'true',
+    }
+    print(values.get(query, ''))
+elif 'share-rm' in args and args[args.index('share-rm') + 1:args.index('share-rm') + 2] == ['show'] and '--query' in args:
+    query = args[args.index('--query') + 1]
+    print('NoRootSquash' if os.environ.get('BAD_ROOT_SQUASH') and query == 'rootSquash' else
+          'SMB' if query == 'enabledProtocols' and os.environ.get('BAD_PROTOCOL') else
+          'NFS' if query == 'enabledProtocols' else 'RootSquash')
 else:
     print('{}')
 '''
@@ -60,6 +87,25 @@ else:
 
 
 class StorageDeployTests(unittest.TestCase):
+    def test_storage_bicep_compiles_with_pinned_tool_when_available(self):
+        bicep = shutil.which("bicep")
+        if not bicep:
+            self.skipTest("Bicep CLI is not installed")
+        result = subprocess.run(
+            [bicep, "build", str(ROOT / "infra/storage/main.bicep"), "--stdout", "--no-restore"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("BCP037", result.stderr)
+        template = json.loads(result.stdout)["resources"][0]["properties"]["template"]
+        # FileStorage does not expose a Blob endpoint, and BlockBlobStorage
+        # does not expose a File endpoint. ARM must evaluate only its backend.
+        for name, backend in (("primaryBlobEndpoint", "blob"), ("primaryFileEndpoint", "azure-files-nfs")):
+            self.assertTrue(template["outputs"][name]["value"].startswith(
+                f"[if(equals(parameters('storageBackend'), '{backend}'),"))
+
+
     def run_deploy(self, *, bicepparam=False, **overrides):
         with tempfile.TemporaryDirectory() as directory:
             tmp = Path(directory)
@@ -105,6 +151,57 @@ class StorageDeployTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(any(args[:3] == ["storage", "container-rm", "show"] for args in calls))
         self.assertFalse(any(args[:4] == ["network", "vnet", "subnet", "update"] for args in calls))
+
+    def test_azure_files_backend_requires_private_endpoint_and_uses_share_verification(self):
+        private_subnet = f"/subscriptions/{SUBSCRIPTION}/resourceGroups/example-rg/providers/Microsoft.Network/virtualNetworks/example/subnets/private"
+        result, calls = self.run_deploy(
+            STORAGE_BACKEND="azure-files-nfs",
+            PUBLIC_NETWORK_ACCESS="Disabled",
+            PRIVATE_ENDPOINT_SUBNET_ID=private_subnet,
+            PRIVATE_DNS_ZONE_ID="/subscriptions/example/resourceGroups/dns/providers/Microsoft.Network/privateDnsZones/privatelink.file.core.windows.net",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any(args[:3] == ["storage", "share-rm", "show"] for args in calls))
+        self.assertFalse(any(args[:3] == ["storage", "container-rm", "show"] for args in calls))
+        self.assertFalse(any(args[:4] == ["network", "vnet", "subnet", "update"] for args in calls))
+        deployments = [args for args in calls if args[:2] == ["deployment", "group"] and args[2] in ("validate", "create")]
+        for args in deployments:
+            self.assertIn("storageBackend=azure-files-nfs", args)
+            self.assertIn("shareQuotaGiB=100", args)
+
+    def test_azure_files_backend_fails_closed_without_private_dns(self):
+        result, calls = self.run_deploy(
+            STORAGE_BACKEND="azure-files-nfs",
+            PUBLIC_NETWORK_ACCESS="Disabled",
+            PRIVATE_ENDPOINT_SUBNET_ID=f"/subscriptions/{SUBSCRIPTION}/resourceGroups/example-rg/providers/Microsoft.Network/virtualNetworks/example/subnets/private",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires PRIVATE_ENDPOINT_SUBNET_ID and PRIVATE_DNS_ZONE_ID", result.stderr)
+        self.assertFalse(any(args[:2] == ["deployment", "group"] for args in calls))
+
+    def test_azure_files_backend_rejects_failed_server_security_readback(self):
+        private_subnet = f"/subscriptions/{SUBSCRIPTION}/resourceGroups/example-rg/providers/Microsoft.Network/virtualNetworks/example/subnets/private"
+        result, calls = self.run_deploy(
+            STORAGE_BACKEND="azure-files-nfs",
+            PUBLIC_NETWORK_ACCESS="Disabled",
+            PRIVATE_ENDPOINT_SUBNET_ID=private_subnet,
+            PRIVATE_DNS_ZONE_ID="/subscriptions/example/resourceGroups/dns/providers/Microsoft.Network/privateDnsZones/privatelink.file.core.windows.net",
+            BAD_NFS_ENCRYPTION="1",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("NFS encryptionInTransit.required", result.stderr)
+
+    def test_azure_files_backend_rejects_non_nfs_share(self):
+        private_subnet = f"/subscriptions/{SUBSCRIPTION}/resourceGroups/example-rg/providers/Microsoft.Network/virtualNetworks/example/subnets/private"
+        result, _ = self.run_deploy(
+            STORAGE_BACKEND="azure-files-nfs",
+            PUBLIC_NETWORK_ACCESS="Disabled",
+            PRIVATE_ENDPOINT_SUBNET_ID=private_subnet,
+            PRIVATE_DNS_ZONE_ID="/subscriptions/example/resourceGroups/dns/providers/Microsoft.Network/privateDnsZones/privatelink.file.core.windows.net",
+            BAD_PROTOCOL="1",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("share enabledProtocols", result.stderr)
 
     def test_wrong_tenant_stops_before_any_write(self):
         result, calls = self.run_deploy(WRONG_TENANT="1")

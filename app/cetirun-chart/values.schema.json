@@ -1503,8 +1503,18 @@
         },
         "skills": {
             "type": "object",
-            "description": "Shared skills volume configuration. Auto-creates PV/PVC backed by Azure Blob CSI (NFS by default; Fuse/Fuse2 supported). Protocol, secretName, and mountOptions are install-time-only PV settings.",
+            "description": "Static shared skills storage: Blob or Azure Files NFS 4.1 with required TLS. Backend and mount settings require replacement PV/PVC resources to change.",
             "properties": {
+                "backend": {
+                    "type": "string",
+                    "enum": ["blob", "azure-files-nfs"],
+                    "default": "blob"
+                },
+                "shareName": {
+                    "type": "string",
+                    "description": "Azure Files NFS share, used only with azure-files-nfs",
+                    "default": ""
+                },
                 "existingClaim": {
                     "type": "string",
                     "description": "Separately owned namespace-local skills PVC; suppresses chart PV/PVC creation",
@@ -1570,7 +1580,6 @@
                 "containerName": {
                     "type": "string",
                     "description": "Blob container name",
-                    "minLength": 1,
                     "default": "aks-skills"
                 },
                 "mountPath": {
@@ -1603,7 +1612,24 @@
                     "minLength": 1,
                     "default": "100Gi"
                 }
-            }
+            },
+            "allOf": [
+                {
+                    "if": {"required": ["backend"], "properties": {"backend": {"const": "azure-files-nfs"}}},
+                    "then": {
+                        "required": ["shareName"],
+                        "properties": {
+                            "shareName": {"pattern": "^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$", "not": {"pattern": "--"}},
+                            "containerName": {"maxLength": 0},
+                            "protocol": {"const": "nfs"},
+                            "secretName": {"maxLength": 0},
+                            "mountOptions": {"maxItems": 1, "items": {"const": "ro"}}
+                        },
+                        "not": {"anyOf": [{"required": ["driver"]}, {"required": ["volumeAttributes"]}, {"required": ["encryptInTransit"]}]}
+                    },
+                    "else": {"properties": {"shareName": {"maxLength": 0}, "containerName": {"minLength": 1}}}
+                }
+            ]
         },
         "podDisruptionBudget": {
             "type": "object",
