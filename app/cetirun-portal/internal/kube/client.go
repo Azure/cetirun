@@ -83,6 +83,19 @@ const AnnotationSecretUpdatedAt = "cetirun.microsoft.com/secret-updated-at"
 // AnnotationAgentDisplayName stores the Agent's name for display in the Portal.
 const AnnotationAgentDisplayName = "cetirun.microsoft.com/agent-display-name"
 
+// AnnotationCetiAdminInstallationUID names the installation record of the
+// CetiAdmin Agent (internal/cetiadmin of the operator). The operator sets it on
+// the Agent that it installs for CetiAdmin. CetiAdmin admission refuses every
+// other writer of a cetirun.microsoft.com/cetiadmin- annotation.
+const AnnotationCetiAdminInstallationUID = "cetirun.microsoft.com/cetiadmin-installation-uid"
+
+// IsCetiAdmin reports whether the operator installed the Agent for CetiAdmin.
+// The deployment configures that Agent. Admission refuses the Portal's edits,
+// upgrades, and deletion of it; restart, suspend, and resume stay available.
+func IsCetiAdmin(instance *cetirunv1alpha1.Agent) bool {
+	return instance != nil && instance.Annotations[AnnotationCetiAdminInstallationUID] != ""
+}
+
 // UpdateInstanceOpts specifies which fields to update on an existing instance.
 // nil pointer = no change; non-nil = apply the pointed-to value.
 type UpdateInstanceOpts struct {

@@ -31,7 +31,19 @@ its policy-bound Team. Refer to
   `cetiadmin.instanceName`, `cetiadmin` by default. The Agent runs in the
   namespace `cetirun-<instanceName>`.
 - The owner is the user in `cetiadmin.owner`. The owner opens CetiAdmin in the
-  Portal in the same way as the other Agents of the owner.
+  Portal in the same way as the other Agents of the owner. **Agent UI** signs
+  the owner in to the Hermes Webapp. If the owner opens the Webapp address
+  directly, the Webapp asks for a username and a password: use the username
+  `cetirun` and the **Hermes API / Webapp Key** from the **Overview** tab.
+  Refer to [Open a Hermes Agent](../../getting-started/first-instance/#open-a-hermes-agent).
+- The deployment configures CetiAdmin. In the Portal, the owner can restart,
+  suspend, and resume CetiAdmin, but cannot edit, upgrade, or delete it.
+  Admission refuses these changes also for a cluster administrator. To change
+  the model, set `cetiadmin.model.default` and run `make deploy` again.
+  CetiAdmin then restarts once. To remove CetiAdmin,
+  [disable it](#disable-cetiadmin).
+- CetiAdmin does not count toward the limit of Agents of its owner
+  (`features.maxInstancesPerUser` of the Portal).
 - CetiAdmin uses the model in `cetiadmin.model.default`, `auto` by default. Its
   AI Gateway key starts with the budget in
   `cetiadmin.model.initialMonthlyBudgetUSD`. GitHub Copilot is disabled by

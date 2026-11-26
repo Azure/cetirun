@@ -262,6 +262,10 @@ func (h *AdminInstanceHandler) UpdateInstance(w http.ResponseWriter, r *http.Req
 		writeManagementError(w, kube.ErrInstanceChanged)
 		return
 	}
+	if kube.IsCetiAdmin(instance) {
+		writeManagementError(w, errCetiAdminManaged)
+		return
+	}
 	if input.Port.Set && agentconfig.Defaults(instance.Spec.Agent).Type != api.AgentTypeCustom {
 		writeError(w, http.StatusBadRequest, "invalid_agent", "agent.port is configurable only for custom agents")
 		return
@@ -283,6 +287,9 @@ func (h *AdminInstanceHandler) UpdateInstance(w http.ResponseWriter, r *http.Req
 		opts.Agent = &agent
 	}
 	opts.Authorize = func(current *api.Agent) error {
+		if kube.IsCetiAdmin(current) {
+			return errCetiAdminManaged
+		}
 		// Admin authority replaces ownership only on these routes; platform
 		// type restrictions and admission still apply to runtime changes.
 		if !input.Empty() || current.Spec.Agent.Type == api.AgentTypeCustom && req.Model != nil {
@@ -314,6 +321,15 @@ func (h *AdminInstanceHandler) DeleteInstance(w http.ResponseWriter, r *http.Req
 		return
 	}
 	audit.uid = string(version.UID)
+	instance, err := h.Kube.GetInstanceByName(r.Context(), r.PathValue("name"))
+	if err != nil {
+		writeManagementError(w, err)
+		return
+	}
+	if kube.IsCetiAdmin(instance) {
+		writeManagementError(w, errCetiAdminManaged)
+		return
+	}
 	if err := h.Kube.DeleteInstanceByName(r.Context(), r.PathValue("name"), version); err != nil {
 		writeManagementError(w, err)
 		return

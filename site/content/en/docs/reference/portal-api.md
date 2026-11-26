@@ -159,6 +159,15 @@ read returned. Without them, the response is `428`. A stale version gets
 changed fields, and the response status of each request. It does not log the
 values.
 
+The deployment configures the CetiAdmin Agent, and admission refuses the
+Portal's changes to it. So for this Agent, the `PATCH` and `DELETE` requests
+of a Portal administrator and of the owner, and the owner's upgrade request,
+return `403` with the code `cetiadmin_managed`. The owner can still restart,
+suspend, and resume it. The owner's `GET /api/v1/instances` and
+`GET /api/v1/instances/{name}` mark it with `cetiAdmin: true`, and the
+per-user limit of Agents (`features.maxInstancesPerUser`) does not count it.
+Refer to [CetiAdmin](../../operations/cetiadmin/).
+
 ## Skill Marketplace administration
 
 The Portal chart's `skillMarketplace.enabled` enables these Portal API

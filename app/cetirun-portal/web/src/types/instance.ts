@@ -81,6 +81,11 @@ export interface Instance extends InstanceVersion {
   teamSkillsRestartNeeded?: boolean;
   /** The Skill Marketplace could not publish the Team's skills; administrators see the error on the Skills page. */
   teamSkillsPublicationFailed?: boolean;
+  /**
+   * The operator installed this Agent for CetiAdmin. The deployment configures it: the Portal can restart,
+   * suspend, and resume it, but not edit, upgrade, or delete it, and it does not count toward the owner's limit.
+   */
+  cetiAdmin?: boolean;
 }
 
 /**

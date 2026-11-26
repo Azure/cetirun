@@ -99,6 +99,16 @@ describe("AIGatewayBlock", () => {
     expect(screen.getByText("Choose a model in Chat from the models this Agent exposes.")).toBeInTheDocument();
   });
 
+  it("names the deployment value instead of a default-model editor for CetiAdmin", () => {
+    // Admission refuses a model change of CetiAdmin from the Portal.
+    renderBlock({ ...instance({ models: ["auto", "gpt-6"], defaultModel: "auto" }), agent: { type: "hermes" }, cetiAdmin: true });
+    expect(within(screen.getByLabelText("Agent models")).getByText("auto (default)")).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Default model" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(screen.getByText(/The platform sets the default model of CetiAdmin/)).toHaveTextContent(
+      "The platform sets the default model of CetiAdmin: cetiadmin.model.default of the deployment.");
+  });
+
   it("runs the GitHub sign-in until it succeeds", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     api.startCopilotLogin.mockResolvedValue({
