@@ -4,42 +4,20 @@
 """Check the effective AKS Kubernetes version locally before cloud writes."""
 
 import argparse
-import json
-import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+
+from bicep_inputs import compile_inputs, write_snapshots
 
 
 MINIMUM_VERSION = (1, 37)
 STABLE_VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*))?")
 
 
-def compile_bicep(*args):
-    # Never install tools, restore modules, or print compiled parameter values.
-    result = subprocess.run(
-        ["bicep", *map(str, args), "--stdout", "--no-restore"],
-        check=True, text=True, stdout=subprocess.PIPE,
-    )
-    return json.loads(result.stdout)
-
-
-def compile_inputs(template_path, parameter_path):
-    if parameter_path.suffix == ".bicepparam":
-        bundle = compile_bicep("build-params", parameter_path, "--bicep-file", template_path)
-        template = json.loads(bundle["templateJson"])
-        parameters = json.loads(bundle["parametersJson"])
-    else:
-        template = compile_bicep("build", template_path)
-        parameters = json.loads(parameter_path.read_text(encoding="utf-8"))
-    return template, parameters
-
-
 def effective_version(template, parameters):
     supplied = parameters["parameters"]
-    if not isinstance(supplied, dict):
-        raise ValueError("parameters must be an object")
     if "kubernetesVersion" in supplied:
         # A reference or unresolved expression cannot establish compatibility.
         return supplied["kubernetesVersion"]["value"]
@@ -59,11 +37,7 @@ def main(argv=None):
         if match is None or tuple(map(int, match.group(1, 2))) < MINIMUM_VERSION:
             raise ValueError("unsupported Kubernetes version")
         if args.output_dir is not None:
-            for name, value in (("template", template), ("parameters", parameters)):
-                path = args.output_dir / f"{name}.json"
-                descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-                    json.dump(value, output)
+            write_snapshots(args.output_dir, template, parameters)
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError):
         print(
             "Error: could not establish a supported Kubernetes version. "

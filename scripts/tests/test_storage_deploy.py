@@ -43,6 +43,10 @@ if os.environ.get('FAIL_BICEP') == '1':
     sys.exit(1)
 args = sys.argv[1:]
 assert '--stdout' in args and '--no-restore' in args
+if os.environ.get('INVALID_TEMPLATE') == '1':
+    print(json.dumps({'templateJson': '[]', 'parametersJson': '{"parameters":{}}'})
+          if args[0] == 'build-params' else '[]')
+    sys.exit(0)
 if args[0] == 'build-params':
     assert pathlib.Path(args[1]).suffix == '.bicepparam'
     assert pathlib.Path(args[1]).read_text().startswith('using ')
@@ -71,10 +75,11 @@ class StorageDeployTests(unittest.TestCase):
                        CALLS_LOG=str(calls), RESOURCE_GROUP="example-rg", AKS_CLUSTER_NAME="example-cluster",
                        AZURE_SUBSCRIPTION_ID=SUBSCRIPTION, AZURE_TENANT_ID=TENANT,
                        AKS_SUBNET_ID=f"/subscriptions/{SUBSCRIPTION}/resourceGroups/example-nodes/providers/Microsoft.Network/virtualNetworks/example-vnet/subnets/aks-subnet",
-                       PARAM_FILE=str(parameters))
+                       PARAM_FILE=str(parameters), TMPDIR=str(tmp))
             env.update(overrides)
             result = subprocess.run(["bash", str(ROOT / "infra/storage/deploy.sh")],
                                     env=env, capture_output=True, text=True)
+            self.assertFalse(list(tmp.glob("tmp.*")), "Deployment snapshots must be removed on exit")
             rows = [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
             return result, rows
 
@@ -112,6 +117,14 @@ class StorageDeployTests(unittest.TestCase):
             with self.subTest(bicepparam=bicepparam):
                 result, calls = self.run_deploy(bicepparam=bicepparam, FAIL_BICEP="1")
                 self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(calls, [])
+
+    def test_invalid_compiled_template_stops_before_azure_calls(self):
+        for bicepparam in (False, True):
+            with self.subTest(bicepparam=bicepparam):
+                result, calls = self.run_deploy(bicepparam=bicepparam, INVALID_TEMPLATE="1")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("could not snapshot deployment inputs", result.stderr)
                 self.assertEqual(calls, [])
 
     def test_foreign_or_malformed_subnet_cannot_mutate_same_name_in_target(self):

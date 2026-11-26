@@ -19,23 +19,8 @@ export AZURE_SUBSCRIPTION_ID AZURE_TENANT_ID
 # only JSON snapshots, so it cannot download or select a different Bicep tool.
 DEPLOYMENT_INPUT_DIR="$(mktemp -d)"
 trap 'rm -rf -- "$DEPLOYMENT_INPUT_DIR"' EXIT
-python3 - "$BICEP_FILE" "$PARAM_FILE" "$DEPLOYMENT_INPUT_DIR" <<'PYINPUTS'
-import json, pathlib, subprocess, sys
-source, parameters, destination = map(pathlib.Path, sys.argv[1:])
-def compile_bicep(*args):
-    return json.loads(subprocess.check_output(['bicep', *map(str, args), '--stdout', '--no-restore'], text=True))
-if parameters.suffix == '.bicepparam':
-    bundle = compile_bicep('build-params', parameters, '--bicep-file', source)
-    template = json.loads(bundle['templateJson'])
-    values = json.loads(bundle['parametersJson'])
-else:
-    template = compile_bicep('build', source)
-    values = json.loads(parameters.read_text())
-if not isinstance(values.get('parameters'), dict):
-    raise SystemExit('Error: storage parameters must contain a parameters object.')
-for name, document in [('template', template), ('parameters', values)]:
-    (destination / (name + '.json')).write_text(json.dumps(document))
-PYINPUTS
+python3 "${SCRIPT_DIR}/../../scripts/bicep_inputs.py" \
+  --template "$BICEP_FILE" --parameters "$PARAM_FILE" --output-dir "$DEPLOYMENT_INPUT_DIR"
 python3 - <<'PYTARGET'
 import json, os, subprocess
 account = json.loads(subprocess.check_output([
