@@ -28,8 +28,9 @@ kubectl --context cetiadmin -n "$CETIADMIN_TARGET_NAMESPACE" get pod "$CETIADMIN
   controller recreation. Verify the exact Pod UID immediately before the
   operation, its controller ownership, current target binding, node health,
   HOME writer identity, and absence of suspension, migration, or maintenance.
-  Use the installed UID-aware admission/deletion contract. Do not force-delete
-  or set a zero grace period.
+  Set both the Pod UID and its current resourceVersion as deletion
+  preconditions. On conflict, observe the workload again; do not retry by
+  name, force-delete, or set a zero grace period.
 - If the source/writer is unknown, or the target is protected, use its existing
   supported recovery path or escalate. Do not weaken exec or admission rules.
 
@@ -49,6 +50,15 @@ If OOM occurs more than three times in one hour, escalate. Propose a justified
 limit increase, obtain confirmation, and update permitted Agent intent rather
 than patching an arbitrary live workload. Verify the effective Pod limits and
 stability after reconciliation. Do not silently change global resource defaults.
+
+If Helm reports the correction as deployed but the old Pod still has the
+failed limits, compare its `controller-revision-hash` with the StatefulSet's
+`status.updateRevision`. An ordinary single-replica built-in Agent can wait
+for the Operator to gracefully replace that stale, unready Pod. Look for the
+`StalledRolloutPodReplaced` event, then verify the replacement's revision,
+limits, readiness and original HOME claim. Do not race the Operator with a
+second deletion. If it cannot establish ownership or node health, escalate;
+never force-delete the Pod or recreate the StatefulSet or PVC.
 
 ## ImagePullBackOff
 
