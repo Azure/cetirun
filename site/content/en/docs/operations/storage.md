@@ -48,6 +48,41 @@ profile and the recorded claim template of the Agent. A separate approved
 migration or expansion is still necessary to change the storage class or size
 of a claim that already exists.
 
+### Grow the HOME of an Agent
+
+This procedure is for Hermes and OpenClaw Agents without a Sandbox. The HOME
+claim of such an Agent is `data-cetirun-<name>-0` in the namespace
+`cetirun-<name>`. The StorageClass of the claim must allow volume expansion.
+
+1. Increase the storage request of the claim. The CSI driver expands the disk
+   and the file system while the Agent runs:
+
+   ```bash
+   kubectl patch pvc data-cetirun-<name>-0 -n cetirun-<name> --type merge \
+     -p '{"spec":{"resources":{"requests":{"storage":"120Gi"}}}}'
+   ```
+
+2. Set `spec.helm.values.persistence.size` of the Agent to the same size, so
+   that the StatefulSet template agrees with the claim. Kubernetes cannot
+   change this template in place. The upgrade hook of the agent chart deletes
+   only the StatefulSet object. Helm creates it again with the new size. The
+   Pod keeps running.
+
+Agent charts 0.2.2 and earlier cannot apply a larger `persistence.size`. Their
+upgrade hook does not replace the StatefulSet, so each later Helm upgrade of
+the Agent fails with `spec.volumeClaimTemplates: ... field is immutable`, and
+the Agent stays `Provisioning`. For these Agents, do only step 1. If
+`persistence.size` was already changed, set it back to the size in the
+StatefulSet template. The claim keeps its larger size. Alternatively, delete
+only the StatefulSet object:
+
+```bash
+kubectl delete statefulset cetirun-<name> -n cetirun-<name> --cascade=orphan
+```
+
+The next retry of the operator creates the StatefulSet with the new size. The
+Pod and the claim stay the same.
+
 ## Sandbox HOME class selection
 
 When native Sandbox sources are configured, Portal administrators choose HOME

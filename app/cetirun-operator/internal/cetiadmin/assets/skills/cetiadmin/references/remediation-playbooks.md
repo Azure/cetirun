@@ -216,10 +216,17 @@ every `*.log` under HOME disposable. If no safe files exist, skip cleanup.
 
 Measure again after cleanup. If use remains above 85% or is above 95%, recommend
 expansion and obtain confirmation. Check the actual StorageClass's expansion
-support and current PVC ownership. Increase both the permitted Agent capacity
-intent (`spec.helm.values.persistence.size` for ordinary targets) and the bound
-PVC request, using observed identities and conditional writes. Never shrink or
-change reclaim policy, existingClaim, mount ownership, or volume binding.
+support and current PVC ownership. Increase the bound PVC request first, using
+observed identities and conditional writes. For an ordinary target, raise the
+capacity intent `spec.helm.values.persistence.size` to the same size only when
+its `spec.helm.version` is later than 0.2.2. Charts 0.2.2 and earlier cannot
+replace the StatefulSet template, so a larger size makes every later Helm
+upgrade of the target fail with an immutable `volumeClaimTemplates` error.
+There, keep the size and report that the template keeps the old size. If such
+a target already fails that way, confirm and set `persistence.size` back to the
+size in its StatefulSet's `volumeClaimTemplates`; the PVC and the file system
+keep their larger size, so this is not a shrink. Never shrink or change reclaim
+policy, existingClaim, mount ownership, or volume binding.
 
 Observe the PVC's resize conditions and the mounted filesystem capacity.
 Record a partial or failed expansion rather than assuming the second write or

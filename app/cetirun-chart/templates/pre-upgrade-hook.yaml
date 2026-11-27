@@ -6,6 +6,8 @@ ordinals, template, updateStrategy, revisionHistoryLimit, persistentVolumeClaimR
 and minReadySeconds. This hook detects changes to the immutable fields (serviceName,
 selector, volumeClaimTemplates, podManagementPolicy) and orphan-deletes the StatefulSet
 so Helm can recreate it. Pods keep running as orphans and are re-adopted via label selector.
+Only a missing StatefulSet skips the checks. Any other kubectl error fails the hook, so
+that Helm reports it instead of the immutable-field error of the later patch.
 */}}
 apiVersion: v1
 kind: ServiceAccount
@@ -32,7 +34,9 @@ rules:
   - apiGroups: ["apps"]
     resources: ["statefulsets"]
     resourceNames: [{{ include "cetirun.fullname" . | quote }}]
-    verbs: ["get", "delete"]
+    # kubectl delete waits for the deletion with a list and a watch that select
+    # this name, so resourceNames limits them too.
+    verbs: ["get", "list", "watch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -110,8 +114,36 @@ spec:
               EXPECT_VCT_NAMES=""
               {{- end }}
 
-              # Check if StatefulSet exists
-              if ! kubectl get statefulset "$STS_NAME" -n "$NS" >/dev/null 2>&1; then
+              # Kubernetes keeps a size in its canonical form, for example 1Ti
+              # for 1024Gi. This writes a whole-number size in that form; any
+              # other size stays as it is.
+              canonical() {
+                value=$1
+                case "$value" in
+                  *[KMGTP]i) number=${value%??} base=1024 units="Ki Mi Gi Ti Pi Ei" ;;
+                  *[kMGTP]) number=${value%?} base=1000 units="k M G T P E" ;;
+                  *) number=$value base=1000 units="k M G T P E" ;;
+                esac
+                suffix=${value#"$number"}
+                case "$number" in
+                  ''|*[!0-9]*|0*|???????????????????*) echo "$value"; return ;;
+                esac
+                set -- $units
+                if [ -n "$suffix" ]; then
+                  while [ "$1" != "$suffix" ]; do shift; done
+                  shift
+                fi
+                while [ $# -gt 0 ] && [ $((number % base)) -eq 0 ]; do
+                  number=$((number / base)) suffix=$1
+                  shift
+                done
+                echo "$number$suffix"
+              }
+
+              # Check if StatefulSet exists. Under set -e, any error other than
+              # NotFound ends the hook with kubectl's message.
+              FOUND=$(kubectl get statefulset "$STS_NAME" -n "$NS" --ignore-not-found -o name)
+              if [ -z "$FOUND" ]; then
                 echo "StatefulSet $STS_NAME not found, nothing to do"
                 exit 0
               fi
@@ -155,7 +187,7 @@ spec:
                   CHANGED="${CHANGED}volumeClaimTemplate accessMode: '${CURRENT}' -> '${EXPECT_VCT_ACCESS_MODE}'; "
                 fi
                 CURRENT=$(kubectl get statefulset "$STS_NAME" -n "$NS" -o jsonpath='{.spec.volumeClaimTemplates[0].spec.resources.requests.storage}')
-                if [ "$CURRENT" != "$EXPECT_VCT_SIZE" ]; then
+                if [ "$(canonical "$CURRENT")" != "$(canonical "$EXPECT_VCT_SIZE")" ]; then
                   CHANGED="${CHANGED}volumeClaimTemplate size: '${CURRENT}' -> '${EXPECT_VCT_SIZE}'; "
                 fi
               fi
@@ -164,10 +196,20 @@ spec:
               if [ -n "$CHANGED" ]; then
                 echo "Immutable StatefulSet fields changed: ${CHANGED}"
                 echo "Orphan-deleting StatefulSet $STS_NAME (pods will keep running)"
-                kubectl delete statefulset "$STS_NAME" -n "$NS" --cascade=orphan
+                # Wait until it is gone, so that Helm creates it again instead of
+                # patching it; stay below the Job deadline.
+                kubectl delete statefulset "$STS_NAME" -n "$NS" --cascade=orphan --timeout=90s
               else
                 echo "No immutable field changes detected, skipping orphan-delete"
               fi
+          env:
+            # The image user 65534 has the home directory /dev/null, where
+            # kubectl stops with "not a directory" before any request.
+            - name: HOME
+              value: /tmp
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -185,4 +227,7 @@ spec:
             limits:
               cpu: 100m
               memory: 64Mi
+      volumes:
+        - name: tmp
+          emptyDir: {}
 {{- end }}
