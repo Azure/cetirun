@@ -61,17 +61,22 @@ another port, the port of its URL, and the policy can allow other internal
 ranges (`allowedInternalCIDRs`). You cannot read the NetworkPolicy in your own
 namespace. The NetworkPolicy of a standard Agent in an Agent namespace has the
 same AI Gateway port and allowed internal ranges, unless that Agent sets its
-own network values. Read its egress rules when you can.
+own network values. Your own policy blocks every request that such a policy
+blocks, except requests to the Kubernetes API server.
 
-Before you use a failed request from your Pod as evidence, check its
-destination, protocol, and port against those egress rules. When you cannot
-read any, use the defaults above, and say in your report that you assumed them.
-A request that the rules block does not reach the service: its connection times
-out, is refused or reset, its TLS handshake fails, or the Istio proxy in your
-Pod answers `upstream connect error or disconnect/reset before headers`. Such a
-failure is not evidence of a fault in the platform, a route, or the ingress.
-Judge those components from Kubernetes evidence instead: rollout state,
-readiness, endpoints, Events, and bounded logs.
+Before you use a failed request from your Pod as evidence, read the egress
+rules of a standard Agent that sets no network values of its own, and check the
+destination, protocol, and port of the request against them. Discard the
+failure only when those rules block the request. A request that the rules block
+does not reach the service: its connection times out, is refused or reset, its
+TLS handshake fails, or the Istio proxy in your Pod answers `upstream connect
+error or disconnect/reset before headers`. Such a failure is not evidence of a
+fault in the platform, a route, or the ingress. Judge those components from
+Kubernetes evidence instead: rollout state, readiness, endpoints, Events, and
+bounded logs. When you cannot read such rules, or they do not show that the
+request is blocked, keep the failure: report the missed answer or the error
+answer, and say that its egress classification is unknown. Do not assign a
+cause, and do not ask for more permissions.
 
 A request that the rules allow is evidence, even when the Pods behind it are
 Ready. An error answer shows that the request failed: report the destination,
