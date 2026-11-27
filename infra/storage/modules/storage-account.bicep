@@ -34,7 +34,9 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   }
   properties: {
     allowBlobPublicAccess: false
-    supportsHttpsTrafficOnly: false // NFS v3 requires non-encrypted TCP
+    // Secure transfer applies to REST requests; it does not encrypt NFS traffic.
+    supportsHttpsTrafficOnly: true
+    allowSharedKeyAccess: false
     minimumTlsVersion: 'TLS1_2'
     isHnsEnabled: true // Required by NFS v3
     isNfsV3Enabled: true

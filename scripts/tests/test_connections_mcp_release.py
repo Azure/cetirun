@@ -133,7 +133,10 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
             executable.chmod(0o755)
         manifests = [*ROOT.glob("app/*/chart/Chart.yaml"),
                      ROOT / "app/cetirun-chart/Chart.yaml",
-                     ROOT / "app/cetirun-platform/Chart.yaml", ROOT / "infra/istio/Chart.yaml"]
+                     ROOT / "app/cetirun-platform/Chart.yaml",
+                     *ROOT.glob("infra/*/Chart.yaml")]
+        # Inventory validation also requires explicitly local bootstrap charts;
+        # only published inventory entries may enter the release lifecycle.
         for source in manifests:
             target = self.root / source.relative_to(ROOT)
             target.parent.mkdir(parents=True, exist_ok=True)

@@ -180,8 +180,8 @@ Set the four necessary `sharedSkills` fields. Copy three of them from the
 ## NFS security properties
 
 The [storage module]({{< repo "infra/storage/modules/storage-account.bicep" >}})
-sets hierarchical namespace and NFS v3 when it creates the account. It disables
-HTTPS-only enforcement for NFS traffic and does not allow anonymous blob access.
+sets hierarchical namespace and NFS v3 when it creates the account. It requires
+HTTPS for REST requests and disables shared-key and anonymous blob access.
 It uses `networkAcls.defaultAction: Deny` with explicitly allowed subnets.
 The SKU is `Premium_LRS`, and `networkAcls.bypass` is `AzureServices`.
 The module creates a private endpoint only when `privateEndpointSubnetId` is

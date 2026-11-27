@@ -3,6 +3,7 @@
 """Run the inventory's actual builders against a local Docker command double."""
 
 import json
+import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -13,11 +14,13 @@ import tempfile
 import tarfile
 import unittest
 
-import yaml
-
-
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/cetirun-release.py"
+import yaml
+
+SPEC = importlib.util.spec_from_file_location("release_inventory", SCRIPT)
+RELEASE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(RELEASE)
 IMAGES = {"cetirun-base", "openclaw-gateway", "hermes-gateway", "cetirun-desktop", "cetirun-operator",
           "cetirun-ai-gateway", "cetirun-agent-broker", "cetirun-connections-mcp", "cetirun-terminal",
           "cetirun-portal", "cetirun-vscode", "cetirun-pi-agent", "cetirun-memory-context",
@@ -504,6 +507,18 @@ class ReleaseInventoryTests(unittest.TestCase):
         plan = json.loads(self.run_release("plan").stdout)
         self.assertEqual(plan["gitSha"], "a" * 40)
         self.assertEqual(self.commands(), [])
+
+    def test_local_bootstrap_chart_is_explicit_and_unclassified_chart_fails(self):
+        data = RELEASE.inventory()
+        expected = {entry["path"] for entry in data["charts"]} | {"infra/keyvault-tls"}
+        self.assertEqual(RELEASE.chart_inventory_paths(data), expected)
+        with self.assertRaisesRegex(ValueError, "inventory differs"):
+            RELEASE.validate_chart_inventory(expected | {"infra/unclassified"}, data)
+
+    def test_local_bootstrap_chart_is_not_a_published_release_chart(self):
+        data = RELEASE.inventory()
+        self.assertNotIn("infra/keyvault-tls", {entry["path"] for entry in data["charts"]})
+        self.assertNotIn("cetirun-keyvault-tls", {entry["name"] for entry in data["charts"]})
 
     def test_release_pipeline_shell_syntax(self):
         pipeline = yaml.safe_load((ROOT / ".pipelines/release-mcr.yml").read_text())

@@ -389,6 +389,22 @@
                 }
             }
         },
+        "providerIdentity": {
+            "type": "object",
+            "description": "Managed identity used by the Gateway provider path. The chart templates enforce UUID syntax and reject the zero UUID when enabled.",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Use Azure Workload Identity for provider authentication",
+                    "default": false
+                },
+                "clientId": {
+                    "type": "string",
+                    "description": "Client ID of the managed identity used for provider authentication",
+                    "default": ""
+                }
+            }
+        },
         "metrics": {
             "type": "object",
             "description": "LiteLLM's Prometheus metrics, served on a separate port without authentication",

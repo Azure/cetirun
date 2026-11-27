@@ -28,6 +28,28 @@ This page is for platform administrators. Related pages:
   [README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}) is the
   complete reference of the chart.
 
+## Azure provider Workload Identity
+
+For Azure model deployments that accept Entra tokens, set
+`platform.values.cetirun-ai-gateway.providerIdentity.enabled: true` and provide
+the managed identity's client ID in `providerIdentity.clientId`. Federate that
+identity with the new cluster's OIDC issuer and the AI Gateway ServiceAccount,
+and grant the required inference role on the model resource. This uses ordinary
+Azure Workload Identity and does not require Entra Agent Identity preview.
+
+The chart adds the Workload Identity Pod label, annotates its ServiceAccount,
+and enables LiteLLM Azure AD token refresh. Omit `api_key` for the supported
+Azure provider models. A provider credential Secret is unnecessary when no
+configured model uses API keys; Gateway master, salt, console and database
+credentials are still required. Mixed configurations can retain an existing
+provider Secret for models that use keys.
+
+When ADX content logging also uses Workload Identity, both configurations must
+name the same managed identity because the Pod has one ServiceAccount. The
+chart rejects conflicting IDs or an externally managed ServiceAccount in this
+mode. Token acquisition, refresh and a real provider request require live
+acceptance; a successful Helm render does not prove inference permission.
+
 ## How a request goes through the AI Gateway
 
 1. The operator creates one virtual key for each Agent. It writes the value to

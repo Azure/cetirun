@@ -435,6 +435,67 @@ Provider credentials must come from exactly one source.
 {{- end }}
 
 {{/*
+Provider identity is deliberately separate from the ADX content identity. A
+single ServiceAccount may carry both only when the managed identity is the
+same, otherwise the Azure workload identity webhook would select an ambiguous
+client ID.
+*/}}
+{{- define "cetirun-ai-gateway.validateProviderIdentity" -}}
+{{- $identity := .Values.providerIdentity | default dict -}}
+{{- $enabled := false -}}
+{{- if hasKey $identity "enabled" -}}
+  {{- $enabled = get $identity "enabled" -}}
+{{- end -}}
+{{- if and (hasKey $identity "enabled") (not (kindIs "bool" $enabled)) -}}
+{{- fail "providerIdentity.enabled must be a boolean" -}}
+{{- end -}}
+{{- $clientID := "" -}}
+{{- if hasKey $identity "clientId" -}}
+  {{- $clientID = get $identity "clientId" | toString -}}
+{{- end -}}
+{{- $content := .Values.content | default dict -}}
+{{- $contentEnabled := false -}}
+{{- if hasKey $content "enabled" -}}
+  {{- $contentEnabled = get $content "enabled" -}}
+{{- end -}}
+{{- if and (hasKey $content "enabled") (not (kindIs "bool" $contentEnabled)) -}}
+{{- fail "content.enabled must be a boolean" -}}
+{{- end -}}
+{{- $contentClientID := "" -}}
+{{- if hasKey $content "clientId" -}}
+  {{- $contentClientID = get $content "clientId" | toString -}}
+{{- end -}}
+{{- $annotations := .Values.serviceAccount.annotations | default dict -}}
+{{- $annotatedClientID := "" -}}
+{{- if hasKey $annotations "azure.workload.identity/client-id" -}}
+  {{- $annotatedClientID = get $annotations "azure.workload.identity/client-id" | toString -}}
+{{- end -}}
+{{- if $enabled -}}
+  {{- if not (kindIs "bool" .Values.serviceAccount.create) -}}
+  {{- fail "serviceAccount.create must be a boolean" -}}
+  {{- end -}}
+  {{- if not .Values.serviceAccount.create -}}
+  {{- fail "providerIdentity.enabled requires serviceAccount.create=true" -}}
+  {{- end -}}
+  {{- if not (regexMatch "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" $clientID) -}}
+  {{- fail "providerIdentity.clientId must be a UUID" -}}
+  {{- end -}}
+  {{- if eq (lower $clientID) "00000000-0000-0000-0000-000000000000" -}}
+  {{- fail "providerIdentity.clientId must not be the zero UUID" -}}
+  {{- end -}}
+{{- end -}}
+{{- if and $enabled $contentEnabled (ne (lower $clientID) (lower $contentClientID)) -}}
+{{- fail "providerIdentity.clientId must match content.clientId when both identities are enabled" -}}
+{{- end -}}
+{{- if and $enabled $annotatedClientID (ne (lower $clientID) (lower $annotatedClientID)) -}}
+{{- fail "serviceAccount.annotations.azure.workload.identity/client-id conflicts with providerIdentity.clientId" -}}
+{{- end -}}
+{{- if and $contentEnabled $annotatedClientID (ne (lower $contentClientID) (lower $annotatedClientID)) -}}
+{{- fail "serviceAccount.annotations.azure.workload.identity/client-id conflicts with content.clientId" -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Where the proxy and the metrics process share their Prometheus samples.
 */}}
 {{- define "cetirun-ai-gateway.metricsDirectory" -}}

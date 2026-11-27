@@ -990,8 +990,13 @@ def validate_mesh_configmap(document, service, *, published=False):
 
 
 def configuration(path, *, domain=None, registry=None, version=None, coordinate_origins=None,
-                  chart_roots=None, published_artifacts=None):
+                  chart_roots=None, published_artifacts=None, internal_only=False):
     config = copy.deepcopy(path) if isinstance(path, dict) else yaml_file(path)
+    if type(internal_only) is not bool:
+        raise ValueError("internal_only must be a boolean")
+    if internal_only and config.get("publicTLS", {}).get("enabled", False):
+        raise ValueError("--internal-only cannot be combined with publicTLS.enabled=true")
+    config["_internalOnly"] = internal_only
     chart_roots = chart_roots or {}
     release = config.setdefault("release", {})
     if not isinstance(release, dict):
@@ -1043,8 +1048,14 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
         raise ValueError("istio.tlsMode must be external or retain for an existing chart-owned certificate")
     if config.get("instances"):
         raise ValueError("Arbitrary Instance creation is not part of this deployment; configure CetiAdmin through cetirun-operator.cetiadmin")
-    for field in ("tenantId", "portalClientId", "blueprintClientId", "authorizationClientId", "encryptionClientId", "keyVaultKeyUrl"):
+    agent_identity_enabled = config.get("identity", {}).get("agentIdentityEnabled", True)
+    if type(agent_identity_enabled) is not bool:
+        raise ValueError("identity.agentIdentityEnabled must be an explicit boolean")
+    for field in ("tenantId", "portalClientId", "encryptionClientId", "keyVaultKeyUrl"):
         required(config, f"identity.{field}")
+    for field in ("blueprintClientId", "authorizationClientId"):
+        if agent_identity_enabled:
+            required(config, f"identity.{field}")
     for field in ("customRuntime.storageClass", "customRuntime.storageSize", "customRuntime.accessMode"):
         required(config, f"platform.values.cetirun-operator.{field}")
     persistence_path = "platform.values.cetirun-ai-gateway.postgresql.bundled.persistence"
@@ -1141,15 +1152,15 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
                      "cetirun-operator.connectionsMCP.url": f"https://cetirun-connections-mcp.{pns}.svc.cluster.local/mcp",
                      "cetirun-operator.connectionsMCP.brokerNamespace": bns,
                      "cetirun-operator.connectionsMCP.brokerServiceAccount": values["broker"]["serviceAccount"]["name"] or "cetirun-agent-broker",
-                     "cetirun-operator.agentIdentity.enabled": True, "cetirun-operator.agentIdentity.brokerURL": broker_http,
+                     "cetirun-operator.agentIdentity.enabled": agent_identity_enabled,
+                     "cetirun-operator.agentIdentity.brokerURL": broker_http,
                      "cetirun-operator.agentIdentity.tenantId": identity["tenantId"],
-                     "cetirun-operator.agentIdentity.blueprintClientId": identity["blueprintClientId"],
                      "cetirun-portal.istio.host": domain, "cetirun-portal.istio.gateway": gateway,
                      "cetirun-portal.istio.gatewayNamespace": config["istio"]["ingressNamespace"],
                      "cetirun-portal.istio.gatewayServiceAccount": config["istio"]["ingressServiceAccount"],
                      "cetirun-portal.istio.internalAuthMTLS": True,
                      "cetirun-portal.aiGateway.catalogNamespace": pns,
-                     "cetirun-portal.features.agentToolsEnabled": True, "cetirun-portal.features.agentIdentityEnabled": True,
+                     "cetirun-portal.features.agentToolsEnabled": True, "cetirun-portal.features.agentIdentityEnabled": agent_identity_enabled,
                      "cetirun-portal.features.allowedAgentTypes": ["hermes", "openclaw", "custom"],
                      "cetirun-portal.agentIdentity.tenantId": identity["tenantId"],
                      "cetirun-portal.agentIdentity.portalClientId": identity["portalClientId"],
@@ -1163,8 +1174,16 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
                      "cetirun-connections-mcp.istio.sidecarInjection": True, "cetirun-connections-mcp.istio.revision": revision,
                      "cetirun-connections-mcp.portal.baseURL": f"https://{domain}"},
     }
-    for field in ("tenantId", "blueprintClientId", "authorizationClientId", "encryptionClientId", "keyVaultKeyUrl"):
+    for field in ("tenantId", "encryptionClientId", "keyVaultKeyUrl"):
         assignments["broker"][f"agentIdentity.{field}"] = identity[field]
+    if agent_identity_enabled:
+        assignments["platform"]["cetirun-operator.agentIdentity.blueprintClientId"] = identity["blueprintClientId"]
+        for field in ("blueprintClientId", "authorizationClientId"):
+            assignments["broker"][f"agentIdentity.{field}"] = identity[field]
+    assignments["broker"]["identityModes.azureAgent.enabled"] = agent_identity_enabled
+    assignments["broker"]["identityModes.microsoftDelegated.enabled"] = agent_identity_enabled
+    if not agent_identity_enabled:
+        assignments["platform"]["cetirun-operator.agentIdentity.cleanupEnabled"] = False
     operator_defaults = yaml_file(Path(chart_roots.get("cetirun-operator", OPERATOR_VALUES.parent)) / "values.yaml")
     observability_defaults = yaml_file(Path(chart_roots.get("cetirun-observability", OBSERVABILITY_VALUES.parent)) / "values.yaml")
     gateway_defaults = yaml_file(Path(chart_roots.get("cetirun-ai-gateway", AI_GATEWAY_VALUES.parent)) / "values.yaml")
@@ -1210,8 +1229,8 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
     for component in ("operator", "portal", "ai-gateway", "connections-mcp"):
         if component != "operator" and platform[f"cetirun-{component}"].get("enabled", True) is not True:
             raise ValueError(f"The default deployment requires cetirun-{component}.enabled=true")
-    if not values["broker"]["identityModes"]["microsoftDelegated"]["enabled"]:
-        raise ValueError("The default deployment requires the Broker Auth SDK")
+    if agent_identity_enabled and not values["broker"]["identityModes"]["microsoftDelegated"]["enabled"]:
+        raise ValueError("Agent Identity mode requires the Broker Auth SDK")
     required(values["broker"], "tls.secretName")
     for field in ("tls.secretName", "broker.clientTLSSecretName"):
         required(mcp, field)
@@ -1228,9 +1247,17 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
     for field in ("storageClassName", "resourceGroup", "storageAccount", "containerName"):
         required(skills, field)
     operator["cetirun"]["helmValues"]["skills"] = {**skills, "shared": True}
-    for field in ("providerCredentials.existingSecret", "auth.masterKey.existingSecret", "auth.saltKey.existingSecret",
-                  "auth.adminUI.passwordSecret.existingSecret", "redis.passwordSecret.existingSecret"):
+    provider_identity = mapping(ai.get("providerIdentity", {}), "providerIdentity")
+    if type(provider_identity.get("enabled", False)) is not bool:
+        raise ValueError("providerIdentity.enabled must be an explicit boolean")
+    if provider_identity.get("enabled") and not nonzero_uuid(provider_identity.get("clientId")):
+        raise ValueError("providerIdentity.clientId must name an existing managed identity")
+    provider_fields = ("auth.masterKey.existingSecret", "auth.saltKey.existingSecret",
+                       "auth.adminUI.passwordSecret.existingSecret", "redis.passwordSecret.existingSecret")
+    for field in provider_fields:
         required(ai, field)
+    if not provider_identity.get("enabled"):
+        required(ai, "providerCredentials.existingSecret")
     if ai["providerCredentials"].get("inline"):
         raise ValueError("Provider credentials must use an existing Secret")
     operator["aiGateway"]["masterKeySecret"] = {"name": ai["auth"]["masterKey"]["existingSecret"], "key": ai["auth"]["masterKey"]["key"]}
@@ -1255,28 +1282,50 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
             raise ValueError("Direct model routing requires cetiadmin.model.default to name a configured model")
     else:
         auto = models.get("auto", {}).get("litellm_params", {})
-        decision = models.get("decision-1", {})
         router = auto.get("complexity_router_config", {})
+        decision_name = router.get("jev_classifier_config", {}).get("deployment_name")
+        decision = models.get(decision_name, {})
         if (auto.get("model") != "auto_router/complexity_router" or router.get("classifier_type") != "jev"
-                or router.get("jev_classifier_config", {}).get("deployment_name") != "decision-1"):
+                or decision_name != "decision-1" or decision_name not in models):
             raise ValueError("models must configure auto with the existing jev classifier and logical decision-1 deployment")
         decision_model = decision.get("litellm_params", {}).get("model", "")
         if (not isinstance(decision_model, str) or not decision_model.startswith(("azure_ai/", "openai/"))
-                or decision.get("model_info", {}).get("base_model") != "azure_ai/Microsoft-Decision-1"
+                or decision.get("model_info", {}).get("base_model") not in ("azure_ai/Microsoft-Decision-1", "azure_ai/Microsoft-Decision-1.1")
                 or decision.get("model_info", {}).get("mode") != "evaluation"):
-            raise ValueError("decision-1 needs an explicit azure_ai/<deployment> or openai/<proxy-model>, base_model azure_ai/Microsoft-Decision-1 and evaluation mode. "
+            raise ValueError("the classifier needs an explicit azure_ai/<deployment> or openai/<proxy-model>, a supported Microsoft-Decision base_model and evaluation mode. "
                              "LiteLLM prices the model only by that name, and the Operator does not offer an unpriced classifier to auto")
+        if decision.get("model_info", {}).get("base_model") == "azure_ai/Microsoft-Decision-1.1":
+            info = decision.get("model_info", {})
+            prices_valid = True
+            for key in ("input_cost_per_token", "output_cost_per_token"):
+                value = info.get(key)
+                if type(value) not in (int, float) or isinstance(value, bool):
+                    prices_valid = False
+                    break
+                prices_valid = prices_valid and math.isfinite(float(value)) and float(value) >= 0
+            if type(info.get("max_input_tokens")) is not int or info["max_input_tokens"] <= 0 or not prices_valid:
+                raise ValueError("Microsoft-Decision-1.1 requires explicit token limit and nonnegative finite input/output pricing")
         decision_params = decision["litellm_params"]
         if not decision_model.split("/", 1)[1].strip("/ \t\r\n") or any(c.isspace() for c in decision_model):
             raise ValueError("decision-1 requires a real deployment or proxy model name")
-        for field in ("api_base", "api_key"):
-            required(decision_params, field)
+        required(decision_params, "api_base")
+        if not (provider_identity.get("enabled") and decision_model.startswith("azure_ai/")):
+            required(decision_params, "api_key")
         if "api_version" in decision_params:
             required(decision_params, "api_version")
         if set(router.get("tiers", {})) != {"SIMPLE", "MEDIUM", "COMPLEX", "REASONING"}:
             raise ValueError("auto requires explicit SIMPLE, MEDIUM, COMPLEX and REASONING tiers")
     for entry in ai["models"]:
         params = entry.get("litellm_params", {})
+        if provider_identity.get("enabled") and not ai["providerCredentials"].get("existingSecret"):
+            if any(isinstance(value, str) and value.startswith("os.environ/") for value in params.values()):
+                raise ValueError("provider inputs using os.environ require providerCredentials.existingSecret")
+        if "api_key" not in params and provider_identity.get("enabled"):
+            if str(params.get("model", "")).startswith("auto_router/"):
+                continue
+            if str(params.get("model", "")).startswith(("azure_ai/", "azure/")):
+                continue
+            raise ValueError("providerIdentity requires an api_key for non-Azure models")
         if "api_key" in params and not re.fullmatch(r"os\.environ/[A-Za-z_][A-Za-z0-9_]*", str(params["api_key"])):
             raise ValueError("Model api_key must reference a provider Secret environment variable")
     validate_cetiadmin(config, operator)
@@ -1818,14 +1867,16 @@ class Deployment:
         if admin["enabled"] and admin["monitor"]["enabled"] and admin["monitor"]["deliver"] == "slack":
             for key in ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"):
                 refs.add(("Secret", "cetirun-" + admin["instanceName"], admin["monitor"]["slackSecretName"], key))
-        for namespace, name, keys in (
-            (c["istio"]["ingressNamespace"], "cetirun-tls", ("tls.crt", "tls.key")),
+        tls_references = (
             (c["broker"]["namespace"], broker["tls"]["secretName"], (broker["tls"]["certKey"], broker["tls"]["keyKey"], broker["tls"]["clientCAKey"])),
             (c["platform"]["namespace"], operator["sandboxAdmission"]["tlsSecretName"], ("tls.crt", "tls.key")),
             (c["platform"]["namespace"], operator["connectionsMCP"]["caSecretName"], ("ca.crt",)),
             (c["platform"]["namespace"], mcp["tls"]["secretName"], ("tls.crt", "tls.key")),
             (c["platform"]["namespace"], mcp["broker"]["clientTLSSecretName"], ("tls.crt", "tls.key", "ca.crt")),
-        ):
+        )
+        if not c.get("_internalOnly"):
+            tls_references = ((c["istio"]["ingressNamespace"], "cetirun-tls", ("tls.crt", "tls.key")), *tls_references)
+        for namespace, name, keys in tls_references:
             for key in keys:
                 refs.add(("Secret", namespace, name, key))
         for field in ("platformConfigMapName", "skillsCatalogConfigMapName", "placementConfigMapName"):
@@ -1901,7 +1952,7 @@ class Deployment:
         self.verify_certificate("broker-client", self.public_certificate(ns, mcp["broker"]["clientTLSSecretName"], "tls.crt"),
                                 self.public_certificate(bns, b["tls"]["secretName"], b["tls"]["clientCAKey"]),
                                 client_uri=f"spiffe://cluster.local/ns/{b['toolService']['namespace']}/sa/{b['toolService']['serviceAccount']}")
-        if self.defer_public_tls:
+        if self.defer_public_tls or self.config.get("_internalOnly"):
             return
         ingress = self.scratch / "ingress-public.pem"
         ingress.write_text(self.public_certificate(c["istio"]["ingressNamespace"], "cetirun-tls", "tls.crt"))
@@ -1914,6 +1965,84 @@ class Deployment:
         not_before = datetime.strptime(starts.strip().removeprefix("notBefore="), "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
         if not_before > datetime.now(timezone.utc):
             raise ValueError("The ingress certificate is not yet valid")
+
+    def check_internal_surface(self):
+        """Keep the internal bootstrap from adopting an existing public path."""
+        if not self.config.get("_internalOnly"):
+            return
+        for release, documents in self.documents.items():
+            if release == "istio":
+                continue
+            for document in documents:
+                kind = document.get("kind")
+                if kind == "Gateway":
+                    raise ValueError("--internal-only refuses to render a Gateway resource")
+                if kind != "Service":
+                    continue
+                spec = document.get("spec", {})
+                name = document.get("metadata", {}).get("name", "unknown")
+                forbidden = ("externalIPs", "externalName", "loadBalancerIP", "loadBalancerClass")
+                if spec.get("type", "ClusterIP") != "ClusterIP" or any(spec.get(field) for field in forbidden):
+                    raise ValueError(f"--internal-only requires rendered Service {release}/{name} to be ClusterIP-only")
+                if any(port.get("nodePort") is not None for port in spec.get("ports", [])):
+                    raise ValueError(f"--internal-only refuses rendered nodePort Service {release}/{name}")
+        ingress = self.config["istio"]["ingressNamespace"]
+        raw = self.kubectl("get", "gateways.networking.istio.io", "--namespace", ingress, "-o", "json")
+        try:
+            gateways = json.loads(raw).get("items", [])
+        except (TypeError, ValueError) as error:
+            raise ValueError("Cannot inspect existing Istio Gateways for internal-only exposure") from error
+        if gateways:
+            names = [item.get("metadata", {}).get("name", "unknown") for item in gateways]
+            raise ValueError(f"--internal-only refuses existing Istio Gateway resources: {', '.join(names[:3])}")
+        namespaces = {self.config[name]["namespace"] for name in self.chart_specs if name != "istio"}
+        for namespace in sorted(namespaces):
+            if not self.resource("namespace", namespace):
+                continue
+            raw = self.kubectl("get", "services", "--namespace", namespace, "-o", "json")
+            try:
+                services = json.loads(raw).get("items", [])
+            except (TypeError, ValueError) as error:
+                raise ValueError("Cannot inspect existing Services for internal-only exposure") from error
+            for service in services:
+                spec = service.get("spec", {})
+                if spec.get("type", "ClusterIP") != "ClusterIP" or spec.get("externalIPs"):
+                    name = service.get("metadata", {}).get("name", "unknown")
+                    raise ValueError(f"--internal-only refuses non-ClusterIP Service {namespace}/{name}")
+
+    def internal_stage_receipt_valid(self):
+        """Authorize retrying only a previously recorded internal stage."""
+        path = self.config.get("_internalStageReceipt")
+        if not path:
+            return False
+        try:
+            mode = os.stat(path).st_mode & 0o777
+            if mode & 0o077:
+                return False
+            receipt = json.loads(Path(path).read_text())
+        except (OSError, TypeError, ValueError):
+            return False
+        target = receipt.get("target", {}) if isinstance(receipt, dict) else {}
+        release = receipt.get("release", {}) if isinstance(receipt, dict) else {}
+        charts = receipt.get("charts", {}) if isinstance(receipt, dict) else {}
+        expected_charts = {name: {"release": self.config[name]["release"],
+                                  "namespace": self.config[name]["namespace"]}
+                          for name in self.chart_specs}
+        config_path = self.config.get("_internalConfigPath")
+        profile_hash = None
+        if config_path:
+            try:
+                profile_hash = hashlib.sha256(Path(config_path).read_bytes()).hexdigest()
+            except OSError:
+                return False
+        return (isinstance(receipt, dict) and receipt.get("schemaVersion") == 1
+                and receipt.get("mode") == "internal-only"
+                and target == {"cluster": self.config["target"]["cluster"],
+                               "server": self.config["target"]["server"],
+                               "clusterUID": self.config["target"]["clusterUID"]}
+                and release == {key: self.config["release"][key] for key in ("registry", "version", "gitSHA")}
+                and charts == expected_charts
+                and (profile_hash is None or receipt.get("profileSha256") == profile_hash))
 
     def check_agent_mcp_conflicts(self):
         if not self.resource("CustomResourceDefinition", "agents.cetirun.microsoft.com"):
@@ -2544,6 +2673,7 @@ class Deployment:
         for kind in ("gateways.networking.istio.io", "virtualservices.networking.istio.io", "authorizationpolicies.security.istio.io"):
             if not self.resource("customresourcedefinition", kind):
                 raise ValueError(f"Managed Istio prerequisite is missing: {kind}")
+        self.check_internal_surface()
         for field in ("controlPlane", "ingress"):
             namespace, deployment = c["istio"][f"{field}Namespace"], c["istio"][f"{field}Deployment"]
             # A missing Deployment would only fail rollout status, whose output is
@@ -2577,6 +2707,8 @@ class Deployment:
                                             "--selector", "owner=helm,name=" + section["release"] +
                                             (",status!=superseded" if c.get("_infrastructureOnly") else ""), "-o", "json"))
             if releases:
+                if c.get("_internalOnly") and not self.internal_stage_receipt_valid():
+                    raise ValueError("--internal-only is only for a new CetiRun installation; an existing release requires the full public deployment path")
                 if releases[0]["status"].startswith("pending-"):
                     raise ValueError(f"Release {section['release']} has an unfinished operation")
                 if (name == "platform" and c["platform"].get("postgresqlStorage")
@@ -2661,7 +2793,8 @@ class Deployment:
             if kind == "Secret" and key and key not in self.secret_keys(namespace, name):
                 raise ValueError(f"Required Secret key is missing: {namespace}/{name}:{key}")
         self.check_mesh_configuration()
-        if c["istio"].get("mode", "manage") == "external" and "istio" not in self.existing_releases:
+        if (not c.get("_internalOnly") and c["istio"].get("mode", "manage") == "external"
+                and "istio" not in self.existing_releases):
             raise ValueError("istio.mode=external requires the named existing CetiRun Istio release")
         tls = self.resource("Secret", "cetirun-tls", c["istio"]["ingressNamespace"])
         owner = (tls or {}).get("annotations", {})
@@ -2901,15 +3034,16 @@ class Deployment:
                 self.kubectl("create", "namespace", namespace)
             if name != "istio" and (self.namespaces[namespace] or {}).get("labels", {}).get("istio.io/rev") != c["istio"]["revision"]:
                 self.kubectl("label", "namespace", namespace, f"istio.io/rev={c['istio']['revision']}", "--overwrite=false")
-        if c["istio"].get("mode", "manage") == "manage":
+        if c["istio"].get("mode", "manage") == "manage" and not c.get("_internalOnly"):
             upgrade("istio")
-        self.ready("istio")
+        if not c.get("_internalOnly"):
+            self.ready("istio")
         command = [sys.executable, "-B", str(ROOT / "scripts/ensure-oauth2-proxy-id-token-header.py"),
                    "--context", c["target"]["context"], "--namespace", c["istio"]["controlPlaneNamespace"],
                    "--name", c["istio"]["meshConfigMap"], "--service", self.oauth_service()]
         if self.mesh_uid:
             command += ["--uid", self.mesh_uid]
-        if c["istio"].get("mode", "manage") == "manage" and not self.published_artifacts:
+        if c["istio"].get("mode", "manage") == "manage" and not self.published_artifacts and not c.get("_internalOnly"):
             self.run(command)
         upgrade("broker")
         self.ready("broker")
@@ -2956,12 +3090,13 @@ class Deployment:
                 "release": {key: self.config["release"][key] for key in ("registry", "version", "gitSHA")},
                 "releaseOrigins": self.config["_releaseOrigins"],
                 "publicTLS": self.ingress.render() if self.ingress else {"enabled": False},
+                "internalOnly": bool(self.config.get("_internalOnly")),
                 "domain": self.config["domain"],
                 "domainIsPlaceholder": bool(self.ingress and not self.ingress.domain and not self.config["_source"].get("domain")),
-                "stages": (["full prerequisites except the managed public certificate", "DNS, upstream cert-manager, umbrella certificate bootstrap",
+                "stages": (["internal mTLS/admission/storage/model platform without public Gateway or OAuth2"] if self.config.get("_internalOnly") else []) + (["full prerequisites except the managed public certificate", "DNS, upstream cert-manager, umbrella certificate bootstrap",
                             "wait for staging and production certificates; full releases never enter certificate-only mode"] if self.ingress else []) + ["verify target, managed Istio, references, ownership and all artifacts",
                            "confirm retained CetiAdmin shutdown before any Operator removal; recheck immediately before its upgrade",
-                           "CetiRun Istio/OAuth2 release and mesh provider", "isolated Broker/Auth SDK release",
+                           *([] if self.config.get("_internalOnly") else ["CetiRun Istio/OAuth2 release and mesh provider"]), "isolated Broker/Auth SDK release",
                            "platform data services, Operator, Portal Chat, MCP, Custom/terminal and Memory bindings",
                            "dedicated CetiAdmin protection; global Sandbox enforcement after admission readiness",
                            "all workloads and CetiAdmin installation checks ready; admission server dry-run"],
@@ -2987,13 +3122,24 @@ def main(argv=None):
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--verify", action="store_true", help="read-only public DNS, TLS and Portal verification")
     mode.add_argument("--plan", action="store_true", help="validate inputs and render locally without cluster/registry calls")
+    parser.add_argument("--internal-only", action="store_true",
+                        help="bootstrap internal mTLS/admission services without creating the public Istio Gateway or OAuth2 release")
+    parser.add_argument("--internal-stage-receipt", type=Path,
+                        help="private 0600 receipt authorizing retry of a previously recorded internal-only stage")
     args = parser.parse_args(argv)
     try:
         overrides = {key: getattr(args, key) if getattr(args, key) is not None else os.environ.get(key.upper())
                      for key in ("registry", "version")}
         origins = {key: f"--{key}" if getattr(args, key) is not None else f"environment {key.upper()}"
                    for key in overrides}
-        config, values = configuration(args.config, **overrides, coordinate_origins=origins)
+        config, values = configuration(args.config, **overrides, coordinate_origins=origins,
+                                       internal_only=args.internal_only)
+        if args.internal_only:
+            config["_internalConfigPath"] = str(args.config)
+        if args.internal_stage_receipt and not args.internal_only:
+            raise ValueError("--internal-stage-receipt requires --internal-only")
+        if args.internal_stage_receipt:
+            config["_internalStageReceipt"] = str(args.internal_stage_receipt)
         with tempfile.TemporaryDirectory(prefix="cetirun-platform-") as temporary:
             deployment = Deployment(config, values, Path(temporary))
             deployment.render()

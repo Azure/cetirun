@@ -218,6 +218,29 @@ path. Supply `cetirun-tls` out of band and keep `istio.tlsMode: external`; an
 existing Istio chart-owned certificate uses the documented `retain` mode.
 There is no automatic ownership migration.
 
+For certificates renewed in Azure Key Vault, `infra/keyvault-tls/` provides a
+separate CSI consumer chart. It synchronizes the certificate's backing secret
+to `cetirun-tls` without modifying the managed Istio Deployment. The certificate
+policy must permit private-key export, and the dedicated Workload Identity must
+be allowed to read that backing secret. CA registration, issuance approval and
+Key Vault renewal configuration remain external prerequisites.
+
+Keep both consumer replicas running: CSI can remove the synced Secret when the
+last mounting Pod disappears. Verify Key Vault version propagation, the synced
+Secret and every ingress replica's SDS state, then verify the certificate served
+over a new TLS connection. A successful Key Vault renewal alone is insufficient.
+
+For a TLS-only check before public DNS points to the new ingress, run:
+
+```bash
+python3 scripts/verify_external_tls.py --hostname portal.example.com \
+  --address 192.0.2.10 --minimum-valid-days 30
+```
+
+The command uses the system trust store and checks the requested hostname. It
+does not validate OAuth, group authorization, model calls or the renewal chain.
+The managed `make deploy-verify` command still requires `publicTLS.enabled=true`.
+
 ### Migrate an existing external-certificate deployment
 
 This migration has no command. Plan it as a separately reviewed change, and
