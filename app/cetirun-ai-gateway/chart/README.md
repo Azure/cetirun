@@ -2283,20 +2283,25 @@ these actions:
   restarted each such Agent twice: when the upstream stopped answering, and
   when it answered again. The AI Gateway keeps the limits of each deployment
   while the upstream does not answer. Each answer of the upstream is an
-  observation: its time and the limits of the model. When LiteLLM answers from
-  the listing that it keeps, the time is when it read the listing. The AI
-  Gateway keeps the newest observation in its Redis, for 30 days after that
-  time, and in the replica. A replica dates each of its reads once by the clock
-  of Redis: with a round trip to Redis, it learns two times of Redis between
-  which the read happened, and the observation keeps them. So the clocks of the
-  replicas do not matter, and a later change of the clock of Redis does not move
-  earlier reads. At each refresh, a replica combines the observation in Redis
-  with its own: the later read wins, and of two reads that the clock of Redis
-  cannot order, the smaller limit of each kind wins until a later read. The
-  replica writes the result in place of the value that it read, in one step,
-  so that the replicas agree, also a replica that starts meanwhile; when
-  another replica wrote meanwhile, it reads again. A replica uses what it knows
-  when Redis does not answer, and writes it at the next refresh.
+  observation: the limits of the model, and the time of the read, between the
+  request and the answer. When LiteLLM answers from the listing that it keeps,
+  the time is that of its read of the listing. The AI Gateway keeps the newest
+  observation in its Redis, for 30 days after that time, and in the replica. A
+  replica dates each of its reads once by the clock of Redis: with a round trip
+  to Redis, it learns two times of Redis between which the read happened, and
+  the observation keeps them. So the clocks of the replicas do not matter, and
+  a later change of the clock of Redis does not move earlier reads. The times
+  are of an epoch of the clock of Redis. A new epoch begins when Redis lost its
+  data, or when its clock went back. The times of two epochs do not order two
+  reads. A read that Redis did not date within five seconds, because Redis
+  did not answer, is not later than another read. At each refresh, a replica
+  combines the observation in Redis with its own: the later read wins, and of
+  two reads that the clock of Redis cannot order, the smaller limit of each kind
+  wins until a later read. The replica writes the result in place of the value
+  that it read, in one step, so that the replicas agree, also a replica that
+  starts meanwhile; when another replica wrote meanwhile, it reads again. A
+  replica uses what it knows when Redis does not answer, and writes it at the
+  next refresh.
   The ID of the deployment scopes the limits: two deployments with one upstream
   URL and model keep their own limits, and a changed credential keeps them.
   When the upstream answers without limits for the model, also with an empty
