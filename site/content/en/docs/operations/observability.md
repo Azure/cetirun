@@ -245,7 +245,7 @@ reasons:
 | Reason | Meaning |
 | --- | --- |
 | `collection not observed` | No Pod has heartbeats in the interval and in the intervals before and after it. The collection stopped, or it stopped or started again in the interval, or the AI Gateway did not run. The current interval has this reason until the heartbeats of the next interval arrive. |
-| `missed heartbeat` | A Pod that ran in the interval lacks its heartbeat in it, in the interval before it, or in the interval after it. The collection can have lost lines of that Pod. A Pod needs no heartbeat before its first interval or after its last. |
+| `missed heartbeat` | A Pod that ran in the interval lacks its heartbeat in it, in the interval before it, or in the interval after it. A Pod runs from its first heartbeat to its last in the whole view, also through days without its heartbeats. The collection can have lost lines of that Pod. A Pod needs no heartbeat before its first interval or after its last. |
 | `request lines past retention` | The interval is older than the retention of the logs database, which counts from the ingestion of a line. `GatewayRequests()` can lack its lines. |
 
 In an interval without a reason, a usage of zero means that no call came. For

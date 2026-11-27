@@ -40,14 +40,19 @@
     let step = 5m;
     let firstInterval = bin(fromTime, step);
     let intervals = range Interval from firstInterval to toTime - 1tick step step;
-    // Each Pod's heartbeats, from a day before the period to a day after it.
+    // Each Pod ran from its first heartbeat to its last in the whole view,
+    // also through days without its heartbeats, whatever the period.
+    let spans = GatewayCoverage
+        | where Cluster == cluster
+        | summarize First = min(Interval), Last = max(Interval) by Pod
+        | where First < toTime and Last >= firstInterval;
+    // The heartbeats in the period and next to it.
     let beats = GatewayCoverage
-        | where Cluster == cluster and Interval >= firstInterval - 1d and Interval < toTime + 1d
+        | where Cluster == cluster and Interval >= firstInterval - step and Interval < toTime + step
         | distinct Pod, Interval;
     // Each Pod in each interval of the period from its first heartbeat to its
     // last, with its heartbeats in that interval and next to it.
-    let pods = beats
-        | summarize First = min(Interval), Last = max(Interval) by Pod
+    let pods = spans
         | mv-expand Interval = range(max_of(First, firstInterval), min_of(Last, toTime - 1tick), step) to typeof(datetime)
         | where isnotnull(Interval)
         | join kind=leftouter (beats | project Pod, Interval, Here = true) on Pod, Interval

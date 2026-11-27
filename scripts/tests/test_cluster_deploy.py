@@ -613,6 +613,12 @@ class AdxScriptTests(unittest.TestCase):
         self.assertIn("where not(Here) or (not(Before) and Interval != First) or (not(After) and Interval != Last)", gaps)
         self.assertIn("project Pod, Interval = Interval + step, Before = true", gaps)
         self.assertIn("project Pod, Interval = Interval - step, After = true", gaps)
+        # A Pod ran from its first heartbeat to its last in the whole view, whatever the period: a Pod without
+        # heartbeats for days still missed them in a short period in between.
+        spans = re.search(r"let spans = GatewayCoverage\r?\n((?: {8}\|.*\r?\n)+)", gaps)[1].splitlines()
+        self.assertEqual(spans[0].strip(), "| where Cluster == cluster")
+        self.assertEqual(spans[1].strip(), "| summarize First = min(Interval), Last = max(Interval) by Pod")
+        self.assertIn("let pods = spans", gaps)
         # GatewayRequests() keeps its lines only for the retention of the logs database.
         self.assertIn("(intervals | where Interval < now() - __LOGS_RETENTION_DAYS__d", gaps)
         self.assertEqual(set(re.findall(r'Reason = "([^"]+)"', gaps)),
