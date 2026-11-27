@@ -173,6 +173,19 @@ administrator's `GET /api/v1/admin/instances/{name}`, mark it with
 (`features.maxInstancesPerUser`) does not count it. Refer to
 [CetiAdmin](../../operations/cetiadmin/).
 
+The Agent responses also report the budget of the AI Gateway key of the Agent.
+The numbers are the ones that the operator last read from the AI Gateway:
+
+- The owner's `GET /api/v1/instances` and `GET /api/v1/instances/{name}`
+  return them in `aiGateway.budget`.
+- The administrator's `GET /api/v1/admin/instances` and
+  `GET /api/v1/admin/instances/{name}` return them in `aiGatewayBudget`.
+
+The object has `budgetUSD` and `spendUSD` as decimal strings, `duration`,
+`resetAt`, `checkedAt`, and `state`. The `state` is `active`, `budgetReached`,
+`suspended`, `noModelAccess`, or `blocked`. The object is absent until the
+operator reads the key. The Portal does not calculate a remaining amount.
+
 ## Skill Marketplace administration
 
 The Portal chart's `skillMarketplace.enabled` enables these Portal API
