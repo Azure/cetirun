@@ -46,6 +46,45 @@ Hermes terminal does not require an exec exception. Cross-Pod `kubectl exec`
 requires both target RBAC and current admission approval. Protected Sandbox
 targets do not inherit the ordinary-target exec or Pod deletion path.
 
+Your own Pod has the NetworkPolicy of a standard Agent. With the default
+settings of the platform, it allows egress only to these destinations: DNS to
+the Pods of the cluster resolver on TCP and UDP port 53, istiod on port 15012,
+the AI Gateway on port 4000, Connections MCP on port 8443 when it is configured,
+the Kubernetes API server, and public addresses outside the blocked ranges. By
+default, the blocked ranges include the private ranges, so the other Pod and
+Service addresses of the cluster are blocked, for example the Portal and OAuth2
+Proxy. Inside the cluster, the public host name of the platform resolves to an
+address that reaches the ingress Pods, which is blocked too.
+
+An administrator can change these settings: the AI Gateway can listen on
+another port, the port of its URL, and the policy can allow other internal
+ranges (`allowedInternalCIDRs`). You cannot read the NetworkPolicy in your own
+namespace, and the NetworkPolicy of an Agent does not show the rules of your
+Pod: an Agent can set its own network values, and an Agent whose release was not
+applied again since a change, for example during a Helm maintenance hold, still
+has the rules from before it. So you do not know which egress rules apply to a
+request from your Pod.
+
+Keep every failed request from your Pod. A request that got no answer, because
+its connection timed out, was refused or reset, its TLS handshake failed, or the
+Istio proxy in your Pod answered `upstream connect error or disconnect/reset
+before headers` or `upstream request timeout`, was either blocked by the egress
+rules of your Pod or not answered by its destination. Report its destination
+and the missed answer, and say that its cause is unknown. Do not assign a
+cause, and do not ask for more permissions. Such a missed answer does not show a
+fault in the platform, a route, or the ingress, and it does not show that they
+are healthy either. Judge those components from Kubernetes evidence instead:
+rollout state, readiness, endpoints, Events, and bounded logs. Report the
+missed answer with that verdict.
+
+An error answer shows that the request failed, even when the Pods behind it are
+Ready: report the destination, the status, and the start of the body, for
+example a 503 that an AI Gateway route returns with the AI Gateway's own body.
+To check an endpoint of an ordinary target, use an authorized `kubectl exec` to
+its loopback address. Check exec permission with
+`kubectl --context cetiadmin auth can-i create pods --subresource=exec -n <namespace>`.
+The form `create pods/exec` asks about a Pod named `exec`, so it always says no.
+
 ## Preserve the automation tiers
 
 Perform these actions without another confirmation when they fall within the

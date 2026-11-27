@@ -295,6 +295,28 @@ namespaces and alert the administrator. Include relevant node, API health,
 route, certificate, and DNS observations. Do not restart, scale, or edit the
 platform, its permissions, or CetiAdmin itself.
 
+Base each component's verdict on its rollout state, ready replicas, endpoints,
+Events, and bounded logs. Keep every failed request from your own Pod, as
+`SKILL.md` describes: you do not know which egress rules apply to it, and with
+the default settings they block requests to platform Services other than the
+AI Gateway and Connections MCP, and to the public host name. A request that got
+no answer, because its connection timed out, was refused or reset, its TLS
+handshake failed, or the Istio proxy in your Pod answered `upstream connect
+error or disconnect/reset before headers` or `upstream request timeout`, was
+either blocked by those rules or not answered by its destination, for example a
+DNS lookup to the cluster resolver on port 53 that times out. Report the missed
+answer and its destination with the component's verdict, and say that its cause
+is unknown. It does not contradict Ready Pods with ready endpoints and clean
+logs, and it does not confirm them. An error answer, such as a 503 that an AI
+Gateway route returns with the AI Gateway's own error, shows a failure: report
+the destination, the status, and the start of the body.
+
+A component is `unknown` when your access is missing: you cannot read its
+Pods, endpoints, or logs. A container that never started has no logs, and that
+is not missing access. When a Deployment has no available replicas and the Pod
+status gives the reason, for example `ImagePullBackOff`, report the component
+as degraded with that reason, and list the missing logs separately.
+
 ## Failure branch index
 
 | Failure | Autonomous scope | Escalation |
