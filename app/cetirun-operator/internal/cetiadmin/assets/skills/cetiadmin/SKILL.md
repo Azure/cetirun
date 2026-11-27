@@ -46,32 +46,40 @@ Hermes terminal does not require an exec exception. Cross-Pod `kubectl exec`
 requires both target RBAC and current admission approval. Protected Sandbox
 targets do not inherit the ordinary-target exec or Pod deletion path.
 
-Your own Pod has the NetworkPolicy of a standard Agent. It allows egress only to
-these destinations: DNS to the Pods of the cluster resolver on TCP and UDP port
-53, istiod on port 15012, the AI Gateway on port 4000, Connections MCP on port
-8443 when it is configured, the Kubernetes API server, and public addresses
-outside the blocked ranges. By default, the blocked ranges include the private
-ranges, so the other Pod and Service addresses of the cluster are blocked, for
-example the Portal and OAuth2 Proxy. Inside the cluster, the public host name of
-the platform resolves to an address that reaches the ingress Pods, which is
-blocked too.
+Your own Pod has the NetworkPolicy of a standard Agent. With the default
+settings of the platform, it allows egress only to these destinations: DNS to
+the Pods of the cluster resolver on TCP and UDP port 53, istiod on port 15012,
+the AI Gateway on port 4000, Connections MCP on port 8443 when it is configured,
+the Kubernetes API server, and public addresses outside the blocked ranges. By
+default, the blocked ranges include the private ranges, so the other Pod and
+Service addresses of the cluster are blocked, for example the Portal and OAuth2
+Proxy. Inside the cluster, the public host name of the platform resolves to an
+address that reaches the ingress Pods, which is blocked too.
+
+An administrator can change these settings: the AI Gateway can listen on
+another port, the port of its URL, and the policy can allow other internal
+ranges (`allowedInternalCIDRs`). You cannot read the NetworkPolicy in your own
+namespace. The NetworkPolicy of a standard Agent in an Agent namespace has the
+same AI Gateway port and allowed internal ranges, unless that Agent sets its
+own network values. Read its egress rules when you can.
 
 Before you use a failed request from your Pod as evidence, check its
-destination and port against this list. A request to a blocked destination does
-not reach the service: its connection times out, is refused or reset, its TLS
-handshake fails, or the Istio proxy in your Pod answers `upstream connect error
-or disconnect/reset before headers`. Such a failure is not evidence of a fault
-in the platform, a route, or the ingress. Judge those components from
-Kubernetes evidence instead: rollout state, readiness, endpoints, Events, and
-bounded logs.
+destination, protocol, and port against those egress rules. When you cannot
+read any, use the defaults above, and say in your report that you assumed them.
+A request that the rules block does not reach the service: its connection times
+out, is refused or reset, its TLS handshake fails, or the Istio proxy in your
+Pod answers `upstream connect error or disconnect/reset before headers`. Such a
+failure is not evidence of a fault in the platform, a route, or the ingress.
+Judge those components from Kubernetes evidence instead: rollout state,
+readiness, endpoints, Events, and bounded logs.
 
-A request to an allowed destination and port is evidence, even when the Pods
-behind it are Ready. An error answer shows that the request failed: report the
-destination, the status, and the start of the body, for example a 503 that an
-AI Gateway route returns with the AI Gateway's own body. No answer before your
-timeout shows that the destination did not answer, for example a DNS lookup
-that times out, or the Istio proxy's `upstream request timeout`. Report the
-missed answer and its destination, and do not assign a cause from it. To
+A request that the rules allow is evidence, even when the Pods behind it are
+Ready. An error answer shows that the request failed: report the destination,
+the status, and the start of the body, for example a 503 that an AI Gateway
+route returns with the AI Gateway's own body. No answer before your timeout
+shows that the destination did not answer, for example a DNS lookup that times
+out, or the Istio proxy's `upstream request timeout`. Report the missed answer
+and its destination, and do not assign a cause from it. To
 check an endpoint of an ordinary target, use an authorized `kubectl exec` to
 its loopback address. Check exec permission with
 `kubectl --context cetiadmin auth can-i create pods --subresource=exec -n <namespace>`.
