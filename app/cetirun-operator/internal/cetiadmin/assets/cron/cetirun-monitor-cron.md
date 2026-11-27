@@ -23,10 +23,28 @@ stop without repairs or external delivery and record the reason locally.
    `--previous` logs when a failure needs them.
 3. Check PVC binding, storage Events, Service endpoints, EndpointSlices, and
    the generated routes. Measure disk use with `df` only where ordinary-target
-   exec is authorized. PVC capacity is not a disk-use measurement.
+   exec is authorized. PVC capacity is not a disk-use measurement. Check exec
+   with `kubectl --context cetiadmin auth can-i create pods --subresource=exec -n <namespace>`;
+   the form `create pods/exec` asks about a Pod named `exec` and always says
+   no. Check again on each run; a recorded permission gap can be out of date.
 4. Read Operator, Portal, Istio, CoreDNS, and other platform component status
    only in the configured `platformReadNamespaces`. Include node, scheduling,
-   storage, API health, and optional diagnostic APIs when relevant.
+   storage, API health, and optional diagnostic APIs when relevant. Judge each
+   component from its rollout state, readiness, endpoints, Events, and bounded
+   logs. Keep every failed request from your Pod, as `SKILL.md` describes: you
+   do not know which egress rules apply to it, and with the default settings
+   they block requests to the Portal, OAuth2 Proxy, and the public host name. A
+   request that got no answer (a timeout, a refused or reset connection, or the
+   Istio proxy's `upstream connect error` or `upstream request timeout`), for
+   example DNS to the cluster resolver on port 53 or a request to the AI
+   Gateway, was either blocked by those rules or not answered by its
+   destination: report it with its destination, and say that its cause is
+   unknown. It does not make a component with Ready Pods, ready endpoints, and
+   clean logs unhealthy, and it does not confirm that the component is healthy.
+   An error answer such as a 503 shows a failure. A component that you cannot
+   read is unknown, not healthy. A Deployment without available replicas whose
+   Pod status gives the reason, such as `ImagePullBackOff`, is degraded; list
+   its missing logs separately.
 
 For example, after resolving the exact variables from current API objects:
 

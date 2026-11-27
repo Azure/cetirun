@@ -155,7 +155,7 @@ param platformNamespace string = 'cetirun-system'
 param adxContentViewers array = []
 
 @minValue(1)
-@description('Days of the daily AI Gateway usage view GatewayDailyUsageV2 in the logs database.')
+@description('Days of the daily AI Gateway usage view GatewayDailyUsageV2 and of the coverage view GatewayCoverage in the logs database.')
 param adxGatewayUsageRetentionDays int = 400
 
 @description('Create the managed identity of the ADX-Mon alerter, with the Viewer role on the logs and metrics databases. Needs adxMode create or existing.')

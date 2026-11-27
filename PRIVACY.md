@@ -212,6 +212,9 @@ default. It keeps the calls, tokens, and spend of each day per Agent, owner
 alias, AI Gateway user ID, Team, and model. Since CetiRun v0.2.0, this user ID
 is the owner's Entra tenant and object IDs. The view `GatewayDailyUsage` of
 earlier cluster templates keeps its rows until an administrator drops it.
+The materialized view `GatewayCoverage` keeps, for the same time, the number of
+AI Gateway heartbeats and request lines in 5 minutes per cluster and Pod, and
+when the first of these lines arrived. It has no user data.
 Successful collection still depends on the deployed collectors, permissions,
 and settings. Source configuration alone does not prove that a live cluster
 collects data.

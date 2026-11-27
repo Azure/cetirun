@@ -147,6 +147,7 @@ class GatewayModeTest(unittest.TestCase):
         package.__path__ = []
         request_log = types.ModuleType("cetirun_ai_gateway.request_log")
         request_log.handler = self.handler
+        request_log.heartbeat = types.SimpleNamespace(interval=300, start=lambda: self.events.append(("heartbeat",)))
         guard = types.ModuleType("cetirun_ai_gateway.guard")
         guard.handler = self.guard
         content = types.ModuleType("cetirun_ai_gateway.content")
@@ -185,13 +186,14 @@ class GatewayModeTest(unittest.TestCase):
 
     def test_the_request_log_is_registered_before_the_proxy_starts(self):
         self.start({"CETIRUN_REQUEST_LOG": "true"})
+        # The heartbeat starts last, right before the proxy.
         self.assertEqual(self.events, [
-            ("callback", self.guard), ("callback", self.handler), ("run", self.ARGS, "litellm", False)])
+            ("callback", self.guard), ("callback", self.handler), ("heartbeat",), ("run", self.ARGS, "litellm", False)])
 
     def test_the_spend_log_is_turned_off_together_with_the_request_log(self):
         self.start({"CETIRUN_REQUEST_LOG": "true", "CETIRUN_SPEND_LOGS": "false"})
         self.assertEqual(self.events, [
-            ("callback", self.guard), ("callback", self.handler), ("run", self.ARGS, "litellm", True)])
+            ("callback", self.guard), ("callback", self.handler), ("heartbeat",), ("run", self.ARGS, "litellm", True)])
 
     def test_workers_that_would_load_litellm_again_are_refused(self):
         cases = [
@@ -210,18 +212,19 @@ class GatewayModeTest(unittest.TestCase):
 
     def test_one_worker_is_accepted(self):
         self.start({"CETIRUN_REQUEST_LOG": "true", "NUM_WORKERS": "1"}, ["--port", "4000", "--num_workers", "1"])
-        self.assertEqual(self.events[:2], [("callback", self.guard), ("callback", self.handler)])
+        self.assertEqual(self.events[:3], [("callback", self.guard), ("callback", self.handler), ("heartbeat",)])
 
     def test_content_is_registered_when_the_chart_names_a_database(self):
         self.start({"CETIRUN_REQUEST_LOG": "true", "CETIRUN_CONTENT_ENDPOINT": "https://example.kusto.windows.net",
                     "CETIRUN_CONTENT_DATABASE": "CetiRunContent", "CETIRUN_CONTENT_CLUSTER": "example"})
         self.assertEqual(self.events, [
             ("callback", self.guard), ("callback", self.handler), ("callback", self.content),
-            ("run", self.ARGS, "litellm", False)])
+            ("heartbeat",), ("run", self.ARGS, "litellm", False)])
 
     def test_content_does_not_need_the_request_log(self):
         self.start({"CETIRUN_CONTENT_ENDPOINT": "https://example.kusto.windows.net",
                     "CETIRUN_CONTENT_DATABASE": "CetiRunContent", "CETIRUN_CONTENT_CLUSTER": "example"})
+        # No request log, no heartbeat: nothing to tell apart.
         self.assertEqual(self.events, [("callback", self.guard), ("callback", self.content), ("run", self.ARGS, "litellm", False)])
 
     def test_a_litellm_without_the_spend_log_setting_does_not_start(self):

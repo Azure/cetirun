@@ -38,6 +38,7 @@ import { GovernanceNotice } from "../../components/GovernanceNotice";
 import { ChartUnavailableNotice } from "../../components/ChartUnavailableNotice";
 import { useFeatures } from "../../hooks/useFeatures";
 import { AgentPhase } from "../../components/Lifecycle";
+import { BudgetSummary } from "../../components/UsageBlock";
 import { agentTypeLabel } from "../../utils/instance";
 
 interface Draft {
@@ -329,6 +330,7 @@ export function InstanceDetailPage() {
     {selectedTab === "overview" && <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
       <section><h2 className="portal-section-title" style={{ marginBottom: 8 }}>Agent details</h2><DetailList detail={detail} /></section>
       <section><h2 className="portal-section-title" style={{ marginBottom: 8 }}>Configuration</h2><ConfigSummary detail={detail} /></section>
+      {detail.aiGatewayBudget && <section><h2 className="portal-section-title" style={{ marginBottom: 8 }}>Usage</h2><BudgetSummary budget={detail.aiGatewayBudget} /></section>}
       {detail.conditions.length > 0 && <section><h2 className="portal-section-title" style={{ marginBottom: 12 }}>Current conditions</h2>{detail.conditions.map((condition) => <div key={condition.type} style={{ marginBottom: 8, overflowWrap: "anywhere" }}><Text weight="semibold">{condition.type}: </Text><Text>{condition.status}{condition.reason ? ` — ${condition.reason}` : ""}{condition.message ? `: ${condition.message}` : ""}</Text></div>)}</section>}
     </div>}
     {(selectedTab === "status" || selectedTab === "events") && <>

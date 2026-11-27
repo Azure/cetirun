@@ -587,6 +587,84 @@ class AdxScriptTests(unittest.TestCase):
             self.assertIn(f"CopilotRoute = tostring(Body['deployment_id']) startswith \"{prefix}\"",
                           (ADX_SCRIPTS / name).read_text())
 
+    def test_gateway_coverage_counts_the_heartbeats_and_follows_the_usage_view(self):
+        create, retention, caching, gaps = kusto_commands("cetirun-gateway-coverage.kql")
+        self.assertTrue(create.startswith(".create ifnotexists materialized-view with (folder = "))
+        # No backfill, for the reason of the usage view.
+        self.assertNotIn("backfill", create)
+        self.assertIn(" GatewayCoverage on table Gateway {", create)
+        self.assertEqual(re.findall(r"^ {4}(\w+)$", create, re.M), ["Gateway"])
+        # The heartbeats that the AI Gateway image writes, per 5 minutes, cluster and Pod, and its request lines at
+        # the completion time of the call, the time key of GatewayRequests(), with the earliest ingestion time.
+        request_log = (ROOT / "app/cetirun-ai-gateway/cetirun_ai_gateway/request_log.py").read_text()
+        log_type = re.search(r'^HEARTBEAT_LOG_TYPE = "([^"]+)"$', request_log, re.M)[1]
+        request_type = re.search(r'^LOG_TYPE = "([^"]+)"$', request_log, re.M)[1]
+        self.assertIn('"time": iso_time(end),', request_log)
+        view = create.replace("\r\n", "\n")
+        self.assertIn('| where Container == "gateway"\n', view)
+        self.assertIn(f'| where LogType in ("{log_type}", "{request_type}")\n', view)
+        self.assertIn(f"| extend At = iff(LogType == \"{request_type}\", todatetime(Body['time']), Timestamp)\n", view)
+        self.assertIn(f'Heartbeats = countif(LogType == "{log_type}"),\n', view)
+        self.assertIn(f'Requests = countif(LogType == "{request_type}"),\n', view)
+        self.assertIn("Arrived = min(ingestion_time())\n", view)
+        self.assertIn("by Interval = bin(At, 5m), Cluster, Pod", view)
+        logs = (ROOT / "infra/cluster/modules/adx/cetirun-logs.kql").read_text()
+        self.assertIn("Timestamp = todatetime(Body['time']),", logs)
+        # A running Pod writes one heartbeat in each interval, so a Pod without one missed it.
+        interval = int(re.search(r"^HEARTBEAT_INTERVAL_SECONDS = (\d+)$", request_log, re.M)[1])
+        self.assertEqual(interval, 300)
+        self.assertIn("let step = 5m;", gaps)
+        # Kept as long as the usage view.
+        self.assertTrue(retention.startswith(".alter materialized-view GatewayCoverage policy retention"))
+        self.assertIn("__RETENTION_DAYS__.00:00:00", retention)
+        self.assertTrue(caching.startswith(".alter materialized-view GatewayCoverage policy caching"))
+        self.assertIn("GatewayCoverageGaps(cluster:string, fromTime:datetime, toTime:datetime)", gaps)
+        # An interval counts as observed when a Pod's heartbeats surround it, and as a gap when a Pod that ran then
+        # lacks one around it, apart from its first and last interval. The interval in which the view started, and
+        # the ones before, can have lines that arrived before the view: they stay unobserved, and the first
+        # interval after them needs no heartbeat before it.
+        self.assertIn("let firstCounted = toscalar(GatewayCoverage | summarize Start = bin(min(Arrived), step) + step);",
+                      gaps)
+        self.assertIn("let observed = pods | where Here and Before and After and Interval >= firstCounted | distinct Interval;",
+                      gaps)
+        self.assertIn("| where Interval >= firstCounted\n", gaps.replace("\r\n", "\n"))
+        self.assertIn("where not(Here) or (not(Before) and Interval != First and Interval != firstCounted) "
+                      "or (not(After) and Interval != Last)", gaps)
+        self.assertIn("project Pod, Interval = Interval + step, Before = true", gaps)
+        self.assertIn("project Pod, Interval = Interval - step, After = true", gaps)
+        # A Pod ran from its first heartbeat to its last in the whole view, whatever the period: a Pod without
+        # heartbeats for days still missed them in a short period in between. A Pod that writes lines without
+        # heartbeats, from an older image, does not count.
+        spans = re.search(r"let spans = GatewayCoverage\r?\n((?: {8}\|.*\r?\n)+)", gaps)[1].splitlines()
+        self.assertEqual(spans[0].strip(), "| where Cluster == cluster and Heartbeats > 0")
+        self.assertEqual(spans[1].strip(), "| summarize First = min(Interval), Last = max(Interval) by Pod")
+        self.assertIn("let pods = spans", gaps)
+        self.assertIn("| where Cluster == cluster and Heartbeats > 0 and Interval >= firstInterval - step", gaps)
+        # GatewayRequests() reads the request lines of the Gateway table at the completion time of each call: an
+        # interval of which the table holds fewer of them than the view counted lost some, also when the retention
+        # was raised later. Both count by that time over the whole intervals of the period, and only after the
+        # start of the view.
+        self.assertNotIn("__LOGS_RETENTION_DAYS__", gaps)
+        self.assertNotIn("now()", gaps)
+        self.assertIn("let lastEnd = bin(toTime - 1tick, step) + step;", gaps)
+        present = re.search(r"let present = Gateway\r?\n((?: {8}\|.*\r?\n)+)", gaps)[1]
+        self.assertIn(f"| where tostring(Body['log_type']) == \"{request_type}\"", present)
+        self.assertIn("| extend At = todatetime(Body['time'])", present)
+        self.assertIn("| where At >= firstInterval and At < lastEnd", present)
+        self.assertIn("| summarize Present = count() by Interval = bin(At, step)", present)
+        self.assertIn("Interval >= firstCounted and Interval < toTime", gaps)
+        self.assertIn("| summarize Counted = sum(Requests) by Interval", gaps)
+        self.assertIn("| where coalesce(Present, 0) < Counted", gaps)
+        self.assertEqual(set(re.findall(r'Reason = "([^"]+)"', gaps)),
+                         {"collection not observed", "missed heartbeat", "request lines removed"})
+        self.assertIn("no calls were recorded and no heartbeat gap was detected", gaps)
+        module = (ROOT / "infra/cluster/modules/adx.bicep").read_text()
+        line = next(text for text in module.splitlines() if text.startswith("var logsFunctions"))
+        # After the usage view, and with the same retention.
+        self.assertLess(line.index("adx/cetirun-gateway-usage.kql"), line.index("adx/cetirun-gateway-coverage.kql"))
+        self.assertEqual(line.count("'__RETENTION_DAYS__', string(gatewayUsageRetentionDays)"), 2)
+        self.assertNotIn("__LOGS_RETENTION_DAYS__", line)
+
     def test_audit_messages_land_whole_and_expand_into_events(self):
         table, mapping, function = kusto_commands("cetirun-audit.kql")
         self.assertEqual(table, ".create-merge table KubeAuditLogs (Records:dynamic)")

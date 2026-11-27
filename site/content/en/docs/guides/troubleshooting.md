@@ -145,12 +145,25 @@ requests. Hermes shows the message of the AI Gateway, which starts with
 add credits with the provider, but this does not apply to the AI Gateway.
 OpenClaw says that the Agent is out of budget on the CetiRun AI Gateway.
 
-The Portal does not show the budget or the spend. Ask your platform
+The **Usage** section on the **Overview** tab shows **Budget reached** and the
+spend against the budget, up to about ten minutes late. Ask your platform
 administrator to raise the budget, or wait until it resets on the first day of
 the month (UTC). For the details, refer to
 [When the budget runs out](../models/#when-the-budget-runs-out). To change a
 budget, platform administrators refer to
 [Budgets and spend](../../operations/budgets/).
+
+**Usage** also shows other causes for which the AI Gateway refuses the calls:
+
+- **No model access**: the Agent Policy of your Team grants the Agent no
+  model.
+- **Blocked by an administrator**: an administrator blocked the key of the
+  Agent.
+- **Key recovery required**: the AI Gateway lost the record of the key of the
+  Agent. A budget reset does not restore it.
+
+In these cases, ask your administrator. Refer to
+[Spend and budget](../models/#spend-and-budget).
 
 If the Agent Policy of your Team sets request limits, the **Models** section
 shows them. A request over a limit fails with HTTP 429. The Agent can send the
@@ -177,7 +190,7 @@ other values. Platform administrators find the settings in
 | Length of the Agent name | 35 characters, including your alias | The form rejects the name. |
 | Home directory storage | 100 GiB | The disk of the Agent is full. |
 | CPU and memory | 4 CPUs and 8 GiB are reserved. The maximum is 8 CPUs and 16 GiB. | The Agent becomes slow, or a process stops. |
-| Monthly model budget | 10,000 US dollars for each Agent. An Agent of a policy-bound Team uses the budget of its Agent Policy. | Not in the portal. Refer to [The Agent reports a billing or credits error](#the-agent-reports-a-billing-or-credits-error). |
+| Monthly model budget | 10,000 US dollars for each Agent. An Agent of a policy-bound Team uses the budget of its Agent Policy. | The **Usage** section shows the budget and the spend. Refer to [The Agent reports a billing or credits error](#the-agent-reports-a-billing-or-credits-error). |
 | Model request limits | The Agent Policy of your Team sets them. | The **Models** section shows them. |
 | Network access | Private network addresses and the cloud metadata service are blocked. | The Agent cannot connect to internal services. |
 | Duration of a Hermes tool | 420 seconds for one foreground tool | Hermes stops a tool that runs longer. For longer tools, refer to [Bounded long-running tools]({{< repo "app/cetirun-chart/agents/hermes/README.md" >}}#bounded-long-running-tools). |

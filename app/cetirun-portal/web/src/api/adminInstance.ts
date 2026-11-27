@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { apiFetch, PortalError } from "./fetch";
-import type { AgentConfig, ConditionStatus, GovernanceStatus, InstanceVersion, StatusResponse } from "../types/instance";
+import type { AgentConfig, AIGatewayBudget, ConditionStatus, GovernanceStatus, InstanceVersion, StatusResponse } from "../types/instance";
 
 /** The administrator API deliberately omits registry secret references. */
 export type AdminAgentConfig = Omit<AgentConfig, "registrySecretRef">;
@@ -19,6 +19,8 @@ export interface AdminInstanceSummary {
   ready: boolean;
   governance?: GovernanceStatus;
   createdAt: string;
+  /** The current period of the key's budget; absent before the operator read the key. */
+  aiGatewayBudget?: AIGatewayBudget;
 }
 
 export interface AdminInstanceDetail extends AdminInstanceSummary {

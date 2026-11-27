@@ -21,11 +21,13 @@ For this role and the other Admin pages, refer to
 [Portal administration](../portal-administration/).
 
 The **Overview** tab shows ownership, configuration, integration states, and
-the desired and observed configuration generations. **Status** shows Conditions
-and Pod health. **Events** shows Agent and namespace events. An unavailable
-diagnostic source is reported separately from an empty result. Configured
-registry authentication means that a credential reference exists. It does not
-prove that an image can be pulled.
+the desired and observed configuration generations. Its **Usage** section shows
+the spend of the AI Gateway key of the Agent against its budget.
+
+**Status** shows Conditions and Pod health. **Events** shows Agent and
+namespace events. An unavailable diagnostic source is reported separately from
+an empty result. Configured registry authentication means that a credential
+reference exists. It does not prove that an image can be pulled.
 
 This page does not expose credentials. It does not grant access to the owner's
 chat, terminal, or Agent UI. The page does not include arbitrary

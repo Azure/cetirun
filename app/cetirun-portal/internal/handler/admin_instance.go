@@ -42,6 +42,9 @@ type AdminInstanceSummary struct {
 	Ready       bool              `json:"ready"`
 	Governance  *GovernanceStatus `json:"governance,omitempty"`
 	CreatedAt   string            `json:"createdAt"`
+	// AIGatewayBudget is the current period of the Agent key's budget, or nil
+	// before the operator has read it.
+	AIGatewayBudget *AIGatewayBudgetResponse `json:"aiGatewayBudget,omitempty"`
 }
 
 // ListAllInstances handles GET /api/v1/admin/instances.
@@ -81,6 +84,8 @@ func adminInstanceSummary(ins *cetirunv1alpha1.Agent) AdminInstanceSummary {
 		Ready:       ready,
 		Governance:  governanceStatus(ins),
 		CreatedAt:   ins.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
+
+		AIGatewayBudget: aiGatewayBudget(ins),
 	}
 }
 

@@ -14,6 +14,7 @@ import json
 import pathlib
 import random
 import sys
+import time
 import types
 import unittest
 
@@ -468,6 +469,96 @@ class RequestLogTest(unittest.TestCase):
 
     def test_module_exposes_the_configured_instance(self):
         self.assertIsInstance(self.module.handler, self.module.RequestLog)
+
+
+class RecordingStream(io.StringIO):
+    """A stream that keeps each write, to see what one write carries."""
+
+    def __init__(self, failures=0):
+        super().__init__()
+        self.writes = []
+        self.failures = failures
+
+    def write(self, text):
+        if self.failures:
+            self.failures -= 1
+            raise OSError("stdout is gone")
+        self.writes.append(text)
+        return super().write(text)
+
+
+def wait_for(condition, seconds=5):
+    deadline = time.monotonic() + seconds
+    while not condition():
+        if time.monotonic() > deadline:
+            raise AssertionError("timed out")
+        time.sleep(0.01)
+
+
+class HeartbeatTest(unittest.TestCase):
+    """The heartbeat lines that let the logs tell a time without calls from a
+    time whose lines did not arrive."""
+
+    def setUp(self):
+        self.module = load_request_log()
+
+    def heartbeat(self, stream, interval):
+        heartbeat = self.module.Heartbeat(stream=stream, interval=interval, clock=lambda: 1795651200.25)
+        self.addCleanup(heartbeat.stop, 5)
+        return heartbeat
+
+    def test_a_heartbeat_line_names_its_type_time_and_interval(self):
+        self.assertEqual(json.loads(self.module.heartbeat_line(1795651200.25)), {
+            "log_type": "cetirun.ai_gateway.heartbeat", "schema_version": 1,
+            "time": "2026-11-26T00:00:00.250Z", "interval_seconds": 300})
+        self.assertEqual(json.loads(self.module.heartbeat_line(1795651200.25, 60))["interval_seconds"], 60)
+
+    def test_the_first_line_comes_at_once_and_stop_ends_the_wait(self):
+        stream = RecordingStream()
+        heartbeat = self.heartbeat(stream, 60).start()
+        wait_for(lambda: stream.writes)
+        heartbeat.stop(5)
+        self.assertFalse(heartbeat.thread.is_alive())
+        self.assertEqual(len(stream.writes), 1)
+        self.assertTrue(heartbeat.thread.daemon, "A heartbeat never keeps the process alive")
+
+    def test_lines_follow_the_interval_from_one_thread(self):
+        stream = RecordingStream()
+        heartbeat = self.heartbeat(stream, 0.02)
+        heartbeat.start()
+        thread = heartbeat.thread
+        heartbeat.start()
+        self.assertIs(heartbeat.thread, thread)
+        wait_for(lambda: len(stream.writes) >= 4)
+        heartbeat.stop(5)
+        for text in stream.writes:
+            self.assertEqual(json.loads(text)["log_type"], "cetirun.ai_gateway.heartbeat")
+
+    def test_every_line_is_one_write_while_calls_are_logged(self):
+        stream = RecordingStream()
+        heartbeat = self.heartbeat(stream, 0.001)
+        handler = self.module.RequestLog(stream=stream)
+        heartbeat.start()
+        for _ in range(200):
+            handler.write({"standard_logging_object": success_payload()})
+        heartbeat.stop(5)
+        types_seen = set()
+        for text in stream.writes:
+            self.assertTrue(text.endswith("\n") and text.count("\n") == 1, text[:80])
+            types_seen.add(json.loads(text)["log_type"])
+        self.assertEqual(types_seen, {"cetirun.ai_gateway.request", "cetirun.ai_gateway.heartbeat"})
+
+    def test_a_failed_write_does_not_end_the_heartbeats(self):
+        stream = RecordingStream(failures=2)
+        self.heartbeat(stream, 0.01).start()
+        wait_for(lambda: len(stream.writes) >= 2)
+
+    def test_the_module_heartbeat_writes_to_stdout_every_five_minutes(self):
+        heartbeat = self.module.heartbeat
+        self.assertIsInstance(heartbeat, self.module.Heartbeat)
+        self.assertEqual(heartbeat.interval, 300)
+        self.assertIsNone(heartbeat.stream)
+        self.assertIsNone(heartbeat.thread, "The entrypoint starts it, not the import")
 
 
 if __name__ == "__main__":
