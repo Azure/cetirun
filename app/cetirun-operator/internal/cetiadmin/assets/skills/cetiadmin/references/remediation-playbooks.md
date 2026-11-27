@@ -286,18 +286,21 @@ route, certificate, and DNS observations. Do not restart, scale, or edit the
 platform, its permissions, or CetiAdmin itself.
 
 Base each component's verdict on its rollout state, ready replicas, endpoints,
-Events, and bounded logs. By default, your Pod's egress policy blocks the
-platform Services other than the AI Gateway and Connections MCP, and the
-public host name. A request to a blocked destination is not evidence: its
-connection times out, is refused or reset, its TLS handshake fails, or the
-Istio proxy in your Pod answers `upstream connect error or disconnect/reset
-before headers`. Such a failure does not contradict Ready Pods with ready
-endpoints and clean logs. A request to an allowed destination is evidence
-about its route, even when the Pods are Ready. An AI Gateway route that
-answers 503 with the AI Gateway's own error has failed: report the route, the
-status, and the start of the body. A route that gives no answer before your
-timeout, or the Istio proxy's `upstream request timeout`, did not answer:
-report the route and the timeout, without naming a cause in the service.
+Events, and bounded logs. Before you use a failed request from your own Pod as
+evidence, check its destination and port against your Pod's egress policy,
+which `SKILL.md` lists. A failed request to a blocked destination, such as a
+platform Service other than the AI Gateway and Connections MCP, or the public
+host name, is not evidence: its connection times out, is refused or reset, its
+TLS handshake fails, or the Istio proxy in your Pod answers `upstream connect
+error or disconnect/reset before headers`. Such a failure does not contradict
+Ready Pods with ready endpoints and clean logs. A request to an allowed
+destination and port is evidence, even when the Pods are Ready. An error
+answer, such as a 503 that an AI Gateway route returns with the AI Gateway's
+own error, shows a failure: report the destination, the status, and the start
+of the body. No answer before your timeout, such as a DNS lookup to the cluster
+resolver on port 53 that times out, or the Istio proxy's `upstream request
+timeout`, shows that the destination did not answer: report the missed answer
+without naming a cause.
 
 A component is `unknown` when your access is missing: you cannot read its
 Pods, endpoints, or logs. A container that never started has no logs, and that
