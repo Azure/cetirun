@@ -22,9 +22,9 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// upgradeHookObjects renders the agent chart for an upgrade and returns the
-// objects of its pre-upgrade hook by kind.
-func upgradeHookObjects(t *testing.T, values map[string]any) map[string]map[string]any {
+// upgradeRender renders the agent chart for an upgrade of the release
+// cetirun-example, by template file.
+func upgradeRender(t *testing.T, values map[string]any) map[string]string {
 	t.Helper()
 	chrt := testChart(t)
 	prepared, err := PrepareChart(chrt, values)
@@ -41,8 +41,14 @@ func upgradeHookObjects(t *testing.T, values map[string]any) map[string]map[stri
 	if err != nil {
 		t.Fatal(err)
 	}
+	return rendered
+}
+
+// renderedObjects returns the objects of one rendered template by kind.
+func renderedObjects(t *testing.T, manifest string) map[string]map[string]any {
+	t.Helper()
 	objects := map[string]map[string]any{}
-	for _, doc := range strings.Split(rendered["cetirun/templates/pre-upgrade-hook.yaml"], "\n---") {
+	for _, doc := range strings.Split(manifest, "\n---") {
 		var obj map[string]any
 		if err := yaml.Unmarshal([]byte(doc), &obj); err != nil {
 			t.Fatal(err)
@@ -51,6 +57,14 @@ func upgradeHookObjects(t *testing.T, values map[string]any) map[string]map[stri
 			objects[kind] = obj
 		}
 	}
+	return objects
+}
+
+// upgradeHookObjects renders the agent chart for an upgrade and returns the
+// objects of its pre-upgrade hook by kind.
+func upgradeHookObjects(t *testing.T, values map[string]any) map[string]map[string]any {
+	t.Helper()
+	objects := renderedObjects(t, upgradeRender(t, values)["cetirun/templates/pre-upgrade-hook.yaml"])
 	if objects["Job"] == nil {
 		t.Fatal("the agent chart renders no pre-upgrade hook Job")
 	}
@@ -154,17 +168,66 @@ func TestUpgradeHookCanWaitForTheDeletion(t *testing.T) {
 	}
 }
 
-// The jsonpath queries of the hook and the value of each for a StatefulSet that
-// matches the rendered expectations.
-var upgradeHookQueries = map[string]string{
-	`{.spec.serviceName}`: "SERVICE_NAME",
-	`{.spec.selector.matchLabels.app\.kubernetes\.io/name}`:           "SELECTOR_NAME",
-	`{.spec.selector.matchLabels.app\.kubernetes\.io/instance}`:       "SELECTOR_INSTANCE",
-	`{.spec.podManagementPolicy}`:                                     "",
-	`{.spec.volumeClaimTemplates[*].metadata.name}`:                   "VCT_NAMES",
-	`{.spec.volumeClaimTemplates[0].spec.storageClassName}`:           "VCT_STORAGE_CLASS",
-	`{.spec.volumeClaimTemplates[0].spec.accessModes[0]}`:             "VCT_ACCESS_MODE",
-	`{.spec.volumeClaimTemplates[0].spec.resources.requests.storage}`: "VCT_SIZE",
+// The jsonpath queries of the hook.
+const (
+	upgradeHookServiceNameQuery  = `{.spec.serviceName}`
+	upgradeHookSelectorNameQuery = `{.spec.selector.matchLabels.app\.kubernetes\.io/name}`
+	upgradeHookInstanceQuery     = `{.spec.selector.matchLabels.app\.kubernetes\.io/instance}`
+	upgradeHookPolicyQuery       = `{.spec.podManagementPolicy}`
+	upgradeHookClaimNamesQuery   = `{.spec.volumeClaimTemplates[*].metadata.name}`
+	upgradeHookClassQuery        = `{.spec.volumeClaimTemplates[0].spec.storageClassName}`
+	upgradeHookAccessModeQuery   = `{.spec.volumeClaimTemplates[0].spec.accessModes[0]}`
+	upgradeHookSizeQuery         = `{.spec.volumeClaimTemplates[0].spec.resources.requests.storage}`
+)
+
+// upgradeStatefulSet returns the StatefulSet that the agent chart renders for
+// an upgrade with values.
+func upgradeStatefulSet(t *testing.T, values map[string]any) map[string]any {
+	t.Helper()
+	sts := renderedObjects(t, upgradeRender(t, values)["cetirun/templates/statefulset.yaml"])["StatefulSet"]
+	if sts == nil {
+		t.Fatal("the agent chart renders no StatefulSet")
+	}
+	return sts
+}
+
+// liveStatefulSetFields answers the hook's jsonpath queries for the StatefulSet
+// that Kubernetes keeps when Helm applies sts: with the API's default
+// podManagementPolicy, and the size in the canonical form of a quantity.
+func liveStatefulSetFields(t *testing.T, sts map[string]any) map[string]string {
+	t.Helper()
+	spec := object(sts["spec"])
+	labels := object(object(spec["selector"])["matchLabels"])
+	policy := text(spec["podManagementPolicy"])
+	if policy == "" {
+		policy = "OrderedReady"
+	}
+	fields := map[string]string{
+		upgradeHookServiceNameQuery:  text(spec["serviceName"]),
+		upgradeHookSelectorNameQuery: text(labels["app.kubernetes.io/name"]),
+		upgradeHookInstanceQuery:     text(labels["app.kubernetes.io/instance"]),
+		upgradeHookPolicyQuery:       policy,
+	}
+	var names []string
+	templates := array(spec["volumeClaimTemplates"])
+	for _, item := range templates {
+		names = append(names, text(object(object(item)["metadata"])["name"]))
+	}
+	fields[upgradeHookClaimNamesQuery] = strings.Join(names, " ")
+	if len(templates) > 0 {
+		claim := object(object(templates[0])["spec"])
+		fields[upgradeHookClassQuery] = text(claim["storageClassName"])
+		fields[upgradeHookAccessModeQuery] = text(array(claim["accessModes"])[0])
+		size, err := resource.ParseQuantity(text(object(object(claim["resources"])["requests"])["storage"]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		fields[upgradeHookSizeQuery] = size.String()
+	}
+	if fields[upgradeHookServiceNameQuery] == "" || fields[upgradeHookSelectorNameQuery] == "" || len(names) == 0 {
+		t.Fatalf("unexpected rendered StatefulSet: %v", fields)
+	}
+	return fields
 }
 
 func shellQuote(value string) string {
@@ -213,57 +276,61 @@ func writeKubectlStub(t *testing.T, dir string, fields map[string]string, getErr
 	}
 }
 
-// The query of the hook for the size of the HOME claim template.
-const upgradeHookSizeQuery = `{.spec.volumeClaimTemplates[0].spec.resources.requests.storage}`
-
 func TestUpgradeHookScript(t *testing.T) {
 	shell, err := exec.LookPath("sh")
 	if runtime.GOOS == "windows" || err != nil {
 		t.Skip("requires a POSIX sh")
 	}
 	for _, tc := range []struct {
-		// size is the rendered persistence.size, and current the size of the
-		// StatefulSet; both default to 120Gi.
-		name, size, current, getError, missing, failQuery string
-		succeeds, deletes                                 bool
-		output                                            string
+		// persistence is the rendered persistence values, with the size 120Gi
+		// unless it says otherwise. The live StatefulSet is the one that the same
+		// values render, as Kubernetes keeps it; live overrides its fields.
+		name, getError, missing, failQuery string
+		persistence, live                  map[string]string
+		succeeds, deletes                  bool
+		output                             string
 	}{
 		// The image user's HOME made every kubectl call fail like this; the hook
 		// must not treat it as a missing StatefulSet.
 		{name: "kubectl error", getError: "error: stat /dev/null/.kube/config: not a directory", output: "not a directory"},
 		{name: "missing StatefulSet", missing: "yes", succeeds: true, output: "not found, nothing to do"},
 		{name: "unchanged", succeeds: true, output: "No immutable field changes detected"},
+		{name: "unchanged with a storage class and another access mode",
+			persistence: map[string]string{"storageClass": "managed-csi-premium", "accessMode": "ReadWriteOncePod"},
+			succeeds:    true, output: "No immutable field changes detected"},
+		{name: "unchanged with the cluster's default storage class", persistence: map[string]string{"storageClass": ""},
+			succeeds: true, output: "No immutable field changes detected"},
 		// Kubernetes keeps 1024Gi as 1Ti.
-		{name: "same size in canonical form", size: "1024Gi", current: "1Ti", succeeds: true,
+		{name: "same size in canonical form", persistence: map[string]string{"size": "1024Gi"}, succeeds: true,
 			output: "No immutable field changes detected"},
-		{name: "grown volume", current: "100Gi", succeeds: true, deletes: true,
+		{name: "grown volume", live: map[string]string{upgradeHookSizeQuery: "100Gi"}, succeeds: true, deletes: true,
 			output: "volumeClaimTemplate size: '100Gi' -> '120Gi'"},
-		{name: "grown volume to a size in another form", size: "1024Gi", current: "1000Gi", succeeds: true, deletes: true,
+		{name: "grown volume to a size in another form", persistence: map[string]string{"size": "1024Gi"},
+			live: map[string]string{upgradeHookSizeQuery: "1000Gi"}, succeeds: true, deletes: true,
 			output: "volumeClaimTemplate size: '1000Gi' -> '1024Gi'"},
-		{name: "failed read", current: "100Gi", failQuery: `{.spec.serviceName}`, output: "unable to return a response"},
+		{name: "changed storage class", live: map[string]string{upgradeHookClassQuery: "other"}, succeeds: true,
+			deletes: true, output: "volumeClaimTemplate storageClassName: 'other' -> 'default'"},
+		{name: "changed access mode", live: map[string]string{upgradeHookAccessModeQuery: "ReadWriteOncePod"},
+			succeeds: true, deletes: true, output: "volumeClaimTemplate accessMode: 'ReadWriteOncePod' -> 'ReadWriteOnce'"},
+		// A StatefulSet with another selector could take over no orphaned Pod.
+		{name: "changed selector", live: map[string]string{upgradeHookSelectorNameQuery: "other"},
+			output: "selector app.kubernetes.io/name: 'other' -> 'cetirun'"},
+		{name: "changed selector and grown volume",
+			live:   map[string]string{upgradeHookInstanceQuery: "other", upgradeHookSizeQuery: "100Gi"},
+			output: "selector app.kubernetes.io/instance: 'other' -> 'cetirun-example'; volumeClaimTemplate size"},
+		{name: "failed read", live: map[string]string{upgradeHookSizeQuery: "100Gi"}, failQuery: upgradeHookServiceNameQuery,
+			output: "unable to return a response"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := upgradeHookInput("hermes")
-			if tc.size != "" {
-				input["persistence"] = map[string]any{"size": tc.size}
+			persistence := object(input["persistence"])
+			for key, value := range tc.persistence {
+				persistence[key] = value
 			}
 			script := upgradeHookScript(t, upgradeHookJob(t, input))
-			expected := map[string]string{}
-			for _, match := range regexp.MustCompile(`(?m)^\s*EXPECT_([A-Z_]+)="([^"]*)"$`).FindAllStringSubmatch(script, -1) {
-				expected[match[1]] = match[2]
-			}
-			if expected["VCT_SIZE"] != object(input["persistence"])["size"] || expected["SERVICE_NAME"] == "" {
-				t.Fatalf("unexpected rendered expectations: %v", expected)
-			}
-			fields := map[string]string{}
-			for query, key := range upgradeHookQueries {
-				fields[query] = expected[key]
-				if key == "" {
-					fields[query] = "OrderedReady"
-				}
-			}
-			if tc.current != "" {
-				fields[upgradeHookSizeQuery] = tc.current
+			fields := liveStatefulSetFields(t, upgradeStatefulSet(t, input))
+			for query, value := range tc.live {
+				fields[query] = value
 			}
 			dir := t.TempDir()
 			writeKubectlStub(t, dir, fields, tc.getError, tc.missing, tc.failQuery)
@@ -280,7 +347,11 @@ func TestUpgradeHookScript(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			deleted := strings.Contains(string(calls), "delete statefulset "+expected["SERVICE_NAME"]+" -n cetirun-example --cascade=orphan")
+			name := regexp.MustCompile(`STS_NAME="([^"]+)"`).FindStringSubmatch(script)
+			if name == nil {
+				t.Fatal("the hook script names no StatefulSet")
+			}
+			deleted := strings.Contains(string(calls), "delete statefulset "+name[1]+" -n cetirun-example --cascade=orphan")
 			if deleted != tc.deletes {
 				t.Fatalf("orphan delete %v, want %v; calls:\n%s", deleted, tc.deletes, calls)
 			}

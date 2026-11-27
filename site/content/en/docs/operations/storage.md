@@ -325,9 +325,11 @@ persistence nor a `Retain` policy is a substitute for backup.
 
 When immutable fields differ, the agent chart's
 [pre-upgrade/pre-rollback hook]({{< repo "app/cetirun-chart/templates/pre-upgrade-hook.yaml" >}})
-can orphan-delete and recreate a StatefulSet. It does not migrate data or
-automatically resize a PVC that already exists. After a successful chart update,
-you must examine the mounted storage class, size, and contents.
+can orphan-delete and recreate a StatefulSet. A changed selector, for example
+after a change of `nameOverride`, stops the upgrade instead: a StatefulSet with
+another selector cannot take over the running Pod. The hook does not migrate
+data or automatically resize a PVC that already exists. After a successful chart
+update, you must examine the mounted storage class, size, and contents.
 
 Before you delete an Agent or its namespace, read
 [Delete only with a recovery plan](../agent-lifecycle/#delete-only-with-a-recovery-plan).

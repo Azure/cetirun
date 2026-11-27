@@ -6,6 +6,9 @@ ordinals, template, updateStrategy, revisionHistoryLimit, persistentVolumeClaimR
 and minReadySeconds. This hook detects changes to the immutable fields (serviceName,
 selector, volumeClaimTemplates, podManagementPolicy) and orphan-deletes the StatefulSet
 so Helm can recreate it. Pods keep running as orphans and are re-adopted via label selector.
+A changed selector stops the hook before it deletes anything: a StatefulSet of the same
+name with another selector can adopt no orphaned Pod, and cannot create a Pod whose name
+an orphan still has.
 Only a missing StatefulSet skips the checks. Any other kubectl error fails the hook, so
 that Helm reports it instead of the immutable-field error of the later patch.
 */}}
@@ -156,14 +159,17 @@ spec:
                 CHANGED="${CHANGED}serviceName: '${CURRENT}' -> '${EXPECT_SERVICE_NAME}'; "
               fi
 
-              # 2. Check selector.matchLabels
+              # 2. Check selector.matchLabels. The Pods of the StatefulSet carry
+              # these labels, so a StatefulSet with another selector could not
+              # take them over: a changed selector stops the hook (below).
+              SELECTOR_CHANGED=""
               CURRENT=$(kubectl get statefulset "$STS_NAME" -n "$NS" -o jsonpath='{.spec.selector.matchLabels.app\.kubernetes\.io/name}')
               if [ "$CURRENT" != "$EXPECT_SELECTOR_NAME" ]; then
-                CHANGED="${CHANGED}selector app.kubernetes.io/name: '${CURRENT}' -> '${EXPECT_SELECTOR_NAME}'; "
+                SELECTOR_CHANGED="${SELECTOR_CHANGED}selector app.kubernetes.io/name: '${CURRENT}' -> '${EXPECT_SELECTOR_NAME}'; "
               fi
               CURRENT=$(kubectl get statefulset "$STS_NAME" -n "$NS" -o jsonpath='{.spec.selector.matchLabels.app\.kubernetes\.io/instance}')
               if [ "$CURRENT" != "$EXPECT_SELECTOR_INSTANCE" ]; then
-                CHANGED="${CHANGED}selector app.kubernetes.io/instance: '${CURRENT}' -> '${EXPECT_SELECTOR_INSTANCE}'; "
+                SELECTOR_CHANGED="${SELECTOR_CHANGED}selector app.kubernetes.io/instance: '${CURRENT}' -> '${EXPECT_SELECTOR_INSTANCE}'; "
               fi
 
               # 3. Check podManagementPolicy (chart doesn't set it, so expect OrderedReady)
@@ -193,6 +199,13 @@ spec:
               fi
 
               # Decision
+              if [ -n "$SELECTOR_CHANGED" ]; then
+                echo "The selector of StatefulSet $STS_NAME cannot change: ${SELECTOR_CHANGED}${CHANGED}"
+                echo "A StatefulSet of this name with another selector could not take over the running Pod, nor create its"
+                echo "Pod while the old one keeps the name, so the StatefulSet stays as it is. Set nameOverride back, or delete"
+                echo "the StatefulSet and its Pod before the upgrade; the HOME claim stays."
+                exit 1
+              fi
               if [ -n "$CHANGED" ]; then
                 echo "Immutable StatefulSet fields changed: ${CHANGED}"
                 echo "Orphan-deleting StatefulSet $STS_NAME (pods will keep running)"

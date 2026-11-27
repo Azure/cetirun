@@ -52,7 +52,7 @@
     "configmap.yaml": "0b1656be50cd0c325454042e400ec3cd9da770fffb560f995647b1d3da7f7859",
     "deny-exec-policy.yaml": "7dd9900c6cb720cda23eae4abebcdd68e7d868d91be7df00bac133f63acb4267",
     "networkpolicy.yaml": "af8744e3a2c41de2387500c84832546cd1c71cb6431b9a2d10c626bf75ea96b2",
-    "pre-upgrade-hook.yaml": "ad3c984f8642acd99fe7ef4496e57a17504ad2ff07b1735c416e7324a19f8228",
+    "pre-upgrade-hook.yaml": "391d14e41def27208815d2332c959a587e98101fe1984df1761dc50f057d8fcd",
     "service.yaml": "52e4408419d03e5bdfe7d821f93607c1693d8a7059927a160bf56ccbe0c0a6b2",
     "shared-skills-pv.yaml": "38c08b871f0dfe5237fff4c92fd6622e54c9b81edec9bcb10c79f68075035e77",
     "shared-skills-pvc.yaml": "d5af7044cd33fb9d6ddacb1d23aa2fbcc17d0ddcbfa42f9e10f2a7103ab75d7d",
