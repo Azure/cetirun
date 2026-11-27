@@ -151,9 +151,10 @@ aiGateway:
 # chart fills. It reads with a workload identity: the cluster needs workload
 # identity, and the identity needs a federated credential for this release's
 # ServiceAccount and the Viewer role on the logs database. Kusto grants a role
-# on a whole database, so use a logs database that holds the rows of this
-# cluster alone. At start, the Portal turns the report off when the database
-# also holds AI Gateway rows of another cluster.
+# on a whole database: give the role only while no other CetiRun cluster
+# writes to the logs database, and remove it before one does. At start, the
+# Portal turns the report off when the database also holds AI Gateway rows of
+# another cluster; that does not remove the role.
 usage:
   # -- Read the usage from Azure Data Explorer
   enabled: false

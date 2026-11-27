@@ -741,10 +741,11 @@ role `Viewer` on the logs database only. The output `adxPortalUsageClientId` is
 `observability.portal.clientId` of the `make deploy` environment file.
 
 Kusto grants a role on a whole database, so the identity can read every table
-of the logs database. A logs database that the template creates with
-`adxMode: create` holds the rows of this cluster alone. With
-`adxMode: existing`, other clusters can share the database, and the template
-does not create the identity. Refer to
+of the logs database. Set `adxPortalUsage` to `true` only while no other
+CetiRun cluster writes to the logs database. Another installation can still
+use the databases of `adxMode: create`, for example with `adxMode: existing`.
+Before it does, remove the role: setting `adxPortalUsage` to `false` does not
+remove it. Refer to
 [The Portal's usage identity](../observability/#the-portals-usage-identity).
 
 The default SKU, `Dev(No SLA)_Standard_E2a_v4`, has one engine node and no SLA.

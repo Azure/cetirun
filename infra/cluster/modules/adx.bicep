@@ -104,7 +104,7 @@ param gatewayUsageRetentionDays int = 400
 @description('Client (application) ID of the ADX-Mon alerter identity, which runs alert queries. Empty skips its Viewer roles on the logs and metrics databases.')
 param alerterClientId string = ''
 
-@description('Client (application) ID of the identity with which the Portal reads the AI Gateway usage. Empty skips its Viewer role on the logs database. Kusto grants a role on a whole database: give one only for a logs database that holds the rows of one CetiRun cluster.')
+@description('Client (application) ID of the identity with which the Portal reads the AI Gateway usage. Empty skips its Viewer role on the logs database. Kusto grants a role on a whole database: give one only while no other CetiRun cluster writes to the logs database.')
 param portalUsageClientId string = ''
 
 @description('Create the database of Kubernetes audit events. A new Kusto cluster then gets a system-assigned identity, which the Event Hub data connection uses; an existing cluster must have one.')

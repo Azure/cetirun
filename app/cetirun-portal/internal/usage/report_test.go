@@ -56,7 +56,8 @@ func TestCheckTurnsTheReportOffForRowsOfAnotherCluster(t *testing.T) {
 		t.Fatal(err)
 	}
 	status := report.Status()
-	if status.State != StateOff || !strings.Contains(status.Reason, `rows of the cluster "e2e"`) || !strings.Contains(status.Reason, `the cluster "sm" alone`) {
+	if status.State != StateOff || !strings.Contains(status.Reason, `rows of the cluster "e2e"`) ||
+		!strings.Contains(status.Reason, "remove the identity's Viewer role") || !strings.Contains(status.Reason, `the cluster "sm" only`) {
 		t.Fatalf("status %+v", status)
 	}
 	if !reflect.DeepEqual(querier.parameters, []map[string]string{{"cluster": "sm"}}) {

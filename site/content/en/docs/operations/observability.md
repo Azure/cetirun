@@ -395,9 +395,10 @@ Also watch these signals of the platform:
   creates it with `adxAlerter: true`.
 - For the Portal's usage report, a user-assigned managed identity with a
   federated credential for
-  `system:serviceaccount:<platform namespace>:cetirun-portal`. It needs the
-  `Viewer` role on a logs database that holds the rows of this cluster alone.
-  Refer to [The Portal's usage identity](#the-portals-usage-identity).
+  `system:serviceaccount:<platform namespace>:cetirun-portal`, and the
+  `Viewer` role on the logs database. No other CetiRun cluster may write to
+  that database while the identity has the role. Refer to
+  [The Portal's usage identity](#the-portals-usage-identity).
 - Outbound HTTPS from the platform namespace to the Kusto cluster, its
   `ingest-` endpoint, the Azure Storage endpoints of ADX ingestion, and Entra
   ID. With the alerter, also to the alert receiver.
@@ -483,9 +484,26 @@ and the `Viewer` role on the logs database. With `adxMode: create` and
 Kusto grants a role on a whole database, not on the rows of one cluster. With
 the `Viewer` role, the identity can read every table of the logs database.
 These tables include the platform logs, the ingress access log, and the
-inventory. Give the role only on a logs database that holds the rows of this
-CetiRun cluster alone. When several CetiRun clusters share the logs database,
-leave out the block.
+inventory. So the role has a prerequisite: no other CetiRun cluster writes to
+the logs database while the identity has the role. `adxMode: create` makes the
+databases for this cluster, but another installation can still use them, for
+example with `adxMode: existing`.
+
+Before another CetiRun cluster writes to the logs database, do these steps:
+
+1. Remove the `portal` block from the environment file, and run
+   `make deploy`. The Portal stops reading the usage.
+2. If the cluster template created the identity, set `adxPortalUsage` to
+   `false` in its parameters. Otherwise, its next deployment gives the role
+   again.
+3. Remove the role. Step 2 does not remove it. As an admin of the logs
+   database, run:
+
+   ```kusto
+   .drop database CetiRunLogs viewers ('aadapp=<portal-usage-client-id>;<tenant-id>')
+   ```
+
+You can also delete the identity `<clusterName>-portal-usage`.
 
 When the Portal starts, it looks for AI Gateway rows of another cluster in the
 logs database. If it finds one, it turns the usage report off. This check finds
@@ -498,7 +516,7 @@ Portal log shows the result:
 | Log message | Meaning |
 | --- | --- |
 | `Usage report reads the AI Gateway usage from Azure Data Explorer` | The check passed. |
-| `Usage report is off` | The database also holds rows of another cluster, or the configuration is incomplete. For example, the workload identity webhook did not set the variables of the Pod. The log names the reason. |
+| `Usage report is off` | The database also holds rows of another cluster, or the configuration is incomplete. For example, the workload identity webhook did not set the variables of the Pod. The log names the reason. For rows of another cluster, remove the role with the steps above. |
 | `Usage report: cannot check the logs database yet` | The Portal could not read the database. The error names the cause, for example a missing role or federated credential. |
 
 To use the Portal chart without `make deploy`, set `usage.enabled`,

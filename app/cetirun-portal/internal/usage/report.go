@@ -24,7 +24,7 @@ type State string
 
 const (
 	// StateChecking means that the Portal has not yet confirmed that the
-	// logs database holds the rows of this cluster alone.
+	// logs database holds no AI Gateway rows of another cluster.
 	StateChecking State = "checking"
 	// StateReady means that the check passed.
 	StateReady State = "ready"
@@ -140,7 +140,7 @@ func (r *Report) Check(ctx context.Context) error {
 	if len(tables[0].Rows) > 0 {
 		other := fmt.Sprint(tables[0].Rows[0][0])
 		r.status.Store(&Status{State: StateOff, Reason: fmt.Sprintf(
-			"the logs database %s also holds AI Gateway rows of the cluster %q, and the Portal's identity can read every row of it; give the Portal a logs database that holds the rows of the cluster %q alone",
+			"the logs database %s also holds AI Gateway rows of the cluster %q, and the Portal's identity can read every row of it; remove the identity's Viewer role on that database, and use the usage report of the cluster %q only with a logs database to which no other cluster writes",
 			r.settings.Database, other, r.settings.Cluster)})
 		return nil
 	}

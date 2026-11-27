@@ -417,8 +417,8 @@ def observability(config, *, observability_defaults=None, gateway_defaults=None)
     if "portal" in block:
         # The Portal's usage report reads the AI Gateway usage of this cluster
         # from the logs database. Kusto grants a role on a whole database, so
-        # the identity's database holds the rows of this cluster alone; the
-        # Portal checks that at start.
+        # no other cluster writes to that database while the identity has the
+        # role; the Portal checks for rows of another cluster at start.
         portal_client = required(config, "observability.portal.clientId")
         if not re.fullmatch(GUID, portal_client):
             raise ValueError("observability.portal.clientId must be the client ID of the managed identity with which the "

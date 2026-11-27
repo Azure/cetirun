@@ -216,7 +216,8 @@ prompts and responses: its outputs `adxContentDatabase` and
 `adxContentClientId` give the optional `observability.content` block. With
 `adxPortalUsage`, the template also creates the identity with which the Portal
 reads the AI Gateway usage: its output `adxPortalUsageClientId` gives the
-optional `observability.portal` block. Refer to the prerequisites in
+optional `observability.portal` block. Use `adxPortalUsage` only while no other
+CetiRun cluster writes to the logs database. Refer to the prerequisites in
 [Monitoring and logs](../../operations/observability/#prerequisites).
 
 ## 2. Configure authentication and storage
