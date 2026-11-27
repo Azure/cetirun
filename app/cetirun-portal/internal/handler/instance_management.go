@@ -31,6 +31,12 @@ type managementError struct {
 
 func (e *managementError) Error() string { return e.message }
 
+// errCetiAdminManaged refuses a change that CetiAdmin admission would refuse
+// with a message that does not say why.
+var errCetiAdminManaged = &managementError{http.StatusForbidden, "cetiadmin_managed",
+	"The platform manages the CetiAdmin Agent, so the Portal cannot change or delete it. " +
+		"Its model and its other settings come from the cetiadmin values of the deployment."}
+
 func decodeManagementRequest(w http.ResponseWriter, r *http.Request, target any) (map[string]json.RawMessage, bool) {
 	if contentType := r.Header.Get("Content-Type"); contentType != "" {
 		mediaType, _, err := mime.ParseMediaType(contentType)
@@ -140,6 +146,10 @@ func (h *InstanceHandler) updateInstance(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusForbidden, "forbidden", "Only the instance owner may change this Agent")
 		return
 	}
+	if kube.IsCetiAdmin(instance) {
+		writeManagementError(w, errCetiAdminManaged)
+		return
+	}
 	if req.UID == "" || req.ResourceVersion == "" {
 		writeError(w, http.StatusPreconditionRequired, "version_required", "uid and resourceVersion from the current Agent are required")
 		return
@@ -172,6 +182,9 @@ func (h *InstanceHandler) updateInstance(w http.ResponseWriter, r *http.Request,
 	opts.Authorize = func(current *api.Agent) error {
 		if !ownsInstance(current, claims) {
 			return &managementError{http.StatusForbidden, "forbidden", "Only the instance owner may change this Agent"}
+		}
+		if kube.IsCetiAdmin(current) {
+			return errCetiAdminManaged
 		}
 		if req.Agent != nil && current.Spec.Agent.RegistrySecretRef != nil && !registryOwner(current, claims) {
 			return &managementError{http.StatusForbidden, "forbidden", "Only the instance owner may change a private image"}

@@ -18,7 +18,9 @@ export function InstanceListPage() {
   const [showCreate, setShowCreate] = useState(false);
 
   const maxInstances = features?.maxInstancesPerUser ?? 1;
-  const atLimit = maxInstances > 0 && (instances?.length ?? 0) >= maxInstances;
+  // The operator installs CetiAdmin for its owner, so the limit does not count it.
+  const ownInstances = instances?.filter((instance) => !instance.cetiAdmin).length ?? 0;
+  const atLimit = maxInstances > 0 && ownInstances >= maxInstances;
 
   return (
     <div className="portal-page">
@@ -29,7 +31,7 @@ export function InstanceListPage() {
             {instances && features && (
               <p className="portal-page-count">
                 {maxInstances > 0
-                  ? `${instances.length} of ${maxInstances} agents`
+                  ? `${ownInstances} of ${maxInstances} agents`
                   : `${instances.length} agent${instances.length === 1 ? "" : "s"}`}
               </p>
             )}
@@ -82,6 +84,11 @@ export function InstanceListPage() {
                       {inst.instanceName}
                     </Link>
                     <span className="agent-row-display">{inst.displayName}</span>
+                    {inst.cetiAdmin && (
+                      <span className="agent-row-display">
+                        CetiAdmin. The platform manages it.{maxInstances > 0 ? " It does not count toward your limit of agents." : ""}
+                      </span>
+                    )}
                     <GovernanceNotice instance={inst} compact />
                   </div>
                   <div className="agent-row-facts">
