@@ -1,0 +1,41 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+//
+// Coverage of the AI Gateway request log: which times of each cluster reached
+// the CetiRun logs database. A time without request lines can be a time
+// without calls, or a time whose lines did not arrive. With the request log,
+// each AI Gateway Pod also writes a heartbeat line every 5 minutes, on stdout
+// like the request lines, so that it takes their way to this database
+// (app/cetirun-ai-gateway/cetirun_ai_gateway/request_log.py).
+//
+// GatewayCoverage is a materialized view of the Gateway table with the number
+// of heartbeats per 10 minutes, cluster and Pod. A 10-minute interval with a
+// heartbeat of the cluster is covered: a usage of zero for it means that no
+// call came. GatewayCoverageGaps() lists the other intervals of a period.
+// __RETENTION_DAYS__ is the retention of the view, the one of the daily usage
+// view; the ADX module of the cluster template replaces it and runs this script
+// after cetirun-gateway-usage.kql.
+//
+// The view counts the heartbeats that arrive after its creation, without
+// backfill: Kusto refuses a backfill while some rows of the table are outside
+// the hot cache. Times before the AI Gateway image that writes heartbeats, and
+// before the view, have no coverage.
+.create ifnotexists materialized-view with (folder = "CetiRun", docString = "AI Gateway heartbeats per 10 minutes, cluster and Pod: the times when the request log reached this database, from the creation of the view.") GatewayCoverage on table Gateway {
+    Gateway
+    | where Container == "gateway" and tostring(Body['log_type']) == "cetirun.ai_gateway.heartbeat"
+    | summarize Heartbeats = count() by Interval = bin(Timestamp, 10m), Cluster, Pod
+}
+
+.alter materialized-view GatewayCoverage policy retention '{"SoftDeletePeriod": "__RETENTION_DAYS__.00:00:00", "Recoverability": "Enabled"}'
+
+.alter materialized-view GatewayCoverage policy caching hot = 31d
+
+.create-or-alter function with (folder = "CetiRun", docstring = "The 10-minute intervals from fromTime to toTime without an AI Gateway heartbeat of the cluster. The request log can lack calls of these intervals: a usage of zero is known only for the other intervals.", skipvalidation = "true") GatewayCoverageGaps(cluster:string, fromTime:datetime, toTime:datetime) {
+    let first = bin(fromTime, 10m);
+    let covered = GatewayCoverage
+        | where Cluster == cluster and Interval >= first and Interval < toTime
+        | distinct Interval;
+    range Interval from first to toTime - 1tick step 10m
+    | join kind=leftanti covered on Interval
+    | project Cluster = cluster, Interval
+}

@@ -586,6 +586,34 @@ class AdxScriptTests(unittest.TestCase):
             self.assertIn(f"CopilotRoute = tostring(Body['deployment_id']) startswith \"{prefix}\"",
                           (ADX_SCRIPTS / name).read_text())
 
+    def test_gateway_coverage_counts_the_heartbeats_and_follows_the_usage_view(self):
+        create, retention, caching, gaps = kusto_commands("cetirun-gateway-coverage.kql")
+        self.assertTrue(create.startswith(".create ifnotexists materialized-view with (folder = "))
+        # No backfill, for the reason of the usage view.
+        self.assertNotIn("backfill", create)
+        self.assertIn(" GatewayCoverage on table Gateway {", create)
+        self.assertEqual(re.findall(r"^ {4}(\w+)$", create, re.M), ["Gateway"])
+        # The heartbeats that the AI Gateway image writes, per 10 minutes, cluster and Pod.
+        request_log = (ROOT / "app/cetirun-ai-gateway/cetirun_ai_gateway/request_log.py").read_text()
+        log_type = re.search(r'^HEARTBEAT_LOG_TYPE = "([^"]+)"$', request_log, re.M)[1]
+        self.assertIn(f"tostring(Body['log_type']) == \"{log_type}\"", create)
+        self.assertIn("by Interval = bin(Timestamp, 10m), Cluster, Pod", create)
+        # A running Pod writes two heartbeats in each interval, so one late line leaves it covered.
+        interval = int(re.search(r"^HEARTBEAT_INTERVAL_SECONDS = (\d+)$", request_log, re.M)[1])
+        self.assertEqual(600 % interval, 0)
+        self.assertGreaterEqual(600 // interval, 2)
+        # Kept as long as the usage view.
+        self.assertTrue(retention.startswith(".alter materialized-view GatewayCoverage policy retention"))
+        self.assertIn("__RETENTION_DAYS__.00:00:00", retention)
+        self.assertTrue(caching.startswith(".alter materialized-view GatewayCoverage policy caching"))
+        self.assertIn("GatewayCoverageGaps(cluster:string, fromTime:datetime, toTime:datetime)", gaps)
+        self.assertIn("join kind=leftanti covered on Interval", gaps)
+        module = (ROOT / "infra/cluster/modules/adx.bicep").read_text()
+        line = next(text for text in module.splitlines() if text.startswith("var logsFunctions"))
+        # After the usage view, with the same retention.
+        self.assertLess(line.index("adx/cetirun-gateway-usage.kql"), line.index("adx/cetirun-gateway-coverage.kql"))
+        self.assertEqual(line.count("'__RETENTION_DAYS__', string(gatewayUsageRetentionDays)"), 2)
+
     def test_audit_messages_land_whole_and_expand_into_events(self):
         table, mapping, function = kusto_commands("cetirun-audit.kql")
         self.assertEqual(table, ".create-merge table KubeAuditLogs (Records:dynamic)")
