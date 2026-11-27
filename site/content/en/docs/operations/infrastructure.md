@@ -733,6 +733,20 @@ has the role `Viewer` on the logs and metrics databases only. The output
 `adxAlerterClientId` is `observability.alerter.clientId` of the `make deploy`
 environment file.
 
+With `adxPortalUsage` set to `true`, the template also creates the
+user-assigned managed identity `<clusterName>-portal-usage`. The Portal reads
+the AI Gateway usage of this cluster with it. It has a federated credential for
+the Portal's service account `cetirun-portal` in `platformNamespace`, and the
+role `Viewer` on the logs database only. The output `adxPortalUsageClientId` is
+`observability.portal.clientId` of the `make deploy` environment file.
+
+Kusto grants a role on a whole database, so the identity can read every table
+of the logs database. A logs database that the template creates with
+`adxMode: create` holds the rows of this cluster alone. With
+`adxMode: existing`, other clusters can share the database, and the template
+does not create the identity. Refer to
+[The Portal's usage identity](../observability/#the-portals-usage-identity).
+
 The default SKU, `Dev(No SLA)_Standard_E2a_v4`, has one engine node and no SLA.
 Use it for evaluation; for production, refer to
 [Size Azure Data Explorer](../observability/#size-azure-data-explorer). The

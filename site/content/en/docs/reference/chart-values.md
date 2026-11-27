@@ -640,6 +640,12 @@ Source: [app/cetirun-portal/chart/values.yaml]({{< repo "app/cetirun-portal/char
 | `sandboxStorage.platformConfigMapName` | `""` |  |
 | `sandboxStorage.defaultStorageClassName` | `""` |  |
 | `aiGateway.catalogNamespace` | `"cetirun-system"` | Namespace where the operator publishes the shared-model catalog (the operator's namespace). |
+| `usage` |  | Usage report: the Portal reads the AI Gateway usage of this cluster from the logs database in Azure Data Explorer, which the cetirun-observability chart fills. It reads with a workload identity: the cluster needs workload identity, and the identity needs a federated credential for this release's ServiceAccount and the Viewer role on the logs database. Kusto grants a role on a whole database, so use a logs database that holds the rows of this cluster alone. At start, the Portal turns the report off when the database also holds AI Gateway rows of another cluster. |
+| `usage.enabled` | `false` | Read the usage from Azure Data Explorer |
+| `usage.clusterName` | `""` | Names this CetiRun cluster in its rows: the clusterName of the cetirun-observability chart |
+| `usage.adx.endpoint` | `""` | Query URI of the Kusto cluster |
+| `usage.adx.database` | `"CetiRunLogs"` | The logs database |
+| `usage.adx.clientId` | `""` | Client ID of the managed identity with the Viewer role on the logs database |
 | `skillMarketplace` |  | Skill Marketplace: Team skills from one synchronized Git repository. When enabled, every Team skill without the npm: prefix is a marketplace skill: Team saves check new skills against the marketplace catalog, Policy saves keep skills a Team still selects, and Agent details show the Team's skills. Keep it in step with the operator's skillMarketplace.enabled. |
 | `skillMarketplace.enabled` | `false` |  |
 | `skillMarketplace.catalogNamespace` | `"cetirun-system"` | Namespace where the marketplace publishes its catalog (the operator's namespace). |

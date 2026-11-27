@@ -216,6 +216,15 @@ Successful collection still depends on the deployed collectors, permissions,
 and settings. Source configuration alone does not prove that a live cluster
 collects data.
 
+With the `portal` block of the `observability` input, the Portal reads the AI
+Gateway usage of its cluster from `CetiRunLogs`. It reads with a managed
+identity that has the `Viewer` role on that database. The role covers every
+table of the database, including the owner aliases, emails, and Entra IDs of
+the inventory. Give it only on a logs database that holds the rows of one
+cluster. At start, the Portal checks whether the database holds AI Gateway rows
+of another cluster. It reads only the name of such a cluster, and turns the
+usage report off.
+
 With the cluster template parameter `adxAuditLogs`, the AKS API server sends
 its audit events through an Event Hub, which keeps each message for one day,
 into the database `CetiRunAudit`. These are all requests except `get` and

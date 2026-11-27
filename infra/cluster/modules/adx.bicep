@@ -18,7 +18,8 @@
 // before the first rows arrive.
 //
 // Optionally, the module also makes the ADX-Mon alerter a Viewer of the logs
-// and metrics databases, and creates the database of Kubernetes audit events.
+// and metrics databases, makes the Portal's usage identity a Viewer of the logs
+// database, and creates the database of Kubernetes audit events.
 
 @description('Name of the Kusto cluster: 4 to 22 lowercase letters and digits, starting with a letter.')
 @minLength(4)
@@ -102,6 +103,9 @@ param gatewayUsageRetentionDays int = 400
 
 @description('Client (application) ID of the ADX-Mon alerter identity, which runs alert queries. Empty skips its Viewer roles on the logs and metrics databases.')
 param alerterClientId string = ''
+
+@description('Client (application) ID of the identity with which the Portal reads the AI Gateway usage. Empty skips its Viewer role on the logs database. Kusto grants a role on a whole database: give one only for a logs database that holds the rows of one CetiRun cluster.')
+param portalUsageClientId string = ''
 
 @description('Create the database of Kubernetes audit events. A new Kusto cluster then gets a system-assigned identity, which the Event Hub data connection uses; an existing cluster must have one.')
 param auditLogs bool = false
@@ -253,6 +257,20 @@ resource alerterAssignment 'Microsoft.Kusto/clusters/databases/principalAssignme
     tenantId: tenantId
   }
 }]
+
+// The Portal reads the AI Gateway usage views of the logs database. The role
+// also lets it read the other tables of that database, so this cluster's rows
+// must be its only rows: the Portal checks that at start.
+resource portalUsageAssignment 'Microsoft.Kusto/clusters/databases/principalAssignments@2024-04-13' = if (!empty(portalUsageClientId)) {
+  parent: database[0]
+  name: guid(cluster.id, logsDatabaseName, portalUsageClientId, 'Viewer')
+  properties: {
+    principalId: portalUsageClientId
+    principalType: 'App'
+    role: 'Viewer'
+    tenantId: tenantId
+  }
+}
 
 // Kubernetes audit events, which an Event Hub data connection writes: the
 // ADX-Mon ingestor gets no role on this database, and only auditViewers read

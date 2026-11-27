@@ -100,6 +100,21 @@ func TestSandboxStorageConfiguration(t *testing.T) {
 	}
 }
 
+func TestUsageConfiguration(t *testing.T) {
+	t.Setenv("USAGE_ENABLED", "")
+	if Load().UsageEnabled {
+		t.Fatal("the usage report is on by default")
+	}
+	t.Setenv("USAGE_ENABLED", "true")
+	t.Setenv("USAGE_ADX_ENDPOINT", "https://example.australiaeast.kusto.windows.net")
+	t.Setenv("USAGE_ADX_DATABASE", "CetiRunLogs")
+	t.Setenv("USAGE_CLUSTER_NAME", "example")
+	cfg := Load()
+	if !cfg.UsageEnabled || cfg.UsageADXEndpoint != "https://example.australiaeast.kusto.windows.net" || cfg.UsageADXDatabase != "CetiRunLogs" || cfg.UsageClusterName != "example" {
+		t.Fatalf("usage configuration did not load: %+v", cfg)
+	}
+}
+
 func TestLoad_Defaults(t *testing.T) {
 	os.Unsetenv("LISTEN_ADDR")
 	t.Setenv("ALLOWED_AGENT_TYPES", "")

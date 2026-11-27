@@ -45,6 +45,8 @@
 {{- $_ := required "chat.identityRealm is required for Custom Chat" $chatRealm -}}
 {{- $_ := required "istio.host is required for Custom Chat" .Values.istio.host -}}
 {{- end }}
+{{- include "cetirun-portal.validateUsage" . }}
+{{- $usageEnabled := include "cetirun-portal.usageEnabled" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -65,6 +67,11 @@ spec:
         {{- end }}
       labels:
         {{- include "cetirun-portal.selectorLabels" . | nindent 8 }}
+        {{- if $usageEnabled }}
+        {{- /* The workload identity webhook gives the Pod a token for the
+        identity named on its ServiceAccount, which reads the usage. */}}
+        azure.workload.identity/use: "true"
+        {{- end }}
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
       {{- with .Values.imagePullSecrets }}
@@ -173,6 +180,16 @@ spec:
             {{- if .Values.noticeBanner }}
             - name: NOTICE_BANNER
               value: {{ .Values.noticeBanner | quote }}
+            {{- end }}
+            {{- if $usageEnabled }}
+            - name: USAGE_ENABLED
+              value: "true"
+            - name: USAGE_ADX_ENDPOINT
+              value: {{ .Values.usage.adx.endpoint | trimSuffix "/" | quote }}
+            - name: USAGE_ADX_DATABASE
+              value: {{ .Values.usage.adx.database | quote }}
+            - name: USAGE_CLUSTER_NAME
+              value: {{ .Values.usage.clusterName | quote }}
             {{- end }}
           livenessProbe:
             httpGet:

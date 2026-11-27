@@ -1750,6 +1750,8 @@ ALERTER = {"endpoint": "https://alerts.example.com", "clientId": "66666666-6666-
            "destination": "example-team"}
 # Synthetic content input: a synthetic client ID.
 CONTENT = {"clientId": "77777777-7777-7777-7777-777777777777"}
+# Synthetic input of the Portal's usage identity: a synthetic client ID.
+PORTAL = {"clientId": "99999999-9999-9999-9999-999999999999"}
 
 
 class ObservabilityTests(DeploymentFixture, unittest.TestCase):
@@ -1766,6 +1768,11 @@ class ObservabilityTests(DeploymentFixture, unittest.TestCase):
     def content_config(self):
         config = self.observability_config()
         config["observability"]["content"] = copy.deepcopy(CONTENT)
+        return config
+
+    def portal_config(self):
+        config = self.observability_config()
+        config["observability"]["portal"] = copy.deepcopy(PORTAL)
         return config
 
     def refused(self, config, message):
@@ -1896,6 +1903,59 @@ class ObservabilityTests(DeploymentFixture, unittest.TestCase):
                     else:
                         DEPLOY.set_value(config, path, value)
                 self.refused(config, message)
+
+    def test_the_portal_reads_no_usage_without_its_block(self):
+        _, values = self.configure(self.observability_config())
+        self.assertFalse(DEPLOY.get_value(values["platform"], "cetirun-portal.usage.enabled"))
+
+    def test_portal_block_points_the_usage_report_at_the_logs_database(self):
+        _, values = self.configure(self.portal_config())
+        # The Kusto cluster, the logs database and the cluster name are those of the collection.
+        self.assertEqual(values["platform"]["cetirun-portal"]["usage"], {
+            "enabled": True, "clusterName": OBSERVABILITY["clusterName"],
+            "adx": {"endpoint": OBSERVABILITY["adx"]["endpoint"], "database": "CetiRunLogs", "clientId": PORTAL["clientId"]},
+        })
+        config = self.portal_config()
+        config["observability"]["adx"]["databases"] = {"logs": "ExampleLogs"}
+        _, values = self.configure(config)
+        self.assertEqual(values["platform"]["cetirun-portal"]["usage"]["adx"]["database"], "ExampleLogs")
+
+    def test_invalid_portal_inputs_are_refused_before_tools(self):
+        cases = [
+            ({"observability.portal": None}, r"observability\.portal must be a mapping"),
+            ({"observability.portal.clientId": DELETE}, r"observability\.portal\.clientId is required"),
+            ({"observability.portal.clientId": "example-client"}, "managed identity with which the Portal reads the usage"),
+            ({"observability.portal.database": "CetiRunLogs"},
+             r"observability\.portal\.database is not supported; set other chart values under platform\.values\.cetirun-portal"),
+            ({"platform.values.cetirun-portal.usage.adx.clientId": "88888888-8888-8888-8888-888888888888"},
+             r"cetirun-portal\.usage\.adx\.clientId conflicts with the complete deployment inputs"),
+            ({"platform.values.cetirun-portal.usage.enabled": False},
+             r"cetirun-portal\.usage\.enabled conflicts with the complete deployment inputs"),
+        ]
+        for changes, message in cases:
+            with self.subTest(changes=list(changes), message=message):
+                config = self.portal_config()
+                for path, value in changes.items():
+                    if value is DELETE:
+                        parent, key = path.rsplit(".", 1)
+                        DEPLOY.get_value(config, parent).pop(key)
+                    else:
+                        DEPLOY.set_value(config, path, value)
+                self.refused(config, message)
+
+    @unittest.skipUnless(shutil.which("helm"), "requires existing Helm for real local chart rendering")
+    def test_the_portal_reads_the_usage_with_its_own_workload_identity(self):
+        documents = self.deployment(self.portal_config(), "portal-usage").documents["platform"]
+        portal = next(doc for doc in documents if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "cetirun-portal")
+        template = portal["spec"]["template"]
+        self.assertEqual(template["metadata"]["labels"]["azure.workload.identity/use"], "true")
+        env = {item["name"]: item.get("value") for item in template["spec"]["containers"][0]["env"]}
+        self.assertEqual({name: value for name, value in env.items() if name.startswith("USAGE_")}, {
+            "USAGE_ENABLED": "true", "USAGE_ADX_ENDPOINT": OBSERVABILITY["adx"]["endpoint"],
+            "USAGE_ADX_DATABASE": "CetiRunLogs", "USAGE_CLUSTER_NAME": OBSERVABILITY["clusterName"],
+        })
+        account = next(doc for doc in documents if doc["kind"] == "ServiceAccount" and doc["metadata"]["name"] == "cetirun-portal")
+        self.assertEqual(account["metadata"]["annotations"]["azure.workload.identity/client-id"], PORTAL["clientId"])
 
     @unittest.skipUnless(shutil.which("helm"), "requires existing Helm for real local chart rendering")
     def test_alert_rule_is_read_only_once_its_definition_exists_and_must_name_this_release(self):

@@ -146,6 +146,29 @@ aiGateway:
   # operator's namespace).
   catalogNamespace: cetirun-system
 
+# -- Usage report: the Portal reads the AI Gateway usage of this cluster from
+# the logs database in Azure Data Explorer, which the cetirun-observability
+# chart fills. It reads with a workload identity: the cluster needs workload
+# identity, and the identity needs a federated credential for this release's
+# ServiceAccount and the Viewer role on the logs database. Kusto grants a role
+# on a whole database, so use a logs database that holds the rows of this
+# cluster alone. At start, the Portal turns the report off when the database
+# also holds AI Gateway rows of another cluster.
+usage:
+  # -- Read the usage from Azure Data Explorer
+  enabled: false
+  # -- Names this CetiRun cluster in its rows: the clusterName of the
+  # cetirun-observability chart
+  clusterName: ""
+  adx:
+    # -- Query URI of the Kusto cluster
+    endpoint: ""
+    # -- The logs database
+    database: CetiRunLogs
+    # -- Client ID of the managed identity with the Viewer role on the logs
+    # database
+    clientId: ""
+
 # -- Skill Marketplace: Team skills from one synchronized Git repository.
 # When enabled, every Team skill without the npm: prefix is a marketplace
 # skill: Team saves check new skills against the marketplace catalog, Policy

@@ -393,6 +393,11 @@ Also watch these signals of the platform:
   `system:serviceaccount:<platform namespace>:cetirun-adx-mon-alerter`, and
   the `Viewer` role on the logs and metrics databases. The cluster template
   creates it with `adxAlerter: true`.
+- For the Portal's usage report, a user-assigned managed identity with a
+  federated credential for
+  `system:serviceaccount:<platform namespace>:cetirun-portal`. It needs the
+  `Viewer` role on a logs database that holds the rows of this cluster alone.
+  Refer to [The Portal's usage identity](#the-portals-usage-identity).
 - Outbound HTTPS from the platform namespace to the Kusto cluster, its
   `ingest-` endpoint, the Azure Storage endpoints of ADX ingestion, and Entra
   ID. With the alerter, also to the alert receiver.
@@ -419,7 +424,9 @@ observability:
 
 The outputs `adxClusterUri` and `adxIngestorClientId` of the cluster template
 are its `adx.endpoint` and `ingestorClientId`. The optional `alerter` block
-turns the alerter on; refer to [Alerts](#alerts).
+turns the alerter on; refer to [Alerts](#alerts). The optional `portal` block
+lets the Portal read the AI Gateway usage; refer to
+[The Portal's usage identity](#the-portals-usage-identity).
 
 The optional `content` block sends the prompts and responses of the AI Gateway
 to a database of their own. The spend log in PostgreSQL then keeps none:
@@ -453,6 +460,51 @@ and it keeps that certificate. A tool that renders without access to the
 cluster, for example `helm template`, generates a new certificate each time.
 The collectors then refuse the ingestor until they restart. With such a tool,
 set `ingestor.tls.secretName` to a Secret that you supply.
+
+## The Portal's usage identity
+
+With the optional `portal` block, the Portal reads the AI Gateway usage of this
+cluster from the logs database. It reads with a managed identity of its own:
+
+```yaml
+observability:
+  # clusterName, adx and ingestorClientId, as above
+  portal:
+    clientId: <portal-usage-client-id>
+```
+
+The block sets the Portal's `usage` values with the `clusterName`, the Kusto
+cluster, and the logs database above. The identity needs a federated
+credential for `system:serviceaccount:<platform namespace>:cetirun-portal`
+and the `Viewer` role on the logs database. With `adxMode: create` and
+`adxPortalUsage: true`, the cluster template creates it. Its output
+`adxPortalUsageClientId` is `clientId`.
+
+Kusto grants a role on a whole database, not on the rows of one cluster. With
+the `Viewer` role, the identity can read every table of the logs database.
+These tables include the platform logs, the ingress access log, and the
+inventory. Give the role only on a logs database that holds the rows of this
+CetiRun cluster alone. When several CetiRun clusters share the logs database,
+leave out the block.
+
+When the Portal starts, it looks for AI Gateway rows of another cluster in the
+logs database. If it finds one, it turns the usage report off. This check finds
+a configuration error. It does not limit the identity.
+
+If the Portal cannot read the database, for example before the role exists, it
+checks again after 30 seconds. It then doubles the wait, up to 10 minutes. The
+Portal log shows the result:
+
+| Log message | Meaning |
+| --- | --- |
+| `Usage report reads the AI Gateway usage from Azure Data Explorer` | The check passed. |
+| `Usage report is off` | The database also holds rows of another cluster, or the configuration is incomplete. For example, the workload identity webhook did not set the variables of the Pod. The log names the reason. |
+| `Usage report: cannot check the logs database yet` | The Portal could not read the database. The error names the cause, for example a missing role or federated credential. |
+
+To use the Portal chart without `make deploy`, set `usage.enabled`,
+`usage.clusterName`, `usage.adx.endpoint`, `usage.adx.database`, and
+`usage.adx.clientId` under `cetirun-portal` in the platform values. The cluster
+needs workload identity.
 
 ## Data loss and limits
 

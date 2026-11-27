@@ -8,7 +8,8 @@ already has are checked and never replaced, since replacing them would drop
 the cluster's own collection settings. The compiled template turns Container
 Insights and managed Prometheus off, and creates Azure Data Explorer for the
 ADX-Mon collection by default. Its Kusto scripts create every table that a
-query reads, and the audit events and the alerter identity are optional.
+query reads, and the audit events, the alerter identity and the Portal's usage
+identity are optional.
 """
 
 import json
@@ -626,6 +627,37 @@ class CompiledObservabilityTests(unittest.TestCase):
         parameters = self.module("deploy-adx-alerter-identity")["properties"]["parameters"]
         self.assertEqual(parameters["serviceAccountName"]["value"], "cetirun-adx-mon-alerter")
         self.assertEqual(parameters["namespace"]["value"], "[parameters('observabilityNamespace')]")
+
+    def test_the_portal_usage_identity_is_optional_and_only_with_a_kusto_cluster_of_this_cluster(self):
+        self.assertIs(self.template["parameters"]["adxPortalUsage"]["defaultValue"], False)
+        identity = self.module("deploy-portal-usage-identity")
+        # Kusto grants a role on a whole database: only a logs database that the template creates for this
+        # cluster holds this cluster's rows alone.
+        self.assertIn("equals(parameters('adxMode'), 'create')", identity["condition"])
+        self.assertIn("parameters('adxPortalUsage')", identity["condition"])
+        parameters = identity["properties"]["parameters"]
+        self.assertEqual(parameters["serviceAccountName"]["value"], "cetirun-portal")
+        self.assertEqual(parameters["namespace"]["value"], "[parameters('platformNamespace')]")
+        self.assertEqual(parameters["name"]["value"], "[format('{0}-portal-usage', parameters('clusterName'))]")
+        output = self.template["outputs"]["adxPortalUsageClientId"]
+        self.assertIn("observability.portal.clientId", output["metadata"]["description"])
+
+    def test_the_portal_usage_identity_reads_only_the_logs_database(self):
+        adx = self.module("deploy-adx")
+        self.assertIn("portalUsageClientId", adx["properties"]["parameters"])
+        assignments = [resource for resource in template_resources(adx["properties"]["template"])
+                       if resource["type"] == "Microsoft.Kusto/clusters/databases/principalAssignments"
+                       and "portalUsageClientId" in resource["properties"]["principalId"]]
+        self.assertEqual(len(assignments), 1)
+        assignment = assignments[0]
+        self.assertEqual(assignment["properties"]["role"], "Viewer")
+        self.assertEqual(assignment["properties"]["principalType"], "App")
+        self.assertIn("not(empty(parameters('portalUsageClientId')))", assignment["condition"])
+        # The first database of the module is the logs database.
+        self.assertIn("variables('databases')[0].name", assignment["name"])
+        self.assertEqual(adx["properties"]["template"]["variables"]["databases"][0]["name"], "[parameters('logsDatabaseName')]")
+        self.assertIn("parameters('logsDatabaseName')", assignment["name"])
+        self.assertNotIn("copy", assignment)
 
     def test_audit_events_go_to_one_hub_that_only_the_kusto_cluster_reads(self):
         resources = {resource["type"]: resource for resource in

@@ -150,19 +150,23 @@ SKILL_MARKETPLACE_FIELDS = {
 SKILL_MARKETPLACE_SECRET_KEYS = {"none": (), "token": ("token",), "ssh": ("ssh-privatekey", "known_hosts")}
 # The ADX-Mon collection of logs, events and metrics into Azure Data Explorer,
 # CetiRun's only observability path. The top-level observability block of the
-# environment file is required; its alerter block and its content block, which
-# sends the AI Gateway's prompts and responses to a database of their own, are
+# environment file is required; its alerter block, its content block, which
+# sends the AI Gateway's prompts and responses to a database of their own, and
+# its portal block, with which the Portal reads the AI Gateway usage, are
 # optional. make deploy does not call Azure: the Kusto cluster, its databases and
 # the identities exist before the deployment.
 OBSERVABILITY = "cetirun-observability"
 OBSERVABILITY_INGESTOR = "cetirun-adx-mon-ingestor"
 OBSERVABILITY_FIELDS = {
-    "observability": ("clusterName", "adx", "ingestorClientId", "alerter", "content"),
+    "observability": ("clusterName", "adx", "ingestorClientId", "alerter", "content", "portal"),
     "observability.adx": ("endpoint", "databases"),
     "observability.adx.databases": ("logs", "metrics", "agentLogs"),
     "observability.alerter": ("endpoint", "clientId", "destination"),
     "observability.content": ("clientId", "database"),
+    "observability.portal": ("clientId",),
 }
+# The chart that takes the other values of each block.
+OBSERVABILITY_CHARTS = {"observability.content": "cetirun-ai-gateway", "observability.portal": "cetirun-portal"}
 GUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 SCP_URL = re.compile(r"[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^/\s]\S*")
 DNS_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
@@ -340,7 +344,8 @@ def skill_marketplace(config, platform, *, operator_defaults=None):
 
 
 def observability(config, *, observability_defaults=None, gateway_defaults=None):
-    """Platform values of the ADX-Mon collection and of the AI Gateway's content, from their input block."""
+    """Platform values of the ADX-Mon collection, of the AI Gateway's content and of the Portal's usage identity, from
+    their input block."""
     switch = f"{OBSERVABILITY}.enabled"
     if "observability" not in config:
         raise ValueError("observability is required: ADX-Mon collects the platform's and the Agents' logs, events and "
@@ -350,11 +355,13 @@ def observability(config, *, observability_defaults=None, gateway_defaults=None)
     databases = mapping(adx.get("databases", {}), "observability.adx.databases")
     alerter = mapping(block.get("alerter", {}), "observability.alerter")
     content = mapping(block.get("content", {}), "observability.content")
+    portal = mapping(block.get("portal", {}), "observability.portal")
     for name, section in (("observability", block), ("observability.adx", adx), ("observability.adx.databases", databases),
-                          ("observability.alerter", alerter), ("observability.content", content)):
+                          ("observability.alerter", alerter), ("observability.content", content),
+                          ("observability.portal", portal)):
         unknown = sorted(map(str, set(section) - set(OBSERVABILITY_FIELDS[name])))
         if unknown:
-            chart = "cetirun-ai-gateway" if name == "observability.content" else OBSERVABILITY
+            chart = OBSERVABILITY_CHARTS.get(name, OBSERVABILITY)
             raise ValueError(f"{name}.{unknown[0]} is not supported; set other chart values under platform.values.{chart}")
     cluster = required(config, "observability.clusterName")
     if not re.fullmatch(DNS_LABEL, cluster):
@@ -407,6 +414,19 @@ def observability(config, *, observability_defaults=None, gateway_defaults=None)
                        "cetirun-ai-gateway.content.clientId": content_client,
                        "cetirun-ai-gateway.content.adx.endpoint": endpoint,
                        "cetirun-ai-gateway.content.adx.database": database})
+    if "portal" in block:
+        # The Portal's usage report reads the AI Gateway usage of this cluster
+        # from the logs database. Kusto grants a role on a whole database, so
+        # the identity's database holds the rows of this cluster alone; the
+        # Portal checks that at start.
+        portal_client = required(config, "observability.portal.clientId")
+        if not re.fullmatch(GUID, portal_client):
+            raise ValueError("observability.portal.clientId must be the client ID of the managed identity with which the "
+                             "Portal reads the usage of this cluster")
+        values.update({"cetirun-portal.usage.enabled": True, "cetirun-portal.usage.clusterName": cluster,
+                       "cetirun-portal.usage.adx.endpoint": endpoint,
+                       "cetirun-portal.usage.adx.database": names["logs"],
+                       "cetirun-portal.usage.adx.clientId": portal_client})
     return values
 
 
