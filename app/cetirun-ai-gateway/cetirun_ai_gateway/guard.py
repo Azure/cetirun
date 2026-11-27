@@ -144,11 +144,12 @@ The guard keeps the limits that an upstream advertised last for each deployment
 while it does not answer. Each answer is an observation of the time when
 LiteLLM read the listing. The guard keeps the newest observation in the
 Gateway's Redis, so that the replicas agree, and in the replica for when Redis
-does not answer. A replica dates each of its reads by Redis's clock with a
-round trip, and Redis takes an observation only in place of one of an earlier
-read; when it cannot tell which read was earlier, it keeps the smaller limits.
-An answer without limits for the model, also an empty listing, withdraws them,
-and the router stops serving them at once.
+does not answer. A replica dates each of its reads once by Redis's clock, with
+a round trip. At each refresh it combines the observation in Redis with its
+own: the later read wins, and of two reads that Redis's clock cannot order, the
+smaller limit of each kind. It writes the result in place of the value that it
+read. An answer without limits for the model, also an empty listing, withdraws
+them, and the router stops serving them at once.
 
 Encrypted reasoning without the Gateway's mark is removed from Responses API
 requests while encrypted content affinity is on for the model. A client that
@@ -572,16 +573,15 @@ UPSTREAM_LIMITS_TTL = 30 * 24 * 3600
 UPSTREAM_REDIS_TIMEOUT = 5
 # How long the guard remembers when LiteLLM read each upstream listing: longer than LiteLLM keeps one (300 s).
 UPSTREAM_LISTING_MEMORY = 900
-# Reads a deployment's observation in Redis, or offers one, in one step. It returns the value that Redis has
-# afterwards, Redis's time in milliseconds, and what Redis did: 'read'; 'stored', it took the offered observation;
-# 'same', it has that observation already; 'kept', it keeps its observation, which is of a later read, or has
-# smaller limits when Redis cannot tell which of the two reads was later; or 'refused', the offered times are not
-# in order, are after Redis's time, or are older than Redis keeps observations. An offered observation carries two
-# times of Redis's clock between which its read happened. The replica measures them before it offers the
-# observation, so an offer that reaches Redis late keeps the time of its read. Redis replaces a value that is not
-# an observation or is dated more than a minute ahead of its time (UPSTREAM_AHEAD_MS). KEYS[1] is the key; ARGV
-# holds the observation without its times ('' to read), the two times in milliseconds, and the time to keep an
-# observation in seconds. Limits that an observation does not have count as no limit.
+# How often a replica reads Redis and writes again when other replicas wrote between its read and its write.
+UPSTREAM_WRITE_ATTEMPTS = 3
+# Reads a deployment's observation in Redis, or writes one in place of the value that the replica read, in one
+# step: Redis does not take the new value when its value changed since that read. The replicas decide what to
+# write (combined); the script only makes the replacement atomic. It returns the value that Redis has afterwards,
+# Redis's time in milliseconds, and what Redis did: 'read'; 'stored'; 'changed', its value changed since the
+# replica read it; or 'expired', the read of the new observation is older than Redis keeps one. KEYS[1] is the
+# key; ARGV holds the new value ('' to read), the value that the replica read ('' for none), the earlier time of
+# the new observation's read in milliseconds, and the time to keep an observation in seconds after that time.
 UPSTREAM_LIMITS_SCRIPT = """
 if redis.replicate_commands then pcall(redis.replicate_commands) end
 local time = redis.call('TIME')
@@ -593,55 +593,16 @@ end
 if ARGV[1] == '' then
   return answer(current, 'read')
 end
-local observation = cjson.decode(ARGV[1])
-local first, last = tonumber(ARGV[2]), tonumber(ARGV[3])
-if not first or not last or first > last or last > now then
-  return answer(current, 'refused')
+if (current or '') ~= ARGV[2] then
+  return answer(current, 'changed')
 end
-local ttl = tonumber(ARGV[4]) - math.floor((now - first) / 1000)
+local keep = tonumber(ARGV[4])
+local ttl = math.min(keep, keep - math.floor((now - tonumber(ARGV[3])) / 1000))
 if ttl < 1 then
-  return answer(current, 'refused')
+  return answer(current, 'expired')
 end
-local function limit(limits, name)
-  local value = type(limits) == 'table' and limits[name]
-  if type(value) == 'number' then
-    return value
-  end
-  return math.huge
-end
-local function smaller(limits, than)
-  local below = false
-  for _, side in ipairs({limits, than}) do
-    if type(side) == 'table' then
-      for name in pairs(side) do
-        if limit(limits, name) > limit(than, name) then
-          return false
-        end
-        below = below or limit(limits, name) < limit(than, name)
-      end
-    end
-  end
-  return below
-end
-if current then
-  local ok, stored = pcall(cjson.decode, current)
-  if ok and type(stored) == 'table' and type(stored['etag']) == 'string' and stored['etag'] ~= '' then
-    local read = stored['observed_ms']
-    if type(read) == 'table' and type(read[1]) == 'number' and type(read[2]) == 'number'
-        and read[1] <= read[2] and read[2] <= now + 60000 then
-      if stored['etag'] == observation['etag'] then
-        return answer(current, 'same')
-      end
-      if last < read[1] or (first <= read[2] and not smaller(observation['limits'], stored['limits'])) then
-        return answer(current, 'kept')
-      end
-    end
-  end
-end
-observation['observed_ms'] = {first, last}
-local value = cjson.encode(observation)
-redis.call('SET', KEYS[1], value, 'EX', ttl)
-return answer(value, 'stored')
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ttl)
+return answer(ARGV[1], 'stored')
 """
 # How far ahead of Redis's time an observation in Redis can be dated, for a clock that Redis's host adjusted.
 UPSTREAM_AHEAD_MS = 60000
@@ -741,8 +702,8 @@ def live_observation(observation):
 
 def stored_observation(value, now_ms, sent, received):
     """The observation in a value of Redis, or None when it is none. Its read happened between two times of
-    Redis's clock, and Redis's time now_ms fell between the times sent and received of this replica's clock: so the
-    read happened between two times of this replica's clock, which the observation keeps as seen."""
+    Redis's clock, which it keeps as observed_ms. Redis's time now_ms fell between the times sent and received of
+    this replica's clock: so the read happened between two times of this replica's clock, which it keeps as seen."""
     if isinstance(value, bytes):
         value = value.decode("utf-8", "replace")
     try:
@@ -761,8 +722,53 @@ def stored_observation(value, now_ms, sent, received):
         limits = token_limits(limits)
         if limits is None:
             return None
-    return {"limits": limits, "etag": etag,
+    return {"limits": limits, "etag": etag, "observed_ms": (read[0], read[1]),
             "seen": (sent - (now_ms - read[0]) / 1000, received - (now_ms - read[1]) / 1000)}
+
+
+def stored_value(observation):
+    """An observation as Redis keeps it."""
+    return json.dumps({"limits": observation["limits"], "etag": observation["etag"],
+                       "observed_ms": list(observation["observed_ms"])})
+
+
+def same_observation(one, other):
+    """Whether two observations are the same, with the same times."""
+    return all(one[field] == other[field] for field in ("etag", "limits", "observed_ms"))
+
+
+def smaller_limits(one, other):
+    """The smaller limit of each kind of two observations' limits, or None when neither has a limit. A kind of
+    limit that an observation does not have counts as no limit."""
+    one, other = one or {}, other or {}
+    limits = {name: min(limit for limit in (one.get(name), other.get(name)) if limit is not None)
+              for name in set(one) | set(other)}
+    return limits or None
+
+
+def combined(shared, local):
+    """The newest that this replica knows of a deployment's limits, from the observation in Redis and its own,
+    both dated by Redis's clock: the observation of the later read. When the times of the two reads overlap, so
+    that Redis's clock cannot order them, an observation with the smaller limit of each kind, whose read happened
+    between the earliest and the latest of their times: only a read after both replaces it."""
+    if shared is None or local is None:
+        return local if shared is None else shared
+    if shared["etag"] != local["etag"]:
+        if shared["observed_ms"][1] < local["observed_ms"][0]:
+            return local
+        if local["observed_ms"][1] < shared["observed_ms"][0]:
+            return shared
+    limits = smaller_limits(shared["limits"], local["limits"])
+    if limits == shared["limits"]:
+        etag = shared["etag"]
+    elif limits == local["limits"]:
+        etag = local["etag"]
+    else:
+        etag = hashlib.sha256("\n".join(sorted((shared["etag"], local["etag"]))).encode("utf-8")).hexdigest()[:16]
+    return {"limits": limits, "etag": etag,
+            "observed_ms": (min(shared["observed_ms"][0], local["observed_ms"][0]),
+                            max(shared["observed_ms"][1], local["observed_ms"][1])),
+            "seen": (min(shared["seen"][0], local["seen"][0]), max(shared["seen"][1], local["seen"][1]))}
 
 
 def shared_redis():
@@ -792,38 +798,42 @@ async def upstream_limits_script(client, name, *args):
 async def newest_observation(key, local):
     """The newest observation of a deployment that this replica can know.
 
-    The replica dates its own observation by Redis's clock with a round trip: Redis's time during the round trip,
-    less the time since the read by this replica's clock, gives two times of Redis between which the read
-    happened. It offers the observation with those times, and Redis keeps the observation of the later read and
-    returns the one that it keeps. So the clocks of the replicas are never compared, and an offer that reaches
-    Redis late does not replace the observation of a later read that another replica offered meanwhile. When
-    Redis cannot tell which of two reads was later, it keeps the smaller limits. An observation that Redis did not
-    take while it did not answer goes there at the next lookup. When Redis does not answer, the replica uses its
-    own observation."""
+    The replica dates its own observation once, by Redis's clock, with a round trip: Redis's time during the round
+    trip, less the time since the read by this replica's clock, gives two times of Redis between which the read
+    happened. The observation keeps those times, so a later change of Redis's clock does not move them, and the
+    clocks of the replicas are never compared. At each lookup the replica reads Redis, combines the observation
+    there with its own (combined), and writes the result in place of the value that it read when they differ;
+    when another replica wrote meanwhile, it reads again. So an observation that Redis did not take while it did
+    not answer goes there at the next lookup. When Redis does not answer, the replica uses what it knows: the
+    result of its last read, or else its own observation."""
     redis = shared_redis()
     if redis is None:
         return local
+    known = [local]
 
     async def exchange():
         client = redis.init_async_client()
         name = redis.check_and_fix_namespace(key)
-        value, now_ms, _, sent, received = await upstream_limits_script(client, name, "")
-        shared = stored_observation(value, now_ms, sent, received)
-        if local is None or (shared is not None and shared["etag"] == local["etag"]):
-            return shared if local is None else local
-        first, last = read_times(now_ms, sent, received, local["seen"])
-        offered = json.dumps({"limits": local["limits"], "etag": local["etag"]})
-        value, now_ms, verdict, sent, received = await upstream_limits_script(
-            client, name, offered, first, last, UPSTREAM_LIMITS_TTL)
-        return stored_observation(value, now_ms, sent, received) if verdict == "kept" else local
+        for _ in range(UPSTREAM_WRITE_ATTEMPTS):
+            value, now_ms, _, sent, received = await upstream_limits_script(client, name, "")
+            if local is not None and local["observed_ms"] is None:
+                local["observed_ms"] = read_times(now_ms, sent, received, local["seen"])
+            shared = stored_observation(value, now_ms, sent, received)
+            known[0] = newest = combined(shared, local)
+            if newest is None or (shared is not None and same_observation(newest, shared)):
+                return
+            _, _, verdict, _, _ = await upstream_limits_script(
+                client, name, stored_value(newest), value or "", newest["observed_ms"][0], UPSTREAM_LIMITS_TTL)
+            if verdict != "changed":
+                return
 
     try:
-        newest = await asyncio.wait_for(exchange(), UPSTREAM_REDIS_TIMEOUT)
-    except Exception:  # noqa: BLE001  # Redis does not answer: this replica's observation, offered again later
-        return local
-    if newest is None or newest is local:
-        return local
-    KEPT_UPSTREAM_LIMITS[key] = newest
+        await asyncio.wait_for(exchange(), UPSTREAM_REDIS_TIMEOUT)
+    except Exception:  # noqa: BLE001  # Redis does not answer: what this replica knows, written again later
+        pass
+    newest = known[0]
+    if newest is not None and newest is not local:
+        KEPT_UPSTREAM_LIMITS[key] = newest
     return newest
 
 
@@ -842,7 +852,8 @@ async def kept_upstream_limits(module, state, model, api_base, listing, fresh, l
         FAILED_UPSTREAMS.discard(key)
         seen, _, read = record
         if local is None or (local["etag"] != read and local["seen"][1] < seen):
-            local = {"limits": token_limits(dict(limits)) if limits else None, "etag": read, "seen": (seen, seen)}
+            local = {"limits": token_limits(dict(limits)) if limits else None, "etag": read, "seen": (seen, seen),
+                     "observed_ms": None}
     elif limits:
         return limits  # a listing that LiteLLM read before the guard replaced its lookup
     if local is None:
@@ -888,12 +899,12 @@ def install_kept_upstream_limits():
     observation: the limits that the upstream advertised for the model, or none, at the time when LiteLLM read
     the listing. The client that the replacement passes on shows whether LiteLLM asked the upstream, or answered
     from the listing that it keeps, and whether the upstream answered. The guard keeps the newest observation in
-    the replica and in the Gateway's Redis, which orders the reads by its own clock: each replica dates its
-    reads by Redis's clock with a round trip before it offers them. When the upstream does not answer, the
-    replacement returns the limits of the newest observation, and the router keeps them as it keeps an answer.
-    When the newest observation has no limits, the registry's refresh stops serving the limits at once. The router
-    imports the function by name at each refresh, so replacing the module's function is enough; the registry's
-    refresh of one deployment names the deployment for it.
+    the replica and in the Gateway's Redis. Each replica dates its reads once by Redis's clock, with a round trip,
+    and combines its observation with the one in Redis at each refresh (newest_observation). When the upstream does
+    not answer, the replacement returns the limits of the newest observation, and the router keeps them as it keeps
+    an answer. When the newest observation has no limits, the registry's refresh stops serving the limits at once.
+    The router imports the function by name at each refresh, so replacing the module's function is enough; the
+    registry's refresh of one deployment names the deployment for it.
     """
     try:
         module = importlib.import_module(UPSTREAM_INFO_MODULE)
