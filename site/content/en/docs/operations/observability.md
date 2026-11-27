@@ -494,6 +494,13 @@ views keep their rows for 400 days by default, longer than the request lines.
 installation can still use them, for example with `adxMode: existing`. If you
 do not know the history of a logs database, use a new one for this cluster.
 
+A role stays with an identity when the Portal changes to another identity. To
+change the identity, give the new identity its federated credential and the
+`Viewer` role. Then set its client ID in the `portal` block, and run
+`make deploy`. The Portal Pods restart with the new identity. Then remove the
+role of the old identity with the commands of steps 3 and 4 below, with the
+old client ID.
+
 Before another CetiRun cluster writes to the logs database, do these steps.
 `<logs-database>` is the database of `observability.adx.databases.logs`, by
 default `CetiRunLogs`.
@@ -503,22 +510,32 @@ default `CetiRunLogs`.
 2. If the cluster template created the identity, set `adxPortalUsage` to
    `false` in its parameters. Otherwise, its next deployment gives the role
    again.
-3. Remove the role. Step 2 does not remove it. As an admin of the logs
-   database, run:
+3. Remove the role of the identity, and of every identity that the Portal used
+   before. Step 2 does not remove a role. As an admin of the logs database, run
+   this command for each client ID:
 
    ```kusto
    .drop database <logs-database> viewers ('aadapp=<portal-usage-client-id>;<tenant-id>')
    ```
 
-4. Make sure that the identity has no role on the logs database. This command
-   returns no rows:
+4. Make sure that no identity of the Portal, current or earlier, has a role on
+   the logs database. For each client ID, this command returns no rows:
 
    ```kusto
    .show database <logs-database> principals
    | where PrincipalFQN startswith "aadapp=<portal-usage-client-id>"
    ```
 
-You can also delete the identity `<clusterName>-portal-usage`.
+   If you do not know every client ID that the Portal used, list all principals
+   of the database. Check that none of them is an identity of the Portal:
+
+   ```kusto
+   .show database <logs-database> principals
+   | project Role, PrincipalDisplayName, PrincipalFQN
+   ```
+
+You can also delete the identity `<clusterName>-portal-usage` and the earlier
+identities.
 
 When the Portal starts, it looks for AI Gateway rows of another cluster in the
 logs database. It reads the `Gateway` table and the daily usage views. If it
