@@ -198,9 +198,10 @@ Bicep inputs and helper side effects. The cluster and storage helpers expect
 `.bicepparam` files that you write. The repository does not include these
 files. Set `PARAM_FILE` explicitly to your reviewed file.
 
-The cluster helper installs or updates an Azure CLI extension, registers a
-preview feature, provisions infrastructure, enables Gateway API, and overwrites
-the selected kubeconfig entry. Node-pool defaults are not sized for a small
+The cluster helper requires an explicitly selected subscription, tenant and
+private kubeconfig. It checks the installed Azure CLI capabilities, registers a
+preview feature, provisions infrastructure, enables Gateway API, and writes
+only the selected private kubeconfig entry. Node-pool defaults are not sized for a small
 demonstration environment.
 
 `make deploy` needs a Kusto cluster with the logs, metrics, and Agent logs
@@ -553,9 +554,8 @@ these inputs before the first run:
   shows.
 - `platform.values.cetirun-portal.features.maxInstancesPerUser` limits the
   Agents of each user. The default is `1`, and `0` removes the limit. The
-  limit also applies to Portal administrators. Because CetiAdmin counts as an
-  Agent of its owner, the owner cannot create another Agent with the default
-  value.
+  limit also applies to Portal administrators. CetiAdmin does not count
+  toward the limit of its owner.
 
 ## 7. Run the plan and the deployment {#platform-chart}
 
@@ -675,9 +675,8 @@ CSI is not necessary for HOME storage.
 
 ### Test a first Agent
 
-Use two test accounts in the allowed groups. Do not use the owner account,
-unless you raised `features.maxInstancesPerUser`. Refer to
-[Inputs to decide before the first run](#inputs-to-decide-before-the-first-run).
+Use two test accounts in the allowed groups. The CetiAdmin owner can be one of
+them.
 
 | Test | Expected result |
 | --- | --- |

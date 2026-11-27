@@ -80,6 +80,8 @@ export function OverviewSection({ instance }: { instance: Instance }) {
   const [editWebUI, setEditWebUI] = useState(false);
   const [editValidationError, setEditValidationError] = useState("");
   const gatewayRouted = !!instance.aiGateway?.routed;
+  // The deployment configures CetiAdmin; admission refuses the Portal's edits and deletion of it.
+  const cetiAdmin = !!instance.cetiAdmin;
   const governance = currentGovernance(instance);
   const readiness = !instance.suspended && !governance &&
     (instance.phase === "Provisioning" || instance.phase === "Failed")
@@ -208,6 +210,17 @@ export function OverviewSection({ instance }: { instance: Instance }) {
         <div className="overview-grid">
           <div className="overview-lead">
             {overview && (<>
+              {cetiAdmin && (
+                <div className="portal-callout portal-callout--info" aria-label="CetiAdmin">
+                  <Info20Regular />
+                  <span>
+                    The platform manages CetiAdmin. The <code>cetiadmin</code> values of the deployment set its model
+                    and its other settings, for example <code>cetiadmin.model.default</code>. You can restart, suspend,
+                    and resume it here, but you cannot edit or delete it. To open its Webapp, select Agent UI. If you
+                    open the Webapp address directly, sign in as <code>cetirun</code> with the Hermes API / Webapp Key.
+                  </span>
+                </div>
+              )}
               {instance.phase === "Suspended" && (
                 <div className="portal-callout portal-callout--warning">
                   <Warning20Regular />
@@ -234,17 +247,17 @@ export function OverviewSection({ instance }: { instance: Instance }) {
             {/* Keep lifecycle requests mounted while the owner checks the Status tab. */}
             <div className="portal-actions" style={{ display: overview && instance.phase !== "Deleting" ? "flex" : "none",
               flexWrap: "wrap", gap: 8 }}>
-              {instance.upgradeAvailable && (
+              {instance.upgradeAvailable && !cetiAdmin && (
                 <Button appearance="primary" icon={<ArrowSync20Regular />} onClick={() => upgradeMutation.mutate(instance)} disabled={upgradeMutation.isPending}>
                   {upgradeMutation.isPending ? "Upgrading..." : "Upgrade to Latest"}
                 </Button>
               )}
-              <Button appearance="secondary" icon={<Edit20Regular />} onClick={openEditDialog} disabled={updateMutation.isPending}>Edit Agent</Button>
+              {!cetiAdmin && <Button appearance="secondary" icon={<Edit20Regular />} onClick={openEditDialog} disabled={updateMutation.isPending}>Edit Agent</Button>}
               {(instance.restartAvailable || instance.restartRequestId) && <RestartAgentButton key={instance.uid} instance={instance} />}
               {instance.suspended !== undefined && <SuspendAgentButton instance={instance} />}
-              <Button className="portal-danger-quiet" appearance="secondary" onClick={() => { setDeleteVersion({ uid: instance.uid, resourceVersion: instance.resourceVersion }); setConfirmOpen(true); }} disabled={deleteMutation.isPending}>
+              {!cetiAdmin && <Button className="portal-danger-quiet" appearance="secondary" onClick={() => { setDeleteVersion({ uid: instance.uid, resourceVersion: instance.resourceVersion }); setConfirmOpen(true); }} disabled={deleteMutation.isPending}>
                 {deleteMutation.isPending ? "Deleting..." : "Delete Agent"}
-              </Button>
+              </Button>}
             </div>
             {overview && upgradeMutation.isError && (
               <span className="portal-error-text">

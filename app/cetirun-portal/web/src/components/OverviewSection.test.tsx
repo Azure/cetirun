@@ -112,6 +112,30 @@ describe("OverviewSection", () => {
     expect(screen.queryByText(/Contact your administrator to restore access/)).not.toBeInTheDocument();
   });
 
+  it("keeps only the lifecycle controls that admission allows for CetiAdmin", () => {
+    const cetiAdmin: Instance = {
+      ...baseInstance, instanceName: "cetiadmin", displayName: "", team: "cetiadmin", agent: { type: "hermes" },
+      gatewayToken: undefined, apiServerKey: "hermes-key", upgradeAvailable: true, cetiAdmin: true,
+      suspended: false, suspendAvailable: true, restartAvailable: true,
+    };
+    const view = renderInRouter(<OverviewSection instance={cetiAdmin} />);
+    expect(screen.getByRole("button", { name: "Restart Agent" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Suspend Agent" })).toBeInTheDocument();
+    for (const name of ["Edit Agent", "Delete Agent", "Upgrade to Latest"]) {
+      expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+    }
+    const notice = screen.getByLabelText("CetiAdmin");
+    expect(notice).toHaveTextContent("The platform manages CetiAdmin.");
+    expect(notice).toHaveTextContent("cetiadmin.model.default");
+    expect(notice).toHaveTextContent("sign in as cetirun with the Hermes API / Webapp Key");
+
+    view.rerender(<OverviewSection instance={{ ...cetiAdmin, cetiAdmin: undefined }} />);
+    for (const name of ["Edit Agent", "Delete Agent", "Upgrade to Latest"]) {
+      expect(screen.getByRole("button", { name })).toBeInTheDocument();
+    }
+    expect(screen.queryByLabelText("CetiAdmin")).not.toBeInTheDocument();
+  });
+
   const unreadyHermes: Instance = {
     ...baseInstance, agent: { type: "hermes" }, phase: "Provisioning", generation: 2, observedGeneration: 2,
     suspended: false, suspendAvailable: true, resumeAvailable: false, restartAvailable: false,

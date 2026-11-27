@@ -299,6 +299,8 @@ export function InstanceDetailPage() {
   if (detailQuery.isLoading) return <Spinner label="Loading agent..." />;
   if (detailQuery.error && !detail) return <MessageBar intent="error">Failed to load: {detailQuery.error.message}</MessageBar>;
   if (!detail) return null;
+  // The deployment configures CetiAdmin; the API refuses the Portal's edits and deletion of it.
+  const cetiAdmin = Boolean(detail.cetiAdmin);
 
   return <div style={{ maxWidth: 980 }}>
     {detailQuery.error && !editing && !deleteTarget && <MessageBar intent="error">Failed to refresh Agent: {detailQuery.error.message}. The last loaded configuration is shown.</MessageBar>}
@@ -307,12 +309,15 @@ export function InstanceDetailPage() {
       <h1 className="portal-detail-title">{detail.displayName || detail.name}</h1>
       <AgentPhase phase={deletionInProgress ? "Deleting" : detail.phase || "Unknown"} />
       <span className="portal-detail-owner">{detail.alias}{detail.team ? ` · ${detail.team}` : ""}</span>
-      <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+      {!cetiAdmin && <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
         <Button appearance="secondary" icon={<Edit20Regular />} onClick={startEditing} disabled={deletionInProgress || editing || updateMutation.isPending}>Edit</Button>
         <Button className="portal-danger" appearance="primary" icon={<Delete20Regular />} onClick={() => { setDeleteName(""); deleteMutation.reset(); setDeleteTarget({ name: detail.name, alias: detail.alias, team: detail.team, uid: detail.uid, resourceVersion: detail.resourceVersion }); }} disabled={deletionInProgress}>Delete</Button>
-      </div>
+      </div>}
     </div>
-    {!editableType && <MessageBar intent="info">Runtime configuration is unavailable because this Agent type is not enabled by the current platform policy. The display name can still be changed.</MessageBar>}
+    {cetiAdmin && <MessageBar intent="info">
+      <span>The platform manages CetiAdmin. The <code>cetiadmin</code> values of the deployment set its model and its other settings, for example <code>cetiadmin.model.default</code>, so the Portal cannot edit or delete it.</span>
+    </MessageBar>}
+    {!editableType && !cetiAdmin && <MessageBar intent="info">Runtime configuration is unavailable because this Agent type is not enabled by the current platform policy. The display name can still be changed.</MessageBar>}
     {deletionInProgress && <MessageBar intent="warning">Deletion has been requested. This page will close once the Agent is removed.</MessageBar>}
     {pendingReconcile && !deleting && <MessageBar intent="info">Configuration saved; waiting for the Operator to apply generation {detail.generation}.</MessageBar>}
     {reviewNotice && !editing && <MessageBar intent="info">{reviewNotice}</MessageBar>}

@@ -401,6 +401,25 @@ force deletion, physical writer fencing, or recovery from an unreachable
 source. Completion is an observation of the Kubernetes workload. It is not a
 new qualification for model inference or storage failover.
 
+### Recovery after correcting a failed rollout
+
+For an ordinary Hermes or OpenClaw Agent, a successful Helm upgrade can leave
+the previous Pod running with the wrong configuration. For example, after you
+raise a memory limit, the StatefulSet template can have the corrected limit
+while its Pod is still restarting with the old limit.
+
+For a single-replica, unpartitioned `OrderedReady` rolling update, the
+Operator compares the Pod's `controller-revision-hash` with the StatefulSet's
+observed `status.updateRevision`. If the old Pod has been explicitly unready
+for at least a minute on a healthy node, the Operator can gracefully replace
+it. It selects at most one Pod UID for that StatefulSet generation and emits
+`StalledRolloutPodReplaced`. Readiness still requires the replacement to
+become ready. The StatefulSet and HOME PVC are not recreated.
+
+This does not restart a Pod already on the desired revision or repair an
+invalid configuration. It does not apply to Sandbox or CetiAdmin workloads,
+`OnDelete` updates, migration, or maintenance.
+
 ### Owner restart API
 
 The owner API is `POST /api/v1/instances/{name}/restart`. Send the current

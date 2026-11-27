@@ -99,6 +99,10 @@ use storage.
 The admission server serves TLS under its Service name,
 `cetirun-sandbox-admission.cetirun-system.svc`. The chart does not issue a
 certificate. Create a CA, a server certificate for that name, and a TLS Secret.
+`make deploy` verifies the certificate with `openssl verify -x509_strict`, and
+the CetiAdmin check of a platform upgrade requires the CA to allow certificate
+signing. So the CA needs `keyUsage` with `keyCertSign` and a Subject Key
+Identifier, and the server certificate needs an Authority Key Identifier.
 For example, use OpenSSL. The commands write the private keys to a new private
 directory outside the repository. They refuse a directory that exists:
 
@@ -109,15 +113,20 @@ mkdir -m 700 "$ADMISSION_TLS_DIR" || exit 1
 SERVICE=cetirun-sandbox-admission.cetirun-system.svc
 openssl req -x509 -newkey rsa:2048 -nodes -days 1825 \
   -subj "/CN=cetirun-sandbox-admission-ca" \
+  -addext 'basicConstraints=critical,CA:TRUE' \
+  -addext 'keyUsage=critical,keyCertSign,cRLSign' \
+  -addext 'subjectKeyIdentifier=hash' \
   -keyout "$ADMISSION_TLS_DIR/ca.key" -out "$ADMISSION_TLS_DIR/ca.crt"
 openssl req -newkey rsa:2048 -nodes -subj "/CN=${SERVICE}" \
   -keyout "$ADMISSION_TLS_DIR/tls.key" -out "$ADMISSION_TLS_DIR/tls.csr"
-printf 'subjectAltName=DNS:%s\nextendedKeyUsage=serverAuth\n' "${SERVICE}" \
+printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\nsubjectAltName=DNS:%s\nextendedKeyUsage=serverAuth\n' "${SERVICE}" \
   > "$ADMISSION_TLS_DIR/tls.ext"
 openssl x509 -req -in "$ADMISSION_TLS_DIR/tls.csr" \
   -CA "$ADMISSION_TLS_DIR/ca.crt" -CAkey "$ADMISSION_TLS_DIR/ca.key" \
   -CAcreateserial -days 365 -extfile "$ADMISSION_TLS_DIR/tls.ext" \
   -out "$ADMISSION_TLS_DIR/tls.crt"
+openssl verify -x509_strict -CAfile "$ADMISSION_TLS_DIR/ca.crt" -purpose sslserver \
+  -verify_hostname "${SERVICE}" "$ADMISSION_TLS_DIR/tls.crt"
 base64 < "$ADMISSION_TLS_DIR/ca.crt" | tr -d '\n' > "$ADMISSION_TLS_DIR/ca-bundle.txt"
 ```
 
@@ -138,6 +147,27 @@ webhook then refuses every write that it examines.
 The example CA is valid for five years, and the server certificate for one
 year. Renew the server certificate each year, and replace the CA before it
 expires. Refer to [Renew the admission certificate](#renew-the-admission-certificate).
+
+A CA made with earlier versions of these commands has no `keyUsage`, so
+`make deploy` and the CetiAdmin check refuse it. Issue the CA again from the
+same key and subject. The server certificate stays valid, because the key does
+not change. Then use the new `ca-bundle.txt` as the CA bundle:
+
+```bash
+openssl req -x509 -new -key "$ADMISSION_TLS_DIR/ca.key" -days 1825 \
+  -subj "/CN=cetirun-sandbox-admission-ca" \
+  -addext 'basicConstraints=critical,CA:TRUE' \
+  -addext 'keyUsage=critical,keyCertSign,cRLSign' \
+  -addext 'subjectKeyIdentifier=hash' \
+  -out "$ADMISSION_TLS_DIR/ca.crt"
+openssl verify -x509_strict -CAfile "$ADMISSION_TLS_DIR/ca.crt" -purpose sslserver \
+  -verify_hostname cetirun-sandbox-admission.cetirun-system.svc "$ADMISSION_TLS_DIR/tls.crt"
+base64 < "$ADMISSION_TLS_DIR/ca.crt" | tr -d '\n' > "$ADMISSION_TLS_DIR/ca-bundle.txt"
+```
+
+Use the subject of your CA. If the verification fails, the server certificate
+has no Authority Key Identifier. Then issue a new server certificate with the
+commands above.
 
 In the environment file of `make deploy`, name the Secret and the CA bundle.
 Also name the admission administrators:

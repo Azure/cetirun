@@ -38,6 +38,8 @@ export interface AdminInstanceDetail extends AdminInstanceSummary {
   tailscaleEnabled: boolean;
   registryAuthConfigured: boolean;
   conditions: ConditionStatus[];
+  /** The operator installed this Agent for CetiAdmin. The deployment configures it, so the Portal does not edit or delete it. */
+  cetiAdmin?: boolean;
 }
 
 export interface AdminInstanceStatus extends StatusResponse {

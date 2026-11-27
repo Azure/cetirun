@@ -95,7 +95,7 @@ func validateRuntimeOverrides(values map[string]any, agentType string) error {
 		}
 	}
 	if annotations, ok := values["podAnnotations"].(map[string]any); ok {
-		for _, field := range []string{"cetirun.microsoft.com/registry-binding-only", "cetirun.microsoft.com/connections-ca-hash", aiGatewayKeyIDPodAnnotation} {
+		for _, field := range []string{"cetirun.microsoft.com/registry-binding-only", "cetirun.microsoft.com/connections-ca-hash", aiGatewayKeyIDPodAnnotation, rolloutRecoveryPod} {
 			if _, present := annotations[field]; present {
 				return fmt.Errorf("platform rollout annotations are platform-owned")
 			}

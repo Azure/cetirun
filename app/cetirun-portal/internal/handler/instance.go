@@ -129,6 +129,10 @@ type InstanceResponse struct {
 	// error for the Agent's Team: the Skill Marketplace could not publish the
 	// Team's skills. Administrators see the error on the Skills page.
 	TeamSkillsPublicationFailed bool `json:"teamSkillsPublicationFailed,omitempty"`
+	// CetiAdmin reports that the operator installed this Agent for CetiAdmin.
+	// The deployment configures it, so the Portal does not edit, upgrade, or
+	// delete it, and it does not count toward the owner's limit of Agents.
+	CetiAdmin bool `json:"cetiAdmin,omitempty"`
 }
 
 // AgentIdentityResponse contains only non-sensitive lifecycle information.
@@ -304,6 +308,10 @@ func (h *InstanceHandler) DeleteInstanceByName(w http.ResponseWriter, r *http.Re
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
+	if kube.IsCetiAdmin(instance) {
+		writeManagementError(w, errCetiAdminManaged)
+		return
+	}
 
 	version, ok := h.readInstanceVersion(w, r)
 	if !ok {
@@ -337,6 +345,10 @@ func (h *InstanceHandler) UpgradeInstanceByName(w http.ResponseWriter, r *http.R
 	}
 	if !ownsInstance(existing, claims) {
 		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if kube.IsCetiAdmin(existing) {
+		writeManagementError(w, errCetiAdminManaged)
 		return
 	}
 	if existing.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
@@ -619,7 +631,9 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		}
 		count := 0
 		for _, inst := range all {
-			if ownsInstance(&inst, claims) {
+			// The operator installs CetiAdmin for its owner; it is not one of the
+			// Agents that the owner creates.
+			if ownsInstance(&inst, claims) && !kube.IsCetiAdmin(&inst) {
 				count++
 			}
 		}
@@ -754,6 +768,7 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 		Model:                    instance.Spec.Model,
 		Phase:                    instance.Status.Phase,
 		CreatedAt:                instance.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
+		CetiAdmin:                kube.IsCetiAdmin(instance),
 	}
 	if resp.Phase == "" {
 		resp.Phase = "Pending"
@@ -784,10 +799,11 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 
 	// Determine if an upgrade is available by comparing instance version with operator latest.
 	// Empty instance version means the operator hasn't backfilled it yet — not upgradeable.
+	// The operator sets the version of CetiAdmin itself.
 	latestVersion, err := h.Kube.GetOperatorChartVersion(ctx)
 	if err != nil {
 		slog.Warn("Failed to get operator chart version", "error", err)
-	} else if latestVersion != "" && instance.Spec.Helm.Version != "" && instance.Spec.Helm.Version != latestVersion {
+	} else if latestVersion != "" && instance.Spec.Helm.Version != "" && instance.Spec.Helm.Version != latestVersion && !resp.CetiAdmin {
 		resp.UpgradeAvailable = true
 	}
 

@@ -182,7 +182,12 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
         limits={gateway.rateLimits}
         intro="Set by the Team's Agent Policy on this Agent's own key. Requests over a limit get HTTP 429 and can be retried."
       />
-      {!custom && gateway.models.length > 1 && (
+      {!custom && instance.cetiAdmin && (
+        <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
+          The platform sets the default model of CetiAdmin: <code>cetiadmin.model.default</code> of the deployment.
+        </Text>
+      )}
+      {!custom && !instance.cetiAdmin && gateway.models.length > 1 && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <Text size={200}>Default model</Text>
           <Select
