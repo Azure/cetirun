@@ -81,6 +81,13 @@ class ModelList:
     def __init__(self, data=()):
         self.data = tuple(data)
 
+    @classmethod
+    def model_validate_json(cls, content):
+        listing = json.loads(content)
+        if not isinstance(listing, dict) or not isinstance(listing.get("data", []), list):
+            raise ValueError("synthetic: not a listing")
+        return cls(listing.get("data", []))
+
 
 class ListingCache:
     """Stands in for LiteLLM's InMemoryCache."""
@@ -100,26 +107,32 @@ def add_path_to_api_base(api_base, path):
 
 
 def upstream_info_module():
-    """LiteLLM 1.110.1's openai_like.model_info: it asks the upstream for its models, keeps the listing it
-    read, or an empty one after a failed request, under the URL and the headers, and returns the model's
-    limits, or none."""
+    """LiteLLM 1.110.1's openai_like.model_info: it answers from the listing it keeps for the URL and the
+    headers, or asks the upstream for its models and keeps the listing it read, or an empty one after a failed
+    request or an answer that is not a listing, and returns the model's limits, or none."""
     module = types.ModuleType(UPSTREAM_INFO)
     module._ModelList = ModelList
     module.add_path_to_api_base = add_path_to_api_base
 
+    def card_limits(listing, model):
+        card = next((card for card in listing.data if card.get("id") == model), {})
+        return {name: card[name] for name in ("max_input_tokens", "max_output_tokens") if name in card}
+
     async def get_openai_compatible_model_info(*, model, api_base, headers, client, cache):
         url = add_path_to_api_base(api_base, "/v1/models")
         key = "upstream_model_info:" + hashlib.sha256(json.dumps((url, sorted(headers.items()))).encode()).hexdigest()
+        cached = cache.get_cache(key)
+        if isinstance(cached, ModelList):
+            return card_limits(cached, model)
         try:
             response = await client.get(url=url, headers=dict(headers))
             response.raise_for_status()
-            listing = json.loads(response.content)["data"]
+            listing = ModelList.model_validate_json(response.content)
         except Exception:  # noqa: BLE001
             cache.set_cache(key, ModelList(), ttl=60)
             return {}
-        cache.set_cache(key, ModelList(listing), ttl=300)
-        card = next((card for card in listing if card.get("id") == model), {})
-        return {name: card[name] for name in ("max_input_tokens", "max_output_tokens") if name in card}
+        cache.set_cache(key, listing, ttl=300)
+        return card_limits(listing, model)
 
     module.get_openai_compatible_model_info = get_openai_compatible_model_info
     return module
@@ -150,27 +163,67 @@ def upstream_registry_module():
 
 
 class SharedRedis:
-    """Stands in for the proxy's Redis, which the replicas share: each call raises while fail is set."""
+    """Stands in for the proxy's Redis, LiteLLM's RedisCache, which the replicas share. Its async client gets a
+    value and runs the guard's compare-and-set script as Redis does; it raises while fail is set and does not
+    answer while hang is set. Values are bytes, as redis-py returns them."""
 
     def __init__(self):
-        self.values, self.ttls, self.fail, self.sets = {}, {}, False, 0
+        self.values, self.ttls, self.fail, self.hang, self.writes = {}, {}, False, False, 0
 
-    def check(self):
-        if self.fail:
+    def check_and_fix_namespace(self, key):
+        return "synthetic-namespace:" + key
+
+    def init_async_client(self):
+        return SharedRedisClient(self)
+
+
+class SharedRedisClient:
+    def __init__(self, store):
+        self.store = store
+
+    async def answer(self):
+        if self.store.hang:
+            await asyncio.sleep(3600)
+        if self.store.fail:
             raise ConnectionError("synthetic: Redis does not answer")
 
-    async def async_set_cache(self, key, value, **kwargs):
-        self.check()
-        self.sets += 1
-        self.values[key], self.ttls[key] = json.dumps(value), kwargs.get("ttl")
+    async def get(self, name):
+        await self.answer()
+        return self.store.values.get(name)
 
-    async def async_get_cache(self, key, **kwargs):
-        self.check()
-        return json.loads(self.values[key]) if key in self.values else None
+    async def eval(self, script, numkeys, name, value, observed_at, ttl, latest):
+        """Runs the guard's script as Redis runs it: it keeps an observation whose time is a number that is as
+        new or newer and not further ahead than latest, and otherwise stores the new one for ttl seconds."""
+        await self.answer()
+        current = self.store.values.get(name)
+        try:
+            seen = json.loads(current)["observed_at"] if current is not None else None
+        except (ValueError, TypeError, KeyError):
+            seen = None
+        if isinstance(seen, (int, float)) and not isinstance(seen, bool) and float(observed_at) <= seen <= float(latest):
+            return current
+        self.store.values[name], self.store.ttls[name] = value.encode(), int(ttl)
+        self.store.writes += 1
+        return value.encode()
 
-    async def async_delete_cache(self, key):
-        self.check()
-        self.values.pop(key, None)
+
+class UpstreamAnswer:
+    """The models endpoint of an upstream that answers each request with a status and a body."""
+
+    class Response:
+        def __init__(self, status, content):
+            self.status_code, self.content = status, content
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"synthetic: HTTP {self.status_code}")
+
+    def __init__(self, status, content):
+        self.status, self.content, self.calls = status, content, 0
+
+    async def get(self, *args, **kwargs):
+        self.calls += 1
+        return self.Response(self.status, self.content)
 
 
 def load_guard(litellm_attributes=None):
@@ -2485,10 +2538,20 @@ class GuardTest(unittest.TestCase):
 
     ADVERTISED = {"data": [{"id": "gpt-5.4", "max_input_tokens": 922000, "max_output_tokens": 128000}]}
     LIMITS = {"max_input_tokens": 922000, "max_output_tokens": 128000}
+    SMALLER = {"max_input_tokens": 272000, "max_output_tokens": 128000}
     UPSTREAM = "https://upstream.example.com/v1"
     DEPLOYMENT = "cetirun-shared-synthetic-terra"
+    DAYS_30 = 30 * 24 * 3600
+
+    def clocked(self, guard):
+        """The guard, on the test's clock: self.now, which a test moves."""
+        if not hasattr(self, "now"):
+            self.now = 1_800_000_000.0
+        guard.clock = lambda: self.now
+        return guard
 
     def install_upstream_info(self, replace=True):
+        self.clocked(self.module)
         module = upstream_info_module()
         self.install_modules({UPSTREAM_INFO: vars(module), UPSTREAM_REGISTRY: vars(upstream_registry_module())})
         if replace:
@@ -2502,18 +2565,31 @@ class GuardTest(unittest.TestCase):
         return redis
 
     def limits(self, listing, model="gpt-5.4", cache=None, guard=None, deployment=DEPLOYMENT,
-               api_key="synthetic-upstream-key", replica=None):
+               api_key="synthetic-upstream-key", replica=None, client=None):
         """The limits the router gets for a deployment of the model at a refresh: the upstream answers with
-        listing, or does not answer for None. A router keeps its last listing for minutes; a new cache stands
-        for a later refresh. With replica, another replica of the Gateway refreshes them."""
+        listing, or does not answer for None, or client answers. LiteLLM keeps the last listing for minutes in
+        its cache; a new cache stands for a later refresh. With replica, another replica of the Gateway
+        refreshes them."""
         if replica is not None:
             with self.modules_of(replica.modules):
-                return self.limits(listing, model, cache, replica.guard, deployment, api_key)
+                return self.limits(listing, model, cache, replica.guard, deployment, api_key, client=client)
         guard = guard or self.module
         entry = {"model_name": model, "model_info": {"id": deployment},
                  "litellm_params": {"model": f"openai/{model}", "api_base": self.UPSTREAM, "api_key": api_key}}
         registry = sys.modules[UPSTREAM_REGISTRY].HostRegistry(cache or ListingCache())
-        return dict(asyncio.run(registry._arefresh_deployment_model_info(entry, client=guard.ExerciseUpstream(listing))))
+        return dict(asyncio.run(registry._arefresh_deployment_model_info(
+            entry, client=client or guard.ExerciseUpstream(listing))))
+
+    @staticmethod
+    def listing(limits, model="gpt-5.4"):
+        return {"data": [{"id": model, **limits}]}
+
+    def stored(self, redis, deployment=DEPLOYMENT):
+        """The name of a deployment's observation in Redis, and the observation there or None."""
+        name = "synthetic-namespace:" + self.module.upstream_limits_key(
+            sys.modules[UPSTREAM_INFO], deployment, self.UPSTREAM, "gpt-5.4")
+        value = redis.values.get(name)
+        return name, None if value is None else json.loads(value)
 
     @contextlib.contextmanager
     def modules_of(self, modules):
@@ -2529,18 +2605,20 @@ class GuardTest(unittest.TestCase):
                     sys.modules[name] = module
 
     def replica(self):
-        """Another replica of the Gateway: its own guard and LiteLLM modules, and the same Redis."""
-        replica = types.SimpleNamespace(guard=load_guard(), modules={
-            UPSTREAM_INFO: upstream_info_module(), UPSTREAM_REGISTRY: upstream_registry_module()})
-        with self.modules_of(replica.modules):
-            self.assertTrue(replica.guard.install_kept_upstream_limits())
-        return replica
+        """Another replica of the Gateway: its own guard and LiteLLM modules, and the same Redis and clock. The
+        guard replaces the lookup of the LiteLLM it is loaded with."""
+        modules = {UPSTREAM_INFO: upstream_info_module(), UPSTREAM_REGISTRY: upstream_registry_module()}
+        with self.modules_of(modules):
+            guard = self.clocked(load_guard())
+            self.assertTrue(guard.install_kept_upstream_limits())
+        return types.SimpleNamespace(guard=guard, modules=modules)
 
     def test_the_limits_an_upstream_advertised_last_are_kept_while_it_does_not_answer(self):
         self.install_upstream_info()
         self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
         with self.assertLogs(LOGGER, "WARNING") as logs:
             for _ in range(3):
+                self.now += 300
                 self.assertEqual(self.limits(None), self.LIMITS)
         # One warning while the upstream does not answer; it names the upstream and the deployment, not the key.
         self.assertEqual(len(logs.output), 1)
@@ -2551,22 +2629,144 @@ class GuardTest(unittest.TestCase):
         # A refused key is another credential of the same deployment: its limits stay.
         self.assertEqual(self.limits(None, api_key="synthetic-refused-key"), self.LIMITS)
         # A later answer replaces them.
-        self.assertEqual(self.limits({"data": [{"id": "gpt-5.4", "max_input_tokens": 1050000}]}),
-                         {"max_input_tokens": 1050000})
+        self.now += 300
+        self.assertEqual(self.limits(self.listing({"max_input_tokens": 1050000})), {"max_input_tokens": 1050000})
         with self.assertLogs(LOGGER, "WARNING"):
             self.assertEqual(self.limits(None), {"max_input_tokens": 1050000})
+            # Of two answers at one time of the clock, the later one counts.
+            self.assertEqual(self.limits(self.listing(self.SMALLER)), self.SMALLER)
+            self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
+            self.assertEqual(self.limits(None), self.LIMITS)
 
-    def test_an_upstream_that_answers_without_the_model_drops_its_kept_limits(self):
+    def test_an_answer_that_litellm_does_not_read_as_a_listing_keeps_the_limits(self):
         self.install_upstream_info()
-        self.limits(self.ADVERTISED)
-        self.assertEqual(self.limits({"data": [{"id": "another-model", "max_input_tokens": 1}]}), {})
+        self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
+        with self.assertLogs(LOGGER, "WARNING") as logs:
+            for status, content in ((500, b'{"data": []}'), (401, b"{}"), (200, b"<html></html>"),
+                                    (200, b'{"data": "none"}')):
+                with self.subTest(status=status, content=content):
+                    self.now += 300
+                    upstream = UpstreamAnswer(status, content)
+                    self.assertEqual(self.limits(None, client=upstream), self.LIMITS)
+                    self.assertEqual(upstream.calls, 1)
+        self.assertEqual(len(logs.output), 1)
+
+    def test_a_successful_answer_without_limits_for_the_model_withdraws_them(self):
+        # LiteLLM keeps an HTTP 200 with an empty listing as it keeps the listing of a failed request, but it is
+        # an answer. So is a listing without the model or without data, or a model without limits.
+        redis = self.shared_redis()
+        self.install_upstream_info()
+        for answer in ({"data": []}, self.listing({"max_input_tokens": 1}, model="another-model"),
+                       {"object": "list"}, self.listing({})):
+            with self.subTest(answer=answer):
+                other = self.replica()
+                self.now += 300
+                self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
+                # The other replica reads the limits from Redis while the upstream does not answer it.
+                with self.assertLogs(LOGGER, "WARNING"):
+                    self.assertEqual(self.limits(None, replica=other), self.LIMITS)
+                self.now += 300
+                self.assertEqual(self.limits(answer), {})
+                self.assertEqual(self.stored(redis)[1], {"limits": None, "observed_at": self.now})
+                # Neither replica keeps the limits when the upstream does not answer later.
+                self.now += 300
+                self.assertEqual(self.limits(None), {})
+                self.assertEqual(self.limits(None, replica=other), {})
+
+    def test_a_listing_that_litellm_keeps_counts_from_when_it_read_it(self):
+        redis = self.shared_redis()
+        self.install_upstream_info()
+        other = self.replica()
+        # This replica's LiteLLM reads the listing, and keeps it for five minutes.
+        cache, upstream = ListingCache(), UpstreamAnswer(200, json.dumps(self.ADVERTISED).encode())
+        read_at = self.now
+        self.assertEqual(self.limits(None, cache=cache, client=upstream), self.LIMITS)
+        # A minute later the other replica reads a smaller window.
+        self.now += 60
+        self.assertEqual(self.limits(self.listing(self.SMALLER), replica=other), self.SMALLER)
+        smaller = self.stored(redis)[1]
+        self.assertEqual(smaller, {"limits": self.SMALLER, "observed_at": self.now})
+        # LiteLLM answers this replica's next refresh from its listing, without a request. That is an
+        # observation of the earlier time: Redis keeps the newer one and its time, and both replicas use it. A
+        # request of another listing in between does not make the replica forget when LiteLLM read this one.
+        self.now += 60
+        self.assertEqual(self.limits(self.ADVERTISED, deployment="cetirun-shared-synthetic-third",
+                                     api_key="synthetic-third-key"), self.LIMITS)
+        writes = redis.writes
+        self.assertEqual(self.limits(None, cache=cache, client=upstream), self.SMALLER)
+        self.assertEqual(upstream.calls, 1)
+        self.assertEqual((self.stored(redis)[1], redis.writes), (smaller, writes))
+        # Redis loses its observations: the replica offers the newest one it knows, with its time.
+        redis.values.clear()
+        self.assertEqual(self.limits(None, cache=cache, client=upstream), self.SMALLER)
+        name, observed = self.stored(redis)
+        self.assertEqual((observed, redis.ttls[name]), (smaller, self.DAYS_30 - 60))
+        # Another deployment of the same listing has its first observation from LiteLLM's listing too: of the
+        # time when LiteLLM read it, which Redis keeps 30 days from then.
+        deployment = "cetirun-shared-synthetic-other"
+        self.assertEqual(self.limits(None, cache=cache, client=upstream, deployment=deployment), self.LIMITS)
+        name, observed = self.stored(redis, deployment)
+        self.assertEqual((observed, redis.ttls[name]), ({"limits": self.LIMITS, "observed_at": read_at},
+                                                        self.DAYS_30 - 120))
+        # The other replica reads an empty listing later: the listing that this replica's LiteLLM keeps from
+        # before does not bring the limits back.
+        self.now += 60
+        self.assertEqual(self.limits({"data": []}, replica=other), {})
+        self.assertEqual(self.limits(None, cache=cache, client=upstream), {})
+        self.assertEqual(upstream.calls, 1)
+        self.assertEqual(self.stored(redis)[1], {"limits": None, "observed_at": self.now})
+
+    def test_an_observation_that_redis_did_not_take_wins_over_an_older_one_there(self):
+        redis = self.shared_redis()
+        self.install_upstream_info()
+        other = self.replica()
+        self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
+        self.assertEqual(self.limits(self.ADVERTISED, replica=other), self.LIMITS)
+        # Redis does not answer while this replica reads a smaller window, so Redis keeps the older observation.
+        self.now += 300
+        redis.fail = True
+        self.assertEqual(self.limits(self.listing(self.SMALLER)), self.SMALLER)
+        redis.fail = False
+        self.assertEqual(self.stored(redis)[1]["limits"], self.LIMITS)
+        # Redis answers again, and the upstream does not. The replica offers its observation before it uses one
+        # from Redis, so neither replica goes back to the older limits.
+        self.now += 300
+        with self.assertLogs(LOGGER, "WARNING") as logs:
+            self.assertEqual(self.limits(None), self.SMALLER)
+            self.assertEqual(self.limits(None, replica=other), self.SMALLER)
+        self.assertEqual(len(logs.output), 2)
+        self.assertEqual(self.stored(redis)[1]["limits"], self.SMALLER)
+        # The same for a withdrawal: an empty listing while Redis does not answer.
+        self.now += 300
+        redis.fail = True
+        self.assertEqual(self.limits({"data": []}), {})
+        redis.fail = False
+        self.now += 300
         self.assertEqual(self.limits(None), {})
-        # Nothing to keep for a model that the upstream never advertised.
-        self.assertEqual(self.limits(None, model="never-listed"), {})
-        # LiteLLM's own cached listing of the upstream decides whether it answered.
-        cache = ListingCache()
-        self.limits(self.ADVERTISED, cache=cache)
-        self.assertEqual(self.limits(None, model="never-listed", cache=cache), {})
+        self.assertEqual(self.limits(None, replica=other), {})
+        self.assertEqual(self.stored(redis)[1]["limits"], None)
+
+    def test_a_redis_that_fails_or_does_not_answer_leaves_the_replicas_observation(self):
+        redis = self.shared_redis()
+        self.install_upstream_info()
+        self.module.UPSTREAM_REDIS_TIMEOUT = 0.05
+        self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
+        with self.assertLogs(LOGGER, "WARNING") as logs:
+            for failure in ("fail", "hang"):
+                with self.subTest(failure=failure):
+                    setattr(redis, failure, True)
+                    self.now += 300
+                    self.assertEqual(self.limits(None), self.LIMITS)
+                    setattr(redis, failure, False)
+        self.assertEqual(len(logs.output), 1)
+        # Redis that answers without an observation, after a restart for example, gets the replica's again.
+        redis.values.clear()
+        self.now += 300
+        self.assertEqual(self.limits(None), self.LIMITS)
+        self.assertEqual(self.stored(redis)[1]["limits"], self.LIMITS)
+        # A replica that starts while neither Redis nor the upstream answers has LiteLLM's answer.
+        redis.fail = True
+        self.assertEqual(self.limits(None, replica=self.replica()), {})
 
     def test_each_deployment_keeps_its_own_limits(self):
         # Two deployments of one upstream URL and model, with other credentials, can see other limits.
@@ -2575,16 +2775,17 @@ class GuardTest(unittest.TestCase):
         other = {"deployment": "cetirun-shared-synthetic-other", "api_key": "synthetic-other-key"}
         self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
         self.assertEqual(self.limits(None, **other), {})
-        self.assertEqual(self.limits({"data": [{"id": "gpt-5.4", "max_input_tokens": 128000}]}, **other),
+        self.assertEqual(self.limits(self.listing({"max_input_tokens": 128000}), **other),
                          {"max_input_tokens": 128000})
+        self.now += 300
         with self.assertLogs(LOGGER, "WARNING"):
             self.assertEqual(self.limits(None), self.LIMITS)
             self.assertEqual(self.limits(None, **other), {"max_input_tokens": 128000})
         # The upstream lists the model no more for one of them: the other keeps its limits.
-        self.assertEqual(self.limits({"data": [{"id": "another-model"}]}, **other), {})
+        self.assertEqual(self.limits(self.listing({"max_input_tokens": 1}, model="another-model"), **other), {})
         self.assertEqual(self.limits(None), self.LIMITS)
         # Neither the keys nor the values in Redis hold a credential.
-        stored = json.dumps([redis.values, redis.ttls])
+        stored = repr([redis.values, redis.ttls])
         for credential in ("synthetic-upstream-key", "synthetic-other-key"):
             self.assertNotIn(credential, stored)
 
@@ -2604,71 +2805,119 @@ class GuardTest(unittest.TestCase):
         redis = self.shared_redis()
         self.install_upstream_info()
         self.limits(self.ADVERTISED)
-        self.assertEqual(list(redis.ttls.values()), [30 * 24 * 3600])
+        self.assertEqual(list(redis.ttls.values()), [self.DAYS_30])
         # Another replica, with its own guard and LiteLLM, and the same Redis.
-        replica = load_guard()
-        self.install_upstream_info(replace=False)
-        self.assertTrue(replica.install_kept_upstream_limits())
+        other = self.replica()
+        self.now += 600
         with self.assertLogs(LOGGER, "WARNING"):
-            self.assertEqual(self.limits(None, guard=replica), self.LIMITS)
-        # The time in Redis counts from the upstream's last answer, not from the failed requests.
-        self.assertEqual(redis.sets, 1)
-        self.assertEqual(self.limits(None, guard=replica), self.LIMITS)
-        self.assertEqual(redis.sets, 1)
+            self.assertEqual(self.limits(None, replica=other), self.LIMITS)
+        # Redis keeps the observation for 30 days from the upstream's answer, not from the failed requests.
+        self.now += 600
+        self.assertEqual(self.limits(None, replica=other), self.LIMITS)
+        self.assertEqual(redis.writes, 1)
         # The replica keeps what it read, also when Redis stops answering.
         redis.fail = True
-        self.assertEqual(self.limits(None, guard=replica), self.LIMITS)
+        self.assertEqual(self.limits(None, replica=other), self.LIMITS)
         redis.fail = False
-        # LiteLLM keeps the same empty listing for an upstream that lists no model as for one that did not
-        # answer, so the limits stay. When the upstream answers without the model, no replica keeps them.
-        self.assertEqual(self.limits({"data": []}, guard=replica), self.LIMITS)
-        self.assertEqual(self.limits({"data": [{"id": "another-model"}]}, guard=replica), {})
-        self.assertEqual(redis.values, {})
+        # An HTTP 200 with an empty listing is an answer without the model: no replica keeps the limits.
+        self.now += 300
+        self.assertEqual(self.limits({"data": []}, replica=other), {})
+        self.assertEqual(self.limits(None), {})
+        self.assertEqual(self.stored(redis)[1], {"limits": None, "observed_at": self.now})
 
-    def test_the_replicas_keep_what_redis_has(self):
+    def test_the_replicas_agree_on_the_newest_observation(self):
         redis = self.shared_redis()
         self.install_upstream_info()
         other = self.replica()
         self.assertEqual(self.limits(self.ADVERTISED, replica=other), self.LIMITS)
+        self.now += 60
         self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
         # This replica sees a smaller window last, just before the upstream stops answering.
-        smaller = {"max_input_tokens": 272000, "max_output_tokens": 128000}
-        self.assertEqual(self.limits({"data": [{"id": "gpt-5.4", **smaller}]}), smaller)
+        self.now += 60
+        self.assertEqual(self.limits(self.listing(self.SMALLER)), self.SMALLER)
+        self.now += 300
         with self.assertLogs(LOGGER, "WARNING"):
-            self.assertEqual(self.limits(None, replica=other), smaller)
-            self.assertEqual(self.limits(None), smaller)
-        # The upstream answers this replica without the model: the other replica keeps nothing either.
-        self.assertEqual(self.limits({"data": [{"id": "another-model"}]}), {})
+            self.assertEqual(self.limits(None, replica=other), self.SMALLER)
+            self.assertEqual(self.limits(None), self.SMALLER)
+        # The upstream answers this replica without the model: the other replica keeps no limits either.
+        self.now += 300
+        self.assertEqual(self.limits(self.listing({"max_input_tokens": 1}, model="another-model")), {})
         self.assertEqual(self.limits(None, replica=other), {})
-        self.assertEqual((other.guard.KEPT_UPSTREAM_LIMITS, redis.values), ({}, {}))
+        self.assertEqual([observation["limits"] for observation in other.guard.KEPT_UPSTREAM_LIMITS.values()], [None])
+        self.assertEqual(self.stored(redis)[1]["limits"], None)
 
-    def test_a_redis_that_fails_or_holds_something_else_is_not_used(self):
+    def test_only_a_current_observation_in_redis_counts(self):
         redis = self.shared_redis()
-        redis.fail = True
         self.install_upstream_info()
-        # The replica still keeps the limits itself.
         self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
-        with self.assertLogs(LOGGER, "WARNING"):
-            self.assertEqual(self.limits(None), self.LIMITS)
-        redis.fail = False
-        replica = load_guard()
-        upstream = self.install_upstream_info(replace=False)
-        self.assertTrue(replica.install_kept_upstream_limits())
-        key = replica.upstream_limits_key(upstream, self.DEPLOYMENT, self.UPSTREAM, "gpt-5.4")
-        for stored in ({"max_input_tokens": "922000"}, {"max_input_tokens": True}, {"max_input_tokens": 0}, [922000],
-                       {}, "not limits"):
+        name = self.stored(redis)[0]
+        recent = self.now - 60
+        for stored in ({"max_input_tokens": 922000}, {"limits": {"max_input_tokens": "922000"}, "observed_at": recent},
+                       {"limits": {"max_input_tokens": True}, "observed_at": recent},
+                       {"limits": {"max_input_tokens": 0}, "observed_at": recent},
+                       {"limits": [922000], "observed_at": recent}, {"limits": {}, "observed_at": recent},
+                       {"limits": self.SMALLER, "observed_at": True},
+                       {"limits": self.SMALLER, "observed_at": str(recent)},
+                       {"limits": self.SMALLER, "observed_at": self.now - self.DAYS_30},
+                       {"limits": self.SMALLER, "observed_at": self.now + 3600}, "not an observation", [recent]):
             with self.subTest(stored=stored):
-                redis.values[key] = json.dumps(stored)
-                self.assertEqual(self.limits(None, guard=replica), {})
+                redis.values[name] = json.dumps(stored).encode()
+                # A replica without an observation of its own does not take it.
+                self.assertEqual(self.limits(None, replica=self.replica()), {})
+        # The replica that has an observation offers it in place of such a value, also in place of one with a
+        # time that is not a number or that is further ahead than clocks differ.
+        with self.assertLogs(LOGGER, "WARNING"):
+            for stored in ({"max_input_tokens": 922000}, {"limits": self.SMALLER, "observed_at": self.now + 3600},
+                           {"limits": self.SMALLER, "observed_at": str(self.now + 60)}, "not an observation"):
+                with self.subTest(replaced=stored):
+                    redis.values[name] = json.dumps(stored).encode()
+                    self.assertEqual(self.limits(None), self.LIMITS)
+                    self.assertEqual(self.stored(redis)[1]["limits"], self.LIMITS)
+            # An observation a little ahead, from a replica whose clock is ahead, is a newer one.
+            redis.values[name] = json.dumps({"limits": self.SMALLER, "observed_at": self.now + 60}).encode()
+            self.assertEqual(self.limits(None), self.SMALLER)
 
-    def test_a_failed_lookup_leaves_litellms_answer(self):
-        class Unreadable(ListingCache):
-            def get_cache(self, key):
-                raise RuntimeError("synthetic: a cache LiteLLM keeps otherwise")
-
+    def test_a_guard_that_fails_leaves_litellms_answer(self):
         self.install_upstream_info()
-        self.limits(self.ADVERTISED)
-        self.assertEqual(self.limits(None, cache=Unreadable()), {})
+        self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
+
+        def fails(*args):
+            raise RuntimeError("synthetic: the guard fails")
+
+        self.module.upstream_limits_key = fails
+        self.assertEqual(self.limits(None), {})
+        self.assertEqual(self.limits(self.listing(self.SMALLER)), self.SMALLER)
+
+    def test_limits_that_the_guard_does_not_keep_reach_the_router_as_litellm_returned_them(self):
+        self.install_upstream_info()
+        self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
+        # This stand-in of LiteLLM returns a limit that LiteLLM drops: the answer withdraws the kept limits, and
+        # the router gets LiteLLM's answer as it is.
+        self.now += 300
+        self.assertEqual(self.limits(self.listing({"max_input_tokens": 0})), {"max_input_tokens": 0})
+        self.now += 300
+        self.assertEqual(self.limits(None), {})
+
+    def test_a_listing_that_litellm_read_before_the_replacement_is_no_observation(self):
+        redis = self.shared_redis()
+        self.install_upstream_info(replace=False)
+        other = self.replica()
+        self.now += 60
+        self.assertEqual(self.limits(self.listing(self.SMALLER), replica=other), self.SMALLER)
+        # This replica's LiteLLM reads two listings before the guard replaces its lookup.
+        cache = ListingCache()
+        self.assertEqual(self.limits(self.ADVERTISED, cache=cache), self.LIMITS)
+        self.assertEqual(self.limits({"data": []}, cache=cache, api_key="synthetic-empty-key"), {})
+        self.assertTrue(self.module.install_kept_upstream_limits())
+        # LiteLLM answers from them without a request. Limits reach the router as LiteLLM returns them, and
+        # Redis keeps its observation; without limits, the newest observation counts.
+        upstream = UpstreamAnswer(500, b"")
+        self.assertEqual(self.limits(None, cache=cache, client=upstream), self.LIMITS)
+        self.assertEqual(self.stored(redis)[1]["limits"], self.SMALLER)
+        with self.assertLogs(LOGGER, "WARNING"):
+            self.assertEqual(self.limits(None, cache=cache, client=upstream, api_key="synthetic-empty-key"),
+                             self.SMALLER)
+        self.assertEqual(upstream.calls, 0)
 
     def test_the_replacement_needs_litellms_lookup_and_registry(self):
         self.assertFalse(self.module.install_kept_upstream_limits())
@@ -2697,6 +2946,20 @@ class GuardTest(unittest.TestCase):
         scoped = self.module.upstream_limits_key
         self.module.upstream_limits_key = lambda module, deployment, api_base, model: scoped(module, "", api_base, model)
         self.addCleanup(setattr, self.module, "upstream_limits_key", scoped)
+        with self.assertLogs(LOGGER, "WARNING"):
+            self.assertIs(self.module.exercise_kept_upstream_limits(), False)
+
+    def test_limits_that_an_empty_listing_does_not_withdraw_fail_the_build(self):
+        self.install_upstream_info()
+        self.install_router_modules()
+
+        class Unanswered(self.module.ObservedClient):
+            async def get(self, *args, **kwargs):
+                response = await super().get(*args, **kwargs)
+                self.answered = self.answered and bool(json.loads(response.content).get("data"))
+                return response
+
+        self.module.ObservedClient = Unanswered
         with self.assertLogs(LOGGER, "WARNING"):
             self.assertIs(self.module.exercise_kept_upstream_limits(), False)
 

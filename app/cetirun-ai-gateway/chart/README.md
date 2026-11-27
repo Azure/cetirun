@@ -2282,15 +2282,20 @@ these actions:
   limits into the configuration of each Agent with the model. So a refused key
   restarted each such Agent twice: when the upstream stopped answering, and
   when it answered again. The AI Gateway keeps the limits of each deployment
-  in its Redis, for 30 days after the last answer, and in the replica. Each
-  replica uses the limits in Redis, so that the replicas agree, also a replica
-  that starts meanwhile. It uses its own copy only when Redis does not answer.
-  The ID of the deployment scopes the limits: two deployments with one
-  upstream URL and model keep their own limits, and a changed credential keeps
-  them. When the upstream answers without the model, the AI Gateway forgets
-  the limits. Limits that you set in the `model_info` of a model
-  (`max_input_tokens`, `max_output_tokens`) take precedence over the
-  upstream's.
+  while the upstream does not answer. Each answer of the upstream is an
+  observation: its time and the limits of the model. When LiteLLM answers from
+  the listing that it keeps, the time is when it read the listing. The AI
+  Gateway keeps the newest observation in its Redis, for 30 days after that
+  time, and in the replica. Redis takes an observation only in place of an
+  older one, in one step, so that the replicas agree, also a replica that
+  starts meanwhile. A replica uses its own observation when Redis does not
+  answer, and offers it to Redis again at the next refresh. The ID of the
+  deployment scopes the limits: two deployments with one upstream URL and
+  model keep their own limits, and a changed credential keeps them. When the
+  upstream answers without limits for the model, also with an empty listing,
+  the AI Gateway keeps no limits for it. Limits that you set in the
+  `model_info` of a model (`max_input_tokens`, `max_output_tokens`) take
+  precedence over the upstream's.
 - It shortens the request that a router with a jev classifier sends to its
   decision model. The limit in bytes starts at the number of tokens that the
   model takes. This number is the smallest `model_info.max_input_tokens` of
