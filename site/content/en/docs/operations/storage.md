@@ -325,11 +325,20 @@ persistence nor a `Retain` policy is a substitute for backup.
 
 When immutable fields differ, the agent chart's
 [pre-upgrade/pre-rollback hook]({{< repo "app/cetirun-chart/templates/pre-upgrade-hook.yaml" >}})
-can orphan-delete and recreate a StatefulSet. A changed selector, for example
-after a change of `nameOverride`, stops the upgrade instead: a StatefulSet with
-another selector cannot take over the running Pod. The hook does not migrate
-data or automatically resize a PVC that already exists. After a successful chart
-update, you must examine the mounted storage class, size, and contents.
+can orphan-delete and recreate a StatefulSet that keeps its name. A changed
+selector, for example after a change of `nameOverride`, stops the upgrade
+instead: a StatefulSet with another selector cannot take over the running Pod.
+
+The hook does not protect a rename. Without `fullnameOverride`, a change of
+`nameOverride` can also change the name of the StatefulSet. The hook then
+finds no StatefulSet of the new name. Helm creates one with a new, empty HOME
+claim and deletes the old StatefulSet. With `persistence.retainPolicy: Delete`,
+this also deletes the old HOME claim. Keep the name of the StatefulSet: set
+`fullnameOverride` to the current name before you change `nameOverride`.
+
+The hook does not migrate data or automatically resize a PVC that already
+exists. After a successful chart update, you must examine the mounted storage
+class, size, and contents.
 
 Before you delete an Agent or its namespace, read
 [Delete only with a recovery plan](../agent-lifecycle/#delete-only-with-a-recovery-plan).

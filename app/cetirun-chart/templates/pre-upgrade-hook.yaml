@@ -9,6 +9,9 @@ so Helm can recreate it. Pods keep running as orphans and are re-adopted via lab
 A changed selector stops the hook before it deletes anything: a StatefulSet of the same
 name with another selector can adopt no orphaned Pod, and cannot create a Pod whose name
 an orphan still has.
+The hook finds the StatefulSet by its rendered name. It does not protect a rename: when the
+name changes, for example with nameOverride and no fullnameOverride, it finds none, and Helm
+replaces the old StatefulSet with one that has a new HOME claim.
 Only a missing StatefulSet skips the checks. Any other kubectl error fails the hook, so
 that Helm reports it instead of the immutable-field error of the later patch.
 */}}
@@ -202,8 +205,10 @@ spec:
               if [ -n "$SELECTOR_CHANGED" ]; then
                 echo "The selector of StatefulSet $STS_NAME cannot change: ${SELECTOR_CHANGED}${CHANGED}"
                 echo "A StatefulSet of this name with another selector could not take over the running Pod, nor create its"
-                echo "Pod while the old one keeps the name, so the StatefulSet stays as it is. Set nameOverride back, or delete"
-                echo "the StatefulSet and its Pod before the upgrade; the HOME claim stays."
+                echo "Pod while the old one keeps the name, so the StatefulSet stays as it is. Set nameOverride back. Or,"
+                echo "before the upgrade, delete only the StatefulSet object (kubectl delete statefulset $STS_NAME -n $NS"
+                echo "--cascade=orphan), so that its HOME claim stays also with persistence.retainPolicy Delete. When it is"
+                echo "gone, delete its Pod ${STS_NAME}-0. The new StatefulSet of the same name then mounts the same claim."
                 exit 1
               fi
               if [ -n "$CHANGED" ]; then

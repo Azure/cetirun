@@ -315,6 +315,10 @@ func TestUpgradeHookScript(t *testing.T) {
 		// A StatefulSet with another selector could take over no orphaned Pod.
 		{name: "changed selector", live: map[string]string{upgradeHookSelectorNameQuery: "other"},
 			output: "selector app.kubernetes.io/name: 'other' -> 'cetirun'"},
+		// Its recovery deletes only the StatefulSet object: a normal deletion would take the HOME claim with it
+		// when persistence.retainPolicy is Delete.
+		{name: "changed selector, recovery", live: map[string]string{upgradeHookSelectorNameQuery: "other"},
+			output: "--cascade=orphan), so that its HOME claim stays also with persistence.retainPolicy Delete"},
 		{name: "changed selector and grown volume",
 			live:   map[string]string{upgradeHookInstanceQuery: "other", upgradeHookSizeQuery: "100Gi"},
 			output: "selector app.kubernetes.io/instance: 'other' -> 'cetirun-example'; volumeClaimTemplate size"},
