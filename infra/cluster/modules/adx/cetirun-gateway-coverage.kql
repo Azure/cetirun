@@ -31,11 +31,12 @@
 .alter materialized-view GatewayCoverage policy caching hot = 31d
 
 .create-or-alter function with (folder = "CetiRun", docstring = "The 10-minute intervals from fromTime to toTime without an AI Gateway heartbeat of the cluster. The request log can lack calls of these intervals: a usage of zero is known only for the other intervals.", skipvalidation = "true") GatewayCoverageGaps(cluster:string, fromTime:datetime, toTime:datetime) {
-    let first = bin(fromTime, 10m);
+    let firstInterval = bin(fromTime, 10m);
     let covered = GatewayCoverage
-        | where Cluster == cluster and Interval >= first and Interval < toTime
+        | where Cluster == cluster and Interval >= firstInterval and Interval < toTime
         | distinct Interval;
-    range Interval from first to toTime - 1tick step 10m
+    range Interval from firstInterval to toTime - 1tick step 10m
     | join kind=leftanti covered on Interval
     | project Cluster = cluster, Interval
+    | order by Interval asc
 }
