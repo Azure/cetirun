@@ -31,21 +31,20 @@ stop without repairs or external delivery and record the reason locally.
    only in the configured `platformReadNamespaces`. Include node, scheduling,
    storage, API health, and optional diagnostic APIs when relevant. Judge each
    component from its rollout state, readiness, endpoints, Events, and bounded
-   logs. Before you use a failed request as evidence, check its destination,
-   protocol, and port against the egress rules, as `SKILL.md` describes; an
-   administrator can allow more than the defaults. A failed request that the
-   rules block, such as, with the default settings, a request to the Portal,
-   OAuth2 Proxy, or the public host name (a timeout, a refused or reset
-   connection, or the Istio proxy's `upstream connect error`), did not reach
-   the service and is not evidence. A request that the rules allow, such as DNS
-   to the cluster resolver on port 53 or a request to the AI Gateway, is
-   evidence even when the Pods are Ready: an error answer such as a 503 shows a
-   failure, and no answer before your timeout shows that the destination did
-   not answer. Report a missed answer without naming a cause. When you cannot
-   read the rules, keep the failure, and report its egress classification as
-   unknown. A component that you cannot read is unknown, not healthy. A
-   Deployment without available replicas whose Pod status gives the reason,
-   such as `ImagePullBackOff`, is degraded; list its missing logs separately.
+   logs. Keep every failed request from your Pod, as `SKILL.md` describes: you
+   do not know which egress rules apply to it, and with the default settings
+   they block requests to the Portal, OAuth2 Proxy, and the public host name. A
+   request that got no answer (a timeout, a refused or reset connection, or the
+   Istio proxy's `upstream connect error` or `upstream request timeout`), for
+   example DNS to the cluster resolver on port 53 or a request to the AI
+   Gateway, was either blocked by those rules or not answered by its
+   destination: report it with its destination, and say that its cause is
+   unknown. It does not make a component with Ready Pods, ready endpoints, and
+   clean logs unhealthy, and it does not confirm that the component is healthy.
+   An error answer such as a 503 shows a failure. A component that you cannot
+   read is unknown, not healthy. A Deployment without available replicas whose
+   Pod status gives the reason, such as `ImagePullBackOff`, is degraded; list
+   its missing logs separately.
 
 For example, after resolving the exact variables from current API objects:
 

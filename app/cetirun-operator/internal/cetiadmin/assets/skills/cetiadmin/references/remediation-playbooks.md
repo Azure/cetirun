@@ -286,23 +286,20 @@ route, certificate, and DNS observations. Do not restart, scale, or edit the
 platform, its permissions, or CetiAdmin itself.
 
 Base each component's verdict on its rollout state, ready replicas, endpoints,
-Events, and bounded logs. Before you use a failed request from your own Pod as
-evidence, check its destination, protocol, and port against the egress rules,
-as `SKILL.md` describes; an administrator can allow more than the defaults.
-Discard the failure only when the rules block the request, such as, with the
-default settings, a request to a platform Service other than the AI Gateway
-and Connections MCP, or to the public host name: its connection times out, is
-refused or reset, its TLS handshake fails, or the Istio proxy in your Pod
-answers `upstream connect error or disconnect/reset before headers`. Such a
-failure does not contradict Ready Pods with ready endpoints and clean logs. A
-request that the rules allow is evidence, even when the Pods are Ready. An
-error answer, such as a 503 that an AI Gateway route returns with the AI
-Gateway's own error, shows a failure: report the destination, the status, and
-the start of the body. No answer before your timeout, such as a DNS lookup to
-the cluster resolver on port 53 that times out, or the Istio proxy's `upstream
-request timeout`, shows that the destination did not answer: report the missed
-answer without naming a cause. When you cannot read the rules, keep the
-failure, and report its egress classification as unknown.
+Events, and bounded logs. Keep every failed request from your own Pod, as
+`SKILL.md` describes: you do not know which egress rules apply to it, and with
+the default settings they block requests to platform Services other than the
+AI Gateway and Connections MCP, and to the public host name. A request that got
+no answer, because its connection timed out, was refused or reset, its TLS
+handshake failed, or the Istio proxy in your Pod answered `upstream connect
+error or disconnect/reset before headers` or `upstream request timeout`, was
+either blocked by those rules or not answered by its destination, for example a
+DNS lookup to the cluster resolver on port 53 that times out. Report the missed
+answer and its destination with the component's verdict, and say that its cause
+is unknown. It does not contradict Ready Pods with ready endpoints and clean
+logs, and it does not confirm them. An error answer, such as a 503 that an AI
+Gateway route returns with the AI Gateway's own error, shows a failure: report
+the destination, the status, and the start of the body.
 
 A component is `unknown` when your access is missing: you cannot read its
 Pods, endpoints, or logs. A container that never started has no logs, and that

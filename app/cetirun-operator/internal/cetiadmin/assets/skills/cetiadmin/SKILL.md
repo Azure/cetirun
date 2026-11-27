@@ -59,33 +59,28 @@ address that reaches the ingress Pods, which is blocked too.
 An administrator can change these settings: the AI Gateway can listen on
 another port, the port of its URL, and the policy can allow other internal
 ranges (`allowedInternalCIDRs`). You cannot read the NetworkPolicy in your own
-namespace. The NetworkPolicy of a standard Agent in an Agent namespace has the
-same AI Gateway port and allowed internal ranges, unless that Agent sets its
-own network values. Your own policy blocks every request that such a policy
-blocks, except requests to the Kubernetes API server.
+namespace, and the NetworkPolicy of an Agent does not show the rules of your
+Pod: an Agent can set its own network values, and an Agent whose release was not
+applied again since a change, for example during a Helm maintenance hold, still
+has the rules from before it. So you do not know which egress rules apply to a
+request from your Pod.
 
-Before you use a failed request from your Pod as evidence, read the egress
-rules of a standard Agent that sets no network values of its own, and check the
-destination, protocol, and port of the request against them. Discard the
-failure only when those rules block the request. A request that the rules block
-does not reach the service: its connection times out, is refused or reset, its
-TLS handshake fails, or the Istio proxy in your Pod answers `upstream connect
-error or disconnect/reset before headers`. Such a failure is not evidence of a
-fault in the platform, a route, or the ingress. Judge those components from
-Kubernetes evidence instead: rollout state, readiness, endpoints, Events, and
-bounded logs. When you cannot read such rules, or they do not show that the
-request is blocked, keep the failure: report the missed answer or the error
-answer, and say that its egress classification is unknown. Do not assign a
-cause, and do not ask for more permissions.
+Keep every failed request from your Pod. A request that got no answer, because
+its connection timed out, was refused or reset, its TLS handshake failed, or the
+Istio proxy in your Pod answered `upstream connect error or disconnect/reset
+before headers` or `upstream request timeout`, was either blocked by the egress
+rules of your Pod or not answered by its destination. Report its destination
+and the missed answer, and say that its cause is unknown. Do not assign a
+cause, and do not ask for more permissions. Such a missed answer does not show a
+fault in the platform, a route, or the ingress, and it does not show that they
+are healthy either. Judge those components from Kubernetes evidence instead:
+rollout state, readiness, endpoints, Events, and bounded logs. Report the
+missed answer with that verdict.
 
-A request that the rules allow is evidence, even when the Pods behind it are
-Ready. An error answer shows that the request failed: report the destination,
-the status, and the start of the body, for example a 503 that an AI Gateway
-route returns with the AI Gateway's own body. No answer before your timeout
-shows that the destination did not answer, for example a DNS lookup that times
-out, or the Istio proxy's `upstream request timeout`. Report the missed answer
-and its destination, and do not assign a cause from it. To
-check an endpoint of an ordinary target, use an authorized `kubectl exec` to
+An error answer shows that the request failed, even when the Pods behind it are
+Ready: report the destination, the status, and the start of the body, for
+example a 503 that an AI Gateway route returns with the AI Gateway's own body.
+To check an endpoint of an ordinary target, use an authorized `kubectl exec` to
 its loopback address. Check exec permission with
 `kubectl --context cetiadmin auth can-i create pods --subresource=exec -n <namespace>`.
 The form `create pods/exec` asks about a Pod named `exec`, so it always says no.
