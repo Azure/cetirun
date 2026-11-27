@@ -252,6 +252,10 @@ def gateway(args, environ=None):
 
     The callbacks are registered in this process, so the proxy has to run in
     it: one uvicorn server, as LiteLLM starts by default.
+
+    With the request log, a thread of this process also writes a heartbeat line
+    every five minutes, also while no call comes (cetirun_ai_gateway/request_log.py).
+    It starts last, so that its lines do not fall among the lines printed here.
     """
     environ = os.environ if environ is None else environ
     request_log = environ.get(REQUEST_LOG_ENV, "").strip().lower() == "true"
@@ -293,6 +297,11 @@ def gateway(args, environ=None):
 
     from litellm.proxy.proxy_cli import run_server
 
+    if request_log:
+        from cetirun_ai_gateway.request_log import heartbeat
+
+        print(f"request log heartbeat: one line every {heartbeat.interval} seconds", flush=True)
+        heartbeat.start()
     run_server.main(args=list(args), prog_name="litellm")
 
 

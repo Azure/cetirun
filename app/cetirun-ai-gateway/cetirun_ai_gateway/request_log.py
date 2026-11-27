@@ -34,18 +34,37 @@ The image's entrypoint registers ``handler`` with LiteLLM before the proxy
 loads its configuration, when CETIRUN_REQUEST_LOG is set, rather than listing
 it in litellm_settings.callbacks, which settings saved in LiteLLM's database
 can replace.
+
+A time without request lines can be a time without calls, or a time whose
+lines did not reach the logs. To tell them apart, the entrypoint also starts
+``heartbeat`` with the request log: a heartbeat line every
+HEARTBEAT_INTERVAL_SECONDS, on stdout like the request lines, so that it takes
+their way to the logs. The logs database counts the heartbeats per 5 minutes
+(GatewayCoverage), and GatewayCoverageGaps() names the intervals whose request
+lines can be missing.
 """
 
 import datetime
 import json
 import math
 import sys
+import threading
+import time
 from urllib.parse import urlsplit
 
 from litellm.integrations.custom_logger import CustomLogger
 
 LOG_TYPE = "cetirun.ai_gateway.request"
 SCHEMA_VERSION = 1
+HEARTBEAT_LOG_TYPE = "cetirun.ai_gateway.heartbeat"
+HEARTBEAT_SCHEMA_VERSION = 1
+# The logs database counts the heartbeats per 5 minutes. On a fixed schedule of
+# 5 minutes, a running Pod writes one in each interval.
+HEARTBEAT_INTERVAL_SECONDS = 300
+
+# The request log and the heartbeat write to stdout from different threads.
+# Each line goes out whole, as one write.
+WRITE_LOCK = threading.Lock()
 
 # The container runtime splits a line longer than 16 KiB, and a collector that
 # does not join the pieces again stores each as its own line, none of them
@@ -247,9 +266,7 @@ class RequestLog(CustomLogger):
         payload = kwargs.get("standard_logging_object")
         if not isinstance(payload, dict):
             return
-        stream = self.stream or sys.stdout
-        stream.write(self.line(payload, call_origin(kwargs), fallback(kwargs)) + "\n")
-        stream.flush()
+        write_line(self.stream or sys.stdout, self.line(payload, call_origin(kwargs), fallback(kwargs)))
 
     def record(self, payload, origin=None, fallback_details=None):
         metadata = as_dict(payload.get("metadata"))
@@ -358,4 +375,65 @@ class RequestLog(CustomLogger):
         return dump(shortened(record))
 
 
+def write_line(stream, text):
+    """Writes one line whole, also while another thread writes to the stream."""
+    with WRITE_LOCK:
+        stream.write(text + "\n")
+        stream.flush()
+
+
+def heartbeat_line(now, interval=HEARTBEAT_INTERVAL_SECONDS):
+    """A heartbeat as one line of JSON: the request log was on at this time."""
+    return dump({
+        "log_type": HEARTBEAT_LOG_TYPE,
+        "schema_version": HEARTBEAT_SCHEMA_VERSION,
+        "time": iso_time(now),
+        "interval_seconds": interval,
+    })
+
+
+class Heartbeat:
+    """Writes a heartbeat line when it starts, then on a fixed schedule, from a
+    daemon thread of its own: it writes also while no call comes."""
+
+    def __init__(self, stream=None, interval=HEARTBEAT_INTERVAL_SECONDS, clock=time.time):
+        self.stream = stream
+        self.interval = interval
+        self.clock = clock
+        self.stopped = threading.Event()
+        self.thread = None
+
+    def beat(self):
+        write_line(self.stream or sys.stdout, heartbeat_line(self.clock(), self.interval))
+
+    def run(self):
+        due = time.monotonic()
+        while True:
+            try:
+                self.beat()
+            except (OSError, ValueError):
+                # stdout is closed or broken; the next beat tries again.
+                pass
+            due += self.interval
+            now = time.monotonic()
+            if due < now:
+                # A write took longer than an interval: no burst of late beats.
+                due = now + self.interval
+            if self.stopped.wait(due - now):
+                return
+
+    def start(self):
+        """Starts the thread, once."""
+        if self.thread is None:
+            self.thread = threading.Thread(target=self.run, name="cetirun-request-log-heartbeat", daemon=True)
+            self.thread.start()
+        return self
+
+    def stop(self, timeout=None):
+        self.stopped.set()
+        if self.thread is not None:
+            self.thread.join(timeout)
+
+
 handler = RequestLog()
+heartbeat = Heartbeat()

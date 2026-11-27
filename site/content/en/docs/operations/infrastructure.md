@@ -545,6 +545,14 @@ Copilot routes answered. It keeps `adxGatewayUsageRetentionDays` days, 400 by
 default. This is longer than the request log in its source table. Refer to
 [Query functions](../observability/#query-functions).
 
+The materialized view `GatewayCoverage` counts the heartbeats of the AI Gateway
+in intervals of 5 minutes, for the same number of days. It shows the times
+when the request log reached the database. The function
+`GatewayCoverageGaps()` lists the intervals whose request lines can be
+missing. These include the intervals whose lines the logs database no longer
+holds, for example after `adxLogsRetentionDays`. Refer to
+[Query functions](../observability/#query-functions).
+
 The view counts the calls from its creation. Kusto fills a new view with the
 earlier rows of its table (backfill) only while these rows are in the hot
 cache. The rows of a `Gateway` table older than the hot cache period are not,
