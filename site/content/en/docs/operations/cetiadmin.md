@@ -81,6 +81,14 @@ example the target Pod and the fields that CetiAdmin can change. They do not
 check reads. CetiAdmin gets no write access to itself, to the platform
 components, to the credential stores, or to a retained migration source.
 
+CetiAdmin can create an Agent only for an owner whom the platform already
+knows. A live Agent of that owner must have both owner annotations,
+`agentidentity.cetirun.microsoft.com/owner-tenant-id` and
+`agentidentity.cetirun.microsoft.com/owner-object-id`. The new Agent copies
+these annotations, the alias, and the email of that Agent. It also needs a
+Team other than the CetiAdmin Team. The Portal records the owner annotations
+when it creates an Agent for a verified owner. Older Agents can lack them.
+
 As a result, CetiAdmin can read these Secrets of each standard Agent:
 
 - The AI Gateway key (`ai-gateway-virtual-key`)
