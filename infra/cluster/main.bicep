@@ -161,7 +161,7 @@ param adxGatewayUsageRetentionDays int = 400
 @description('Create the managed identity of the ADX-Mon alerter, with the Viewer role on the logs and metrics databases. Needs adxMode create or existing.')
 param adxAlerter bool = false
 
-@description('Create the managed identity with which the Portal reads the AI Gateway usage, with the Viewer role on the logs database. Only with adxMode create, and only while no other CetiRun cluster writes to the logs database: Kusto grants a role on a whole database. Before another installation uses the database, remove the role; setting this to false does not remove it.')
+@description('Create the managed identity with which the Portal reads the AI Gateway usage, with the Viewer role on the logs database. Only with adxMode create, and only while the logs database holds the data of this CetiRun cluster alone: Kusto grants a role on a whole database. Before another installation uses the database, remove the role; setting this to false does not remove it.')
 param adxPortalUsage bool = false
 
 @description('Send the Kubernetes audit events of the AKS API server, except get and list, to the database CetiRunAudit through an Event Hub. Needs adxMode create, or an existing Kusto cluster with a system-assigned identity.')

@@ -66,6 +66,14 @@ func TestCheckTurnsTheReportOffForRowsOfAnotherCluster(t *testing.T) {
 	if !strings.HasPrefix(querier.queries[0], "declare query_parameters(cluster: string);") || strings.Contains(querier.queries[0], `"sm"`) {
 		t.Fatalf("the cluster is not a query parameter: %q", querier.queries[0])
 	}
+	// The daily usage views keep the rows of another cluster longer than the
+	// Gateway table, so the check reads them too, and leaves out a missing one.
+	for _, source := range []string{"union isfuzzy=true", "(Gateway | where Cluster != cluster | take 1",
+		"(GatewayDailyUsage | where Cluster != cluster | take 1", "(GatewayDailyUsageV2 | where Cluster != cluster | take 1"} {
+		if !strings.Contains(querier.queries[0], source) {
+			t.Fatalf("the check lacks %q: %q", source, querier.queries[0])
+		}
+	}
 }
 
 func TestCheckIsReadyForTheRowsOfOneCluster(t *testing.T) {

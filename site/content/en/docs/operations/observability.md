@@ -396,8 +396,8 @@ Also watch these signals of the platform:
 - For the Portal's usage report, a user-assigned managed identity with a
   federated credential for
   `system:serviceaccount:<platform namespace>:cetirun-portal`, and the
-  `Viewer` role on the logs database. No other CetiRun cluster may write to
-  that database while the identity has the role. Refer to
+  `Viewer` role on the logs database. While the identity has the role, the
+  database holds the data of this CetiRun cluster alone. Refer to
   [The Portal's usage identity](#the-portals-usage-identity).
 - Outbound HTTPS from the platform namespace to the Kusto cluster, its
   `ingest-` endpoint, the Azure Storage endpoints of ADX ingestion, and Entra
@@ -484,12 +484,19 @@ and the `Viewer` role on the logs database. With `adxMode: create` and
 Kusto grants a role on a whole database, not on the rows of one cluster. With
 the `Viewer` role, the identity can read every table of the logs database.
 These tables include the platform logs, the ingress access log, and the
-inventory. So the role has a prerequisite: no other CetiRun cluster writes to
-the logs database while the identity has the role. `adxMode: create` makes the
-databases for this cluster, but another installation can still use them, for
-example with `adxMode: existing`.
+inventory.
 
-Before another CetiRun cluster writes to the logs database, do these steps:
+So the role has a prerequisite: the logs database holds the data of this
+CetiRun cluster alone. No other cluster writes to it while the identity has the
+role. It also keeps no data that another cluster wrote earlier. The daily usage
+views keep their rows for 400 days by default, longer than the request lines.
+`adxMode: create` makes new databases for this cluster, but another
+installation can still use them, for example with `adxMode: existing`. If you
+do not know the history of a logs database, use a new one for this cluster.
+
+Before another CetiRun cluster writes to the logs database, do these steps.
+`<logs-database>` is the database of `observability.adx.databases.logs`, by
+default `CetiRunLogs`.
 
 1. Remove the `portal` block from the environment file, and run
    `make deploy`. The Portal stops reading the usage.
@@ -500,14 +507,24 @@ Before another CetiRun cluster writes to the logs database, do these steps:
    database, run:
 
    ```kusto
-   .drop database CetiRunLogs viewers ('aadapp=<portal-usage-client-id>;<tenant-id>')
+   .drop database <logs-database> viewers ('aadapp=<portal-usage-client-id>;<tenant-id>')
+   ```
+
+4. Make sure that the identity has no role on the logs database. This command
+   returns no rows:
+
+   ```kusto
+   .show database <logs-database> principals
+   | where PrincipalFQN startswith "aadapp=<portal-usage-client-id>"
    ```
 
 You can also delete the identity `<clusterName>-portal-usage`.
 
 When the Portal starts, it looks for AI Gateway rows of another cluster in the
-logs database. If it finds one, it turns the usage report off. This check finds
-a configuration error. It does not limit the identity.
+logs database. It reads the `Gateway` table and the daily usage views. If it
+finds such a row, it turns the usage report off. This check finds a
+configuration error. It does not limit the identity, and it does not remove
+the role.
 
 If the Portal cannot read the database, for example before the role exists, it
 checks again after 30 seconds. It then doubles the wait, up to 10 minutes. The
