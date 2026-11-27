@@ -235,10 +235,12 @@ A time without rows of `GatewayRequests()` can be a time without calls. It can
 also be a time whose request lines did not reach the database, for example
 because the collection stopped. With the request log, each AI Gateway Pod
 writes a heartbeat line every 5 minutes. The heartbeats take the same way as
-the request lines. `GatewayCoverage` counts them in intervals of 5 minutes, so
-a Pod has one heartbeat in each interval. It also counts the request lines, at
-the completion time of each call like `GatewayRequests()`. It keeps the time
-when the first line of each row arrived.
+the request lines.
+
+`GatewayCoverage` counts the heartbeats in intervals of 5 minutes, so a Pod
+has one heartbeat in each interval. It also counts the request lines, at the
+completion time of each call like `GatewayRequests()`. It keeps the time when
+the first line of each row arrived.
 
 The heartbeats sample the collection. `GatewayCoverageGaps()` lists the
 intervals of a period whose request lines can be missing, with one of these
@@ -538,11 +540,17 @@ installation can still use them, for example with `adxMode: existing`. If you
 do not know the history of a logs database, use a new one for this cluster.
 
 A role stays with an identity when the Portal changes to another identity. To
-change the identity, give the new identity its federated credential and the
-`Viewer` role. Then set its client ID in the `portal` block, and run
-`make deploy`. The Portal Pods restart with the new identity. Then remove the
-role of the old identity with the commands of steps 3 and 4 below, with the
-old client ID.
+change the identity, do these steps:
+
+1. Give the new identity its federated credential and the `Viewer` role.
+2. Set its client ID in the `portal` block, and run `make deploy`. The Portal
+   Pods restart with the new identity.
+3. If the cluster template created the old identity, set `adxPortalUsage` to
+   `false` in the saved parameters of the cluster template. Otherwise, its next
+   deployment gives the old identity the role again.
+4. Remove the role of the old identity, and make sure that it has no role left.
+   Use the `.drop` and `.show` commands of the next steps, with the old client
+   ID.
 
 Before another CetiRun cluster writes to the logs database, do these steps.
 `<logs-database>` is the database of `observability.adx.databases.logs`, by

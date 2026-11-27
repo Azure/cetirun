@@ -754,7 +754,11 @@ database holds the data of this CetiRun cluster alone. No other cluster writes
 to it, and it keeps no data of another cluster. Another installation can still
 use the databases of `adxMode: create`, for example with `adxMode: existing`.
 Before it does, remove the role of every identity that the Portal used: setting
-`adxPortalUsage` to `false` does not remove it. Refer to
+`adxPortalUsage` to `false` does not remove it.
+
+When the Portal changes from this identity to another one, also set
+`adxPortalUsage` to `false` in the saved parameters. Otherwise, the next
+deployment gives this identity the role again. Refer to
 [The Portal's usage identity](../observability/#the-portals-usage-identity).
 
 The default SKU, `Dev(No SLA)_Standard_E2a_v4`, has one engine node and no SLA.
