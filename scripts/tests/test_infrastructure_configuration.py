@@ -558,6 +558,37 @@ class PublishedInfrastructureRenderTests(unittest.TestCase):
             self.assertEqual(roots["portal"].name, "cetirun-portal")
             self.assertIn("portal", DEPLOY.deployment_charts(config))
 
+    def test_portal_usage_needs_the_portal_of_the_platform_release(self):
+        # Synthetic inputs: a public example domain and synthetic client IDs.
+        collection = {"clusterName": "example", "adx": {"endpoint": "https://example.australiaeast.kusto.windows.net"},
+                      "ingestorClientId": "55555555-5555-5555-5555-555555555555"}
+        usage = {**collection, "portal": {"clientId": "99999999-9999-9999-9999-999999999999"}}
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            source = self.source_fixture(scratch)
+            bundled = copy.deepcopy(source)
+            # The block would set the usage values of the platform release's Portal, which the standalone release
+            # turns off, and the active Portal would never read the usage.
+            source["observability"] = usage
+            with self.assertRaisesRegex(ValueError, r"observability\.portal .*standalone Portal release"):
+                DEPLOY.infrastructure_configuration(source, self.lock, scratch / "compile")
+            source["observability"] = collection
+            _, values, _ = DEPLOY.infrastructure_configuration(source, self.lock, scratch / "compile-collection")
+            self.assertTrue(values["platform"]["cetirun-observability"]["enabled"])
+            self.assertFalse(values["portal"]["usage"]["enabled"])
+            # With the Portal of the platform release, the block sets its usage values.
+            bundled.pop("portal")
+            bundled["platform"]["values"]["cetirun-portal"]["enabled"] = True
+            bundled["broker"]["values"]["portal"] = {
+                "namespace": bundled["platform"]["namespace"],
+                "serviceAccount": bundled["platform"]["values"]["cetirun-portal"]["serviceAccount"]["name"]}
+            bundled["observability"] = usage
+            _, values, _ = DEPLOY.infrastructure_configuration(bundled, self.lock, scratch / "compile-bundled")
+            self.assertEqual(values["platform"]["cetirun-portal"]["usage"],
+                             {"enabled": True, "clusterName": "example",
+                              "adx": {"endpoint": "https://example.australiaeast.kusto.windows.net",
+                                      "database": "CetiRunLogs", "clientId": "99999999-9999-9999-9999-999999999999"}})
+
     def test_real_helm_render_pins_control_plane_and_standalone_portal(self):
         with tempfile.TemporaryDirectory() as temporary:
             scratch = Path(temporary)

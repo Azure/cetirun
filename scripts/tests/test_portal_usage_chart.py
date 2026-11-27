@@ -49,7 +49,9 @@ class PortalUsageChartTests(unittest.TestCase):
     def test_off_by_default_without_an_identity(self):
         objects = self.render({})
         self.assertEqual(self.usage_env(objects), {})
-        self.assertNotIn("azure.workload.identity/use", self.find(objects, "Deployment")["spec"]["template"]["metadata"]["labels"])
+        pod = self.find(objects, "Deployment")["spec"]["template"]["metadata"]
+        self.assertNotIn("azure.workload.identity/use", pod["labels"])
+        self.assertFalse(pod.get("annotations"))
         self.assertNotIn("annotations", self.find(objects, "ServiceAccount")["metadata"])
 
     def test_enabled_names_the_identity_and_the_logs_database(self):
@@ -62,6 +64,11 @@ class PortalUsageChartTests(unittest.TestCase):
         })
         pod = self.find(objects, "Deployment")["spec"]["template"]["metadata"]
         self.assertEqual(pod["labels"]["azure.workload.identity/use"], "true")
+        # The webhook sets the client ID when it creates a Pod: another client ID rolls the Pods.
+        self.assertEqual(pod["annotations"], {"cetirun.microsoft.com/usage-client-id": "99999999-9999-9999-9999-999999999999"})
+        changed = self.render({"usage": {**USAGE, "adx": {**USAGE["adx"], "clientId": "88888888-8888-8888-8888-888888888888"}}})
+        self.assertEqual(self.find(changed, "Deployment")["spec"]["template"]["metadata"]["annotations"],
+                         {"cetirun.microsoft.com/usage-client-id": "88888888-8888-8888-8888-888888888888"})
         self.assertEqual(self.find(objects, "ServiceAccount")["metadata"]["annotations"], {
             "example.com/owner": "platform", "azure.workload.identity/client-id": "99999999-9999-9999-9999-999999999999"})
         # The selector stays as it is: an upgrade can turn the report on in place.

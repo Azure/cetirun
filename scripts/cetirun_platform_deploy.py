@@ -887,6 +887,10 @@ def infrastructure_configuration(path, artifacts, scratch):
             if platform[OBSERVABILITY]["enabled"]:
                 raise ValueError("observability.enabled conflicts with platform values")
         else:
+            if "portal" in values and isinstance(observation, dict) and "portal" in observation:
+                raise ValueError("observability.portal sets the usage values of the platform release's Portal, which the "
+                                 "standalone Portal release replaces. Set usage under portal.values, with an identity "
+                                 "whose federated credential names that release's namespace and service account")
             for field, value in observability(config, observability_defaults=yaml_file(roots[OBSERVABILITY] / "values.yaml"),
                                               gateway_defaults=yaml_file(roots["cetirun-ai-gateway"] / "values.yaml")).items():
                 set_value(platform, field, value)

@@ -65,6 +65,11 @@ spec:
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+        {{- if $usageEnabled }}
+        {{- /* The webhook sets AZURE_CLIENT_ID when it creates a Pod: another
+        client ID needs new Pods. */}}
+        cetirun.microsoft.com/usage-client-id: {{ .Values.usage.adx.clientId | quote }}
+        {{- end }}
       labels:
         {{- include "cetirun-portal.selectorLabels" . | nindent 8 }}
         {{- if $usageEnabled }}

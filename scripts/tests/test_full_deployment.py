@@ -1949,6 +1949,7 @@ class ObservabilityTests(DeploymentFixture, unittest.TestCase):
         portal = next(doc for doc in documents if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "cetirun-portal")
         template = portal["spec"]["template"]
         self.assertEqual(template["metadata"]["labels"]["azure.workload.identity/use"], "true")
+        self.assertEqual(template["metadata"]["annotations"]["cetirun.microsoft.com/usage-client-id"], PORTAL["clientId"])
         env = {item["name"]: item.get("value") for item in template["spec"]["containers"][0]["env"]}
         self.assertEqual({name: value for name, value in env.items() if name.startswith("USAGE_")}, {
             "USAGE_ENABLED": "true", "USAGE_ADX_ENDPOINT": OBSERVABILITY["adx"]["endpoint"],
