@@ -7,6 +7,9 @@ import (
 	"strconv"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 )
 
@@ -33,6 +36,11 @@ const (
 	// AIGatewayKeyBlocked means the key is blocked outside CetiRun, for
 	// example in the AI Gateway console.
 	AIGatewayKeyBlocked = "blocked"
+	// AIGatewayKeyRecoveryRequired means the AI Gateway no longer has the
+	// record of the key that the operator issued, so it refuses the key. The
+	// operator keeps the last spend, but neither a budget reset nor a later
+	// check restores the key: an administrator must recover it.
+	AIGatewayKeyRecoveryRequired = "recoveryRequired"
 )
 
 // The operator's AI Gateway reasons that explain a blocked key, as its
@@ -42,6 +50,10 @@ const (
 	aiGatewayReasonNoModelEntitlement = "NoModelEntitlement"
 	aiGatewayReasonPolicyReprojection = "PolicyReprojection"
 	aiGatewayReasonKeyBlocked         = "KeyBlocked"
+	// aiGatewayReasonKeyRecordLost is the reason of AIGatewayReady when the AI
+	// Gateway lost the record of an issued key. The status keeps the reason of
+	// an earlier block by the operator, so the condition names the loss.
+	aiGatewayReasonKeyRecordLost = "KeyRecordLost"
 )
 
 // AIGatewayBudgetResponse is the current period of an Agent key's budget, as
@@ -92,6 +104,10 @@ func aiGatewayKeyState(instance *cetirunv1alpha1.Agent, status *cetirunv1alpha1.
 	operatorBlock := status.Reason == aiGatewayReasonSuspended || status.Reason == aiGatewayReasonNoModelEntitlement ||
 		status.Reason == aiGatewayReasonPolicyReprojection
 	switch {
+	// Without its record, the AI Gateway refuses the key whatever its spend,
+	// and no budget reset brings the record back.
+	case aiGatewayKeyRecordLost(instance, status):
+		return AIGatewayKeyRecoveryRequired
 	case status.Reason == aiGatewayReasonKeyBlocked:
 		return AIGatewayKeyBlocked
 	// Without a model grant and without an issued key, the Agent has no
@@ -115,6 +131,16 @@ func aiGatewayKeyState(instance *cetirunv1alpha1.Agent, status *cetirunv1alpha1.
 		return AIGatewayKeyBudgetReached
 	}
 	return AIGatewayKeyActive
+}
+
+// aiGatewayKeyRecordLost reports whether the operator found that the AI
+// Gateway lost the record of the key that it issued.
+func aiGatewayKeyRecordLost(instance *cetirunv1alpha1.Agent, status *cetirunv1alpha1.AIGatewayStatus) bool {
+	if status.Reason == aiGatewayReasonKeyRecordLost {
+		return true
+	}
+	ready := meta.FindStatusCondition(instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady)
+	return ready != nil && ready.Status == metav1.ConditionFalse && ready.Reason == aiGatewayReasonKeyRecordLost
 }
 
 // budgetReached reports whether the spend reached the budget: the AI Gateway

@@ -160,6 +160,7 @@ When the AI Gateway refuses the calls of the key, the section shows why:
 | **No model access** | The Agent Policy of the Team grants the Agent no model. |
 | **Block pending** | CetiRun is blocking the key, for a suspension or an Agent Policy change. Until the AI Gateway confirms the block, it can still accept the calls of the key. |
 | **Blocked by an administrator** | An administrator blocked the key in the AI Gateway console. |
+| **Key recovery required** | The AI Gateway lost the record of the key. A budget reset does not restore it: a platform administrator must recover the key. |
 
 The section shows only the budget of the key. A platform administrator can
 also set a budget on the AI Gateway team of a Team in the console. When that

@@ -89,6 +89,11 @@ const KEY_STATES: Record<Exclude<AIGatewayKeyState, "active">, KeyStateText> = {
     tone: "danger",
     description: "An administrator blocked the Agent's key in the AI Gateway, which refuses its model calls.",
   },
+  recoveryRequired: {
+    label: "Key recovery required",
+    tone: "danger",
+    description: "The AI Gateway lost the record of the Agent's key and refuses its model calls. A budget reset does not restore the key: an administrator must recover it.",
+  },
 };
 
 /** The label of a refused key; undefined for an active key or a state this Portal does not know. */

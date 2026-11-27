@@ -132,8 +132,12 @@ Gateway. The operator reads them about every ten minutes.
 The Portal also shows why the AI Gateway refuses a key: **Budget reached**,
 **Suspended**, **No model access**, or **Blocked by an administrator**. While
 the operator blocks a key, until the AI Gateway confirms the block, the Portal
-shows **Block pending**. It does not calculate a remaining amount, and it does
-not show the history of the spend or the budget of an AI Gateway team.
+shows **Block pending**. When the AI Gateway lost the record of the key, the
+Portal shows **Key recovery required** with the last spend that the operator
+read. Refer to
+[Recover a missing key record](../ai-gateway/#recover-a-missing-key-record).
+The Portal does not calculate a remaining amount. It does not show the history
+of the spend or the budget of an AI Gateway team.
 
 The AI Gateway console shows the spend and the budget of each key, user, and
 team. Refer to

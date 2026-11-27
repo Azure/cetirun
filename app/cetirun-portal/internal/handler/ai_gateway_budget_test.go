@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -29,6 +30,14 @@ func budgetAgent() *cetirunv1alpha1.Agent {
 	agent.Status.AIGateway.BudgetResetAt = &reset
 	agent.Status.AIGateway.LastVerifiedTime = &checked
 	return agent
+}
+
+// keyRecordLost sets the condition with which the operator reports that the AI
+// Gateway lost the record of the Agent's key.
+func keyRecordLost(agent *cetirunv1alpha1.Agent) {
+	meta.SetStatusCondition(&agent.Status.Conditions, metav1.Condition{
+		Type: cetirunv1alpha1.ConditionAIGatewayReady, Status: metav1.ConditionFalse, Reason: aiGatewayReasonKeyRecordLost,
+		Message: "the previously issued virtual key record is missing from the AI Gateway"})
 }
 
 func TestAIGatewayBudgetReportsTheGatewaysNumbers(t *testing.T) {
@@ -108,6 +117,35 @@ func TestAIGatewayKeyStateNamesWhyTheGatewayRefusesTheKey(t *testing.T) {
 			a.Status.AIGateway.Reason = aiGatewayReasonKeyBlocked
 		}, AIGatewayKeyBlocked},
 		{"blocked for another reason", func(a *cetirunv1alpha1.Agent) { a.Status.AIGateway.Blocked = true }, AIGatewayKeyBlocked},
+		// Without its record, the AI Gateway refuses the key whatever its
+		// spend, and no budget reset restores it.
+		{"key record lost", func(a *cetirunv1alpha1.Agent) {
+			a.Status.AIGateway.Reason = aiGatewayReasonKeyRecordLost
+			keyRecordLost(a)
+		}, AIGatewayKeyRecoveryRequired},
+		{"key record lost over the budget", func(a *cetirunv1alpha1.Agent) {
+			a.Status.AIGateway.Reason, a.Status.AIGateway.SpendUSD = aiGatewayReasonKeyRecordLost, "60"
+		}, AIGatewayKeyRecoveryRequired},
+		// The operator keeps the reason of its own block in the status, and
+		// the condition names the loss.
+		{"key record lost while suspended", func(a *cetirunv1alpha1.Agent) {
+			a.Spec.Suspended = true
+			a.Status.AIGateway.Blocked, a.Status.AIGateway.Reason = true, aiGatewayReasonSuspended
+			keyRecordLost(a)
+		}, AIGatewayKeyRecoveryRequired},
+		{"key record lost before a block", func(a *cetirunv1alpha1.Agent) {
+			a.Status.AIGateway.Reason = aiGatewayReasonNoModelEntitlement
+			keyRecordLost(a)
+		}, AIGatewayKeyRecoveryRequired},
+		{"another AI Gateway failure", func(a *cetirunv1alpha1.Agent) {
+			meta.SetStatusCondition(&a.Status.Conditions, metav1.Condition{
+				Type: cetirunv1alpha1.ConditionAIGatewayReady, Status: metav1.ConditionFalse, Reason: "GatewayUnavailable"})
+		}, AIGatewayKeyActive},
+		{"key record restored", func(a *cetirunv1alpha1.Agent) {
+			keyRecordLost(a)
+			meta.SetStatusCondition(&a.Status.Conditions, metav1.Condition{
+				Type: cetirunv1alpha1.ConditionAIGatewayReady, Status: metav1.ConditionTrue, Reason: "KeyReady"})
+		}, AIGatewayKeyActive},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			agent := budgetAgent()

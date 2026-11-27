@@ -159,8 +159,10 @@ budget, platform administrators refer to
   model.
 - **Blocked by an administrator**: an administrator blocked the key of the
   Agent.
+- **Key recovery required**: the AI Gateway lost the record of the key of the
+  Agent. A budget reset does not restore it.
 
-In both cases, ask your administrator. Refer to
+In these cases, ask your administrator. Refer to
 [Spend and budget](../models/#spend-and-budget).
 
 If the Agent Policy of your Team sets request limits, the **Models** section
