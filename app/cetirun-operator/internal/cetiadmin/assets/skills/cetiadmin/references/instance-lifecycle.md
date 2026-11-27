@@ -220,7 +220,8 @@ The file contains no credential values:
     "timezone": "UTC",
     "deliver": "local",
     "slackChannel": "",
-    "slackSecretName": ""
+    "slackSecretName": "",
+    "model": ""
   }
 }
 ```
@@ -230,7 +231,10 @@ or cron schedule is required when enabled; one-shot schedules are not monitor
 jobs. Empty Slack fields can be omitted for local delivery. Disabled monitoring
 can omit schedule and Slack fields. Slack requires an explicit channel ID,
 a same-instance Secret reference, and injected `SLACK_BOT_TOKEN` plus
-`SLACK_APP_TOKEN`. The helper checks presence, not live authorization.
+`SLACK_APP_TOKEN`. The helper checks presence, not live authorization. A model
+name in `model` sets the model of the native job. Without it, the job keeps its
+own model: none, which is CetiAdmin's default model, or one that its owner chose.
+A model that `model` set earlier is removed.
 
 The runtime must stop startup on a nonzero exit. On success it must export the
 returned validated `timezone` as `HERMES_TIMEZONE` before starting the scheduler.

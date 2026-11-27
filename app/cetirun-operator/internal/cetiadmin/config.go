@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"k8s.io/apimachinery/pkg/util/validation"
 )
@@ -92,6 +93,9 @@ type Monitor struct {
 	Deliver         string `json:"deliver"`
 	SlackChannel    string `json:"slackChannel,omitempty"`
 	SlackSecretName string `json:"slackSecretName,omitempty"`
+	// Model of the scheduled runs. Empty leaves the job on model.default, or on
+	// a model that the owner chose for it.
+	Model string `json:"model,omitempty"`
 }
 
 func DefaultConfig() Config {
@@ -223,6 +227,9 @@ func (m Monitor) validate() error {
 	}
 	if _, err := time.LoadLocation(m.Timezone); err != nil || m.Timezone == "" || m.Timezone == "Local" {
 		return fmt.Errorf("monitor.timezone must be an IANA timezone")
+	}
+	if len(m.Model) > 256 || strings.IndexFunc(m.Model, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+		return fmt.Errorf("monitor.model must name a model, or be empty for model.default")
 	}
 	if !m.Enabled {
 		return nil

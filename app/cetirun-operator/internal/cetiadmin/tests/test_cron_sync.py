@@ -490,6 +490,46 @@ class CronSyncCLITest(unittest.TestCase):
                 self.config["monitor"] = previous
         self.assertEqual(self.calls("create"), [])
 
+    def test_monitor_model_is_the_model_of_the_job_and_changes_in_place(self):
+        # Without a model the job runs on the main model. A model pins the job to it, a change of the model edits
+        # the same job, and removing it removes the model that it set.
+        first = self.run_cli()
+        self.assertIsNone(self.jobs()[0]["model"])
+        self.config["monitor"]["model"] = "gpt-6-sol"
+        second = self.run_cli()
+        self.assertEqual((second["status"], second["jobId"]), ("updated", first["jobId"]))
+        self.assertEqual(self.jobs()[0]["model"], "gpt-6-sol")
+        self.assertIn("model", self.calls("update")[-1]["fields"])
+        self.assertEqual(self.run_cli()["status"], "unchanged")
+        del self.config["monitor"]["model"]
+        self.assertEqual(self.run_cli()["status"], "updated")
+        self.assertIsNone(self.jobs()[0]["model"])
+        self.assertEqual(len(self.calls("create")), 1)
+
+    def test_monitor_model_keeps_a_model_that_the_owner_chose(self):
+        # Without monitor.model, a model that the owner chose for the job stays, as before the field existed.
+        self.run_cli()
+        self.change_job(model="owner-model")
+        self.assertEqual(self.run_cli()["status"], "unchanged")
+        self.assertEqual(self.jobs()[0]["model"], "owner-model")
+        # The installation input wins while it is set.
+        self.config["monitor"]["model"] = "gpt-6-sol"
+        self.run_cli()
+        self.assertEqual(self.jobs()[0]["model"], "gpt-6-sol")
+        # A later choice of the owner is not the model that monitor.model set, so it stays when the field goes.
+        self.change_job(model="owner-model")
+        del self.config["monitor"]["model"]
+        self.assertEqual(self.run_cli()["status"], "updated")
+        self.assertNotIn("model", self.calls("update")[-1]["fields"])
+        self.assertEqual(self.jobs()[0]["model"], "owner-model")
+
+    def test_monitor_model_names_one_model(self):
+        for model in ("gpt 6", " gpt-6", "gpt-6\t", "a" * 257, 6):
+            with self.subTest(model=model):
+                self.config["monitor"]["model"] = model
+                self.assertEqual(self.run_cli(success=False)["code"], "invalid_config")
+        self.assertEqual(self.calls("create"), [])
+
     def test_native_stdout_and_stderr_are_not_forwarded(self):
         self.run_cli(fault="noisy")
         self.assertEqual(self.run_cli(fault="list_failure", success=False)["code"], "native_error")

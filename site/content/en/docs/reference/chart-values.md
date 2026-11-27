@@ -435,6 +435,7 @@ Source: [app/cetirun-operator/chart/values.yaml]({{< repo "app/cetirun-operator/
 | `cetiadmin.monitor.deliver` | `"local"` |  |
 | `cetiadmin.monitor.slackChannel` | `""` |  |
 | `cetiadmin.monitor.slackSecretName` | `""` |  |
+| `cetiadmin.monitor.model` | `""` |  |
 | `cetiadmin.retainedAgentUID` | `""` |  |
 | `cetiadmin.hookTimeoutSeconds` | `600` |  |
 | `leaderElection` | `true` | Enable leader election (recommended for production with replicaCount > 1). |

@@ -313,6 +313,19 @@ class CetiAdminChartTests(unittest.TestCase):
         refresh_json(values)
         self.rejected(values)
 
+    def test_monitor_model_is_delivered_with_the_runtime_json(self):
+        values = prepared_values()
+        values["cetiadmin"]["monitor"].update(enabled=True, schedule="every 6h", model="gpt-6-sol")
+        refresh_json(values)
+        config = next(item for item in objects(self.rendered(values)) if item["kind"] == "ConfigMap")["data"]
+        self.assertEqual(json.loads(config["cetiadmin-runtime.json"])["monitor"]["model"], "gpt-6-sol")
+        for model in ("gpt 6", "gpt\t6", "a" * 257, 6):
+            with self.subTest(model=model):
+                values = prepared_values()
+                values["cetiadmin"]["monitor"]["model"] = model
+                refresh_json(values)
+                self.rejected(values)
+
     def test_json_binding_drift_and_login_plugins_are_rejected(self):
         for section, name, value in (("instance", "uid", "other-uid"), ("instance", "name", "other-agent"),
                                      ("instance", "namespace", "another-namespace"), ("monitor", "timezone", "UTC-stale")):

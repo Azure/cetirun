@@ -412,6 +412,7 @@ class CetiAdminOperatorChartTests(unittest.TestCase):
             ({"azureWorkloadIdentity": {"enabled": True}}, "clientId"),
             ({"monitor": {"enabled": True, "deliver": "slack"}}, "slackChannel"),
             ({"monitor": {"deliver": "teams"}}, "deliver"), ({"teams": {"enabled": True}}, "unsupported"),
+            ({"monitor": {"model": "gpt 6"}}, "monitor.model"), ({"monitor": {"model": 6}}, "monitor.model"),
             ({"assets": {"image": "other:1"}}, "unsupported"),
             ({"runtime": {"version": "0.0.1"}}, "runtime.version"),
             ({"runtime": {"port": 18789}}, "runtime.port"),
@@ -446,6 +447,13 @@ class CetiAdminOperatorChartTests(unittest.TestCase):
             self.assertEqual(config[name], inputs["cetiadmin"][name])
         result = self.helm(inputs, lint=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_monitor_model_reaches_the_operator_only_when_set(self):
+        # Without a model the configuration, and so its hash, stays as before.
+        self.assertNotIn("model", self.config(self.render(self.values()))["monitor"])
+        inputs = self.values()
+        inputs["cetiadmin"]["monitor"] = {"enabled": True, "schedule": "every 6h", "model": "gpt-6-sol"}
+        self.assertEqual(self.config(self.render(inputs))["monitor"]["model"], "gpt-6-sol")
 
     def test_umbrella_uses_the_same_source_defaults_and_hook_contract(self):
         with tempfile.TemporaryDirectory(prefix="cetiadmin-umbrella-") as directory:

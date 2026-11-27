@@ -120,6 +120,10 @@ cetiadmin:
     deliver: local
     slackChannel: ""
     slackSecretName: ""
+    # The model of the scheduled runs, for example a fixed mid-tier model of the AI Gateway that CetiAdmin's key
+    # may use. Empty leaves the job on model.default, or on a model that the owner chose for it; with the auto
+    # router, the long monitor prompt reaches its most expensive tier.
+    model: ""
   retainedAgentUID: ""
   # Hook wait budget. Helm's own --timeout must also allow this duration.
   hookTimeoutSeconds: 600

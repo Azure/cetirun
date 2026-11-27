@@ -32,8 +32,10 @@ DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 UID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 SLACK_CHANNEL = re.compile(r"[CG][A-Z0-9]{8,31}")
 MAX_JSON_BYTES = 65536
-MONITOR_FIELDS = {"enabled", "schedule", "timezone", "deliver", "slackChannel", "slackSecretName"}
+MONITOR_FIELDS = {"enabled", "schedule", "timezone", "deliver", "slackChannel", "slackSecretName", "model"}
 BINDING_FIELDS = {"version", "instance", "hermesHome", "phase", "jobId", "timezone"}
+# The heading of the input that each synchronization binds into the end of the job's prompt.
+BOUND_INPUT = "\n\n## Bound monitor input\n\n```json\n"
 
 
 class SyncError(Exception):
@@ -81,7 +83,7 @@ def read_config(path):
     if (not isinstance(monitor, dict) or set(monitor) - MONITOR_FIELDS
             or not {"enabled", "timezone", "deliver"}.issubset(monitor)):
         raise SyncError("invalid_config")
-    for key in ("schedule", "slackChannel", "slackSecretName"):
+    for key in ("schedule", "slackChannel", "slackSecretName", "model"):
         monitor.setdefault(key, "")
     if not isinstance(monitor["enabled"], bool):
         raise SyncError("invalid_config")
@@ -91,6 +93,8 @@ def read_config(path):
             raise SyncError("invalid_config")
         if any(ord(char) < 32 for char in text):
             raise SyncError("invalid_config")
+    if any(char.isspace() for char in monitor["model"]):
+        raise SyncError("invalid_config")
     if ((monitor["enabled"] and not monitor["schedule"])
             or monitor["deliver"] not in {"local", "slack"}):
         raise SyncError("invalid_config")
@@ -258,11 +262,30 @@ def desired_job(config, state_dir):
     if not prompt:
         raise SyncError("missing_prompt")
     context = {**config, "stateDirectory": str(state_dir)}
-    prompt += "\n\n## Bound monitor input\n\n```json\n" + json.dumps(context, sort_keys=True) + "\n```"
+    prompt += BOUND_INPUT + json.dumps(context, sort_keys=True) + "\n```"
     monitor = config["monitor"]
     deliver = "slack:" + monitor["slackChannel"] if monitor["deliver"] == "slack" else "local"
-    return {"name": JOB_NAME, "prompt": prompt, "skills": ["cetiadmin"], "skill": "cetiadmin",
-            "deliver": deliver, "failure_deliver": deliver, "origin": None, "attach_to_session": False}
+    desired = {"name": JOB_NAME, "prompt": prompt, "skills": ["cetiadmin"], "skill": "cetiadmin",
+               "deliver": deliver, "failure_deliver": deliver, "origin": None, "attach_to_session": False}
+    # Hermes runs a job with a model on that model through its configured provider, the AI Gateway. Without
+    # monitor.model, the job keeps its own model: none, which is the main model, or one that its owner chose.
+    if monitor["model"]:
+        desired["model"] = monitor["model"]
+    return desired
+
+
+def bound_model(job):
+    """The monitor model in the input that an earlier synchronization bound into the job's prompt, or ''."""
+    prompt = job.get("prompt")
+    if not isinstance(prompt, str) or BOUND_INPUT not in prompt or not prompt.endswith("\n```"):
+        return ""
+    try:
+        bound = json.loads(prompt.rsplit(BOUND_INPUT, 1)[1][:-len("\n```")])
+    except ValueError:
+        return ""
+    monitor = bound.get("monitor") if isinstance(bound, dict) else None
+    model = monitor.get("model") if isinstance(monitor, dict) else None
+    return model if isinstance(model, str) else ""
 
 
 def verify_definition(job, desired, schedule):
@@ -316,6 +339,10 @@ def sync(config, home, install, state_dir):
                 or not isinstance(job.get("enabled"), bool) or job.get("state") not in {"scheduled", "paused"}):
             raise SyncError("job_conflict")
         updates = {key: value for key, value in desired.items() if job.get(key) != value}
+        # Without monitor.model, remove only a model that monitor.model set earlier, not one of the owner.
+        clear_model = not monitor["model"] and bool(job.get("model")) and job.get("model") == bound_model(job)
+        if clear_model:
+            updates["model"] = None
         timezone_changed = binding["timezone"] != monitor["timezone"]
         if job.get("schedule") != schedule or timezone_changed:
             updates["schedule"] = monitor["schedule"]
@@ -326,6 +353,8 @@ def sync(config, home, install, state_dir):
             native_call(native.update_job, binding["jobId"], updates)
             job = known_job(native, binding["jobId"])
         verify_definition(job, desired, schedule)
+        if clear_model and job.get("model"):
+            raise SyncError("readback_mismatch")
         if not job["enabled"] or job.get("state") == "paused" or job.get("paused_at"):
             native_call(native.resume_job, binding["jobId"])
             job = known_job(native, binding["jobId"])

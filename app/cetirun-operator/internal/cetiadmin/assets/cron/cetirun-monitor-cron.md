@@ -5,7 +5,7 @@ remediation playbooks. Retain the autonomous repair tiers, exact target scope,
 batch limits, and audit rules. A scheduled run does not grant new permissions.
 
 The installation appends a **Bound monitor input** JSON object to this prompt.
-It contains this instance's name, namespace, and UID, the six `monitor` fields,
+It contains this instance's name, namespace, and UID, its `monitor` fields,
 and `stateDirectory`. Read those values, not a previous conversation's channel
 or a guessed namespace. Do not print environment variables or credentials.
 If the input is absent, conflicts with this instance, or has `enabled=false`,

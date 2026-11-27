@@ -821,7 +821,7 @@ func stripCetiAdminSchema(schema []byte) ([]byte, error) {
 	}
 	// Pin only the later addition being removed; the historical schema SHA below
 	// remains unchanged and still checks every retained byte.
-	if fmt.Sprintf("%x", sha256.Sum256(schema[start:end])) != "8fd902511e9b1effe4b0c46a2827eb1a91b2b1d42d46045c8bb96ab03101a45c" {
+	if fmt.Sprintf("%x", sha256.Sum256(schema[start:end])) != "80e5b41b806e5d7cdc9edfdab67a276e70cfab838c7e262024b1c95262323082" {
 		return nil, fmt.Errorf("pre-proxy fixture CetiAdmin schema addition changed")
 	}
 	return append(append([]byte(nil), schema[:start]...), schema[end:]...), nil

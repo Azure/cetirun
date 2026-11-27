@@ -165,6 +165,9 @@ func TestParseConfigRejectsInvalidInputs(t *testing.T) {
 		{"missing schedule", appendField(`"monitor":{"enabled":true}`), "monitor.schedule"},
 		{"Teams delivery", appendField(`"monitor":{"enabled":true,"schedule":"every 30m","deliver":"teams"}`), "monitor.deliver"},
 		{"Slack destination", appendField(`"monitor":{"enabled":true,"schedule":"every 30m","deliver":"slack"}`), "monitor.slackChannel"},
+		{"monitor model with a space", appendField(`"monitor":{"enabled":true,"schedule":"every 30m","model":"gpt 6"}`), "monitor.model"},
+		{"monitor model with a control character", appendField(`"monitor":{"enabled":true,"schedule":"every 30m","model":"gpt\u0007"}`), "monitor.model"},
+		{"monitor model length", appendField(`"monitor":{"enabled":true,"schedule":"every 30m","model":"` + strings.Repeat("a", 257) + `"}`), "monitor.model"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := ParseConfig(tt.raw)
@@ -180,13 +183,14 @@ func TestConfigKeepsExplicitIntegrations(t *testing.T) {
   "platformReadNamespaces":["system-test"],
   "azureWorkloadIdentity":{"enabled":true,"clientId":"33333333-3333-3333-3333-333333333333"},
   "sharedSkills":{"enabled":true},
-  "monitor":{"enabled":true,"schedule":"every 30m","timezone":"Asia/Singapore","deliver":"slack","slackChannel":"C012EXAMPLE","slackSecretName":"monitor-slack"}
+  "monitor":{"enabled":true,"schedule":"every 30m","timezone":"Asia/Singapore","deliver":"slack","slackChannel":"C012EXAMPLE","slackSecretName":"monitor-slack","model":"gpt-6-sol"}
 }`
 	got, err := ParseConfig(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.AzureWorkloadIdentity.Enabled || !got.SharedSkills.Enabled || !got.Monitor.Enabled || got.Monitor.SlackChannel != "C012EXAMPLE" || got.Monitor.Deliver != "slack" {
+	if !got.AzureWorkloadIdentity.Enabled || !got.SharedSkills.Enabled || !got.Monitor.Enabled || got.Monitor.SlackChannel != "C012EXAMPLE" || got.Monitor.Deliver != "slack" ||
+		got.Monitor.Model != "gpt-6-sol" {
 		t.Fatal("explicit integrations were lost")
 	}
 	if err := got.ValidateMCPAudience(got.Kubernetes.APIAudience); err == nil {
@@ -194,5 +198,28 @@ func TestConfigKeepsExplicitIntegrations(t *testing.T) {
 	}
 	if err := got.ValidateMCPAudience("api://connections"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMonitorModelEntersTheConfigurationOnlyWhenSet(t *testing.T) {
+	// An installation without a monitor model keeps its configuration hash, so an
+	// operator upgrade does not render CetiAdmin again.
+	config := DefaultConfig()
+	raw, err := json.Marshal(config.Monitor)
+	if err != nil || strings.Contains(string(raw), "model") {
+		t.Fatalf("an empty monitor model is in the configuration: %s, %v", raw, err)
+	}
+	before, err := ConfigHash(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Monitor.Model = "gpt-6-sol"
+	raw, err = json.Marshal(config.Monitor)
+	if err != nil || !strings.HasSuffix(string(raw), `,"model":"gpt-6-sol"}`) {
+		t.Fatalf("the monitor model is not the last monitor field: %s, %v", raw, err)
+	}
+	after, err := ConfigHash(config)
+	if err != nil || after == before {
+		t.Fatalf("a monitor model must change the configuration hash: %v", err)
 	}
 }

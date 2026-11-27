@@ -37,7 +37,7 @@ func (cetiAdminTestProvider) OperatorImageReference() string {
 	return "registry.example.com/cetirun-operator:dev@sha256:" + strings.Repeat("a", 64)
 }
 
-func boundCetiAdminForTest(t *testing.T, agent *api.Agent, budget string) cetiAdminTestProvider {
+func boundCetiAdminForTest(t *testing.T, agent *api.Agent, budget string, configure ...func(*cetiadmin.Config)) cetiAdminTestProvider {
 	t.Helper()
 	config := cetiadmin.DefaultConfig()
 	config.InstanceName = agent.Name
@@ -45,6 +45,9 @@ func boundCetiAdminForTest(t *testing.T, agent *api.Agent, budget string) cetiAd
 	config.Kubernetes.APIAudience = "kubernetes-api"
 	config.Kubernetes.APIEgressCIDRs = []string{"192.0.2.10/32"}
 	config.Model.Default, config.Model.InitialMonthlyBudgetUSD = agent.Spec.Model, budget
+	for _, change := range configure {
+		change(&config)
+	}
 	if err := config.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -114,6 +117,64 @@ func TestCetiAdminNetworkProjectionIsScopedAndIdempotent(t *testing.T) {
 	}
 	if !strings.Contains(string(first), "default/kubernetes.default.svc.cluster.local") {
 		t.Fatal("mesh contract missing")
+	}
+}
+
+// schemaChartHelm renders the real agent chart with a changed values schema,
+// for example the schema of an older chart.
+type schemaChartHelm struct {
+	chartHelm
+	change func(schema map[string]any)
+}
+
+func (h *schemaChartHelm) Prepare(_ string, values map[string]any, chartVersion string) (*helm.PreparedRelease, error) {
+	chrt, err := loader.Load("../../../cetirun-chart")
+	if err != nil {
+		return nil, err
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(chrt.Schema, &schema); err != nil {
+		return nil, err
+	}
+	h.change(schema)
+	if chrt.Schema, err = json.Marshal(schema); err != nil {
+		return nil, err
+	}
+	chrt.Metadata.Version = chartVersion
+	return helm.PrepareChart(chrt, values)
+}
+
+func TestCetiAdminMonitorModelReachesTheRuntime(t *testing.T) {
+	agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "cetiadmin", UID: "admin-uid"}, Spec: api.AgentSpec{
+		Agent: api.HarnessSpec{Type: api.AgentTypeHermes, Username: ptr.To("vibe")}, User: api.UserSpec{Alias: "owner"}, Team: "cetiadmin", Model: "auto", GatewayTokenSecretRef: "native-auth", Helm: api.HelmSpec{Version: "0.1.1"}}}
+	provider := boundCetiAdminForTest(t, agent, "100", func(config *cetiadmin.Config) {
+		config.Monitor.Enabled, config.Monitor.Schedule, config.Monitor.Model = true, "every 6h", "gpt-6-sol"
+	})
+	r := &AgentReconciler{CetiAdmin: provider, HelmClient: &chartHelm{}, DomainSuffix: "example.com", DefaultModel: "auto",
+		ChartRegistry: "registry.example.com", AIGateway: AIGatewayConfig{Enabled: true, URL: "http://gateway.system.svc.cluster.local:4000"}}
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: agent.Spec.Team}}
+	prepared, err := r.prepareRuntimeAgent(context.Background(), agent, team)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection := prepared.Values["cetiadmin"].(map[string]any)
+	var runtime struct {
+		Monitor cetiadmin.Monitor `json:"monitor"`
+	}
+	if err := json.Unmarshal([]byte(projection["runtimeConfig"].(string)), &runtime); err != nil || runtime.Monitor.Model != "gpt-6-sol" ||
+		projection["monitor"].(map[string]any)["model"] != "gpt-6-sol" {
+		t.Fatalf("the monitor model did not reach the runtime: %v %#v", err, projection["monitor"])
+	}
+	// The schema of a chart from before the field refuses it; the operator
+	// names the field and the way out instead.
+	r.HelmClient = &schemaChartHelm{change: func(schema map[string]any) {
+		admin := schema["properties"].(map[string]any)["cetiadmin"].(map[string]any)
+		monitor := admin["properties"].(map[string]any)["monitor"].(map[string]any)
+		delete(monitor["properties"].(map[string]any), "model")
+	}}
+	if _, err := r.prepareRuntimeAgent(context.Background(), agent, team); err == nil ||
+		!strings.Contains(err.Error(), "does not support cetiadmin.monitor.model") {
+		t.Fatalf("a chart without the field was not refused by name: %v", err)
 	}
 }
 

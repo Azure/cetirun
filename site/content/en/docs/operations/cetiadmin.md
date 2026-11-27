@@ -54,10 +54,40 @@ its policy-bound Team. Refer to
   Team allowlist.
 - The optional monitor (`cetiadmin.monitor.enabled`) runs scheduled health
   checks. It keeps the results in CetiAdmin, or it sends them to one Slack
-  channel.
+  channel. `cetiadmin.monitor.model` can run it on another model than
+  `model.default`; see [Model use and budget](#model-use-and-budget).
 
 The `cetiadmin` Team supplies only context. Users can select this Team for
 their own Agents, but the Team gives these Agents no CetiAdmin access.
+
+## Model use and budget
+
+CetiAdmin uses many tokens. Each request carries the `cetiadmin` skill, its
+references, and the output of the earlier commands. These numbers come from one
+test installation; yours depend on the number of Agents and on what CetiAdmin
+finds:
+
+| Use | Requests | Input tokens |
+| --- | --- | --- |
+| One interactive request | 1 | About 47,000 |
+| One monitor run | 12 to 21 | About 0.8 to 1.6 million |
+| One monitor run that finds no change | 14 | About 0.9 million |
+
+- With the `auto` router as `model.default`, every request of a monitor run
+  went to the `REASONING` tier, the most expensive tier of that installation.
+  The classifier of the router took the long monitor prompt for a reasoning
+  task. Set `cetiadmin.monitor.model` to a fixed model, and the monitor runs on
+  that model. Interactive work keeps `model.default`.
+- The default schedule, `every 30m`, is 48 runs a day, or about 48 million
+  input tokens. Choose the schedule and the budget together. For example,
+  `every 6h` is 4 runs a day.
+- `cetiadmin.model.initialMonthlyBudgetUSD` is the monthly budget of the AI
+  Gateway key of CetiAdmin when the operator creates the key. A platform
+  administrator can change it later in the AI Gateway console; refer to
+  [Budgets](../budgets/). When the key reaches its budget, each model request
+  of CetiAdmin fails, also the requests of the monitor. The Portal shows the
+  spend and the budget of the key, and **Budget reached**; refer to
+  [Read the spend](../budgets/#read-the-spend).
 
 ## Access
 

@@ -71,7 +71,7 @@ CETIADMIN_FIELDS = {
     "runtime": {"version", "image", "port"},
     "azureWorkloadIdentity": {"enabled", "clientId"},
     "sharedSkills": {"enabled"},
-    "monitor": {"enabled", "schedule", "timezone", "deliver", "slackChannel", "slackSecretName"},
+    "monitor": {"enabled", "schedule", "timezone", "deliver", "slackChannel", "slackSecretName", "model"},
 }
 CETIADMIN_AGENT_FIELDS = ("spec.suspended", "status.phase", "status.accessUrl", "spec.helm.maintenance", "status.helmMaintenance")
 CETIADMIN_WRITER_FIELDS = {
@@ -544,6 +544,9 @@ def validate_cetiadmin(config, operator):
         ZoneInfo(monitor["timezone"])
     except (ValueError, TypeError, ZoneInfoNotFoundError):
         raise ValueError("cetiadmin.monitor.timezone must be an IANA timezone") from None
+    model = monitor.get("model", "")
+    if not isinstance(model, str) or len(model) > 256 or any(char.isspace() or ord(char) < 32 for char in model):
+        raise ValueError("cetiadmin.monitor.model must name a model, or be empty for model.default")
     if monitor["enabled"]:
         if not isinstance(monitor.get("schedule"), str) or not monitor["schedule"].strip():
             raise ValueError("cetiadmin.monitor.schedule is required")
@@ -577,7 +580,8 @@ def cetiadmin_config_hash(value):
         "model": {"default": "auto", "initialMonthlyBudgetUSD": "", "githubCopilot": False},
         "runtime": {"version": "", "image": "", "port": None},
         "azureWorkloadIdentity": {"enabled": False, "clientId": ""}, "sharedSkills": {"enabled": False},
-        "monitor": {"enabled": False, "schedule": "", "timezone": "UTC", "deliver": "local", "slackChannel": "", "slackSecretName": ""},
+        "monitor": {"enabled": False, "schedule": "", "timezone": "UTC", "deliver": "local", "slackChannel": "", "slackSecretName": "",
+                    "model": ""},
         "retainedAgentUID": "", "migrationSource": None,
     }
     if set(value) - (set(defaults) | {"hookTimeoutSeconds", "legacyDisabledSource"}):
@@ -587,7 +591,7 @@ def cetiadmin_config_hash(value):
     if namespaces is not None and (not isinstance(namespaces, list) or any(not isinstance(name, str) for name in namespaces)):
         raise ValueError("cetiadmin.platformReadNamespaces must be a list of namespace names")
     for section, fields in {"runtime": ("version", "image", "port"),
-                            "azureWorkloadIdentity": ("clientId",), "monitor": ("schedule", "slackChannel", "slackSecretName")}.items():
+                            "azureWorkloadIdentity": ("clientId",), "monitor": ("schedule", "slackChannel", "slackSecretName", "model")}.items():
         for field in fields:
             if canonical[section].get(field) in (None, "", []):
                 canonical[section].pop(field, None)
