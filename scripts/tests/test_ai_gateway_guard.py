@@ -11,6 +11,7 @@ UserAPIKeyAuth in the request's metadata, the request's logging object with the
 API it came through, and RouterRateLimitError's message.
 """
 
+import ast
 import asyncio
 import base64
 import collections
@@ -2718,11 +2719,14 @@ class GuardTest(unittest.TestCase):
         Redis's clock in Redis and in the replicas, and the time that Redis keeps each key, go back by as much."""
         if getattr(self, "redis", None) is not None:
             self.redis.advance(seconds)
+        shift = round(seconds * 1000)
         for guard in [self.module] + [replica.guard for replica in getattr(self, "replicas", [])]:
             for observation in guard.KEPT_UPSTREAM_LIMITS.values():
                 if observation.get("observed_ms") is not None:
                     first, last = observation["observed_ms"]
-                    observation["observed_ms"] = (first - round(seconds * 1000), last - round(seconds * 1000))
+                    observation["observed_ms"] = (first - shift, last - shift)
+            for read, ((first, last), late) in list(getattr(guard, "READ_TIMES", {}).items()):
+                guard.READ_TIMES[read] = ((first - shift, last - shift), late)
 
     def assert_read(self, observation, ago):
         """The observation in Redis is of a read ago seconds before Redis's time, give or take the few seconds
@@ -3014,13 +3018,19 @@ class GuardTest(unittest.TestCase):
             self.assertEqual(self.limits(None, replica=other), self.SMALLER)
         self.assertEqual(len(logs.output), 2)
         self.assertEqual(self.stored(redis)[1]["limits"], self.SMALLER)
-        # The same for a withdrawal: an empty listing while Redis does not answer.
+        # A withdrawal while Redis does not answer: Redis's clock dates it late, so it does not raise the smaller
+        # window in Redis, which both replicas keep, until a read that Redis dates in time withdraws it.
         self.advance(300)
         redis.fail = True
         self.assertEqual(self.limits({"data": []}), {})
         redis.fail = False
         self.advance(300)
-        self.assertEqual(self.limits(None), {})
+        with self.assertLogs(LOGGER, "WARNING"):
+            self.assertEqual(self.limits(None), self.SMALLER)
+            self.assertEqual(self.limits(None, replica=other), self.SMALLER)
+        self.assertEqual(self.stored(redis)[1]["limits"], self.SMALLER)
+        self.advance(300)
+        self.assertEqual(self.limits({"data": []}), {})
         self.assertEqual(self.limits(None, replica=other), {})
         self.assertIsNone(self.stored(redis)[1]["limits"])
 
@@ -3292,6 +3302,113 @@ class GuardTest(unittest.TestCase):
         redis.put(name, planted)
         self.assertEqual(self.limits(self.listing(self.SMALLER)), {"max_input_tokens": 272000, "max_output_tokens": 16384})
         self.assertEqual(redis.get(name), planted.encode())
+
+    def reduction_before_the_next_write(self, redis, other, then=None):
+        """Let the other replica write a later reduction before the next write of a replica reaches Redis."""
+        async def meanwhile():
+            await asyncio.sleep(0.05)
+            self.assertEqual(await self.refresh(self.listing(self.SMALLER), replica=other), self.SMALLER)
+            await asyncio.sleep(0.01)
+            if then is not None:
+                then()
+
+        redis.before_write = meanwhile
+
+    def test_a_replica_keeps_the_value_with_which_redis_refuses_its_write(self):
+        # This replica reads the larger window. Before its write reaches Redis, the other replica writes a later
+        # reduction, and Redis then stops answering. Redis does not take the write and answers with the reduction:
+        # the replica keeps it, although it cannot read Redis again.
+        redis = self.shared_redis()
+        self.install_upstream_info()
+        late, other = self.replica(), self.replica()
+        self.reduction_before_the_next_write(redis, other, then=lambda: setattr(redis, "fail", True))
+        self.assertEqual(self.limits(self.ADVERTISED, replica=late), self.SMALLER)
+        self.advance(300)
+        with self.assertLogs(LOGGER, "WARNING"):
+            self.assertEqual(self.limits(None, replica=late), self.SMALLER)
+        redis.fail = False
+        self.assertEqual(self.stored(redis)[1]["limits"], self.SMALLER)
+
+    def test_a_replica_that_may_not_write_again_keeps_the_value_that_redis_answered_last(self):
+        redis = self.shared_redis()
+        self.install_upstream_info()
+        late, other = self.replica(), self.replica()
+        late.guard.UPSTREAM_WRITE_ATTEMPTS = 1
+        self.reduction_before_the_next_write(redis, other)
+        self.assertEqual(self.limits(self.ADVERTISED, replica=late), self.SMALLER)
+        self.assertEqual((redis.attempts, redis.writes), (2, 1))
+        self.assertEqual(self.stored(redis)[1]["limits"], self.SMALLER)
+
+    def test_a_copy_from_before_redis_clock_went_back_does_not_replace_a_later_observation(self):
+        # This replica reads the larger window. Then Redis's clock goes back an hour: the observation in Redis and
+        # this replica's copy of it are dated ahead of Redis's time, and are no current observation.
+        redis = self.shared_redis()
+        self.install_upstream_info()
+        other = self.replica()
+        self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
+        self.redis_clock_steps(-3600)
+        # While Redis has no current observation, the replica uses its copy, but does not write it to Redis.
+        self.advance(60)
+        name = self.stored(redis)[0]
+        dropped = redis.get(name)
+        with self.assertLogs(LOGGER, "WARNING"):
+            self.assertEqual(self.limits(None), self.LIMITS)
+        self.assertEqual(redis.get(name), dropped)
+        # The other replica reads a reduction, which Redis keeps. The copy does not replace it.
+        self.advance(60)
+        self.assertEqual(self.limits(self.listing(self.SMALLER), replica=other), self.SMALLER)
+        self.advance(60)
+        self.assertEqual(self.limits(None), self.SMALLER)
+        self.assertEqual(self.stored(redis)[1]["limits"], self.SMALLER)
+
+    def test_a_read_that_redis_dates_late_does_not_raise_a_limit(self):
+        # This replica reads the larger window while Redis does not answer. A minute later the other replica reads
+        # a reduction, and Redis's clock then steps an hour ahead. When Redis answers this replica again, its clock
+        # dates the older read after the step, so that the read looks later than the reduction: it does not raise
+        # the limits.
+        redis = self.shared_redis()
+        self.install_upstream_info()
+        other = self.replica()
+        redis.fail = True
+        self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
+        redis.fail = False
+        self.advance(60)
+        self.assertEqual(self.limits(self.listing(self.SMALLER), replica=other), self.SMALLER)
+        self.redis_clock_steps(3600)
+        self.advance(300)
+        with self.assertLogs(LOGGER, "WARNING"):
+            self.assertEqual(self.limits(None), self.SMALLER)
+            self.assertEqual(self.limits(None, replica=other), self.SMALLER)
+        self.assertEqual(self.stored(redis)[1]["limits"], self.SMALLER)
+        # A read that Redis dates in time raises them.
+        self.advance(300)
+        self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
+        self.assertEqual(self.limits(None, replica=other), self.LIMITS)
+
+    def test_a_listing_that_answers_for_two_deployments_is_one_read_dated_once(self):
+        # LiteLLM reads the upstream's listing for one deployment, and answers the lookup of another deployment
+        # of the same upstream from the listing that it keeps, half a minute later. Both observations are of the
+        # read that Redis dated in time, so the later window replaces the older one of both deployments.
+        redis = self.shared_redis()
+        self.install_upstream_info()
+        other = {"deployment": "cetirun-shared-synthetic-other"}
+        self.assertEqual(self.limits(self.listing(self.SMALLER)), self.SMALLER)
+        self.assertEqual(self.limits(self.listing(self.SMALLER), **other), self.SMALLER)
+        self.advance(300)
+        cache = ListingCache()
+        self.assertEqual(self.limits(self.ADVERTISED, cache=cache), self.LIMITS)
+        self.advance(30)
+        self.assertEqual(self.limits(None, cache=cache, **other), self.LIMITS)
+        self.assertEqual(self.stored(redis, deployment=other["deployment"])[1]["limits"], self.LIMITS)
+        # The replica keeps the times of the reads that LiteLLM may still answer from, and no others.
+        self.assertEqual(set(self.module.READ_TIMES), {read for _, _, read in self.module.UPSTREAM_LISTINGS.values()})
+
+    def test_the_guard_defines_each_name_once(self):
+        # A second definition replaces the first for every caller, also for one written above it.
+        tree = ast.parse((PACKAGE / "guard.py").read_text(encoding="utf-8"))
+        names = [node.name for node in tree.body
+                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+        self.assertEqual(sorted({name for name in names if names.count(name) > 1}), [])
 
     def test_a_guard_that_fails_leaves_litellms_answer(self):
         self.install_upstream_info()
