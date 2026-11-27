@@ -893,6 +893,11 @@ def infrastructure_configuration(path, artifacts, scratch):
                                  "whose federated credential names that release's namespace and service account")
             for field, value in observability(config, observability_defaults=yaml_file(roots[OBSERVABILITY] / "values.yaml"),
                                               gateway_defaults=yaml_file(roots["cetirun-ai-gateway"] / "values.yaml")).items():
+                # As in a complete deployment, a usage value that the
+                # environment also sets under platform.values must agree.
+                supplied = get_value(config["platform"].get("values", {}), field)
+                if field.startswith("cetirun-portal.usage.") and supplied is not None and supplied != value:
+                    raise ValueError(f"platform.values.{field} conflicts with observability.portal")
                 set_value(platform, field, value)
     # Optional topology/features are retained, not turned on by publishing a
     # new release. Their required references and TLS are checked after render.
