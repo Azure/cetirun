@@ -28,6 +28,7 @@ import re
 import secrets
 import socket
 import sys
+import time
 import types
 import unittest
 
@@ -2708,20 +2709,47 @@ class GuardTest(unittest.TestCase):
     DAYS_30 = 30 * 24 * 3600
 
     def clocked(self, guard, offset=0.0):
-        """The guard, on a clock that runs with the test's time, self.now, and is offset by seconds."""
+        """The guard, on a clock that runs with the test's time, self.now, and is offset by seconds. It also runs in
+        real time, as the test server's clock does, so that Redis's clock runs as the replicas' clocks do, except
+        for the steps that a test makes (redis_clock_steps). The guard's requests for listings are kept in
+        self.requests, so that a step also moves the round trip to Redis before a request in flight."""
         if not hasattr(self, "now"):
             self.now = 1_800_000_000.0
-        guard.clock = lambda: self.now + offset
+        if not hasattr(self, "started"):
+            self.started = time.perf_counter()
+        guard.clock = lambda: self.now + offset + (time.perf_counter() - self.started)
+        requests = self.requests = getattr(self, "requests", [])
+        if not getattr(guard.ObservedClient, "tracked", False):
+            class ObservedClient(guard.ObservedClient):
+                tracked = True
+
+                def __init__(inner, *args, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    requests.append(inner)
+
+            guard.ObservedClient = ObservedClient
         return guard
 
-    def install_upstream_info(self, replace=True):
+    def install_upstream_info(self, replace=True, warm=True):
         self.clocked(self.module)
         module = upstream_info_module()
         self.install_modules({UPSTREAM_INFO: vars(module), UPSTREAM_REGISTRY: vars(upstream_registry_module())})
         if replace:
             self.assertTrue(self.module.install_kept_upstream_limits())
             self.assertTrue(self.module.install_kept_upstream_limits())  # once only
+            if warm:
+                self.warm()
         return sys.modules[UPSTREAM_INFO]
+
+    # A deployment whose upstream does not answer, with which a replica runs the guard's script once (warm).
+    WARM = {"deployment": "cetirun-shared-synthetic-warm", "api_key": "synthetic-warm-key"}
+
+    def warm(self, replica=None):
+        """When the test uses Redis, let a replica, or this one for None, refresh a deployment once while its
+        upstream does not answer, as a replica does when it starts. Its next read then has a round trip to Redis
+        before it, so that Redis can date it in time (date_read)."""
+        if getattr(self, "redis", None) is not None:
+            self.limits(None, replica=replica, **self.WARM)
 
     def shared_redis(self):
         """The Gateway's Redis: the test server, which runs the guard's script by its own clock."""
@@ -2748,14 +2776,29 @@ class GuardTest(unittest.TestCase):
         def moved(epoch):
             return epoch if epoch is None else str(int(epoch) - shift)
 
+        def moved_call(call):
+            """A round trip to Redis, with Redis's time and its epoch moved."""
+            if call is None:
+                return None
+            before, after, then_ms, epoch = call
+            return before, after, then_ms - shift, moved(epoch)
+
         for guard in [self.module] + [replica.guard for replica in getattr(self, "replicas", [])]:
             for observation in guard.KEPT_UPSTREAM_LIMITS.values():
                 if observation.get("observed_ms") is not None:
                     first, last = observation["observed_ms"]
                     observation["observed_ms"] = (first - shift, last - shift)
                     observation["epoch"] = moved(observation.get("epoch"))
+                if observation.get("reference") is not None:
+                    observation["reference"] = moved_call(observation["reference"])
             for read, ((first, last), late, epoch) in list(getattr(guard, "READ_TIMES", {}).items()):
                 guard.READ_TIMES[read] = ((first - shift, last - shift), late, moved(epoch))
+            for listing, (times, answered, read, reference) in list(getattr(guard, "UPSTREAM_LISTINGS", {}).items()):
+                guard.UPSTREAM_LISTINGS[listing] = (times, answered, read, moved_call(reference))
+            if hasattr(guard, "LAST_CALL"):
+                guard.LAST_CALL[0] = moved_call(guard.LAST_CALL[0])
+        for request in getattr(self, "requests", []):
+            request.reference = moved_call(request.reference)
 
     def assert_read(self, observation, ago):
         """The observation in Redis is of a read ago seconds before Redis's time, give or take the few seconds
@@ -2827,15 +2870,18 @@ class GuardTest(unittest.TestCase):
                 else:
                     sys.modules[name] = module
 
-    def replica(self, offset=0.0):
+    def replica(self, offset=0.0, warm=True):
         """Another replica of the Gateway: its own guard, LiteLLM modules and clock, offset by seconds, and the
-        same Redis. The guard replaces the lookup of the LiteLLM it is loaded with."""
+        same Redis. The guard replaces the lookup of the LiteLLM it is loaded with. Unless warm is false, the
+        replica has run the guard's script once (warm)."""
         modules = {UPSTREAM_INFO: upstream_info_module(), UPSTREAM_REGISTRY: upstream_registry_module()}
         with self.modules_of(modules):
             guard = self.clocked(load_guard(), offset)
             self.assertTrue(guard.install_kept_upstream_limits())
         replica = types.SimpleNamespace(guard=guard, modules=modules)
         self.replicas = getattr(self, "replicas", []) + [replica]
+        if warm:
+            self.warm(replica)
         return replica
 
     def test_the_limits_an_upstream_advertised_last_are_kept_while_it_does_not_answer(self):
@@ -2859,6 +2905,8 @@ class GuardTest(unittest.TestCase):
         with self.assertLogs(LOGGER, "WARNING"):
             self.assertEqual(self.limits(None), {"max_input_tokens": 1050000})
             # Of two answers at one time of the clock, the later one counts.
+            frozen = self.module.clock()
+            self.module.clock = lambda: frozen
             self.assertEqual(self.limits(self.listing(self.SMALLER)), self.SMALLER)
             self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
             self.assertEqual(self.limits(None), self.LIMITS)
@@ -2971,17 +3019,21 @@ class GuardTest(unittest.TestCase):
         self.assert_read(observed, ago=120)
         self.assertAlmostEqual(redis.ttl(name), self.DAYS_30 - 120, delta=5)
         # Redis loses its data, with the epoch of its clock: the replica writes the newest observation that it
-        # knows, as one of the new epoch that ends now and is late.
+        # knows, as one of the new epoch that ends now and is late. It keeps its age: the other replica's read was a
+        # minute ago, so Redis keeps it 30 days from then, not from now.
         redis.clear()
         self.assertEqual(self.limits(None, cache=cache, client=upstream), self.SMALLER)
         name, observed = self.stored(redis)
         self.assertEqual((observed["limits"], observed["etag"], observed["epoch"], observed["late"]),
                          (self.SMALLER, smaller["etag"], self.epoch(redis), True))
-        self.assert_read(observed, ago=0)
-        self.assertAlmostEqual(redis.ttl(name), self.DAYS_30, delta=5)
-        # The other replica reads an empty listing later: the listing that this replica's LiteLLM keeps from
-        # before does not bring the limits back.
+        now = redis.time_ms()
+        self.assertAlmostEqual(observed["observed_ms"][0], now - 60000, delta=5000)
+        self.assertAlmostEqual(observed["observed_ms"][1], now, delta=5000)
+        self.assertAlmostEqual(redis.ttl(name), self.DAYS_30 - 60, delta=5)
+        # The other replica reads an empty listing later, after a round trip to Redis of the new epoch: the listing
+        # that this replica's LiteLLM keeps from before does not bring the limits back.
         self.advance(60)
+        self.warm(other)
         self.assertEqual(self.limits({"data": []}, replica=other), {})
         self.assertEqual(self.limits(None, cache=cache, client=upstream), {})
         self.assertEqual(upstream.calls, 1)
@@ -3033,8 +3085,11 @@ class GuardTest(unittest.TestCase):
             self.assertEqual(self.limits(None, replica=late), self.SMALLER)
             self.assertEqual(self.limits(None, replica=other), self.SMALLER)
         # The same for a larger window that the other replica reads later: a late write of the smaller one does
-        # not replace it.
+        # not replace it. Both replicas ran the guard's script just before, so that Redis's clock dates their
+        # reads within milliseconds, and the milliseconds between them order them.
         self.advance(300)
+        self.warm(late)
+        self.warm(other)
         redis.before_write = lambda: meanwhile(self.LIMITS)
         self.assertEqual(self.limits(self.listing(self.SMALLER), replica=late), self.LIMITS)
         self.assertEqual(self.stored(redis)[1]["limits"], self.LIMITS)
@@ -3122,7 +3177,7 @@ class GuardTest(unittest.TestCase):
 
     def test_a_lookup_without_a_deployment_keeps_nothing(self):
         redis = self.shared_redis()
-        lookup = self.install_upstream_info().get_openai_compatible_model_info
+        lookup = self.install_upstream_info(warm=False).get_openai_compatible_model_info
 
         def call(listing):
             return dict(asyncio.run(lookup(model="gpt-5.4", api_base=self.UPSTREAM, headers={}, cache=ListingCache(),
@@ -3232,10 +3287,14 @@ class GuardTest(unittest.TestCase):
 
     def test_a_round_trip_to_redis_dates_a_read_between_two_times(self):
         # Redis's time fell between the replica's times 10 and 12 s, and the read happened between 5 and 6 s.
-        self.assertEqual(self.module.read_times(1_000_000, 10.0, 12.0, (5.0, 6.0)), (993_000, 996_000))
-        self.assertEqual(self.module.read_times(1_000_000, 10.0, 10.0, (10.0, 10.0)), (1_000_000, 1_000_000))
+        offsets = self.module.clock_offsets(1_000_000, 10.0, 12.0)
+        self.assertEqual(offsets, (988_000, 990_000))
+        self.assertEqual(self.module.read_times(offsets, (5.0, 6.0)), (993_000, 996_000))
+        self.assertEqual(self.module.read_times(self.module.clock_offsets(1_000_000, 10.0, 10.0), (10.0, 10.0)),
+                         (1_000_000, 1_000_000))
         # Parts of a millisecond widen the times.
-        self.assertEqual(self.module.read_times(1_000_000, 10.0004, 10.0006, (10.0, 10.0)), (999_999, 1_000_000))
+        self.assertEqual(self.module.read_times(self.module.clock_offsets(1_000_000, 10.0004, 10.0006), (10.0, 10.0)),
+                         (999_999, 1_000_000))
         # An observation that Redis returns gets times of this replica's clock between which its read happened,
         # and a later round trip dates it between times that include the ones that Redis had.
         value = json.dumps({"limits": self.LIMITS, "etag": "synthetic-etag", "observed_ms": [993_000, 996_000],
@@ -3243,18 +3302,59 @@ class GuardTest(unittest.TestCase):
         observation = self.module.stored_observation(value.encode(), 1_000_000, "5", 20.0, 22.0)
         self.assertEqual((observation["limits"], observation["observed_ms"], observation["seen"], observation["epoch"],
                           observation["late"]), (self.LIMITS, (993_000, 996_000), (13.0, 18.0), "5", False))
-        self.assertEqual(self.module.read_times(1_009_500, 30.0, 31.0, observation["seen"]), (991_500, 997_500))
+        self.assertEqual(self.module.read_times(self.module.clock_offsets(1_009_500, 30.0, 31.0), observation["seen"]),
+                         (991_500, 997_500))
 
-    def test_a_late_dating_ends_when_redis_dated_the_read(self):
-        # The round trip started 10 s after the read: the read ends at Redis's time during the round trip.
-        observation = {"limits": self.LIMITS, "etag": secrets.token_hex(8), "seen": (5.0, 6.0), "observed_ms": None,
-                       "epoch": None, "late": False}
-        self.module.date_read(observation, 1_000_000, 16.0, 17.0, "5")
-        self.assertEqual((observation["observed_ms"], observation["late"], observation["epoch"]),
-                         ((988_000, 1_000_000), True, "5"))
-        prompt = dict(observation, etag=secrets.token_hex(8), observed_ms=None)
-        self.module.date_read(prompt, 1_000_000, 10.0, 11.0, "5")
-        self.assertEqual((prompt["observed_ms"], prompt["late"]), ((994_000, 996_000), False))
+    # The replica's last round trip to Redis before a request: Redis's time 1_000_001 between the replica's times 10
+    # and 10.002 s, in the epoch 5. Redis's clock is 990 s ahead of the replica's, give or take a millisecond.
+    REFERENCE = (10.0, 10.002, 1_000_001, "5")
+
+    def test_redis_clock_ran_steadily_when_one_difference_of_the_clocks_fits_both_round_trips(self):
+        steady = self.module.steady_offsets
+        # Six seconds later, Redis's time 1_005_999 fell between the replica's times 15.998 and 16 s: the
+        # difference fits both round trips, give or take what the clocks can run apart in six seconds.
+        self.assertEqual(steady(self.REFERENCE, 1_005_999, 15.998, 16.0, "5"), (989_992, 990_008))
+        # A step that fits too is no larger than the round trips: the differences of both sides of it count.
+        self.assertEqual(steady(self.REFERENCE, 1_006_004, 15.998, 16.0, "5"), (989_992, 990_013))
+        # Redis's clock stepped three seconds ahead, or back; its epoch changed; or there is no round trip before.
+        for now_ms, epoch, reference in ((1_008_999, "5", self.REFERENCE), (1_002_999, "5", self.REFERENCE),
+                                         (1_005_999, "6", self.REFERENCE), (1_005_999, "5", None)):
+            with self.subTest(now_ms=now_ms, epoch=epoch, reference=reference):
+                self.assertIsNone(steady(reference, now_ms, 15.998, 16.0, epoch))
+
+    def test_a_read_is_dated_late_unless_redis_clock_ran_steadily_and_dated_it_soon(self):
+        read = {"limits": self.LIMITS, "seen": (12.0, 13.0), "observed_ms": None, "epoch": None, "late": False,
+                "reference": self.REFERENCE}
+
+        def dated(now_ms, sent, received, epoch="5", **changes):
+            observation = dict(read, etag=secrets.token_hex(8), **changes)
+            self.module.date_read(observation, now_ms, sent, received, epoch)
+            return observation["observed_ms"], observation["late"], observation["epoch"]
+
+        # Redis's clock ran as the replica's from the round trip before the request to the one after the read.
+        self.assertEqual(dated(1_005_999, 15.998, 16.0), ((1_001_992, 1_003_008), False, "5"))
+        # It stepped an hour ahead, or a minute back, while the request was in flight; its epoch changed; or the read
+        # has no round trip before it. The dating is late: the read ends when Redis dated it, and begins as long
+        # before that as it began before by the replica's clock, so that Redis keeps it 30 days from the read.
+        self.assertEqual(dated(4_605_999, 15.998, 16.0), ((4_601_999, 4_605_999), True, "5"))
+        self.assertEqual(dated(945_999, 15.998, 16.0), ((941_999, 945_999), True, "5"))
+        self.assertEqual(dated(1_005_999, 15.998, 16.0, epoch="6"), ((1_001_999, 1_005_999), True, "6"))
+        self.assertEqual(dated(1_005_999, 15.998, 16.0, reference=None), ((1_001_999, 1_005_999), True, "5"))
+        # The round trip started ten seconds after the read.
+        self.assertEqual(dated(1_012_999, 22.998, 23.0), ((1_001_999, 1_012_999), True, "5"))
+        # A read is dated once.
+        observation = dict(read, etag=secrets.token_hex(8))
+        self.module.date_read(observation, 1_005_999, 15.998, 16.0, "5")
+        self.module.date_read(dict(observation, observed_ms=None), 4_605_999, 15.998, 16.0, "5")
+        self.assertEqual(self.module.READ_TIMES[observation["etag"]], ((1_001_992, 1_003_008), False, "5"))
+
+    def test_two_reads_that_a_replica_merges_keep_the_round_trip_before_both(self):
+        earlier, later = (1.0, 1.002, 5_000, "5"), (3.0, 3.001, 7_000, "5")
+        for one, other in ((earlier, later), (later, earlier)):
+            self.assertIs(self.module.earlier_reference(one, other), earlier)
+        # When one of the reads has no round trip before it, the merge has none either: it is dated late.
+        for one, other in ((earlier, None), (None, earlier), (None, None)):
+            self.assertIsNone(self.module.earlier_reference(one, other))
 
     def observation(self, limits, etag, first, last, epoch="0", late=False):
         """An observation of a read between the times first and last of Redis's clock, in seconds, which the epoch
@@ -3323,23 +3423,23 @@ class GuardTest(unittest.TestCase):
         # The current epoch began at time 50 s, after Redis's clock went back. Its times do not order a read
         # against a read of another epoch, whether that one looks earlier, overlaps it, or is dated ahead after the
         # step: the smaller limit of each kind counts, in an observation of the current epoch that ends at Redis's
-        # time now and is late, so that only a read after it replaces it.
+        # time now and is late, so that only a read after it replaces it. It begins when the earlier read began by
+        # this replica's clock, so that Redis keeps it 30 days from that read.
         current = "50000"
         older = self.observation(self.LIMITS, "older", 0, 10)
-        for shared, local, first in ((older, self.observation(self.SMALLER, "after", 60, 61, epoch=current), 60),
+        for shared, local, first in ((older, self.observation(self.SMALLER, "after", 60, 61, epoch=current), 0),
                                      (self.observation(self.LIMITS, "ahead", 200, 210),
                                       self.observation(self.SMALLER, "after", 60, 61, epoch=current), 60),
-                                     (older, self.observation(self.SMALLER, "across", 40, 61, epoch=current), 40),
+                                     (older, self.observation(self.SMALLER, "across", 40, 61, epoch=current), 0),
                                      (older, self.observation(self.SMALLER, "late", 60, 61, epoch=current, late=True),
-                                      60),
-                                     (older, self.observation(self.SMALLER, "other", 60, 61, epoch="20000"), 100)):
+                                      0),
+                                     (older, self.observation(self.SMALLER, "other", 60, 61, epoch="20000"), 0)):
             for one, other in ((shared, local), (local, shared)):
                 with self.subTest(shared=one["etag"], local=other["etag"], epochs=(one["epoch"], other["epoch"])):
                     result = self.combine(one, other, epoch=current)
                     self.assertEqual((result["limits"], result["observed_ms"], result["seen"], result["epoch"],
                                       result["late"]),
-                                     (self.SMALLER, (first * 1000, 100000), (min(one["seen"][0], other["seen"][0]), 100),
-                                      current, True))
+                                     (self.SMALLER, (first * 1000, 100000), (first, 100), current, True))
                     later = self.observation(self.LIMITS, "later", 101, 102, epoch=current)
                     self.assertIs(self.combine(result, later, now=110, epoch=current), later)
                     self.assertIs(self.combine(later, result, now=110, epoch=current), later)
@@ -3354,23 +3454,36 @@ class GuardTest(unittest.TestCase):
                 result = self.combine(one, other, epoch=current)
                 self.assertEqual((result["limits"], result["etag"], result["observed_ms"], result["seen"],
                                   result["epoch"], result["late"]),
-                                 (self.SMALLER, "later-older", (100000, 100000), (20, 100), current, True))
+                                 (self.SMALLER, "later-older", (20000, 100000), (20, 100), current, True))
         # So is an observation of another epoch alone, also one dated ahead after the clock went back; one of the
         # current epoch stays as it is.
         for one, seen in ((older, (0, 100)), (self.observation(self.LIMITS, "ahead", 200, 210), (100, 100))):
             with self.subTest(alone=one["etag"]):
                 for result in (self.combine(one, None, epoch=current), self.combine(None, one, epoch=current)):
                     self.assertEqual((result["etag"], result["observed_ms"], result["seen"], result["epoch"],
-                                      result["late"]), (one["etag"], (100000, 100000), seen, current, True))
+                                      result["late"]), (one["etag"], (seen[0] * 1000, 100000), seen, current, True))
         alone = self.observation(self.SMALLER, "current", 60, 61, epoch=current)
         self.assertIs(self.combine(None, alone, epoch=current), alone)
         self.assertIs(self.combine(alone, None, epoch=current), alone)
+        # An observation of another epoch whose read began 30 days ago by this replica's clock is gone.
+        expired = self.observation(self.LIMITS, "expired", 100 - self.DAYS_30, 110 - self.DAYS_30)
+        for one, other in ((expired, None), (None, expired)):
+            self.assertIsNone(self.combine(one, other, epoch=current))
+        for one, other in ((expired, alone), (alone, expired)):
+            self.assertIs(self.combine(one, other, epoch=current), alone)
+        self.assertEqual(self.combine(dict(expired, seen=(101 - self.DAYS_30, 110)), None, epoch=current)["observed_ms"],
+                         (101000 - self.DAYS_30 * 1000, 100000))
+        # Its age rounds up to whole milliseconds.
+        self.assertEqual(self.combine(dict(older, seen=(99.9995, 99.9995)), None, epoch=current)["observed_ms"],
+                         (99_999, 100_000))
 
     def test_of_two_reads_of_this_replica_that_overlap_the_smaller_limit_of_each_kind_counts(self):
         # This replica read a listing while LiteLLM read the same one again for another deployment, whose answer
         # arrived first: the times of the two reads overlap, so this replica does not know which answer the
-        # upstream gave later.
-        local = self.observation(self.SMALLER, "local", 10, 20)
+        # upstream gave later. The merge keeps the round trip to Redis before both reads, so that Redis's clock
+        # dates it as one read.
+        before_local, before_fresh = (1.0, 1.001, 5_000, "0"), (4.0, 4.001, 8_000, "0")
+        local = dict(self.observation(self.SMALLER, "local", 10, 20), reference=before_local)
         for fresh, kept in ((self.observation(self.LIMITS, "fresh", 21, 30), "fresh"),
                             (self.observation(self.LIMITS, "fresh", 0, 9), "local"),
                             (self.observation(self.SMALLER, "local", 15, 30), "local")):
@@ -3378,9 +3491,11 @@ class GuardTest(unittest.TestCase):
                 self.assertEqual(self.module.newer_read(local, fresh)["etag"], kept)
         for times in ((5, 15), (12, 18), (5, 25), (20, 30)):
             with self.subTest(times=times):
-                result = self.module.newer_read(local, self.observation(self.LIMITS, "fresh", *times))
-                self.assertEqual((result["limits"], result["seen"], result["observed_ms"], result["epoch"]),
-                                 (self.SMALLER, (min(10, times[0]), max(20, times[1])), None, None))
+                fresh = dict(self.observation(self.LIMITS, "fresh", *times), reference=before_fresh)
+                result = self.module.newer_read(local, fresh)
+                self.assertEqual((result["limits"], result["seen"], result["observed_ms"], result["epoch"],
+                                  result["late"], result["reference"]),
+                                 (self.SMALLER, (min(10, times[0]), max(20, times[1])), None, None, False, before_local))
                 self.assertNotIn(result["etag"], ("local", "fresh"))
         self.assertEqual(self.module.newer_read(None, local), local)
 
@@ -3494,6 +3609,27 @@ class GuardTest(unittest.TestCase):
         self.assertEqual((redis.attempts, redis.writes), (2, 1))
         self.assertEqual(self.stored(redis)[1]["limits"], self.SMALLER)
 
+    def test_a_write_after_redis_lost_the_value_keeps_what_the_replica_read_there(self):
+        # Another replica read a lower output limit, at times that overlap this replica's read of a reduction now:
+        # this replica combines the two, and writes the smaller limit of each kind. Before its write reaches Redis,
+        # Redis loses the value. Redis does not take the write, and answers with no value: the replica writes what
+        # it combined again, not its own read alone, which would raise the output limit.
+        redis = self.shared_redis()
+        self.install_upstream_info()
+        name, now = self.stored(redis)[0], redis.time_ms()
+        redis.put(name, json.dumps({"limits": {"max_input_tokens": 922000, "max_output_tokens": 16384},
+                                    "etag": "synthetic-other", "epoch": self.epoch(redis), "late": False,
+                                    "observed_ms": [now - 10000, now + 10000]}))
+
+        async def lost():
+            redis.server.command("DEL", name)
+
+        redis.before_write = lost
+        smaller = {"max_input_tokens": 272000, "max_output_tokens": 16384}
+        self.assertEqual(self.limits(self.listing(self.SMALLER)), smaller)
+        self.assertEqual(self.stored(redis)[1]["limits"], smaller)
+        self.assertEqual((redis.attempts, redis.writes), (2, 1))
+
     def test_a_copy_from_before_redis_clock_went_back_does_not_replace_a_later_observation(self):
         # This replica reads the larger window. Then Redis's clock goes back an hour: the observation in Redis and
         # this replica's copy of it are dated an hour ahead of Redis's time, in the epoch of its clock before the
@@ -3534,8 +3670,12 @@ class GuardTest(unittest.TestCase):
             self.assertEqual(self.limits(None), self.SMALLER)
         stored = self.stored(redis)[1]
         self.assertEqual((stored["limits"], stored["epoch"], stored["late"]), (self.SMALLER, self.epoch(redis), True))
-        # This exchange took the reduction into the epoch that began when the clock went back: a read after it
-        # raises the limits.
+        # This exchange took the reduction into the epoch that began when the clock went back. The other replica's
+        # next read has only its round trip to Redis from before the step before it: Redis dates it late, and it
+        # does not raise the limits. A read after a round trip of the new epoch does.
+        self.advance(300)
+        self.assertEqual(self.limits(self.ADVERTISED, replica=other), self.SMALLER)
+        self.assertTrue(self.stored(redis)[1]["late"])
         self.advance(300)
         self.assertEqual(self.limits(self.ADVERTISED, replica=other), self.LIMITS)
         self.assertEqual(self.limits(None), self.LIMITS)
@@ -3607,8 +3747,10 @@ class GuardTest(unittest.TestCase):
         self.advance(30)
         self.assertEqual(self.limits(None, cache=cache, **other), self.LIMITS)
         self.assertEqual(self.stored(redis, deployment=other["deployment"])[1]["limits"], self.LIMITS)
-        # The replica keeps the times of the reads that LiteLLM may still answer from, and no others.
-        self.assertEqual(set(self.module.READ_TIMES), {read for _, _, read in self.module.UPSTREAM_LISTINGS.values()})
+        # The replica keeps the times of the reads that LiteLLM may still answer from, and no others. A request
+        # that the upstream did not answer is no observation: Redis does not date it.
+        self.assertEqual(set(self.module.READ_TIMES),
+                         {read for _, answered, read, _ in self.module.UPSTREAM_LISTINGS.values() if answered})
 
     def test_of_two_reads_whose_requests_overlap_the_smaller_limit_counts(self):
         # This replica asks the upstream for its listing while the limit changes. The other replica asks later and
@@ -3642,6 +3784,60 @@ class GuardTest(unittest.TestCase):
         # A read that began after both raises the limits.
         self.advance(300)
         self.assertEqual(self.limits(self.ADVERTISED, replica=other), self.LIMITS)
+
+    def test_a_read_in_flight_while_redis_clock_steps_ahead_does_not_replace_a_reduction(self):
+        # This replica asks the upstream for its listing, and gets the larger window. While its request is in
+        # flight, the other replica reads a reduction, which Redis keeps, and then Redis's clock steps an hour
+        # ahead. Dated after the step, the larger window would look an hour later than the reduction. But Redis's
+        # clock did not run as this replica's since its round trip before the request: the dating is late, and the
+        # reduction stays.
+        redis = self.shared_redis()
+        self.install_upstream_info()
+        other = self.replica()
+
+        async def scenario():
+            released = asyncio.Event()
+
+            class Held:
+                async def get(inner, *args, **kwargs):
+                    await released.wait()
+                    return self.module.ExerciseUpstream.Response(self.ADVERTISED)
+
+            slow = asyncio.create_task(self.refresh(None, client=Held()))
+            await asyncio.sleep(0)
+            self.assertEqual(await self.refresh(self.listing(self.SMALLER), replica=other), self.SMALLER)
+            self.redis_clock_steps(3600)
+            # A round trip of this replica after the step, for another deployment, is not one before the request.
+            await self.refresh(None, **self.WARM)
+            released.set()
+            return await slow
+
+        self.assertEqual(asyncio.run(scenario()), self.SMALLER)
+        stored = self.stored(redis)[1]
+        self.assertEqual((stored["limits"], stored["late"]), (self.SMALLER, True))
+        with self.assertLogs(LOGGER, "WARNING"):
+            self.assertEqual(self.limits(None, replica=other), self.SMALLER)
+        # The exchange after the step is this replica's round trip of the stepped clock: a read after it raises the
+        # limits.
+        self.advance(300)
+        self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
+        self.assertFalse(self.stored(redis)[1]["late"])
+
+    def test_the_first_read_of_a_replica_is_dated_late(self):
+        # A replica that starts has no round trip to Redis before its first read, to show that Redis's clock ran
+        # as the replica's while the request was in flight. Redis dates the read late, so it does not raise the
+        # limits that another replica read before; the replica's next read does.
+        redis = self.shared_redis()
+        self.install_upstream_info()
+        self.assertEqual(self.limits(self.listing(self.SMALLER)), self.SMALLER)
+        cold = self.replica(warm=False)
+        self.advance(300)
+        self.assertEqual(self.limits(self.ADVERTISED, replica=cold), self.SMALLER)
+        stored = self.stored(redis)[1]
+        self.assertEqual((stored["limits"], stored["late"]), (self.SMALLER, True))
+        self.advance(300)
+        self.assertEqual(self.limits(self.ADVERTISED, replica=cold), self.LIMITS)
+        self.assertFalse(self.stored(redis)[1]["late"])
 
     def test_after_redis_clock_went_back_a_little_a_reduction_counts(self):
         # This replica reads the larger window. Then Redis's clock goes back half a minute: ten seconds later, the
@@ -3728,6 +3924,32 @@ class GuardTest(unittest.TestCase):
             self.assertEqual(self.limits(None), self.LIMITS)
             self.assertEqual(self.stored(redis)[1]["limits"], self.LIMITS)
             self.assertEqual(self.limits(None, replica=self.replica()), self.LIMITS)
+
+    def test_after_redis_lost_its_data_a_copy_keeps_its_age(self):
+        # This replica read the larger window 29 days ago, and the upstream has not answered since. Redis loses its
+        # data: the replica's copy goes to Redis as an observation of the new epoch, which Redis keeps only for the
+        # day that remains of the 30 days from the read. A replica that starts in that day gets the limits; after
+        # it, neither that replica nor this one has them.
+        redis = self.shared_redis()
+        self.install_upstream_info()
+        self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
+        age, day = self.DAYS_30 - 24 * 3600, 24 * 3600
+        self.advance(age)
+        redis.clear()
+        with self.assertLogs(LOGGER, "WARNING"):
+            self.assertEqual(self.limits(None), self.LIMITS)
+        name, stored = self.stored(redis)
+        self.assertEqual((stored["limits"], stored["epoch"], stored["late"]), (self.LIMITS, self.epoch(redis), True))
+        self.assertAlmostEqual(stored["observed_ms"][0], redis.time_ms() - age * 1000, delta=5000)
+        self.assertAlmostEqual(redis.ttl(name), day, delta=5)
+        new = self.replica()
+        with self.assertLogs(LOGGER, "WARNING"):
+            self.assertEqual(self.limits(None, replica=new), self.LIMITS)
+        self.advance(day)
+        self.assertEqual(self.observation_names(redis), [])
+        self.assertEqual(self.limits(None), {})
+        self.assertEqual(self.limits(None, replica=new), {})
+        self.assertEqual(self.limits(None, replica=self.replica()), {})
 
     def test_a_copy_older_than_redis_keeps_one_stays_in_the_replica(self):
         # Redis's clock steps 31 days ahead: Redis drops the observation, and dates this replica's copy before the

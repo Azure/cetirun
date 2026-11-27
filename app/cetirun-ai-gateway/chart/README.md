@@ -2293,15 +2293,20 @@ these actions:
   a later change of the clock of Redis does not move earlier reads. The times
   are of an epoch of the clock of Redis. A new epoch begins when Redis lost its
   data, or when its clock went back. The times of two epochs do not order two
-  reads. A read that Redis did not date within five seconds, because Redis
-  did not answer, is not later than another read. At each refresh, a replica
-  combines the observation in Redis with its own: the later read wins, and of
-  two reads that the clock of Redis cannot order, the smaller limit of each kind
-  wins until a later read. The replica writes the result in place of the value
-  that it read, in one step, so that the replicas agree, also a replica that
-  starts meanwhile; when another replica wrote meanwhile, it reads again. A
-  replica uses what it knows when Redis does not answer, and writes it at the
-  next refresh.
+  reads. In a new epoch, an observation keeps the time of its read, and Redis
+  keeps it 30 days after that time. A read is not later than another read when
+  its times can be wrong. That is so when the clock of Redis stepped between the
+  replica's last round trip before the request and its round trip after the
+  read. It is so for the first read of a replica, which has no round trip before
+  it. It is also so when Redis did not date the read within five seconds,
+  because Redis did not answer. At each refresh, a replica combines the
+  observation in Redis with its own: the later read wins, and of two reads that
+  the clock of Redis cannot order, the smaller limit of each kind wins until a
+  later read. The replica writes the result in place of the value that it read,
+  in one step, so that the replicas agree, also a replica that starts
+  meanwhile. When another replica wrote meanwhile, the replica combines that
+  value with its result and writes again. A replica uses what it knows when
+  Redis does not answer, and writes it at the next refresh.
   The ID of the deployment scopes the limits: two deployments with one upstream
   URL and model keep their own limits, and a changed credential keeps them.
   When the upstream answers without limits for the model, also with an empty

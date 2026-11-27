@@ -145,13 +145,15 @@ while it does not answer. Each answer is an observation of the read of the
 listing, between LiteLLM's request and the answer. The guard keeps the newest
 observation in the Gateway's Redis, so that the replicas agree, and in the
 replica for when Redis does not answer. A replica dates each of its reads once
-by Redis's clock, with a round trip, in an epoch of the clock. A new epoch
-begins when Redis lost its data or its clock went back. At each refresh it
-combines the observation in Redis with its own: the read that certainly
-happened later wins, and of two reads that Redis's clock cannot order, the
-smaller limit of each kind. It writes the result in place of the value that it
-read. An answer without limits for the model, also an empty listing, withdraws
-them, and the router stops serving them at once.
+by Redis's clock, with a round trip, in an epoch of the clock. A read is not
+later than another when Redis's clock stepped since the replica's last round
+trip before the request. A new epoch begins when Redis lost its data or its
+clock went back, and an observation keeps the time of its read in it. At each
+refresh it combines the observation in Redis with its own: the read that
+certainly happened later wins, and of two reads that Redis's clock cannot order,
+the smaller limit of each kind. It writes the result in place of the value that
+it read. An answer without limits for the model, also an empty listing,
+withdraws them, and the router stops serving them at once.
 
 Encrypted reasoning without the Gateway's mark is removed from Responses API
 requests while encrypted content affinity is on for the model. A client that
@@ -630,6 +632,13 @@ UPSTREAM_AHEAD_MS = 60000
 # Redis did not date in time, because Redis did not answer, is not ordered by its times: a step of Redis's clock in
 # between could make it look newer or older than it is (date_read).
 UPSTREAM_PROMPT_DATING = 5
+# How fast Redis's clock and this replica's clock can run apart, as a share of the time: a thousand parts per
+# million. Two clocks that ntpd slews, each by at most 500, run apart no faster. Between two round trips to Redis, a
+# larger change of the difference of the two clocks is a step of Redis's clock, or a faster slew, across which
+# Redis's times do not order reads (steady_offsets). UPSTREAM_CLOCK_SLACK_MS adds the rounding of Redis's time to
+# whole milliseconds.
+UPSTREAM_CLOCK_RATE = 0.001
+UPSTREAM_CLOCK_SLACK_MS = 1
 # The deployment whose limits the router refreshes, in the task that refreshes them, and whether the newest
 # observation of it has no limits.
 REFRESHING_DEPLOYMENT = contextvars.ContextVar("cetirun_refreshing_deployment", default=None)
@@ -646,6 +655,9 @@ READ_TIMES = {}
 # when it received the listing, and the round trips to Redis, with which Redis's clock dates the reads.
 clock = time.monotonic
 LAST_READ = [float("-inf")]
+# This replica's latest round trip to Redis that answered: the times of this replica's clock before and after it,
+# Redis's time, and the epoch of Redis's clock. A read keeps the one before its request as its reference.
+LAST_CALL = [None]
 
 
 def upstream_limits_key(module, deployment, api_base, model):
@@ -674,16 +686,17 @@ def read_time():
 
 class ObservedClient:
     """The HTTP client of one lookup of an upstream's models. It records whether LiteLLM asked the upstream,
-    or answered from the listing it keeps, when it sent the request, and whether the upstream answered with a
-    listing, as LiteLLM reads one: a successful status and a body in the listing's form, also without models."""
+    or answered from the listing it keeps, when it sent the request, this replica's last round trip to Redis before
+    it, and whether the upstream answered with a listing, as LiteLLM reads one: a successful status and a body in
+    the listing's form, also without models."""
 
     def __init__(self, client, module):
         self.client, self.module = client, module
         self.asked = self.answered = False
-        self.sent = None
+        self.sent = self.reference = None
 
     async def get(self, *args, **kwargs):
-        self.asked, self.sent = True, read_time()
+        self.asked, self.sent, self.reference = True, read_time(), LAST_CALL[0]
         response = await self.client.get(*args, **kwargs)
         try:
             response.raise_for_status()
@@ -697,17 +710,17 @@ class ObservedClient:
         return getattr(self.client, name)
 
 
-def remember_listing(listing, answered, sent):
+def remember_listing(listing, answered, sent, reference):
     """Record that LiteLLM read an upstream's listing between sending its request, at the time sent, and now, with
-    an ID of the read. The upstream answered at an unknown time in between, so two reads whose times overlap
-    cannot be ordered. A later lookup that LiteLLM answers from the listing it keeps is the same read: an
-    observation of these times, not a newer one."""
+    an ID of the read and the round trip to Redis before the request (reference). The upstream answered at an
+    unknown time in between, so two reads whose times overlap cannot be ordered. A later lookup that LiteLLM
+    answers from the listing it keeps is the same read: an observation of these times, not a newer one."""
     received = read_time()
-    for key in [key for key, (times, _, _) in UPSTREAM_LISTINGS.items()
+    for key in [key for key, (times, _, _, _) in UPSTREAM_LISTINGS.items()
                 if times[1] < received - UPSTREAM_LISTING_MEMORY]:
         del UPSTREAM_LISTINGS[key]
-    UPSTREAM_LISTINGS[listing] = ((min(sent, received), received), answered, secrets.token_hex(8))
-    reads = {read for _, _, read in UPSTREAM_LISTINGS.values()}
+    UPSTREAM_LISTINGS[listing] = ((min(sent, received), received), answered, secrets.token_hex(8), reference)
+    reads = {read for _, _, read, _ in UPSTREAM_LISTINGS.values()}
     for read in [read for read in READ_TIMES if read not in reads]:
         del READ_TIMES[read]
 
@@ -811,11 +824,16 @@ def in_epoch(observation, now_ms, epoch, received):
     """An observation as one of the current epoch epoch of Redis's clock. The read of an observation of another
     epoch happened before Redis's time now_ms of this exchange, which it got at the time received of this replica's
     clock: the observation ends at now_ms, and it is late, so that a read that began after this exchange follows
-    it, and no read before."""
+    it, and no read before. It keeps its age: it begins as long before now_ms as its read began before received by
+    this replica's clock, so Redis keeps it no longer than 30 days from its read; or None when that is longer
+    ago."""
     if observation is None or observation["epoch"] == epoch:
         return observation
-    return dict(observation, observed_ms=(now_ms, now_ms), seen=(min(observation["seen"][0], received), received),
-                epoch=epoch, late=True)
+    began = min(observation["seen"][0], received)
+    first = now_ms - math.ceil((received - began) * 1000)
+    if first <= now_ms - UPSTREAM_LIMITS_TTL * 1000:
+        return None
+    return dict(observation, observed_ms=(first, now_ms), seen=(began, received), epoch=epoch, late=True)
 
 
 def combined(shared, local, now_ms, epoch, received):
@@ -842,6 +860,14 @@ def combined(shared, local, now_ms, epoch, received):
     return in_epoch(newest, now_ms, epoch, received)
 
 
+def earlier_reference(one, other):
+    """Of the round trips to Redis before two reads, the earlier one, which was before both; or None when one of
+    the reads has none."""
+    if one is None or other is None:
+        return None
+    return one if one[1] <= other[1] else other
+
+
 def newer_read(local, fresh):
     """This replica's newest observation of a deployment from its observation and a read of the upstream, by this
     replica's clock: the later read. When the times of the two reads overlap, so that this replica does not know
@@ -856,7 +882,8 @@ def newer_read(local, fresh):
     limits = smaller_limits(local["limits"], fresh["limits"])
     return {"limits": limits, "etag": secrets.token_hex(8),
             "seen": (min(local["seen"][0], fresh["seen"][0]), max(local["seen"][1], fresh["seen"][1])),
-            "observed_ms": None, "epoch": None, "late": False}
+            "observed_ms": None, "epoch": None, "late": False,
+            "reference": earlier_reference(local.get("reference"), fresh.get("reference"))}
 
 
 def shared_redis():
@@ -864,37 +891,77 @@ def shared_redis():
     return getattr(sys.modules.get(PROXY_SERVER_MODULE), "redis_usage_cache", None)
 
 
-def read_times(now_ms, sent, received, seen):
-    """The two times of Redis's clock, in whole milliseconds, between which a read happened: Redis's time now_ms
-    fell between the times sent and received of this replica's clock, and the read between the two times seen."""
-    return now_ms - math.ceil((received - seen[0]) * 1000), now_ms - math.floor((sent - seen[1]) * 1000)
+def clock_offsets(now_ms, sent, received):
+    """How far, in milliseconds, Redis's clock was ahead of this replica's during a round trip: Redis's time now_ms
+    fell between the times sent and received of this replica's clock, so the difference was between the two."""
+    return now_ms - received * 1000, now_ms - sent * 1000
+
+
+def read_times(offsets, seen):
+    """The two times of Redis's clock, in whole milliseconds, between which a read happened: the read happened
+    between the two times seen of this replica's clock, while Redis's clock was ahead of it by a difference between
+    the two offsets."""
+    return math.floor(offsets[0] + seen[0] * 1000), math.ceil(offsets[1] + seen[1] * 1000)
+
+
+def steady_offsets(reference, now_ms, sent, received, epoch):
+    """How far Redis's clock can have been ahead of this replica's, in milliseconds, at any time between the round
+    trip reference and a later one, in which Redis's time now_ms, of the epoch epoch, fell between the times sent and
+    received of this replica's clock. Each round trip bounds the difference of the two clocks (clock_offsets), and in
+    between it changes by no more than UPSTREAM_CLOCK_RATE allows, unless Redis's clock stepped: so it stayed between
+    the smallest and the largest bound of the two round trips, widened by that rate. That holds for a step small
+    enough to fit both round trips too, before and after it. None when no change within the rate fits both round
+    trips, because Redis's clock stepped, forward or back; when the epoch of Redis's clock changed; or when there is
+    no round trip to compare with."""
+    if reference is None:
+        return None
+    before, after, then_ms, then_epoch = reference
+    if then_epoch != epoch:
+        return None
+    low, high = clock_offsets(now_ms, sent, received)
+    then_low, then_high = clock_offsets(then_ms, before, after)
+    drift = UPSTREAM_CLOCK_RATE * (received - before) * 1000 + UPSTREAM_CLOCK_SLACK_MS
+    if low > then_high + drift or high < then_low - drift:
+        return None
+    return min(low, then_low) - drift, max(high, then_high) + drift
 
 
 def date_read(observation, now_ms, sent, received, epoch):
     """Date the read of this replica's observation by Redis's clock, once for each read (READ_TIMES): Redis's time
-    now_ms, of the epoch epoch, fell between the times sent and received of this replica's clock. The dating is
-    late when the round trip started more than UPSTREAM_PROMPT_DATING seconds after the read: a step of Redis's
-    clock in between can have moved the read's times either way. Such a read follows no other read (follows), and
-    it ends at Redis's time now_ms, so that only a read that began after its dating follows it."""
+    now_ms, of the epoch epoch, fell between the times sent and received of this replica's clock.
+
+    The read keeps this replica's last round trip to Redis before its request (reference). When Redis's clock ran
+    as this replica's from that round trip to this one (steady_offsets), the read happened between the times that
+    the two clocks' difference then gives. Otherwise the dating is late: Redis's clock stepped meanwhile, also while
+    the request was in flight, or the read has no round trip before it, as the first read of a replica has none. It
+    is late too when this round trip started more than UPSTREAM_PROMPT_DATING seconds after the read. A late read
+    follows no other read (follows), and it ends at Redis's time now_ms, so that only a read that began after its
+    dating follows it. It begins as long before now_ms as the read began before received by this replica's clock,
+    so that Redis keeps it 30 days from the read."""
     dating = READ_TIMES.get(observation["etag"])
     if dating is None:
-        first, last = read_times(now_ms, sent, received, observation["seen"])
-        late = sent - observation["seen"][1] > UPSTREAM_PROMPT_DATING
-        dating = ((first, now_ms if late else last), late, epoch)
+        seen = observation["seen"]
+        offsets = steady_offsets(observation.get("reference"), now_ms, sent, received, epoch)
+        if offsets is None or sent - seen[1] > UPSTREAM_PROMPT_DATING:
+            dating = ((read_times(clock_offsets(now_ms, sent, received), seen)[0], now_ms), True, epoch)
+        else:
+            dating = (read_times(offsets, seen), False, epoch)
         READ_TIMES[observation["etag"]] = dating
     observation["observed_ms"], observation["late"], observation["epoch"] = dating
 
 
 async def upstream_limits_script(client, name, clock_name, *args):
     """Run the script in Redis: the value that Redis has afterwards, Redis's time in milliseconds, what Redis did,
-    the epoch of Redis's clock, and the times of this replica's clock before and after."""
+    the epoch of Redis's clock, and the times of this replica's clock before and after (also LAST_CALL)."""
     sent = clock()
     value, now_ms, verdict, epoch = await client.eval(UPSTREAM_LIMITS_SCRIPT, 2, name, clock_name, *args,
                                                       UPSTREAM_LIMITS_TTL)
     received = clock()
     now_ms, verdict, epoch = (item.decode("ascii") if isinstance(item, bytes) else item
                               for item in (now_ms, verdict, epoch))
-    return value, int(now_ms), verdict, str(epoch), sent, received
+    now_ms, epoch = int(now_ms), str(epoch)
+    LAST_CALL[0] = (sent, received, now_ms, epoch)
+    return value, now_ms, verdict, epoch, sent, received
 
 
 async def newest_observation(key, local):
@@ -902,15 +969,16 @@ async def newest_observation(key, local):
 
     The replica dates the read of its own observation once, by Redis's clock, with a round trip: Redis's time
     during the round trip, less the time since the read by this replica's clock, gives two times of Redis between
-    which the read happened (date_read). The observation keeps those times and the epoch of Redis's clock, so a
-    later change of Redis's clock does not move them, and the clocks of the replicas are never compared. At each
-    lookup the replica reads Redis, combines the observation there with its own (combined), and writes the result
-    in place of the value that it read when they differ. When another replica wrote meanwhile, Redis answers with
-    that value instead; the replica combines it in the same way at once, and writes again. So what the replica
-    knows has each value that Redis returned, also when it cannot write. Its own observation counts only with
-    times that Redis keeps now (current_read), and the replica only uses it otherwise while Redis has none. When
-    Redis does not answer, the replica uses what it knows: the result of its last exchange with Redis, or else its
-    own observation, which goes to Redis at the next lookup."""
+    which the read happened, when Redis's clock ran as this replica's since the round trip before the request
+    (date_read). The observation keeps those times and the epoch of Redis's clock, so a later change of Redis's
+    clock does not move them, and the clocks of the replicas are never compared. At each lookup the replica reads
+    Redis, combines the observation there with its own (combined), and writes the result in place of the value that
+    it read when they differ. When another replica wrote meanwhile, Redis answers with that value instead, or with
+    none when it lost the value; the replica combines it at once with the result that it offered, and writes again.
+    So what the replica knows has each value that Redis returned, also when it cannot write. Its own observation
+    counts only with times that Redis keeps now (current_read), and the replica only uses it otherwise while Redis
+    has none. When Redis does not answer, the replica uses what it knows: the result of its last exchange with
+    Redis, or else its own observation, which goes to Redis at the next lookup."""
     redis = shared_redis()
     if redis is None:
         return local
@@ -920,10 +988,11 @@ async def newest_observation(key, local):
         client = redis.init_async_client()
         name, clock_name = redis.check_and_fix_namespace(key), redis.check_and_fix_namespace(UPSTREAM_CLOCK_KEY)
         value, now_ms, _, epoch, sent, received = await upstream_limits_script(client, name, clock_name, "", "", "")
+        if local is not None and local["observed_ms"] is None:
+            date_read(local, now_ms, sent, received, epoch)
+        mine = local
         for attempt in range(UPSTREAM_WRITE_ATTEMPTS + 1):
-            if local is not None and local["observed_ms"] is None:
-                date_read(local, now_ms, sent, received, epoch)
-            own = (local if local is not None and current_read(local["observed_ms"], now_ms, local["epoch"] == epoch)
+            own = (mine if mine is not None and current_read(mine["observed_ms"], now_ms, mine["epoch"] == epoch)
                    else None)
             shared = stored_observation(value, now_ms, epoch, sent, received)
             newest = combined(shared, own, now_ms, epoch, received)
@@ -935,6 +1004,9 @@ async def newest_observation(key, local):
                 client, name, clock_name, stored_value(newest), value or "", newest["observed_ms"][0])
             if verdict != "changed":
                 return
+            # Redis did not take the write, and answered with its value: none, when it lost the value meanwhile.
+            # This replica combines that value with the result that it offered, which has what it read in Redis.
+            mine = newest
 
     try:
         await asyncio.wait_for(exchange(), UPSTREAM_REDIS_TIMEOUT)
@@ -960,9 +1032,10 @@ async def kept_upstream_limits(module, state, model, api_base, listing, fresh, l
     local, read = live_observation(KEPT_UPSTREAM_LIMITS.get(key)), None
     if answered:
         FAILED_UPSTREAMS.discard(key)
-        seen, _, read = record
+        seen, _, read, reference = record
         local = newer_read(local, {"limits": token_limits(dict(limits)) if limits else None, "etag": read,
-                                   "seen": seen, "observed_ms": None, "epoch": None, "late": False})
+                                   "seen": seen, "observed_ms": None, "epoch": None, "late": False,
+                                   "reference": reference})
     elif limits:
         return limits  # a listing that LiteLLM read before the guard replaced its lookup
     if local is None:
@@ -1056,7 +1129,7 @@ def install_kept_upstream_limits():
         try:
             listing = upstream_listing_key(module, api_base, headers)
             if observed.asked:
-                remember_listing(listing, observed.answered, observed.sent)
+                remember_listing(listing, observed.answered, observed.sent, observed.reference)
             state = REFRESHING_DEPLOYMENT.get()
             if state is None:
                 return limits
