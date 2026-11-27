@@ -523,6 +523,63 @@ class CronSyncCLITest(unittest.TestCase):
         self.assertNotIn("model", self.calls("update")[-1]["fields"])
         self.assertEqual(self.jobs()[0]["model"], "owner-model")
 
+    def models_record(self):
+        return json.loads((self.state_dir / "cron-models.json").read_text())
+
+    def test_monitor_model_goes_also_after_the_owner_edited_the_prompt(self):
+        # The helper keeps the model that it set apart from the job's prompt: a note that the owner adds to the
+        # prompt does not keep the model when monitor.model goes.
+        self.config["monitor"]["model"] = "gpt-6-sol"
+        job_id = self.run_cli()["jobId"]
+        self.assertEqual(self.models_record(), {"version": 1, "jobId": job_id, "models": ["gpt-6-sol"]})
+        self.change_job(prompt=self.jobs()[0]["prompt"] + "\n\nOwner note: check the GPU nodes too.")
+        del self.config["monitor"]["model"]
+        self.assertEqual(self.run_cli()["status"], "updated")
+        self.assertIsNone(self.jobs()[0]["model"])
+        self.assertNotIn("Owner note", self.jobs()[0]["prompt"])
+        self.assertEqual(self.models_record(), {"version": 1, "jobId": job_id, "models": []})
+
+    def test_a_model_that_an_interrupted_synchronization_set_goes_too(self):
+        # The helper records the model before the job gets it: a synchronization that stops after the update keeps
+        # the record, so the model goes with monitor.model.
+        self.run_cli()
+        self.config["monitor"]["model"] = "gpt-6-sol"
+        self.assertEqual(self.run_cli(fault="update_after_write", success=False)["code"], "native_error")
+        self.assertEqual(self.jobs()[0]["model"], "gpt-6-sol")
+        del self.config["monitor"]["model"]
+        self.assertEqual(self.run_cli()["status"], "updated")
+        self.assertIsNone(self.jobs()[0]["model"])
+
+    def test_a_model_record_of_another_job_does_not_count(self):
+        self.run_cli()
+        self.change_job(model="gpt-6-sol")
+        record = self.state_dir / "cron-models.json"
+        record.write_text(json.dumps({"version": 1, "jobId": "abcdef012345", "models": ["gpt-6-sol"]}))
+        record.chmod(0o600)
+        self.assertEqual(self.run_cli()["status"], "unchanged")
+        self.assertEqual(self.jobs()[0]["model"], "gpt-6-sol")
+
+    def test_the_model_record_is_private_and_checked(self):
+        self.config["monitor"]["model"] = "gpt-6-sol"
+        job_id = self.run_cli()["jobId"]
+        record = self.state_dir / "cron-models.json"
+        self.assertEqual(record.stat().st_mode & 0o777, 0o600)
+        for value in ({"version": 1, "jobId": job_id, "models": ["gpt 6"]},
+                      {"version": 1, "jobId": job_id, "models": "gpt-6-sol"},
+                      {"version": 1, "jobId": job_id, "models": [""]},
+                      {"version": 2, "jobId": job_id, "models": []},
+                      {"version": 1, "jobId": "../job", "models": []},
+                      {"version": 1, "jobId": job_id}, [job_id]):
+            with self.subTest(value=value):
+                record.write_text(json.dumps(value))
+                record.chmod(0o600)
+                self.assertEqual(self.run_cli(success=False)["code"], "state_conflict")
+        record.write_text(json.dumps({"version": 1, "jobId": job_id, "models": ["gpt-6-sol"]}))
+        record.chmod(0o644)
+        self.assertEqual(self.run_cli(success=False)["code"], "unsafe_state")
+        record.chmod(0o600)
+        self.assertEqual(self.run_cli()["status"], "unchanged")
+
     def test_monitor_model_names_one_model(self):
         for model in ("gpt 6", " gpt-6", "gpt-6\t", "a" * 257, 6):
             with self.subTest(model=model):

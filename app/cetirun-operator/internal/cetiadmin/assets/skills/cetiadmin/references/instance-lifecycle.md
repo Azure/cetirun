@@ -234,7 +234,9 @@ a same-instance Secret reference, and injected `SLACK_BOT_TOKEN` plus
 `SLACK_APP_TOKEN`. The helper checks presence, not live authorization. A model
 name in `model` sets the model of the native job. Without it, the job keeps its
 own model: none, which is CetiAdmin's default model, or one that its owner chose.
-A model that `model` set earlier is removed.
+A model that `model` set earlier is removed. The helper records each model that
+it sets, with the job's ID, in `cron-models.json` of its state directory, so an
+edit of the job's prompt does not keep such a model.
 
 The runtime must stop startup on a nonzero exit. On success it must export the
 returned validated `timezone` as `HERMES_TIMEZONE` before starting the scheduler.

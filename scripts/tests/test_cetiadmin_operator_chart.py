@@ -413,6 +413,8 @@ class CetiAdminOperatorChartTests(unittest.TestCase):
             ({"monitor": {"enabled": True, "deliver": "slack"}}, "slackChannel"),
             ({"monitor": {"deliver": "teams"}}, "deliver"), ({"teams": {"enabled": True}}, "unsupported"),
             ({"monitor": {"model": "gpt 6"}}, "monitor.model"), ({"monitor": {"model": 6}}, "monitor.model"),
+            ({"monitor": {"model": False}}, "monitor.model"), ({"monitor": {"model": 0}}, "monitor.model"),
+            ({"monitor": {"model": []}}, "monitor.model"), ({"monitor": {"model": {}}}, "monitor.model"),
             ({"assets": {"image": "other:1"}}, "unsupported"),
             ({"runtime": {"version": "0.0.1"}}, "runtime.version"),
             ({"runtime": {"port": 18789}}, "runtime.port"),

@@ -83,7 +83,8 @@ Licensed under the MIT License.
 {{- if and $c.sharedSkills.enabled (empty (dig "skills" "storageAccount" "" .Values.cetirun.helmValues)) -}}{{- fail "cetiadmin.sharedSkills.enabled requires cetirun.helmValues.skills.storageAccount" -}}{{- end -}}
 {{- if not (has $c.monitor.deliver (list "local" "slack")) -}}{{- fail "cetiadmin.monitor.deliver must be local or slack" -}}{{- end -}}
 {{- if or (not (kindIs "string" $c.monitor.timezone)) (empty $c.monitor.timezone) (eq $c.monitor.timezone "Local") -}}{{- fail "cetiadmin.monitor.timezone must name an IANA timezone" -}}{{- end -}}
-{{- $monitorModel := $c.monitor.model | default "" -}}
+{{- $monitorModel := $c.monitor.model -}}
+{{- if kindIs "invalid" $monitorModel -}}{{- $monitorModel = "" -}}{{- end -}}
 {{- if or (not (kindIs "string" $monitorModel)) (regexMatch "[[:space:][:cntrl:]]" $monitorModel) (gt (len $monitorModel) 256) -}}{{- fail "cetiadmin.monitor.model must name a model, or be empty for model.default" -}}{{- end -}}
 {{- if $c.monitor.enabled -}}
 {{- if empty (trim $c.monitor.schedule) -}}{{- fail "cetiadmin.monitor.schedule is required" -}}{{- end -}}

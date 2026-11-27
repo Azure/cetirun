@@ -6,7 +6,7 @@
 
 Run before the Hermes scheduler starts. The runtime must also export the
 returned timezone as HERMES_TIMEZONE for that scheduler and stop on failure.
-This CLI changes only its own process environment and private binding file;
+This CLI changes only its own process environment and private state files;
 cron.jobs owns all native job storage, output, and notepad handling.
 """
 
@@ -34,8 +34,12 @@ SLACK_CHANNEL = re.compile(r"[CG][A-Z0-9]{8,31}")
 MAX_JSON_BYTES = 65536
 MONITOR_FIELDS = {"enabled", "schedule", "timezone", "deliver", "slackChannel", "slackSecretName", "model"}
 BINDING_FIELDS = {"version", "instance", "hermesHome", "phase", "jobId", "timezone"}
-# The heading of the input that each synchronization binds into the end of the job's prompt.
-BOUND_INPUT = "\n\n## Bound monitor input\n\n```json\n"
+# The models that monitor.model set on the bound job, with its ID. Without monitor.model, a synchronization
+# removes only such a model, whatever the job's prompt says, and keeps a model that the owner chose. A model is
+# recorded before the job gets it, so an interrupted synchronization leaves no model that the next one does not
+# know.
+MODELS_FILE = "cron-models.json"
+MODELS_FIELDS = {"version", "jobId", "models"}
 
 
 class SyncError(Exception):
@@ -147,14 +151,19 @@ def state_lock(directory):
         os.close(descriptor)
 
 
+def check_state_file(info):
+    """A state file is a private regular file of this user, with one link."""
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) & 0o077):
+        raise SyncError("unsafe_state")
+
+
 def read_binding(path, instance, home):
     try:
         info = path.lstat()
     except FileNotFoundError:
         return None
-    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid()
-            or stat.S_IMODE(info.st_mode) & 0o077):
-        raise SyncError("unsafe_state")
+    check_state_file(info)
     saved = read_json(path, "state_conflict")
     if (set(saved) != BINDING_FIELDS or type(saved["version"]) is not int or saved["version"] != 1
             or saved["instance"] != instance or saved["hermesHome"] != str(home)
@@ -165,6 +174,28 @@ def read_binding(path, instance, home):
     if not isinstance(saved["jobId"], str) or not JOB_ID.fullmatch(saved["jobId"]):
         raise SyncError("state_conflict")
     return saved
+
+
+def read_models(path, job_id):
+    """The models that monitor.model set on the job job_id (MODELS_FILE): none when the file is missing or names
+    another job."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return []
+    check_state_file(info)
+    saved = read_json(path, "state_conflict")
+    if (set(saved) != MODELS_FIELDS or type(saved["version"]) is not int or saved["version"] != 1
+            or not isinstance(saved["jobId"], str) or not JOB_ID.fullmatch(saved["jobId"])
+            or not isinstance(saved["models"], list)
+            or any(not isinstance(model, str) or not model or any(char.isspace() for char in model)
+                   for model in saved["models"])):
+        raise SyncError("state_conflict")
+    return saved["models"] if saved["jobId"] == job_id else []
+
+
+def save_models(path, job_id, models, directory_fd):
+    save_binding(path, {"version": 1, "jobId": job_id, "models": models}, directory_fd)
 
 
 def save_binding(path, binding, directory_fd):
@@ -262,7 +293,7 @@ def desired_job(config, state_dir):
     if not prompt:
         raise SyncError("missing_prompt")
     context = {**config, "stateDirectory": str(state_dir)}
-    prompt += BOUND_INPUT + json.dumps(context, sort_keys=True) + "\n```"
+    prompt += "\n\n## Bound monitor input\n\n```json\n" + json.dumps(context, sort_keys=True) + "\n```"
     monitor = config["monitor"]
     deliver = "slack:" + monitor["slackChannel"] if monitor["deliver"] == "slack" else "local"
     desired = {"name": JOB_NAME, "prompt": prompt, "skills": ["cetiadmin"], "skill": "cetiadmin",
@@ -274,20 +305,6 @@ def desired_job(config, state_dir):
     return desired
 
 
-def bound_model(job):
-    """The monitor model in the input that an earlier synchronization bound into the job's prompt, or ''."""
-    prompt = job.get("prompt")
-    if not isinstance(prompt, str) or BOUND_INPUT not in prompt or not prompt.endswith("\n```"):
-        return ""
-    try:
-        bound = json.loads(prompt.rsplit(BOUND_INPUT, 1)[1][:-len("\n```")])
-    except ValueError:
-        return ""
-    monitor = bound.get("monitor") if isinstance(bound, dict) else None
-    model = monitor.get("model") if isinstance(monitor, dict) else None
-    return model if isinstance(model, str) else ""
-
-
 def verify_definition(job, desired, schedule):
     if job.get("schedule") != schedule or any(job.get(key) != value for key, value in desired.items()):
         raise SyncError("readback_mismatch")
@@ -296,6 +313,7 @@ def verify_definition(job, desired, schedule):
 def sync(config, home, install, state_dir):
     monitor = config["monitor"]
     path = state_dir / "cron-binding.json"
+    models_path = state_dir / MODELS_FILE
     with state_lock(state_dir) as directory_fd:
         binding = read_binding(path, config["instance"], home)
         native = load_native(install, monitor["timezone"])
@@ -329,6 +347,8 @@ def sync(config, home, install, state_dir):
                 raise SyncError("create_uncertain")
             binding.update(phase="bound", jobId=job_id)
             save_binding(path, binding, directory_fd)
+            if monitor["model"]:
+                save_models(models_path, job_id, [monitor["model"]], directory_fd)
             job = known_job(native, job_id)
             verify_definition(job, desired, schedule)
             if job.get("enabled") is not False or job.get("state") != "paused":
@@ -339,10 +359,14 @@ def sync(config, home, install, state_dir):
                 or not isinstance(job.get("enabled"), bool) or job.get("state") not in {"scheduled", "paused"}):
             raise SyncError("job_conflict")
         updates = {key: value for key, value in desired.items() if job.get(key) != value}
-        # Without monitor.model, remove only a model that monitor.model set earlier, not one of the owner.
-        clear_model = not monitor["model"] and bool(job.get("model")) and job.get("model") == bound_model(job)
+        # Without monitor.model, remove only a model that monitor.model set, not one that the owner chose.
+        models = read_models(models_path, binding["jobId"])
+        clear_model = not monitor["model"] and bool(job.get("model")) and job.get("model") in models
         if clear_model:
             updates["model"] = None
+        if monitor["model"] and monitor["model"] not in models:
+            models = models + [monitor["model"]]
+            save_models(models_path, binding["jobId"], models, directory_fd)
         timezone_changed = binding["timezone"] != monitor["timezone"]
         if job.get("schedule") != schedule or timezone_changed:
             updates["schedule"] = monitor["schedule"]
@@ -371,6 +395,9 @@ def sync(config, home, install, state_dir):
         if timezone_changed:
             binding["timezone"] = monitor["timezone"]
             save_binding(path, binding, directory_fd)
+        managed = [monitor["model"]] if monitor["model"] else []
+        if models != managed:
+            save_models(models_path, binding["jobId"], managed, directory_fd)
         result.update(status="created" if created else "updated" if changed else "unchanged",
                       jobId=binding["jobId"], nextRunAt=next_run.isoformat())
         return result
