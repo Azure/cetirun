@@ -55,6 +55,7 @@ class ExternalTlsTests(unittest.TestCase):
         self.connect.assert_called_once_with(("192.0.2.1", 443), timeout=verifier.DEFAULT_TIMEOUT)
         self.context.wrap_socket.assert_called_once_with(self.raw, server_hostname="cetirun.example.com")
         self.assertEqual(self.context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertEqual(self.context.minimum_version, ssl.TLSVersion.TLSv1_2)
         self.assertTrue(self.context.check_hostname)
         self.assertEqual(result["sanDnsNames"], ["cetirun.example.com"])
 

@@ -73,6 +73,7 @@ def verify_tls(
         raise ValueError("minimum-valid-days must be finite and positive")
     expected_sha256 = _fingerprint(expected_sha256)
     context = context_factory()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     # Keep these explicit even for create_default_context: verification and
     # hostname checks are part of this tool's contract.
     context.verify_mode = ssl.CERT_REQUIRED

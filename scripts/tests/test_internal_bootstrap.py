@@ -44,7 +44,7 @@ class InternalBootstrapTests(unittest.TestCase):
         deployment.resource = Mock(side_effect=lambda kind, name, namespace="":
                                    {"name": name} if kind == "namespace" else None)
         deployment.kubectl = Mock(side_effect=lambda *args, **kwargs:
-                                  '{"items":[]}' if "gateways.networking.istio.io" in args
+                                  '{"items":[]}' if args[:2] == ("get", "gateways.networking.istio.io")
                                   else '{"items":[{"metadata":{"name":"public"},"spec":{"type":"LoadBalancer"}}]}')
         with self.assertRaisesRegex(ValueError, "non-ClusterIP Service"):
             deployment.check_internal_surface()
