@@ -840,9 +840,11 @@ def combined(shared, local, now_ms, epoch, received):
     """The newest that this replica knows of a deployment's limits, from the observation in Redis and its own,
     both dated by Redis's clock, as an observation of the current epoch epoch (in_epoch): the observation of the
     read that certainly happened later (follows). Otherwise an observation with the smaller limit of each kind,
-    which only a read that certainly happened after it replaces. Its read happened between the earliest and the
-    latest of their times, and it is late when either was. Observations of two epochs are first taken into the
-    current one, so the smaller limit of each kind counts until a read after this exchange."""
+    which only a read that certainly happened after it replaces. It runs from the later of their starts to the
+    later of their ends: no limit of it is larger than the read that began later advertised, and a read that ended
+    before that start is older than that read, so the observation can replace it; Redis keeps it 30 days from that
+    start. It is late when either was. Observations of two epochs are first taken into the current one, so the
+    smaller limit of each kind counts until a read after this exchange."""
     if shared is not None and local is not None and shared["epoch"] != local["epoch"]:
         shared, local = (in_epoch(observation, now_ms, epoch, received) for observation in (shared, local))
     if shared is None or local is None:
@@ -854,8 +856,8 @@ def combined(shared, local, now_ms, epoch, received):
     else:
         limits, both = smaller_limits(shared["limits"], local["limits"]), (shared, local)
         newest = {"limits": limits, "etag": merged_etag(shared, local, limits),
-                  "observed_ms": (min(o["observed_ms"][0] for o in both), max(o["observed_ms"][1] for o in both)),
-                  "seen": (min(o["seen"][0] for o in both), max(o["seen"][1] for o in both)),
+                  "observed_ms": (max(o["observed_ms"][0] for o in both), max(o["observed_ms"][1] for o in both)),
+                  "seen": (max(o["seen"][0] for o in both), max(o["seen"][1] for o in both)),
                   "epoch": shared["epoch"], "late": shared["late"] or local["late"]}
     return in_epoch(newest, now_ms, epoch, received)
 
@@ -871,8 +873,9 @@ def earlier_reference(one, other):
 def newer_read(local, fresh):
     """This replica's newest observation of a deployment from its observation and a read of the upstream, by this
     replica's clock: the later read. When the times of the two reads overlap, so that this replica does not know
-    which answer the upstream gave later, an observation with the smaller limit of each kind, of a read between
-    the earliest and the latest of their times, which Redis's clock dates at the next round trip."""
+    which answer the upstream gave later, an observation with the smaller limit of each kind, from the later of
+    their starts to the later of their ends (as combined does), which Redis's clock dates at the next round trip,
+    with the round trip before both reads."""
     if local is None or local["etag"] == fresh["etag"]:
         return fresh if local is None else local
     if local["seen"][1] < fresh["seen"][0]:
@@ -881,7 +884,7 @@ def newer_read(local, fresh):
         return local
     limits = smaller_limits(local["limits"], fresh["limits"])
     return {"limits": limits, "etag": secrets.token_hex(8),
-            "seen": (min(local["seen"][0], fresh["seen"][0]), max(local["seen"][1], fresh["seen"][1])),
+            "seen": (max(local["seen"][0], fresh["seen"][0]), max(local["seen"][1], fresh["seen"][1])),
             "observed_ms": None, "epoch": None, "late": False,
             "reference": earlier_reference(local.get("reference"), fresh.get("reference"))}
 
@@ -932,12 +935,14 @@ def date_read(observation, now_ms, sent, received, epoch):
 
     The read keeps this replica's last round trip to Redis before its request (reference). When Redis's clock ran
     as this replica's from that round trip to this one (steady_offsets), the read happened between the times that
-    the two clocks' difference then gives. Otherwise the dating is late: Redis's clock stepped meanwhile, also while
-    the request was in flight, or the read has no round trip before it, as the first read of a replica has none. It
-    is late too when this round trip started more than UPSTREAM_PROMPT_DATING seconds after the read. A late read
-    follows no other read (follows), and it ends at Redis's time now_ms, so that only a read that began after its
-    dating follows it. It begins as long before now_ms as the read began before received by this replica's clock,
-    so that Redis keeps it 30 days from the read."""
+    the two clocks' difference then gives. The read ended before this round trip began, so it ends no later than
+    Redis's time now_ms, give or take its rounding (UPSTREAM_CLOCK_SLACK_MS), however wide the allowance for the
+    clocks since a round trip long ago makes its times. Otherwise the dating is late: Redis's clock stepped
+    meanwhile, also while the request was in flight, or the read has no round trip before it, as the first read of
+    a replica has none. It is late too when this round trip started more than UPSTREAM_PROMPT_DATING seconds after
+    the read. A late read follows no other read (follows), and it ends at Redis's time now_ms, so that only a read
+    that began after its dating follows it. It begins as long before now_ms as the read began before received by
+    this replica's clock, so that Redis keeps it 30 days from the read."""
     dating = READ_TIMES.get(observation["etag"])
     if dating is None:
         seen = observation["seen"]
@@ -945,7 +950,8 @@ def date_read(observation, now_ms, sent, received, epoch):
         if offsets is None or sent - seen[1] > UPSTREAM_PROMPT_DATING:
             dating = ((read_times(clock_offsets(now_ms, sent, received), seen)[0], now_ms), True, epoch)
         else:
-            dating = (read_times(offsets, seen), False, epoch)
+            first, last = read_times(offsets, seen)
+            dating = ((first, min(last, now_ms + UPSTREAM_CLOCK_SLACK_MS)), False, epoch)
         READ_TIMES[observation["etag"]] = dating
     observation["observed_ms"], observation["late"], observation["epoch"] = dating
 

@@ -2289,8 +2289,10 @@ these actions:
   observation in its Redis, for 30 days after that time, and in the replica. A
   replica dates each of its reads once by the clock of Redis: with a round trip
   to Redis, it learns two times of Redis between which the read happened, and
-  the observation keeps them. So the clocks of the replicas do not matter, and
-  a later change of the clock of Redis does not move earlier reads. The times
+  the observation keeps them. The read ended before that round trip, so the
+  second time is no later than the time of Redis during it. So the clocks of
+  the replicas do not matter, and a later change of the clock of Redis does not
+  move earlier reads. The times
   are of an epoch of the clock of Redis. A new epoch begins when Redis lost its
   data, or when its clock went back. The times of two epochs do not order two
   reads. In a new epoch, an observation keeps the time of its read, and Redis
@@ -2302,7 +2304,9 @@ these actions:
   because Redis did not answer. At each refresh, a replica combines the
   observation in Redis with its own: the later read wins, and of two reads that
   the clock of Redis cannot order, the smaller limit of each kind wins until a
-  later read. The replica writes the result in place of the value that it read,
+  later read. That result counts from the read that began later, which
+  advertised no smaller limit, so Redis keeps it 30 days after that read.
+  The replica writes the result in place of the value that it read,
   in one step, so that the replicas agree, also a replica that starts
   meanwhile. When another replica wrote meanwhile, the replica combines that
   value with its result and writes again. A replica uses what it knows when
