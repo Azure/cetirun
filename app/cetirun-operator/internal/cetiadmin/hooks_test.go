@@ -154,18 +154,66 @@ func (c *hookTestClient) List(ctx context.Context, list client.ObjectList, optio
 
 func hookTestCA(t *testing.T) []byte {
 	t.Helper()
+	return hookTestCertificate(t, &x509.Certificate{IsCA: true, KeyUsage: x509.KeyUsageCertSign})
+}
+
+// hookTestCertificate signs the template with its own new key: a self-signed
+// certificate that is valid for one hour around now unless the template sets
+// the validity.
+func hookTestCertificate(t *testing.T, template *x509.Certificate) []byte {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cert := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "example.test"},
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
-		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
-	der, err := x509.CreateCertificate(rand.Reader, cert, cert, &key.PublicKey, key)
+	cert := *template
+	cert.SerialNumber, cert.Subject, cert.BasicConstraintsValid = big.NewInt(1), pkix.Name{CommonName: "example.test"}, true
+	if cert.NotBefore.IsZero() {
+		cert.NotBefore, cert.NotAfter = time.Now().Add(-time.Hour), time.Now().Add(time.Hour)
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &cert, &cert, &key.PublicKey, key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+func TestAdmissionCABundleNamesTheProblem(t *testing.T) {
+	now := time.Now()
+	valid := hookTestCA(t)
+	for _, tc := range []struct {
+		name   string
+		bundle []byte
+		want   string // empty: accepted
+	}{
+		{"CA with keyCertSign", valid, ""},
+		{"CA with keyCertSign and cRLSign", hookTestCertificate(t, &x509.Certificate{IsCA: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign}), ""},
+		{"bundle of two CAs", append(append([]byte{}, valid...), hookTestCA(t)...), ""},
+		// openssl req -x509 without -addext keyUsage: basicConstraints only.
+		{"CA without keyUsage", hookTestCertificate(t, &x509.Certificate{IsCA: true}), "has no keyUsage keyCertSign: issue it again with keyUsage=critical,keyCertSign,cRLSign"},
+		{"CA with other key usages", hookTestCertificate(t, &x509.Certificate{IsCA: true, KeyUsage: x509.KeyUsageDigitalSignature}), "has no keyUsage keyCertSign"},
+		{"leaf certificate", hookTestCertificate(t, &x509.Certificate{KeyUsage: x509.KeyUsageDigitalSignature}), "is not a CA certificate: it needs basicConstraints CA:TRUE"},
+		{"expired CA", hookTestCertificate(t, &x509.Certificate{IsCA: true, KeyUsage: x509.KeyUsageCertSign,
+			NotBefore: now.Add(-2 * time.Hour), NotAfter: now.Add(-time.Hour)}), "is outside its validity period"},
+		{"CA valid later", hookTestCertificate(t, &x509.Certificate{IsCA: true, KeyUsage: x509.KeyUsageCertSign,
+			NotBefore: now.Add(time.Hour), NotAfter: now.Add(2 * time.Hour)}), "is outside its validity period"},
+		{"valid CA, then a CA without keyUsage", append(append([]byte{}, valid...), hookTestCertificate(t, &x509.Certificate{IsCA: true})...), "has no keyUsage keyCertSign"},
+		{"not PEM", []byte("not a certificate"), "is not certificate PEM"},
+		{"PEM that is not a certificate", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not a certificate")}), "is not a valid X.509 certificate"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkAdmissionCABundle(string(tc.bundle), now)
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("refused: %v", err)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Fatalf("error = %v, want it to contain %q", err, tc.want)
+			}
+			if err != nil && !strings.HasPrefix(err.Error(), "CetiAdmin admission CA ") {
+				t.Fatalf("error %q does not name the CetiAdmin admission CA", err)
+			}
+		})
+	}
 }
 
 func hookTestFixture(t *testing.T, enabled bool) (*hookTestClient, HookOptions, *corev1.ConfigMap, *Installation) {
