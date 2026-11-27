@@ -47,7 +47,7 @@ admission administrator to use the Admin pages.
 | **Agent policies** | `/admin/policies` | The allowed agent types, skills, shared models, GitHub Copilot, budget, request limits, identity, Sandbox selection, security, network, and ingress mode of each Agent Policy | `AgentPolicy` |
 | **Sandboxes** | `/admin/sandboxes` | The isolation type (**Runtime**), the resources of the Agent and its helpers, the HOME StorageClass and size, and the scratch size | `Sandbox` |
 | **Skills** | `/admin/skills` | Nothing. It shows the state of the Skill Marketplace. It appears only when the Skill Marketplace is enabled | None |
-| **Agents** | `/admin/instances` | The display name, image, Web UI, and model of each Agent. It also deletes Agents, and it shows their status and events. Its page title is **All agents** | `Agent` |
+| **Agents** | `/admin/instances` | The display name, image, Web UI, and model of each Agent. It also deletes Agents, and it shows their status, their events, and the spend and budget of their AI Gateway keys. Its page title is **All agents** | `Agent` |
 
 The navigation also shows **Settings**. This entry is not available.
 

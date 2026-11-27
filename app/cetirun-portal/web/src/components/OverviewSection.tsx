@@ -45,6 +45,7 @@ import { currentGovernance, GovernanceNotice } from "./GovernanceNotice";
 import { ToolAuthorizationBlock } from "./ToolAuthorizationBlock";
 import { RegistryAuthBlock } from "./RegistryAuthBlock";
 import { AIGatewayBlock } from "./AIGatewayBlock";
+import { UsageBlock } from "./UsageBlock";
 import { TeamSkillsBlock } from "./TeamSkillsBlock";
 import { RestartAgentButton } from "./RestartAgentButton";
 import { SuspendAgentButton } from "./SuspendAgentButton";
@@ -309,6 +310,8 @@ export function OverviewSection({ instance }: { instance: Instance }) {
           {overview && (
             <div className="overview-sections">
               {gatewayRouted && !instance.suspended && instance.phase !== "Suspended" && <AIGatewayBlock instance={instance} />}
+
+              <UsageBlock budget={instance.aiGateway?.budget} copilot={instance.aiGateway?.githubCopilot} />
 
               <TeamSkillsBlock instance={instance} />
 

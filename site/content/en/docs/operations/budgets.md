@@ -120,8 +120,27 @@ A per-model limit applies to the model name that the AI Gateway counts:
 
 ## Read the spend
 
-The Portal does not show spend or remaining budgets. The AI Gateway console
-shows the spend and the budget of each key, user, and team. Refer to
+The Portal shows the spend of the key of each Agent in the current month and
+its budget. These are the numbers that the operator last read from the AI
+Gateway. The operator reads them about every ten minutes.
+
+- Owners see them in the **Usage** section of the Agent page. Portal
+  administrators see them in the **Usage** section of the management page of
+  the Agent.
+- **All agents** shows them in the **Spent (USD)** column.
+
+The Portal also shows why the AI Gateway refuses a key: **Budget reached**,
+**Suspended**, **No model access**, or **Blocked by an administrator**. While
+the operator blocks a key, until the AI Gateway confirms the block, the Portal
+shows **Block pending**. When the AI Gateway lost the record of the key, the
+Portal shows **Key recovery required** with the last spend that the operator
+read. Refer to
+[Recover a missing key record](../ai-gateway/#recover-a-missing-key-record).
+The Portal does not calculate a remaining amount. It does not show the history
+of the spend or the budget of an AI Gateway team.
+
+The AI Gateway console shows the spend and the budget of each key, user, and
+team. Refer to
 [Open the console](../ai-gateway/#open-the-console). The key alias of an Agent
 is `cetirun-<agent>-<agent UID>`. The request log and the metrics of the
 AI Gateway also record the spend. Refer to
