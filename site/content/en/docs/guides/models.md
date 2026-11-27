@@ -142,10 +142,14 @@ effort from a request when no deployment that can answer the request reasons.
 ### Spend and budget
 
 The **Usage** section on the **Overview** tab shows the spend of the Agent's
-key in the current month, its budget, and when the budget resets. The numbers
-come from the AI Gateway. The operator reads them about every ten minutes, and
-the section shows when it last checked the key. The spend is the count of the
-AI Gateway, not an invoice. The section does not calculate a remaining amount.
+key in the current month, its budget, and when the budget resets. The spend is
+the count of the AI Gateway. The invoice of the model provider can differ from
+it. The section does not calculate a remaining amount.
+
+The numbers come from the AI Gateway. The operator reads them about every ten
+minutes. The section shows the time of the last check in UTC and how long ago
+it was. If the last check is much older than ten minutes, the numbers can be
+out of date.
 
 When the AI Gateway refuses the calls of the key, the section shows why:
 
