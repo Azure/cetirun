@@ -2286,12 +2286,16 @@ these actions:
   observation: its time and the limits of the model. When LiteLLM answers from
   the listing that it keeps, the time is when it read the listing. The AI
   Gateway keeps the newest observation in its Redis, for 30 days after that
-  time, and in the replica. Redis dates each observation by its own clock and
-  the age that the replica measured, so the clocks of the replicas do not
-  matter. Redis takes an observation only in place of an older one, in one step,
-  so that the replicas agree, also a replica that starts meanwhile. A replica
-  that just read an answer uses that answer. A replica uses its own observation
-  when Redis does not answer, and offers it to Redis again at the next refresh.
+  time, and in the replica. A replica dates each of its reads by the clock of
+  Redis: with a round trip to Redis before it offers the observation, it learns
+  two times of Redis between which the read happened. So the clocks of the
+  replicas do not matter, and an offer that reaches Redis late keeps the time
+  of its read. Redis takes an observation only in place of one of an earlier
+  read, in one step, so that the replicas agree, also a replica that starts
+  meanwhile. When Redis cannot tell which of two reads was earlier, it keeps
+  the smaller limits. After each refresh, a replica uses the observation that
+  Redis keeps. A replica uses its own observation when Redis does not answer,
+  and offers it to Redis again at the next refresh.
   The ID of the deployment scopes the limits: two deployments with one upstream
   URL and model keep their own limits, and a changed credential keeps them.
   When the upstream answers without limits for the model, also with an empty

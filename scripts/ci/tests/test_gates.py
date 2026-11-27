@@ -829,6 +829,21 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("if:", job[1])
         self.assertNotIn("continue-on-error:", job[1])
 
+    def test_the_ai_gateway_guard_tests_run_their_redis_script_on_the_charts_valkey(self):
+        text = (validate.ROOT / ".github/workflows/cetirun-validation.yml").read_text()
+        job = re.search(r"(?ms)^  policy-tests:\n(.*?)(?=^  [a-z][\w-]*:|\Z)", text)
+        self.assertIsNotNone(job)
+        values = (validate.ROOT / "app/cetirun-ai-gateway/chart/values.yaml").read_text()
+        image = re.search(
+            r"repository: (mcr\.microsoft\.com/azurelinux/base/valkey)\n\s+tag: \"([^\"]+)\"\n"
+            r"\s+digest: (sha256:[0-9a-f]{64})\n", values)
+        self.assertIsNotNone(image)
+        steps = {step.splitlines()[0]: step for step in job[1].split("\n      - name: ")[1:]}
+        self.assertIn(f"{image[1]}:{image[2]}@{image[3]}", steps["Start Valkey for the AI Gateway guard tests"])
+        tests = steps["Check release metadata, Python syntax, and offline helper regressions"]
+        self.assertIn("CETIRUN_TEST_REDIS: 127.0.0.1:6379", tests)
+        self.assertIn("run: make version-check python-check ci-test", tests)
+
     def test_ci_dependencies_meet_security_floors(self):
         requirements = (validate.ROOT / "scripts/ci/requirements.txt").read_text()
         for package, minimum in {
