@@ -83,11 +83,17 @@ Agent must have:
 - A `spec.team` that names a live Team other than the CetiAdmin Team. A Team
   is optional elsewhere, but CetiAdmin creation requires one.
 
-List the Agents with the fields to copy:
+Read these fields from one Agent of the owner, by its name. Ask the requester
+for the name of such an Agent; the owner sees the names of their Agents in the
+Portal. For the owner of CetiAdmin, the CetiAdmin Agent has them:
 
 ```sh
-kubectl --context cetiadmin get agents.cetirun.microsoft.com -o 'custom-columns=NAME:.metadata.name,ALIAS:.spec.user.alias,EMAIL:.spec.user.email,TEAM:.spec.team,TENANT:.metadata.annotations.agentidentity\.cetirun\.microsoft\.com/owner-tenant-id,OBJECT:.metadata.annotations.agentidentity\.cetirun\.microsoft\.com/owner-object-id'
+kubectl --context cetiadmin get agents.cetirun.microsoft.com <source-agent> -o 'custom-columns=NAME:.metadata.name,ALIAS:.spec.user.alias,EMAIL:.spec.user.email,TEAM:.spec.team,TENANT:.metadata.annotations.agentidentity\.cetirun\.microsoft\.com/owner-tenant-id,OBJECT:.metadata.annotations.agentidentity\.cetirun\.microsoft\.com/owner-object-id'
 ```
+
+Do not print these fields for all Agents. The aliases, email addresses, and IDs
+of other owners would enter the conversation, the next model request, and the
+logs of the AI Gateway.
 
 When no live Agent of the owner has the annotations, CetiAdmin cannot create
 the Agent. Report it, so that the owner creates one in the Portal or an
