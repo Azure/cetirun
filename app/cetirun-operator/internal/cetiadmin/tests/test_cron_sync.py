@@ -550,6 +550,59 @@ class CronSyncCLITest(unittest.TestCase):
         self.assertEqual(self.run_cli()["status"], "updated")
         self.assertIsNone(self.jobs()[0]["model"])
 
+    def test_a_new_job_is_bound_only_after_the_record_of_its_model(self):
+        # The record of the model comes before the binding: a creation that cannot write the record stays in
+        # creation, and never leaves a bound job with a model that the record does not have.
+        self.config["monitor"]["model"] = "gpt-6-sol"
+        self.state_dir.mkdir(mode=0o700)
+        (self.state_dir / "cron-models.json").mkdir()
+        self.assertEqual(self.run_cli(success=False)["code"], "sync_failed")
+        self.assertEqual(json.loads(self.binding.read_text())["phase"], "creating")
+
+    def test_a_creation_that_stops_after_the_binding_has_the_record_of_its_model(self):
+        self.config["monitor"]["model"] = "gpt-6-sol"
+        self.assertEqual(self.run_cli(fault="missing_readback", success=False)["code"], "job_missing")
+        self.assertEqual(json.loads(self.binding.read_text())["phase"], "bound")
+        del self.config["monitor"]["model"]
+        self.assertEqual(self.run_cli()["status"], "updated")
+        self.assertIsNone(self.jobs()[0]["model"])
+
+    def test_a_model_that_the_owner_chooses_after_an_interrupted_change_stays(self):
+        # monitor.model changes from A to B, and the synchronization stops after the update: the record has both.
+        # The next synchronization, before Hermes runs, settles the record to the model of the job, B, also when it
+        # only pauses the job. A, which the owner chooses then, is not the model that monitor.model set: it stays.
+        self.config["monitor"]["model"] = "model-a"
+        job_id = self.run_cli()["jobId"]
+        self.config["monitor"]["model"] = "model-b"
+        self.assertEqual(self.run_cli(fault="update_after_write", success=False)["code"], "native_error")
+        self.assertEqual(self.jobs()[0]["model"], "model-b")
+        self.assertEqual(self.models_record()["models"], ["model-a", "model-b"])
+        self.config["monitor"]["enabled"] = False
+        self.assertEqual(self.run_cli()["status"], "paused")
+        self.assertEqual(self.models_record(), {"version": 1, "jobId": job_id, "models": ["model-b"]})
+        self.change_job(model="model-a")
+        self.config["monitor"]["enabled"] = True
+        del self.config["monitor"]["model"]
+        self.assertEqual(self.run_cli()["status"], "updated")
+        self.assertEqual(self.jobs()[0]["model"], "model-a")
+        self.assertEqual(self.models_record()["models"], [])
+
+    def test_a_model_change_that_did_not_reach_the_job_is_settled_too(self):
+        # The update did not change the job: the record keeps A, which the job still has.
+        self.config["monitor"]["model"] = "model-a"
+        self.run_cli()
+        self.config["monitor"]["model"] = "model-b"
+        self.assertEqual(self.run_cli(fault="ignore_update", success=False)["code"], "readback_mismatch")
+        self.assertEqual(self.jobs()[0]["model"], "model-a")
+        self.assertEqual(self.models_record()["models"], ["model-a", "model-b"])
+        self.config["monitor"]["enabled"] = False
+        self.assertEqual(self.run_cli()["status"], "paused")
+        self.assertEqual(self.models_record()["models"], ["model-a"])
+        # A model that the owner chose instead of the record's one empties the record.
+        self.change_job(model="owner-model")
+        self.assertEqual(self.run_cli()["status"], "paused")
+        self.assertEqual(self.models_record()["models"], [])
+
     def test_a_model_record_of_another_job_does_not_count(self):
         self.run_cli()
         self.change_job(model="gpt-6-sol")

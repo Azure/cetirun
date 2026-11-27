@@ -34,10 +34,11 @@ SLACK_CHANNEL = re.compile(r"[CG][A-Z0-9]{8,31}")
 MAX_JSON_BYTES = 65536
 MONITOR_FIELDS = {"enabled", "schedule", "timezone", "deliver", "slackChannel", "slackSecretName", "model"}
 BINDING_FIELDS = {"version", "instance", "hermesHome", "phase", "jobId", "timezone"}
-# The models that monitor.model set on the bound job, with its ID. Without monitor.model, a synchronization
-# removes only such a model, whatever the job's prompt says, and keeps a model that the owner chose. A model is
-# recorded before the job gets it, so an interrupted synchronization leaves no model that the next one does not
-# know.
+# The model that monitor.model set on the bound job, with its ID. Without monitor.model, a synchronization removes
+# only that model, whatever the job's prompt says, and keeps a model that the owner chose. A model is recorded
+# before the job gets it, and a new job is bound only after the record of its model, so an interrupted
+# synchronization leaves no model that the next one does not know. While a synchronization changes the model,
+# the record has both models; the next synchronization keeps the one that the job has (settled_models).
 MODELS_FILE = "cron-models.json"
 MODELS_FIELDS = {"version", "jobId", "models"}
 
@@ -198,6 +199,16 @@ def save_models(path, job_id, models, directory_fd):
     save_binding(path, {"version": 1, "jobId": job_id, "models": models}, directory_fd)
 
 
+def settled_models(models, job):
+    """The record of the model that monitor.model set, settled against the bound job: the job's model when the
+    record has it, else none. A synchronization that stopped while it changed the model left both models in the
+    record, and the job has one of them: Hermes, and so the owner, changes the job only after a synchronization
+    succeeds, and each synchronization settles the record first. So the record has at most the one model that
+    monitor.model set and the job still has, and a model that the owner chooses later is not in it."""
+    model = job.get("model")
+    return [model] if model and model in models else []
+
+
 def save_binding(path, binding, directory_fd):
     descriptor, name = tempfile.mkstemp(prefix=".cron-binding-", dir=path.parent)
     try:
@@ -318,6 +329,13 @@ def sync(config, home, install, state_dir):
         binding = read_binding(path, config["instance"], home)
         native = load_native(install, monitor["timezone"])
         job = known_job(native, binding["jobId"] if binding else None)
+        models = []
+        if job is not None:
+            # Settle the record before anything else, also when the monitor is disabled: Hermes may run after this.
+            recorded = read_models(models_path, binding["jobId"])
+            models = settled_models(recorded, job)
+            if models != recorded:
+                save_models(models_path, binding["jobId"], models, directory_fd)
         result = {"status": "disabled", "timezone": monitor["timezone"]}
         if not monitor["enabled"]:
             if job is not None:
@@ -345,10 +363,12 @@ def sync(config, home, install, state_dir):
             job_id = new_job.get("id") if isinstance(new_job, dict) else None
             if not isinstance(job_id, str) or not JOB_ID.fullmatch(job_id):
                 raise SyncError("create_uncertain")
+            # The record of the job's model comes first: a bound job has it.
+            models = [monitor["model"]] if monitor["model"] else []
+            if models:
+                save_models(models_path, job_id, models, directory_fd)
             binding.update(phase="bound", jobId=job_id)
             save_binding(path, binding, directory_fd)
-            if monitor["model"]:
-                save_models(models_path, job_id, [monitor["model"]], directory_fd)
             job = known_job(native, job_id)
             verify_definition(job, desired, schedule)
             if job.get("enabled") is not False or job.get("state") != "paused":
@@ -359,8 +379,7 @@ def sync(config, home, install, state_dir):
                 or not isinstance(job.get("enabled"), bool) or job.get("state") not in {"scheduled", "paused"}):
             raise SyncError("job_conflict")
         updates = {key: value for key, value in desired.items() if job.get(key) != value}
-        # Without monitor.model, remove only a model that monitor.model set, not one that the owner chose.
-        models = read_models(models_path, binding["jobId"])
+        # Without monitor.model, remove only the model that monitor.model set, not one that the owner chose.
         clear_model = not monitor["model"] and bool(job.get("model")) and job.get("model") in models
         if clear_model:
             updates["model"] = None
