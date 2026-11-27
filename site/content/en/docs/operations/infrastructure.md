@@ -549,7 +549,8 @@ The materialized view `GatewayCoverage` counts the heartbeats of the AI Gateway
 in intervals of 5 minutes, for the same number of days. It shows the times
 when the request log reached the database. The function
 `GatewayCoverageGaps()` lists the intervals whose request lines can be
-missing, including the intervals older than `adxLogsRetentionDays`. Refer to
+missing. These include the intervals whose lines the logs database no longer
+holds, for example after `adxLogsRetentionDays`. Refer to
 [Query functions](../observability/#query-functions).
 
 The view counts the calls from its creation. Kusto fills a new view with the

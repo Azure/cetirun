@@ -593,10 +593,12 @@ class AdxScriptTests(unittest.TestCase):
         self.assertNotIn("backfill", create)
         self.assertIn(" GatewayCoverage on table Gateway {", create)
         self.assertEqual(re.findall(r"^ {4}(\w+)$", create, re.M), ["Gateway"])
-        # The heartbeats that the AI Gateway image writes, per 5 minutes, cluster and Pod.
+        # The heartbeats that the AI Gateway image writes, per 5 minutes, cluster and Pod, and all lines of the
+        # gateway container as they arrive.
         request_log = (ROOT / "app/cetirun-ai-gateway/cetirun_ai_gateway/request_log.py").read_text()
         log_type = re.search(r'^HEARTBEAT_LOG_TYPE = "([^"]+)"$', request_log, re.M)[1]
-        self.assertIn(f"tostring(Body['log_type']) == \"{log_type}\"", create)
+        self.assertIn('| where Container == "gateway"\n', create.replace("\r\n", "\n"))
+        self.assertIn(f"Heartbeats = countif(tostring(Body['log_type']) == \"{log_type}\"), Lines = count()", create)
         self.assertIn("by Interval = bin(Timestamp, 5m), Cluster, Pod", create)
         # A running Pod writes one heartbeat in each interval, so a Pod without one missed it.
         interval = int(re.search(r"^HEARTBEAT_INTERVAL_SECONDS = (\d+)$", request_log, re.M)[1])
@@ -614,21 +616,29 @@ class AdxScriptTests(unittest.TestCase):
         self.assertIn("project Pod, Interval = Interval + step, Before = true", gaps)
         self.assertIn("project Pod, Interval = Interval - step, After = true", gaps)
         # A Pod ran from its first heartbeat to its last in the whole view, whatever the period: a Pod without
-        # heartbeats for days still missed them in a short period in between.
+        # heartbeats for days still missed them in a short period in between. A Pod that writes lines without
+        # heartbeats, from an older image, does not count.
         spans = re.search(r"let spans = GatewayCoverage\r?\n((?: {8}\|.*\r?\n)+)", gaps)[1].splitlines()
-        self.assertEqual(spans[0].strip(), "| where Cluster == cluster")
+        self.assertEqual(spans[0].strip(), "| where Cluster == cluster and Heartbeats > 0")
         self.assertEqual(spans[1].strip(), "| summarize First = min(Interval), Last = max(Interval) by Pod")
         self.assertIn("let pods = spans", gaps)
-        # GatewayRequests() keeps its lines only for the retention of the logs database.
-        self.assertIn("(intervals | where Interval < now() - __LOGS_RETENTION_DAYS__d", gaps)
+        self.assertIn("| where Cluster == cluster and Heartbeats > 0 and Interval >= firstInterval - step", gaps)
+        # GatewayRequests() reads the Gateway table: an interval of which it holds fewer lines than the view
+        # counted lost some, also when the retention was raised later. The whole intervals of the period count.
+        self.assertNotIn("__LOGS_RETENTION_DAYS__", gaps)
+        self.assertNotIn("now()", gaps)
+        self.assertIn("| where Timestamp >= firstInterval and Timestamp < bin(toTime - 1tick, step) + step", gaps)
+        self.assertIn("| summarize Counted = sum(Lines) by Interval", gaps)
+        self.assertIn("| where coalesce(Present, 0) < Counted", gaps)
         self.assertEqual(set(re.findall(r'Reason = "([^"]+)"', gaps)),
-                         {"collection not observed", "missed heartbeat", "request lines past retention"})
+                         {"collection not observed", "missed heartbeat", "request lines removed"})
+        self.assertIn("no calls were recorded and no heartbeat gap was detected", gaps)
         module = (ROOT / "infra/cluster/modules/adx.bicep").read_text()
         line = next(text for text in module.splitlines() if text.startswith("var logsFunctions"))
-        # After the usage view, with the same retention, and with the retention of the logs database.
+        # After the usage view, and with the same retention.
         self.assertLess(line.index("adx/cetirun-gateway-usage.kql"), line.index("adx/cetirun-gateway-coverage.kql"))
         self.assertEqual(line.count("'__RETENTION_DAYS__', string(gatewayUsageRetentionDays)"), 2)
-        self.assertIn("'__LOGS_RETENTION_DAYS__', string(logsRetentionDays)", line)
+        self.assertNotIn("__LOGS_RETENTION_DAYS__", line)
 
     def test_audit_messages_land_whole_and_expand_into_events(self):
         table, mapping, function = kusto_commands("cetirun-audit.kql")
