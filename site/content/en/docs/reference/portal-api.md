@@ -183,8 +183,10 @@ The numbers are the ones that the operator last read from the AI Gateway:
 
 The object has `budgetUSD` and `spendUSD` as decimal strings, `duration`,
 `resetAt`, `checkedAt`, and `state`. The `state` is `active`, `budgetReached`,
-`suspended`, `noModelAccess`, or `blocked`. The object is absent until the
-operator reads the key. The Portal does not calculate a remaining amount.
+`suspended`, `noModelAccess`, `blockPending`, or `blocked`. `blockPending`
+means that the operator is blocking the key and that the AI Gateway has not
+confirmed the block: the key can still be accepted. The object is absent until
+the operator reads the key. The Portal does not calculate a remaining amount.
 
 ## Skill Marketplace administration
 

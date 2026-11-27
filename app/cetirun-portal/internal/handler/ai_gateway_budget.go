@@ -22,9 +22,14 @@ const (
 	// Agent is suspended.
 	AIGatewayKeySuspended = "suspended"
 	// AIGatewayKeyNoModelAccess means the Agent Policy grants the Agent no
-	// model now: the operator blocks its key, or keeps it blocked until a
-	// new policy grant is in place.
+	// model now: the operator blocked its key until a new policy grant is in
+	// place, or the Agent has no key.
 	AIGatewayKeyNoModelAccess = "noModelAccess"
+	// AIGatewayKeyBlockPending means the operator has recorded a block of the
+	// key, for a suspension or for a policy without models, that the AI
+	// Gateway has not confirmed yet. Until it does, the key can still be
+	// accepted.
+	AIGatewayKeyBlockPending = "blockPending"
 	// AIGatewayKeyBlocked means the key is blocked outside CetiRun, for
 	// example in the AI Gateway console.
 	AIGatewayKeyBlocked = "blocked"
@@ -84,15 +89,23 @@ func aiGatewayBudget(instance *cetirunv1alpha1.Agent) *AIGatewayBudgetResponse {
 // blocked key has the operator's reason for the block; a key over its budget
 // is refused without being blocked.
 func aiGatewayKeyState(instance *cetirunv1alpha1.Agent, status *cetirunv1alpha1.AIGatewayStatus) string {
+	operatorBlock := status.Reason == aiGatewayReasonSuspended || status.Reason == aiGatewayReasonNoModelEntitlement ||
+		status.Reason == aiGatewayReasonPolicyReprojection
 	switch {
 	case status.Reason == aiGatewayReasonKeyBlocked:
 		return AIGatewayKeyBlocked
+	// Without a model grant and without an issued key, the Agent has no
+	// model access and no key to block.
+	case status.Reason == aiGatewayReasonNoModelEntitlement && status.KeyID == "":
+		return AIGatewayKeyNoModelAccess
+	// The operator records its block before it asks the AI Gateway to apply
+	// it. Until the AI Gateway confirms the block, the key can still be
+	// accepted.
+	case operatorBlock && !status.Blocked:
+		return AIGatewayKeyBlockPending
 	case status.Blocked && (status.Reason == aiGatewayReasonSuspended || instance.Spec.Suspended):
 		return AIGatewayKeySuspended
-	// Without a model grant the Agent has no model access, also when it has
-	// no key to block.
-	case status.Reason == aiGatewayReasonNoModelEntitlement,
-		status.Blocked && status.Reason == aiGatewayReasonPolicyReprojection:
+	case status.Blocked && (status.Reason == aiGatewayReasonNoModelEntitlement || status.Reason == aiGatewayReasonPolicyReprojection):
 		return AIGatewayKeyNoModelAccess
 	// The operator gives each of its own blocks a reason: any other block is
 	// an administrator's.

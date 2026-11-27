@@ -158,6 +158,7 @@ When the AI Gateway refuses the calls of the key, the section shows why:
 | **Budget reached** | The spend reached the budget. The AI Gateway refuses the calls until the budget resets. |
 | **Suspended** | The Agent is suspended. |
 | **No model access** | The Agent Policy of the Team grants the Agent no model. |
+| **Block pending** | CetiRun is blocking the key, for a suspension or an Agent Policy change. Until the AI Gateway confirms the block, it can still accept the calls of the key. |
 | **Blocked by an administrator** | An administrator blocked the key in the AI Gateway console. |
 
 The section shows only the budget of the key. A platform administrator can

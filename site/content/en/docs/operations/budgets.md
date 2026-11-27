@@ -130,9 +130,10 @@ Gateway. The operator reads them about every ten minutes.
 - **All agents** shows them in the **Spent (USD)** column.
 
 The Portal also shows why the AI Gateway refuses a key: **Budget reached**,
-**Suspended**, **No model access**, or **Blocked by an administrator**. It
-does not calculate a remaining amount, and it does not show the history of the
-spend or the budget of an AI Gateway team.
+**Suspended**, **No model access**, or **Blocked by an administrator**. While
+the operator blocks a key, until the AI Gateway confirms the block, the Portal
+shows **Block pending**. It does not calculate a remaining amount, and it does
+not show the history of the spend or the budget of an AI Gateway team.
 
 The AI Gateway console shows the spend and the budget of each key, user, and
 team. Refer to

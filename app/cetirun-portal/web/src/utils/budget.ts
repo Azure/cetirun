@@ -79,6 +79,11 @@ const KEY_STATES: Record<Exclude<AIGatewayKeyState, "active">, KeyStateText> = {
     tone: "warning",
     description: "The Agent Policy grants the Agent no model now, so the AI Gateway refuses its model calls.",
   },
+  blockPending: {
+    label: "Block pending",
+    tone: "warning",
+    description: "CetiRun is blocking the Agent's key, for a suspension or an Agent Policy change. Until the AI Gateway confirms the block, it can still accept the key's calls.",
+  },
   blocked: {
     label: "Blocked by an administrator",
     tone: "danger",

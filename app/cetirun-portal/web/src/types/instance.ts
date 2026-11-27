@@ -143,7 +143,7 @@ export interface AIGatewayInfo {
 }
 
 /** Why the AI Gateway refuses the calls of an Agent's key, or active. */
-export type AIGatewayKeyState = "active" | "budgetReached" | "suspended" | "noModelAccess" | "blocked";
+export type AIGatewayKeyState = "active" | "budgetReached" | "suspended" | "noModelAccess" | "blockPending" | "blocked";
 
 /** The current period of an Agent key's budget, as the AI Gateway reported it. */
 export interface AIGatewayBudget {

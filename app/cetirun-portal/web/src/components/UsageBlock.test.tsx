@@ -65,6 +65,7 @@ describe("UsageBlock", () => {
     ["budgetReached", "Budget reached", /until the budget resets/],
     ["suspended", "Suspended", /while the Agent is suspended/],
     ["noModelAccess", "No model access", /grants the Agent no model/],
+    ["blockPending", "Block pending", /Until the AI Gateway confirms the block, it can still accept the key's calls/],
     ["blocked", "Blocked by an administrator", /An administrator blocked the Agent's key/],
   ] as const)("labels a %s key", (state, label, description) => {
     render(<UsageBlock budget={{ ...budget, state }} />);

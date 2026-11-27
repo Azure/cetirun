@@ -79,16 +79,27 @@ func TestAIGatewayKeyStateNamesWhyTheGatewayRefusesTheKey(t *testing.T) {
 		{"no model entitlement", func(a *cetirunv1alpha1.Agent) {
 			a.Status.AIGateway.Blocked, a.Status.AIGateway.Reason = true, aiGatewayReasonNoModelEntitlement
 		}, AIGatewayKeyNoModelAccess},
-		{"no model entitlement without a key to block", func(a *cetirunv1alpha1.Agent) {
-			a.Status.AIGateway.Reason = aiGatewayReasonNoModelEntitlement
+		{"no model entitlement without an issued key", func(a *cetirunv1alpha1.Agent) {
+			a.Status.AIGateway.Reason, a.Status.AIGateway.KeyID = aiGatewayReasonNoModelEntitlement, ""
 		}, AIGatewayKeyNoModelAccess},
+		// The operator records its block before the AI Gateway applies it:
+		// until the AI Gateway confirms it, the key can still be accepted.
+		{"no model entitlement before the block", func(a *cetirunv1alpha1.Agent) {
+			a.Status.AIGateway.Reason = aiGatewayReasonNoModelEntitlement
+		}, AIGatewayKeyBlockPending},
+		{"no model entitlement over the budget before the block", func(a *cetirunv1alpha1.Agent) {
+			a.Status.AIGateway.Reason, a.Status.AIGateway.SpendUSD = aiGatewayReasonNoModelEntitlement, "60"
+		}, AIGatewayKeyBlockPending},
+		{"suspension before the block", func(a *cetirunv1alpha1.Agent) {
+			a.Spec.Suspended = true
+			a.Status.AIGateway.Reason = aiGatewayReasonSuspended
+		}, AIGatewayKeyBlockPending},
 		{"policy reprojection", func(a *cetirunv1alpha1.Agent) {
 			a.Status.AIGateway.Blocked, a.Status.AIGateway.Reason = true, aiGatewayReasonPolicyReprojection
 		}, AIGatewayKeyNoModelAccess},
-		// The operator records its intent before it blocks the key.
 		{"policy reprojection before the block", func(a *cetirunv1alpha1.Agent) {
 			a.Status.AIGateway.Reason = aiGatewayReasonPolicyReprojection
-		}, AIGatewayKeyActive},
+		}, AIGatewayKeyBlockPending},
 		{"blocked in the console", func(a *cetirunv1alpha1.Agent) {
 			a.Status.AIGateway.Blocked, a.Status.AIGateway.Reason = true, aiGatewayReasonKeyBlocked
 		}, AIGatewayKeyBlocked},

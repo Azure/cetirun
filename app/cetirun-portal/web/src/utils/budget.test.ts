@@ -46,6 +46,7 @@ describe("AI Gateway budget text", () => {
     expect(keyStateText("budgetReached")?.label).toBe("Budget reached");
     expect(keyStateText("suspended")?.label).toBe("Suspended");
     expect(keyStateText("noModelAccess")?.label).toBe("No model access");
+    expect(keyStateText("blockPending")?.label).toBe("Block pending");
     expect(keyStateText("blocked")?.label).toBe("Blocked by an administrator");
     expect(keyStateText("active")).toBeUndefined();
     expect(keyStateText("toString")).toBeUndefined();
