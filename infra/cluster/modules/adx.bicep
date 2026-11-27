@@ -119,7 +119,7 @@ param auditViewers array = []
 // commands that can also run on a Kusto cluster made without this module;
 // their comment lines are left out here. The daily usage view and the coverage
 // view follow the functions, after the logs script has created their table.
-var logsFunctions = join(filter(split('${loadTextContent('adx/cetirun-logs.kql')}\n${replace(loadTextContent('adx/cetirun-gateway-usage.kql'), '__RETENTION_DAYS__', string(gatewayUsageRetentionDays))}\n${replace(loadTextContent('adx/cetirun-gateway-coverage.kql'), '__RETENTION_DAYS__', string(gatewayUsageRetentionDays))}', '\n'), line => !startsWith(line, '//')), '\n')
+var logsFunctions = join(filter(split('${loadTextContent('adx/cetirun-logs.kql')}\n${replace(loadTextContent('adx/cetirun-gateway-usage.kql'), '__RETENTION_DAYS__', string(gatewayUsageRetentionDays))}\n${replace(replace(loadTextContent('adx/cetirun-gateway-coverage.kql'), '__RETENTION_DAYS__', string(gatewayUsageRetentionDays)), '__LOGS_RETENTION_DAYS__', string(logsRetentionDays))}', '\n'), line => !startsWith(line, '//')), '\n')
 var metricsFunctions = join(filter(split('${loadTextContent('adx/cetirun-metrics.kql')}\n${replace(loadTextContent('adx/cetirun-health.kql'), '__LOGS_DATABASE__', logsDatabaseName)}\n${loadTextContent('adx/adxmon-functions.kql')}', '\n'), line => !startsWith(line, '//')), '\n')
 // Each CetiRun cluster's ingestor alters ADX-Mon's functions at start, which
 // needs it to be their admin; a second cluster's deployment adds its own.

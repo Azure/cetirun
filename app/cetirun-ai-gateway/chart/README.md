@@ -2986,10 +2986,10 @@ call comes:
 {"log_type":"cetirun.ai_gateway.heartbeat","schema_version":1,"time":"2026-11-26T00:05:00.000Z","interval_seconds":300}
 ```
 
-A heartbeat takes the same way as the request lines. A time with heartbeats and
-without request lines had no calls. A time without heartbeats can lack request
-lines. With the ADX-Mon collection, the view `GatewayCoverage` counts the
-heartbeats in intervals of 10 minutes.
+A heartbeat takes the same way as the request lines. A time without heartbeats
+can lack request lines. With the ADX-Mon collection, the view `GatewayCoverage`
+counts the heartbeats in intervals of 5 minutes, and the function
+`GatewayCoverageGaps()` lists the intervals whose request lines can be missing.
 
 The cluster must collect container logs. `make deploy` installs the ADX-Mon
 collection with the platform.

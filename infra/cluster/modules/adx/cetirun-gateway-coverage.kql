@@ -1,42 +1,72 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// Coverage of the AI Gateway request log: which times of each cluster reached
-// the CetiRun logs database. A time without request lines can be a time
-// without calls, or a time whose lines did not arrive. With the request log,
-// each AI Gateway Pod also writes a heartbeat line every 5 minutes, on stdout
-// like the request lines, so that it takes their way to this database
-// (app/cetirun-ai-gateway/cetirun_ai_gateway/request_log.py).
+// Coverage of the AI Gateway request log: the times when the request lines of
+// each cluster reached the CetiRun logs database. A time without request lines
+// can be a time without calls, or a time whose lines did not arrive. With the
+// request log, each AI Gateway Pod also writes a heartbeat line every 5
+// minutes, on stdout like the request lines, so that it takes their way to this
+// database (app/cetirun-ai-gateway/cetirun_ai_gateway/request_log.py).
 //
-// GatewayCoverage is a materialized view of the Gateway table with the number
-// of heartbeats per 10 minutes, cluster and Pod. A 10-minute interval with a
-// heartbeat of the cluster is covered: a usage of zero for it means that no
-// call came. GatewayCoverageGaps() lists the other intervals of a period.
+// GatewayCoverage is a materialized view of the Gateway table with the
+// heartbeats per 5 minutes, cluster and Pod: a Pod writes one in each
+// interval. The heartbeats sample the collection. An interval counts as
+// observed when the heartbeats of a Pod arrived before it, in it and after it,
+// and no Pod that ran then lacks one of its heartbeats there.
+// GatewayCoverageGaps() lists the other intervals of a period, with the
+// reason, and the intervals whose request lines are past the retention of the
+// logs database.
+//
 // __RETENTION_DAYS__ is the retention of the view, the one of the daily usage
-// view; the ADX module of the cluster template replaces it and runs this script
-// after cetirun-gateway-usage.kql.
+// view, and __LOGS_RETENTION_DAYS__ the retention of the logs database. The ADX
+// module of the cluster template replaces them and runs this script after
+// cetirun-gateway-usage.kql.
 //
 // The view counts the heartbeats that arrive after its creation, without
 // backfill: Kusto refuses a backfill while some rows of the table are outside
 // the hot cache. Times before the AI Gateway image that writes heartbeats, and
 // before the view, have no coverage.
-.create ifnotexists materialized-view with (folder = "CetiRun", docString = "AI Gateway heartbeats per 10 minutes, cluster and Pod: the times when the request log reached this database, from the creation of the view.") GatewayCoverage on table Gateway {
+.create ifnotexists materialized-view with (folder = "CetiRun", docString = "AI Gateway heartbeats per 5 minutes, cluster and Pod, from the creation of the view: each Pod writes one heartbeat in each interval.") GatewayCoverage on table Gateway {
     Gateway
     | where Container == "gateway" and tostring(Body['log_type']) == "cetirun.ai_gateway.heartbeat"
-    | summarize Heartbeats = count() by Interval = bin(Timestamp, 10m), Cluster, Pod
+    | summarize Heartbeats = count() by Interval = bin(Timestamp, 5m), Cluster, Pod
 }
 
 .alter materialized-view GatewayCoverage policy retention '{"SoftDeletePeriod": "__RETENTION_DAYS__.00:00:00", "Recoverability": "Enabled"}'
 
 .alter materialized-view GatewayCoverage policy caching hot = 31d
 
-.create-or-alter function with (folder = "CetiRun", docstring = "The 10-minute intervals from fromTime to toTime without an AI Gateway heartbeat of the cluster. The request log can lack calls of these intervals: a usage of zero is known only for the other intervals.", skipvalidation = "true") GatewayCoverageGaps(cluster:string, fromTime:datetime, toTime:datetime) {
-    let firstInterval = bin(fromTime, 10m);
-    let covered = GatewayCoverage
-        | where Cluster == cluster and Interval >= firstInterval and Interval < toTime
+.create-or-alter function with (folder = "CetiRun", docstring = "The 5-minute intervals from fromTime to toTime whose AI Gateway request lines can be missing, with the reason: collection not observed, missed heartbeat, or request lines past retention. A usage of zero is known only for the other intervals. The daily usage views keep their totals after the request lines expire: for them, only the first two reasons count.", skipvalidation = "true") GatewayCoverageGaps(cluster:string, fromTime:datetime, toTime:datetime) {
+    let step = 5m;
+    let firstInterval = bin(fromTime, step);
+    let intervals = range Interval from firstInterval to toTime - 1tick step step;
+    // Each Pod's heartbeats, from a day before the period to a day after it.
+    let beats = GatewayCoverage
+        | where Cluster == cluster and Interval >= firstInterval - 1d and Interval < toTime + 1d
+        | distinct Pod, Interval;
+    // Each Pod in each interval of the period from its first heartbeat to its
+    // last, with its heartbeats in that interval and next to it.
+    let pods = beats
+        | summarize First = min(Interval), Last = max(Interval) by Pod
+        | mv-expand Interval = range(max_of(First, firstInterval), min_of(Last, toTime - 1tick), step) to typeof(datetime)
+        | where isnotnull(Interval)
+        | join kind=leftouter (beats | project Pod, Interval, Here = true) on Pod, Interval
+        | join kind=leftouter (beats | project Pod, Interval = Interval + step, Before = true) on Pod, Interval
+        | join kind=leftouter (beats | project Pod, Interval = Interval - step, After = true) on Pod, Interval
+        | project Pod, Interval, First, Last, Here = isnotnull(Here), Before = isnotnull(Before), After = isnotnull(After);
+    // The heartbeats of a Pod surround the interval.
+    let observed = pods | where Here and Before and After | distinct Interval;
+    // A Pod that ran in the interval lacks a heartbeat in it or next to it. A
+    // Pod's first interval needs none before it, and its last none after it.
+    let missed = pods
+        | where not(Here) or (not(Before) and Interval != First) or (not(After) and Interval != Last)
         | distinct Interval;
-    range Interval from firstInterval to toTime - 1tick step 10m
-    | join kind=leftanti covered on Interval
-    | project Cluster = cluster, Interval
-    | order by Interval asc
+    union
+        (intervals | join kind=leftanti observed on Interval | extend Reason = "collection not observed"),
+        (missed | extend Reason = "missed heartbeat"),
+        // GatewayRequests() reads the Gateway table, which keeps a line for the
+        // retention of the logs database from its ingestion.
+        (intervals | where Interval < now() - __LOGS_RETENTION_DAYS__d | extend Reason = "request lines past retention")
+    | project Cluster = cluster, Interval, Reason
+    | order by Interval asc, Reason asc
 }

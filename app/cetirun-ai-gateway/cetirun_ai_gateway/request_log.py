@@ -39,9 +39,9 @@ A time without request lines can be a time without calls, or a time whose
 lines did not reach the logs. To tell them apart, the entrypoint also starts
 ``heartbeat`` with the request log: a heartbeat line every
 HEARTBEAT_INTERVAL_SECONDS, on stdout like the request lines, so that it takes
-their way to the logs. The logs database counts the heartbeats per 10 minutes
-(GatewayCoverage): an interval with a heartbeat and without request lines had
-no calls.
+their way to the logs. The logs database counts the heartbeats per 5 minutes
+(GatewayCoverage), and GatewayCoverageGaps() names the intervals whose request
+lines can be missing.
 """
 
 import datetime
@@ -58,8 +58,8 @@ LOG_TYPE = "cetirun.ai_gateway.request"
 SCHEMA_VERSION = 1
 HEARTBEAT_LOG_TYPE = "cetirun.ai_gateway.heartbeat"
 HEARTBEAT_SCHEMA_VERSION = 1
-# The logs database counts the heartbeats per 10 minutes. On a fixed schedule
-# of 5 minutes, a running Pod writes two in each interval.
+# The logs database counts the heartbeats per 5 minutes. On a fixed schedule of
+# 5 minutes, a running Pod writes one in each interval.
 HEARTBEAT_INTERVAL_SECONDS = 300
 
 # The request log and the heartbeat write to stdout from different threads.

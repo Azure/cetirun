@@ -179,8 +179,8 @@ The cluster template creates these functions:
 |---|---|---|
 | `CetiRunLogs` | `GatewayRequests()` | One AI Gateway call with its Agent, owner, Team, model, tokens, spend, routing and outcome. No request or response content. `CallOrigin` is `health_check` for LiteLLM's own probes, the origin of the classifier for the classifier call of a router, and empty for a client's call. `CopilotRoute` is `true` when a GitHub Copilot route of the owner answered the call |
 | `CetiRunLogs` | `GatewayDailyUsageV2`, a materialized view | The AI Gateway calls, failed calls, tokens and spend of one day per cluster, Agent, AI Gateway user, owner, Team, model, provider and provider model, GitHub Copilot route and call origin, from the creation of the view. It keeps 400 days by default, longer than the request log |
-| `CetiRunLogs` | `GatewayCoverage`, a materialized view | The number of AI Gateway heartbeats in 10 minutes per cluster and Pod, from the creation of the view. It keeps its rows as long as `GatewayDailyUsageV2` |
-| `CetiRunLogs` | `GatewayCoverageGaps(cluster, fromTime, toTime)` | One 10-minute interval of the period without an AI Gateway heartbeat of the cluster |
+| `CetiRunLogs` | `GatewayCoverage`, a materialized view | The number of AI Gateway heartbeats in 5 minutes per cluster and Pod, from the creation of the view. Each Pod writes one heartbeat in each interval. It keeps its rows as long as `GatewayDailyUsageV2` |
+| `CetiRunLogs` | `GatewayCoverageGaps(cluster, fromTime, toTime)` | One 5-minute interval of the period whose AI Gateway request lines can be missing, with the reason |
 | `CetiRunLogs` | `KubeEvents()` | One Kubernetes event version |
 | `CetiRunLogs` | `AgentInventoryHistory()`, `AgentInventory()` | Each record of an Agent's namespace, owner, Team and Agent Policy; the current Agents |
 | `CetiRunLogs` | `InventorySnapshots()` | One complete inventory snapshot of a kind, per cluster |
@@ -235,21 +235,37 @@ A time without rows of `GatewayRequests()` can be a time without calls. It can
 also be a time whose request lines did not reach the database, for example
 because the collection stopped. With the request log, each AI Gateway Pod
 writes a heartbeat line every 5 minutes. The heartbeats take the same way as
-the request lines. `GatewayCoverage` counts them in intervals of 10 minutes.
+the request lines. `GatewayCoverage` counts them in intervals of 5 minutes, so
+a Pod has one heartbeat in each interval.
 
-An interval with a heartbeat of the cluster is covered. A usage of zero in a
-covered interval means that no call came. For example, the 10-minute intervals
-of the last day without a heartbeat:
+The heartbeats sample the collection. `GatewayCoverageGaps()` lists the
+intervals of a period whose request lines can be missing, with one of these
+reasons:
+
+| Reason | Meaning |
+| --- | --- |
+| `collection not observed` | No Pod has heartbeats in the interval and in the intervals before and after it. The collection stopped, or it stopped or started again in the interval, or the AI Gateway did not run. The current interval has this reason until the heartbeats of the next interval arrive. |
+| `missed heartbeat` | A Pod that ran in the interval lacks its heartbeat in it, in the interval before it, or in the interval after it. The collection can have lost lines of that Pod. A Pod needs no heartbeat before its first interval or after its last. |
+| `request lines past retention` | The interval is older than the retention of the logs database, which counts from the ingestion of a line. `GatewayRequests()` can lack its lines. |
+
+In an interval without a reason, a usage of zero means that no call came. For
+example, the gaps of the last day:
 
 ```kusto
 GatewayCoverageGaps("example-cluster", ago(1d), now())
 ```
 
-Use the name of the cluster that the `Cluster` column shows. Lines arrive about
-a minute late, so the current interval can show as a gap. The times before the
-AI Gateway image that writes heartbeats, and before the view, have no coverage.
-A collection that loses the lines of one AI Gateway Pod while another Pod's
-heartbeats arrive leaves no gap.
+Use the name of the cluster that the `Cluster` column shows. The daily totals
+of `GatewayDailyUsageV2` stay after the request lines expire. For them, only
+the reasons `collection not observed` and `missed heartbeat` count. The times
+before the AI Gateway image that writes heartbeats, and before the view, have
+no coverage.
+
+The heartbeats show the collection at the times when the Pods wrote them. Lines
+that are lost between two heartbeats that arrived leave no gap. The same is
+true for lines that a Pod writes after its last heartbeat, for example before
+its node fails. `CollectionHealth()` reports the lines that the collector
+dropped.
 
 `CollectionHealth()` checks the last 15 minutes by default:
 
@@ -410,7 +426,9 @@ Also watch these signals of the platform:
   Before you run them, replace `__LOGS_DATABASE__` in `cetirun-health.kql`
   and `cetirun-agents.kql` with the name of the logs database. Replace
   `__RETENTION_DAYS__` in `cetirun-gateway-usage.kql` and
-  `cetirun-gateway-coverage.kql` with the days that the views keep. Also set the
+  `cetirun-gateway-coverage.kql` with the days that the views keep. Replace
+  `__LOGS_RETENTION_DAYS__` in `cetirun-gateway-coverage.kql` with the days that
+  the logs database keeps. Also set the
   ingestion batching policy of each database. The template sets 30 seconds.
 - For the alerter, a user-assigned managed identity with a federated
   credential for
