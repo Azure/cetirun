@@ -48,6 +48,54 @@ profile and the recorded claim template of the Agent. A separate approved
 migration or expansion is still necessary to change the storage class or size
 of a claim that already exists.
 
+### Grow the HOME of an Agent
+
+This procedure is for Hermes and OpenClaw Agents without a Sandbox, in the
+namespace `cetirun-<name>`. The StorageClass of the HOME claim must allow
+volume expansion.
+
+1. Find the claim that holds HOME in the running Pod:
+
+   ```bash
+   kubectl get pod cetirun-<name>-0 -n cetirun-<name> \
+     -o jsonpath='{.spec.volumes[?(@.name=="data")].persistentVolumeClaim.claimName}'
+   ```
+
+   With the default values, it is `data-cetirun-<name>-0`, the claim of the
+   claim template of the StatefulSet. An existing claim or a claim that the
+   chart creates has another name. Without output, HOME is an `emptyDir`,
+   which cannot grow this way.
+
+2. Increase the storage request of that claim. The CSI driver expands the disk
+   and the file system while the Agent runs:
+
+   ```bash
+   kubectl patch pvc <claim> -n cetirun-<name> --type merge \
+     -p '{"spec":{"resources":{"requests":{"storage":"120Gi"}}}}'
+   ```
+
+3. Only when the claim is `data-cetirun-<name>-0`, set
+   `spec.helm.values.persistence.size` of the Agent to the same size. The claim
+   template of the StatefulSet then agrees with the claim. Kubernetes cannot
+   change this template in place. The upgrade hook of the agent chart deletes
+   only the StatefulSet object. Helm creates it again with the new size. The
+   Pod keeps running.
+
+Agent charts 0.2.2 and earlier cannot apply a larger `persistence.size`. Their
+upgrade hook does not replace the StatefulSet, so each later Helm upgrade of
+the Agent fails with `spec.volumeClaimTemplates: ... field is immutable`, and
+the Agent stays `Provisioning`. For these Agents, do only steps 1 and 2. If
+`persistence.size` was already changed, set it back to the size in the
+StatefulSet template. The claim keeps its larger size. Alternatively, delete
+only the StatefulSet object:
+
+```bash
+kubectl delete statefulset cetirun-<name> -n cetirun-<name> --cascade=orphan
+```
+
+The next retry of the operator creates the StatefulSet with the new size. The
+Pod and the claim stay the same.
+
 ## Sandbox HOME class selection
 
 When native Sandbox sources are configured, Portal administrators choose HOME
@@ -290,9 +338,32 @@ persistence nor a `Retain` policy is a substitute for backup.
 
 When immutable fields differ, the agent chart's
 [pre-upgrade/pre-rollback hook]({{< repo "app/cetirun-chart/templates/pre-upgrade-hook.yaml" >}})
-can orphan-delete and recreate a StatefulSet. It does not migrate data or
-automatically resize a PVC that already exists. After a successful chart update,
-you must examine the mounted storage class, size, and contents.
+can orphan-delete and recreate a StatefulSet that keeps its name. A changed
+selector, for example after a change of `nameOverride`, stops the upgrade
+instead: a StatefulSet with another selector cannot take over the running Pod.
+Set `nameOverride` back.
+
+The message of the hook can also tell how to replace the StatefulSet by hand
+and keep HOME. It does so when the new StatefulSet mounts the same HOME claim
+and the upgrade keeps that claim. An `emptyDir` HOME ends with its Pod. An
+upgrade deletes a claim that the chart created when the new values omit it. To
+keep such a claim, restore the persistence values that create it, together with
+`nameOverride`. Or first annotate the claim, so that Helm keeps it:
+
+```bash
+kubectl annotate pvc cetirun-<name>-data -n cetirun-<name> helm.sh/resource-policy=keep
+```
+
+The hook does not protect a rename. Without `fullnameOverride`, a change of
+`nameOverride` can also change the name of the StatefulSet. The hook then
+finds no StatefulSet of the new name. Helm creates one with a new, empty HOME
+claim and deletes the old StatefulSet. With `persistence.retainPolicy: Delete`,
+this also deletes the old HOME claim. Keep the name of the StatefulSet: set
+`fullnameOverride` to the current name before you change `nameOverride`.
+
+The hook does not migrate data or automatically resize a PVC that already
+exists. After a successful chart update, you must examine the mounted storage
+class, size, and contents.
 
 Before you delete an Agent or its namespace, read
 [Delete only with a recovery plan](../agent-lifecycle/#delete-only-with-a-recovery-plan).

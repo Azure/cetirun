@@ -6,6 +6,17 @@ ordinals, template, updateStrategy, revisionHistoryLimit, persistentVolumeClaimR
 and minReadySeconds. This hook detects changes to the immutable fields (serviceName,
 selector, volumeClaimTemplates, podManagementPolicy) and orphan-deletes the StatefulSet
 so Helm can recreate it. Pods keep running as orphans and are re-adopted via label selector.
+A changed selector stops the hook before it deletes anything: a StatefulSet of the same
+name with another selector can adopt no orphaned Pod, and cannot create a Pod whose name
+an orphan still has. Its message tells how to replace the StatefulSet by hand only when
+the new one mounts the claim that holds HOME in the running Pod, as the Pod mounts it: an
+emptyDir HOME does not outlive its Pod, and Helm deletes a claim of the chart that the new
+values no longer create.
+The hook finds the StatefulSet by its rendered name. It does not protect a rename: when the
+name changes, for example with nameOverride and no fullnameOverride, it finds none, and Helm
+replaces the old StatefulSet with one that has a new HOME claim.
+Only a missing StatefulSet skips the checks. Any other kubectl error fails the hook, so
+that Helm reports it instead of the immutable-field error of the later patch.
 */}}
 apiVersion: v1
 kind: ServiceAccount
@@ -32,7 +43,14 @@ rules:
   - apiGroups: ["apps"]
     resources: ["statefulsets"]
     resourceNames: [{{ include "cetirun.fullname" . | quote }}]
-    verbs: ["get", "delete"]
+    # kubectl delete waits for the deletion with a list and a watch that select
+    # this name, so resourceNames limits them too.
+    verbs: ["get", "list", "watch", "delete"]
+  # The Pod of the StatefulSet: where it keeps HOME, for a changed selector.
+  - apiGroups: [""]
+    resources: ["pods"]
+    resourceNames: [{{ printf "%s-0" (include "cetirun.fullname" .) | quote }}]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -109,9 +127,59 @@ spec:
               {{- else }}
               EXPECT_VCT_NAMES=""
               {{- end }}
+              # The claim that holds HOME in the Pod of the new StatefulSet; none for an emptyDir.
+              {{- if .Values.persistence.existingClaim }}
+              EXPECT_CLAIM="{{ .Values.persistence.existingClaim }}"
+              {{- else if and .Values.persistence.enabled (not .Values.persistence.useStatefulSetVolumeClaim) }}
+              EXPECT_CLAIM="{{ include "cetirun.pvcName" . }}"
+              {{- else if .Values.persistence.enabled }}
+              EXPECT_CLAIM="data-{{ include "cetirun.fullname" . }}-0"
+              {{- else }}
+              EXPECT_CLAIM=""
+              {{- end }}
+              # The chart's own HOME claim when the new values do not create it: an upgrade with them deletes it if
+              # this release created it.
+              {{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) (not .Values.persistence.useStatefulSetVolumeClaim) }}
+              DROPPED_CLAIM=""
+              {{- else }}
+              DROPPED_CLAIM="{{ include "cetirun.fullname" . }}-data"
+              {{- end }}
 
-              # Check if StatefulSet exists
-              if ! kubectl get statefulset "$STS_NAME" -n "$NS" >/dev/null 2>&1; then
+              # Where a Pod keeps HOME: in a claim, or in an emptyDir.
+              home_of() {
+                if [ -n "$1" ]; then echo "the claim $1"; else echo "an emptyDir"; fi
+              }
+
+              # Kubernetes keeps a size in its canonical form, for example 1Ti
+              # for 1024Gi. This writes a whole-number size in that form; any
+              # other size stays as it is.
+              canonical() {
+                value=$1
+                case "$value" in
+                  *[KMGTP]i) number=${value%??} base=1024 units="Ki Mi Gi Ti Pi Ei" ;;
+                  *[kMGTP]) number=${value%?} base=1000 units="k M G T P E" ;;
+                  *) number=$value base=1000 units="k M G T P E" ;;
+                esac
+                suffix=${value#"$number"}
+                case "$number" in
+                  ''|*[!0-9]*|0*|???????????????????*) echo "$value"; return ;;
+                esac
+                set -- $units
+                if [ -n "$suffix" ]; then
+                  while [ "$1" != "$suffix" ]; do shift; done
+                  shift
+                fi
+                while [ $# -gt 0 ] && [ $((number % base)) -eq 0 ]; do
+                  number=$((number / base)) suffix=$1
+                  shift
+                done
+                echo "$number$suffix"
+              }
+
+              # Check if StatefulSet exists. Under set -e, any error other than
+              # NotFound ends the hook with kubectl's message.
+              FOUND=$(kubectl get statefulset "$STS_NAME" -n "$NS" --ignore-not-found -o name)
+              if [ -z "$FOUND" ]; then
                 echo "StatefulSet $STS_NAME not found, nothing to do"
                 exit 0
               fi
@@ -124,14 +192,17 @@ spec:
                 CHANGED="${CHANGED}serviceName: '${CURRENT}' -> '${EXPECT_SERVICE_NAME}'; "
               fi
 
-              # 2. Check selector.matchLabels
+              # 2. Check selector.matchLabels. The Pods of the StatefulSet carry
+              # these labels, so a StatefulSet with another selector could not
+              # take them over: a changed selector stops the hook (below).
+              SELECTOR_CHANGED=""
               CURRENT=$(kubectl get statefulset "$STS_NAME" -n "$NS" -o jsonpath='{.spec.selector.matchLabels.app\.kubernetes\.io/name}')
               if [ "$CURRENT" != "$EXPECT_SELECTOR_NAME" ]; then
-                CHANGED="${CHANGED}selector app.kubernetes.io/name: '${CURRENT}' -> '${EXPECT_SELECTOR_NAME}'; "
+                SELECTOR_CHANGED="${SELECTOR_CHANGED}selector app.kubernetes.io/name: '${CURRENT}' -> '${EXPECT_SELECTOR_NAME}'; "
               fi
               CURRENT=$(kubectl get statefulset "$STS_NAME" -n "$NS" -o jsonpath='{.spec.selector.matchLabels.app\.kubernetes\.io/instance}')
               if [ "$CURRENT" != "$EXPECT_SELECTOR_INSTANCE" ]; then
-                CHANGED="${CHANGED}selector app.kubernetes.io/instance: '${CURRENT}' -> '${EXPECT_SELECTOR_INSTANCE}'; "
+                SELECTOR_CHANGED="${SELECTOR_CHANGED}selector app.kubernetes.io/instance: '${CURRENT}' -> '${EXPECT_SELECTOR_INSTANCE}'; "
               fi
 
               # 3. Check podManagementPolicy (chart doesn't set it, so expect OrderedReady)
@@ -155,19 +226,59 @@ spec:
                   CHANGED="${CHANGED}volumeClaimTemplate accessMode: '${CURRENT}' -> '${EXPECT_VCT_ACCESS_MODE}'; "
                 fi
                 CURRENT=$(kubectl get statefulset "$STS_NAME" -n "$NS" -o jsonpath='{.spec.volumeClaimTemplates[0].spec.resources.requests.storage}')
-                if [ "$CURRENT" != "$EXPECT_VCT_SIZE" ]; then
+                if [ "$(canonical "$CURRENT")" != "$(canonical "$EXPECT_VCT_SIZE")" ]; then
                   CHANGED="${CHANGED}volumeClaimTemplate size: '${CURRENT}' -> '${EXPECT_VCT_SIZE}'; "
                 fi
               fi
 
               # Decision
+              if [ -n "$SELECTOR_CHANGED" ]; then
+                echo "The selector of StatefulSet $STS_NAME cannot change: ${SELECTOR_CHANGED}${CHANGED}"
+                echo "A StatefulSet of this name with another selector could not take over the running Pod, nor create its"
+                echo "Pod while the old one keeps the name, so the StatefulSet stays as it is. Set nameOverride back."
+                # HOME outlives the running Pod only in a claim that the new StatefulSet mounts again. The Pod's own
+                # volume tells where it keeps HOME, also while a rollout to another template is not finished.
+                POD_HOME=$(kubectl get pod "${STS_NAME}-0" -n "$NS" --ignore-not-found -o jsonpath='{.metadata.name}/{.spec.volumes[?(@.name=="data")].persistentVolumeClaim.claimName}')
+                CURRENT_CLAIM=${POD_HOME#*/}
+                if [ -z "$POD_HOME" ]; then
+                  echo "No Pod ${STS_NAME}-0 runs, so the hook cannot tell where it kept HOME."
+                elif [ -n "$CURRENT_CLAIM" ] && [ "$CURRENT_CLAIM" = "$DROPPED_CLAIM" ]; then
+                  echo "HOME of the running Pod is in the claim $CURRENT_CLAIM, which the chart creates. The new values do not"
+                  echo "create it, so an upgrade with them deletes it, with its files, if this release created it. Before the"
+                  echo "upgrade runs again, set back the persistence values that create it too, or first keep the claim out of"
+                  echo "the deletions of Helm:"
+                  echo "kubectl annotate pvc $CURRENT_CLAIM -n $NS helm.sh/resource-policy=keep"
+                elif [ -n "$CURRENT_CLAIM" ] && [ "$CURRENT_CLAIM" = "$EXPECT_CLAIM" ]; then
+                  # The command is on a line of its own: without --cascade=orphan, the deletion would also delete the HOME
+                  # claim when persistence.retainPolicy is Delete.
+                  echo "Or, before the upgrade, delete only the StatefulSet object, so that its HOME claim stays also with"
+                  echo "persistence.retainPolicy Delete:"
+                  echo "kubectl delete statefulset $STS_NAME -n $NS --cascade=orphan"
+                  echo "When it is gone, delete its Pod ${STS_NAME}-0."
+                  echo "The new StatefulSet of the same name then mounts the same HOME claim, $CURRENT_CLAIM."
+                else
+                  echo "HOME of the running Pod is in $(home_of "$CURRENT_CLAIM")."
+                  echo "HOME of a new Pod would be in $(home_of "$EXPECT_CLAIM"), without the files of the running one."
+                fi
+                exit 1
+              fi
               if [ -n "$CHANGED" ]; then
                 echo "Immutable StatefulSet fields changed: ${CHANGED}"
                 echo "Orphan-deleting StatefulSet $STS_NAME (pods will keep running)"
-                kubectl delete statefulset "$STS_NAME" -n "$NS" --cascade=orphan
+                # Wait until it is gone, so that Helm creates it again instead of
+                # patching it; stay below the Job deadline.
+                kubectl delete statefulset "$STS_NAME" -n "$NS" --cascade=orphan --timeout=90s
               else
                 echo "No immutable field changes detected, skipping orphan-delete"
               fi
+          env:
+            # The image user 65534 has the home directory /dev/null, where
+            # kubectl stops with "not a directory" before any request.
+            - name: HOME
+              value: /tmp
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -185,4 +296,7 @@ spec:
             limits:
               cpu: 100m
               memory: 64Mi
+      volumes:
+        - name: tmp
+          emptyDir: {}
 {{- end }}

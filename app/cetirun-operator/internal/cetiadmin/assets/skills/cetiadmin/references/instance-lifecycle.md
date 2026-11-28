@@ -171,7 +171,7 @@ configuration before reporting success.
 | --- | --- | --- |
 | Memory or CPU limits | `spec.helm.values.resources.limits.memory` or `.cpu` | Confirm; check policy and resulting Pod resources |
 | Runtime release | `spec.helm.version` and matching `spec.agent.image` | Confirm planned changes and use the canary process |
-| HOME capacity | Growth of `spec.helm.values.persistence.size` plus the bound PVC request | Confirm; never shrink, delete, or change storage ownership |
+| HOME capacity | Growth of the PVC that the running Pod mounts as HOME, and of `spec.helm.values.persistence.size` only when that PVC is the claim template's and `spec.helm.version` is later than 0.2.2 | Confirm; never shrink, delete, or change storage ownership |
 | Preferred model | `spec.model` within existing authorization | Preserve spend and external blocks; do not inject provider keys |
 | Tailscale or registry credentials | Existing typed references | Refer changes to the responsible administrator; do not copy secrets |
 | Shared skills, Team, Sandbox, identity, RBAC, mounts | Platform-governed configuration | Do not turn a normal config update into new operations authority |
