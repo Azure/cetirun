@@ -228,8 +228,9 @@ alone, also no older data of another cluster. Remove it before another
 installation uses the database, also from each identity that the Portal used
 before: a change of identity leaves the role with the old one. At start, the
 Portal checks whether the database holds AI Gateway rows of another cluster,
-also in the daily usage views. It reads only the name of such a cluster, and
-turns the usage report off. The check does not remove the role.
+also in the daily usage views and the coverage view. It reads only the name of
+such a cluster, and turns the usage report off. The check does not remove the
+role.
 
 With the cluster template parameter `adxAuditLogs`, the AKS API server sends
 its audit events through an Event Hub, which keeps each message for one day,

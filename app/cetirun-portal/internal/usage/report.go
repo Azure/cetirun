@@ -118,20 +118,23 @@ func (r *Report) Status() Status {
 }
 
 // otherClusterQuery finds an AI Gateway row of another cluster, in the
-// Gateway table or in the daily usage views, which keep their rows longer
-// than the table. Kusto grants a role on a whole database, so the Portal's
-// identity can read every row of it: the report reads only a database that
-// holds this cluster's rows alone. A view that the database lacks is left out.
+// Gateway table, in the daily usage views, or in the coverage view. The views
+// keep their rows longer than the table, and only the coverage view keeps the
+// heartbeats of an AI Gateway without calls. Kusto grants a role on a whole
+// database, so the Portal's identity can read every row of it: the report
+// reads only a database that holds this cluster's rows alone. A view that the
+// database lacks is left out.
 const otherClusterQuery = `declare query_parameters(cluster: string);
 union isfuzzy=true
     (Gateway | where Cluster != cluster | take 1 | project Cluster),
     (GatewayDailyUsage | where Cluster != cluster | take 1 | project Cluster),
-    (GatewayDailyUsageV2 | where Cluster != cluster | take 1 | project Cluster)
+    (GatewayDailyUsageV2 | where Cluster != cluster | take 1 | project Cluster),
+    (GatewayCoverage | where Cluster != cluster | take 1 | project Cluster)
 | take 1`
 
 // Check looks for AI Gateway rows of another cluster in the logs database,
-// also in the daily usage views. It returns an error only when the database
-// cannot be read.
+// also in the daily usage views and the coverage view. It returns an error
+// only when the database cannot be read.
 func (r *Report) Check(ctx context.Context) error {
 	tables, err := r.querier.Query(ctx, otherClusterQuery, map[string]string{"cluster": r.settings.Cluster})
 	if err == nil && (len(tables) != 1 || len(tables[0].Columns) != 1) {

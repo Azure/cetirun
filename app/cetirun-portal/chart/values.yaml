@@ -154,8 +154,8 @@ aiGateway:
 # on a whole database: give the role only while the logs database holds the
 # data of this CetiRun cluster alone, and remove it before another cluster
 # writes to it. At start, the Portal turns the report off when the database,
-# also its daily usage views, holds AI Gateway rows of another cluster; that
-# does not remove the role.
+# also its daily usage views and its coverage view, holds AI Gateway rows of
+# another cluster; that does not remove the role.
 usage:
   # -- Read the usage from Azure Data Explorer
   enabled: false

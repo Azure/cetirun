@@ -534,7 +534,8 @@ inventory.
 So the role has a prerequisite: the logs database holds the data of this
 CetiRun cluster alone. No other cluster writes to it while the identity has the
 role. It also keeps no data that another cluster wrote earlier. The daily usage
-views keep their rows for 400 days by default, longer than the request lines.
+views and `GatewayCoverage` keep their rows for 400 days by default, longer
+than the request lines.
 `adxMode: create` makes new databases for this cluster, but another
 installation can still use them, for example with `adxMode: existing`. If you
 do not know the history of a logs database, use a new one for this cluster.
@@ -589,10 +590,12 @@ You can also delete the identity `<clusterName>-portal-usage` and the earlier
 identities.
 
 When the Portal starts, it looks for AI Gateway rows of another cluster in the
-logs database. It reads the `Gateway` table and the daily usage views. If it
-finds such a row, it turns the usage report off. This check finds a
-configuration error. It does not limit the identity, and it does not remove
-the role.
+logs database. It reads the `Gateway` table, the daily usage views, and
+`GatewayCoverage`. The views keep their rows longer than the table: when the
+lines of an AI Gateway without calls expired, only `GatewayCoverage` holds its
+heartbeats. If the Portal finds such a row, it turns the usage report off. This
+check finds a configuration error. It does not limit the identity, and it does
+not remove the role.
 
 If the Portal cannot read the database, for example before the role exists, it
 checks again after 30 seconds. It then doubles the wait, up to 10 minutes. The
