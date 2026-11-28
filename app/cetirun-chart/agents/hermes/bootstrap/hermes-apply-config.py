@@ -42,7 +42,7 @@ SHARED_METRICS_OFFER_VERSION = 2
 # Entries of HOME lists that only the generated configuration adds: a start
 # whose generated configuration does not have them removes them from HOME.
 PLATFORM_LIST_ENTRIES = (
-    ("plugins", "enabled", ("cetirun-memory-context", "cetirun-session-log")),
+    ("plugins", "enabled", ("cetirun-memory-context", "cetirun-session-log", "cetirun-gateway-errors")),
     ("skills", "external_dirs", ("/home/vibe/.agents/skills",)),
 )
 # The CetiRun session log plugin, which logger.enabled turns on, and its files.

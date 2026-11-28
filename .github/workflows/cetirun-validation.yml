@@ -62,7 +62,21 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The AI Gateway guard's tests run its Redis script on the Valkey image that the AI Gateway chart deploys.
+      - name: Start Valkey for the AI Gateway guard tests
+        run: |
+          docker run --detach --rm --name cetirun-test-valkey --publish 127.0.0.1:6379:6379 \
+            mcr.microsoft.com/azurelinux/base/valkey:8@sha256:1f9457e9e325de0301c85d0c18765777820e06290c03849545868b4d22781496 \
+            valkey-server --protected-mode no --save "" --appendonly no
+          for _ in $(seq 30); do
+            if docker exec cetirun-test-valkey valkey-cli ping | grep -q PONG; then exit 0; fi
+            sleep 1
+          done
+          docker logs cetirun-test-valkey
+          exit 1
       - name: Check release metadata, Python syntax, and offline helper regressions
+        env:
+          CETIRUN_TEST_REDIS: 127.0.0.1:6379
         run: make version-check python-check ci-test
 
   python-tests:

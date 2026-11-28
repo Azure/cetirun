@@ -39,6 +39,11 @@ Licensed under the MIT License.
       "models" $models) }}
 {{- $_ := set $config "providers" $providers }}
 {{- $_ := set $config "model" (dict "default" $model "provider" "cetirun-gateway") }}
+{{- /* Ends a turn at the AI Gateway's answer that a provider refused its
+   credentials, which Hermes would otherwise retry for minutes. */}}
+{{- $plugins := dig "plugins" (dict) $config }}
+{{- $_ := set $plugins "enabled" (append (dig "enabled" (list) $plugins) "cetirun-gateway-errors" | uniq) }}
+{{- $_ := set $config "plugins" $plugins }}
 {{- $contextSkills := and (or (not .Values.sandboxWorkload) (dig "reconciled" false (.Values.sandboxWorkload | default dict))) (dig "enabled" false (.Values.memoryContext | default dict)) }}
 {{- if or .Values.skills.shared $contextSkills }}
 {{- $skills := dig "skills" (dict) $config }}

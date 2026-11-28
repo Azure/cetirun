@@ -111,6 +111,16 @@ explicit environment mappings. Reserved variable mappings and bulk sources with
 undeclared output names are rejected before hydration; this also applies to
 profile aliases and the AI Gateway key.
 
+The AI Gateway answers 502 with the error code `cetirun_provider_credentials`,
+or `cetirun_copilot_credentials` for the Agent's GitHub Copilot route, when a
+provider refuses the AI Gateway's own credentials. Hermes 0.22.7 retries a 502
+for about five minutes. The platform plugin `cetirun-gateway-errors` classifies
+these answers with Hermes's `transform_api_error_classification` hook as
+errors that a retry does not fix. Hermes then ends the turn instead of retrying
+it, and shows its own error with the AI Gateway's message in the details.
+The generated configuration enables the plugin on every start; other errors
+keep Hermes's classification.
+
 The browser username is `cetirun`; the password is the existing `API_SERVER_KEY`.
 `CETIRUN_AUTH_KEY` is the independent session-signing key. Both keys must exist
 and are reused across normal restarts. The upstream browser credential at

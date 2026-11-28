@@ -451,18 +451,16 @@ def test_hermes_reconciles_each_platform_plugin_on_its_own(agent):
     assert run(agent).returncode == 0
     source = agent["config"] / "hermes-config.yaml"
     desired = yaml.safe_load(source.read_text())
-    for generated, expected in (
-        (["cetirun-memory-context"], ["home-plugin", "cetirun-memory-context"]),
-        ([SESSION_LOG], ["home-plugin", SESSION_LOG]),
-    ):
+    platform = ["cetirun-memory-context", SESSION_LOG, "cetirun-gateway-errors"]
+    for plugin in platform:
         saved = read_config(agent)
-        saved["plugins"] = {"enabled": ["home-plugin", "cetirun-memory-context", SESSION_LOG]}
+        saved["plugins"] = {"enabled": ["home-plugin", *platform]}
         agent["config_file"].write_text(json.dumps(saved))
-        desired["plugins"] = {"enabled": generated}
+        desired["plugins"] = {"enabled": [plugin]}
         source.write_text(json.dumps(desired))
         result = run(agent)
         assert result.returncode == 0, result.stderr
-        assert read_config(agent)["plugins"]["enabled"] == expected
+        assert read_config(agent)["plugins"]["enabled"] == ["home-plugin", plugin]
 
 
 def test_a_session_log_link_is_removed_without_following_it(agent, tmp_path):

@@ -2238,6 +2238,90 @@ these actions:
   used its default classifier, for every caller. The Decisions API and a
   router's own classifier calls reach the model as before. A key that the
   operator issued still gets the 403 that is described above.
+- It answers with 502, not with the provider's 401, when a provider refuses the
+  AI Gateway's own credentials for a deployment (LiteLLM's
+  `AuthenticationError`). The calling key passed the AI Gateway's checks, so it
+  is not the cause, but clients read a 401 as their own key being wrong: Hermes
+  asks the user to update an API key that the user cannot change. The message
+  starts with `CetiRun AI Gateway:`. It says that the key is not the cause, and
+  that a CetiRun administrator must fix the provider configuration of the model.
+  For an Agent's GitHub Copilot route, it says that the owner can sign in to
+  GitHub Copilot again. This applies to Chat Completions, Responses, and
+  Anthropic Messages requests. A refusal of the calling user's own provider
+  connection keeps LiteLLM's 401 and its message, which tells the caller to
+  connect again: LiteLLM raises `CallerCredentialAuthenticationError` for its
+  per-user GitHub Copilot sign-in. The AI Gateway logs a warning with the
+  provider, the model, the provider's message, and the key's alias. After the
+  refusal, LiteLLM puts the deployment in cooldown for a few seconds, and
+  refuses requests for the model in this time with a 429
+  (`all_deployments_in_cooldown`) that does not say why. When the router
+  recorded each deployment's cooldown after such a refusal, the AI Gateway
+  answers these requests with the same 502. A cooldown after another error
+  keeps LiteLLM's 429. The error has the OpenAI error code
+  `cetirun_provider_credentials`, or `cetirun_copilot_credentials` for an
+  Agent's GitHub Copilot route. The answer has the header
+  `x-should-retry: false`, which OpenAI's SDKs follow. The CetiRun Agent images
+  recognize the codes and end the turn instead of retrying it. OpenClaw shows
+  its own text for the code, which says who can fix the credentials. The
+  OpenClaw image changes this with the same script as the budget text
+  (`agents/openclaw/compat/apply-gateway-budget.mjs`), which also changes
+  OpenClaw's check for errors that end a turn. Hermes shows its own error, with
+  this message in the details: the plugin `cetirun-gateway-errors` of the
+  Hermes image classifies the codes as errors that a retry does not fix.
+  Without the codes, OpenClaw retried a 502 for about 90 seconds and Hermes
+  for about five minutes. An Anthropic Messages answer keeps the Anthropic
+  error form (`api_error`), without a code.
+- It keeps the token limits that an OpenAI-compatible upstream advertised last,
+  while the upstream does not answer. LiteLLM asks the upstream of an
+  OpenAI-compatible deployment that has an `api_base`, such as one with the
+  provider `openai` or `hosted_vllm`, for the limits of its models
+  (`GET /v1/models`) every five minutes. These limits take the place of the
+  limits in LiteLLM's table. LiteLLM forgets them ten minutes after the
+  upstream last answered, and a replica that starts while the upstream does
+  not answer has only the table's limits. The CetiRun operator writes the
+  limits into the configuration of each Agent with the model. So a refused key
+  restarted each such Agent twice: when the upstream stopped answering, and
+  when it answered again. The AI Gateway keeps the limits of each deployment
+  while the upstream does not answer. Each answer of the upstream is an
+  observation: the limits of the model, and the time of the read, between the
+  request and the answer. When LiteLLM answers from the listing that it keeps,
+  the time is that of its read of the listing. The AI Gateway keeps the newest
+  observation in its Redis, for 30 days after that time, and in the replica. A
+  replica dates each of its reads once by the clock of Redis: with a round trip
+  to Redis, it learns two times of Redis between which the read happened, and
+  the observation keeps them. The read ended before that round trip, so the
+  second time is no later than the time of Redis during it. So the clocks of
+  the replicas do not matter, and a later change of the clock of Redis does not
+  move earlier reads. The times
+  are of an epoch of the clock of Redis. A new epoch begins when Redis lost its
+  data, or when its clock went back. The times of two epochs do not order two
+  reads. In a new epoch, an observation keeps the time of its read, and Redis
+  keeps it 30 days after that time. A read is not later than another read when
+  its times can be wrong. That is so when the clock of Redis stepped between the
+  replica's last round trip before the request and its round trip after the
+  read. It is so for the first read of a replica, which has no round trip before
+  it. It is also so when Redis did not date the read within five seconds,
+  because Redis did not answer. At each refresh, a replica combines the
+  observation in Redis with its own: the later read wins, and of two reads that
+  the clock of Redis cannot order, the smaller limit of each kind wins until a
+  later read. A read that does not advertise a kind of limit has the limit that
+  LiteLLM falls back to, from its table. When that limit is the smaller one,
+  the result does not advertise the kind either, so LiteLLM falls back to it.
+  That result counts from the read that began later, which
+  advertised no smaller limit, so Redis keeps it 30 days after that read.
+  The replica writes the result in place of the value that it read,
+  in one step, so that the replicas agree, also a replica that starts
+  meanwhile. When another replica wrote meanwhile, the replica combines that
+  value with its result and writes again. A replica uses what it knows when
+  Redis does not answer, and writes it at the next refresh. A deployment takes
+  the answer of a read once: when LiteLLM answers from the same listing again,
+  the replica does not take that answer as a new observation.
+  The ID of the deployment scopes the limits: two deployments with one upstream
+  URL and model keep their own limits, and a changed credential keeps them.
+  When the upstream answers without limits for the model, also with an empty
+  listing, the AI Gateway keeps no limits for it. The router then stops serving
+  the earlier limits at once. Limits that you set in the `model_info` of a model
+  (`max_input_tokens`, `max_output_tokens`) take precedence over the upstream's.
 - It shortens the request that a router with a jev classifier sends to its
   decision model. The limit in bytes starts at the number of tokens that the
   model takes. This number is the smallest `model_info.max_input_tokens` of

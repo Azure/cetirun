@@ -109,6 +109,52 @@ billing error instead, which the CetiRun OpenClaw image replaces with one about
 the CetiRun budget (agents/openclaw/compat/apply-gateway-budget.mjs of the
 runtime chart).
 
+A provider that refuses the Gateway's own credentials for a deployment (LiteLLM's
+AuthenticationError, HTTP 401) is answered with 502 and a CetiRun message
+instead. A refusal of the calling user's own provider connection
+(CallerCredentialAuthenticationError, for LiteLLM's per-user GitHub Copilot
+sign-in) is about the caller, and keeps LiteLLM's 401 and message. The calling
+key passed the Gateway's checks, so the provider's 401 is
+not about it, but clients read a 401 as their own key being wrong: Hermes asks
+the user to update an API key that the user cannot change. The message says that
+the key is not the cause, and who can fix the credentials: a CetiRun
+administrator for a shared model; for an Agent's GitHub Copilot route (through
+its Copilot proxy), the owner by signing in to GitHub Copilot again. The error
+carries the answer too, because LiteLLM's Anthropic Messages route answers from
+the error and ignores what a failure hook returns. The provider's own message
+goes to the Gateway's log. LiteLLM then keeps the deployment in cooldown for some
+seconds and refuses requests for the model with a 429 that does not say why;
+when the router's record of each such cooldown has the provider's 401, the
+answer is the same 502. Its OpenAI error code, cetirun_provider_credentials, or
+cetirun_copilot_credentials for an Agent's GitHub Copilot route, tells it from
+other upstream failures: the CetiRun Agent images stop the turn at once for it,
+OpenClaw with its own text for the code and Hermes with its own text and this
+message in the details, where both would otherwise retry a 502 for minutes. It
+says x-should-retry: false, which OpenAI's SDKs follow.
+
+LiteLLM asks the upstream of an OpenAI-compatible deployment that has an
+api_base, such as one with the provider openai or hosted_vllm, for the token
+limits of its models every five minutes, and forgets them ten minutes after
+the upstream last answered. When
+the upstream refuses the Gateway's credentials or does not answer, the limits
+fall back to LiteLLM's own table, at once in a replica that starts meanwhile.
+The CetiRun operator puts the limits into each Agent's configuration, so it
+restarted every Agent with the model, and again when the upstream answered.
+The guard keeps the limits that an upstream advertised last for each deployment
+while it does not answer. Each answer is an observation of the read of the
+listing, between LiteLLM's request and the answer. The guard keeps the newest
+observation in the Gateway's Redis, so that the replicas agree, and in the
+replica for when Redis does not answer. A replica dates each of its reads once
+by Redis's clock, with a round trip, in an epoch of the clock. A read is not
+later than another when Redis's clock stepped since the replica's last round
+trip before the request. A new epoch begins when Redis lost its data or its
+clock went back, and an observation keeps the time of its read in it. At each
+refresh it combines the observation in Redis with its own: the read that
+certainly happened later wins, and of two reads that Redis's clock cannot order,
+the smaller limit of each kind. It writes the result in place of the value that
+it read. An answer without limits for the model, also an empty listing,
+withdraws them, and the router stops serving them at once.
+
 Encrypted reasoning without the Gateway's mark is removed from Responses API
 requests while encrypted content affinity is on for the model. A client that
 keeps no state on the provider, such as OpenClaw, sends every earlier
@@ -173,20 +219,26 @@ user chose or to auto; with a reasoning model each failed, out of the user's
 sight. LiteLLM's own rule decides, read from LiteLLM, and each change is logged.
 """
 
+import asyncio
 import base64
+import contextvars
 import datetime
+import hashlib
 import importlib
 import inspect
 import json
 import math
 import re
+import secrets
 import sys
+import time
+from types import MappingProxyType
 
 import litellm
 from fastapi import HTTPException
 from litellm._logging import verbose_proxy_logger
 from litellm.integrations.custom_logger import CustomLogger
-from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy._types import ProxyException, UserAPIKeyAuth
 
 # A request body field that makes LiteLLM log that request's content.
 DEBUG_PARAMETER = "litellm_request_debug"
@@ -381,10 +433,12 @@ def install_mark_form():
 FAILOVER_EXCLUDED = "_excluded_deployment_ids"
 
 
-def deployment_id(deployment):
-    """The model_info.id of a deployment dict, or None."""
-    info = deployment.get("model_info") if isinstance(deployment, dict) else None
-    return info.get("id") if isinstance(info, dict) else None
+def deployment_id(raw_deployment):
+    """The ID of a deployment, a model_list entry or a router's record of one, or None. The affinity failover
+    filter and the discovery of each deployment's limits both use it."""
+    info = field_of(raw_deployment, "model_info")
+    model_id = field_of(info, "id") if info is not None else None
+    return model_id if isinstance(model_id, str) and model_id else None
 
 
 def install_failover_past_affinity():
@@ -508,6 +562,645 @@ def install_savings_provider_lookup():
     return True
 
 
+# LiteLLM's module that asks an OpenAI-compatible upstream for the token limits of its models, the key under
+# which it keeps the upstream's last listing in its cache (get_openai_compatible_model_info), and the router
+# registry's module and method that ask it for each deployment.
+UPSTREAM_INFO_MODULE = "litellm.llms.openai_like.model_info"
+UPSTREAM_LISTING_KEY = "upstream_model_info:"
+UPSTREAM_REGISTRY_MODULE = "litellm.router_rust.surface.registry"
+UPSTREAM_REFRESH = "_arefresh_deployment_model_info"
+# The key of a deployment's newest observation in the Gateway's Redis: this prefix and a hash of the
+# deployment's ID, the upstream's models URL and the model. An observation is an answer of the upstream: the
+# limits that it advertised for the model, or none, an ID of the read, two times of Redis's clock between which
+# the read happened, the epoch of Redis's clock that dated it, and whether it was dated late. Redis keeps it until
+# 30 days after the earlier time. The braces put the guard's keys into one slot of a Redis cluster, so that one
+# script can use a deployment's key and UPSTREAM_CLOCK_KEY together.
+UPSTREAM_LIMITS_KEY = "cetirun:{upstream-limits}:"
+UPSTREAM_LIMITS_TTL = 30 * 24 * 3600
+# The epoch of Redis's clock: its ID, and the latest time of Redis's clock that the guard's script saw.
+UPSTREAM_CLOCK_KEY = UPSTREAM_LIMITS_KEY + "clock"
+# How long the guard waits for Redis before it uses this replica's observation.
+UPSTREAM_REDIS_TIMEOUT = 5
+# How long the guard remembers when LiteLLM read each upstream listing: longer than LiteLLM keeps one (300 s).
+UPSTREAM_LISTING_MEMORY = 900
+# How often a replica writes to Redis when other replicas wrote between its read and its write. Redis answers a
+# write that it does not take with its value, which the replica takes as its next read.
+UPSTREAM_WRITE_ATTEMPTS = 3
+# Reads a deployment's observation in Redis, or writes one in place of the value that the replica read, in one
+# step: Redis does not take the new value when its value changed since that read. The replicas decide what to
+# write (combined); the script only makes the replacement atomic. Each call also keeps the epoch of Redis's
+# clock, in which the times of Redis's clock can order reads: a new epoch begins when Redis has none, for example
+# after it lost its data, and when Redis's clock went back behind the latest time that a call saw. The epoch's ID
+# is the time of Redis's clock when it began. The script returns the value that Redis has afterwards, Redis's time
+# in milliseconds, what Redis did ('read'; 'stored'; 'changed', its value changed since the replica read it; or
+# 'expired', the read of the new observation is older than Redis keeps one), and the epoch. KEYS are the key and
+# UPSTREAM_CLOCK_KEY; ARGV holds the new value ('' to read), the value that the replica read ('' for none), the
+# earlier time of the new observation's read in milliseconds, and the time to keep an observation and the epoch,
+# in seconds.
+UPSTREAM_LIMITS_SCRIPT = """
+if redis.replicate_commands then pcall(redis.replicate_commands) end
+local time = redis.call('TIME')
+local now = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
+local keep = tonumber(ARGV[4])
+local epoch, latest = string.match(redis.call('GET', KEYS[2]) or '', '^(%d+):(%d+)$')
+if not epoch or now < tonumber(latest) then
+  epoch, latest = tostring(now), now
+end
+redis.call('SET', KEYS[2], epoch .. ':' .. tostring(math.max(tonumber(latest), now)), 'EX', keep)
+local current = redis.call('GET', KEYS[1])
+local function answer(value, verdict)
+  return {value or false, tostring(now), verdict, epoch}
+end
+if ARGV[1] == '' then
+  return answer(current, 'read')
+end
+if (current or '') ~= ARGV[2] then
+  return answer(current, 'changed')
+end
+local ttl = math.min(keep, keep - math.floor((now - tonumber(ARGV[3])) / 1000))
+if ttl < 1 then
+  return answer(current, 'expired')
+end
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ttl)
+return answer(ARGV[1], 'stored')
+"""
+# How far ahead of Redis's time an observation of the current epoch of Redis's clock can be dated: by a call that
+# ran after the one that a replica waited for. An observation of another epoch can be dated further ahead, after
+# Redis's clock went back; its times do not order it against a read of the current epoch (follows).
+UPSTREAM_AHEAD_MS = 60000
+# How soon after a read the round trip that dates it must start, in seconds of this replica's clock. A read that
+# Redis did not date in time, because Redis did not answer, is not ordered by its times: a step of Redis's clock in
+# between could make it look newer or older than it is (date_read).
+UPSTREAM_PROMPT_DATING = 5
+# How fast Redis's clock and this replica's clock can run apart, as a share of the time: a thousand parts per
+# million. Two clocks that ntpd slews, each by at most 500, run apart no faster. Between two round trips to Redis, a
+# larger change of the difference of the two clocks is a step of Redis's clock, or a faster slew, across which
+# Redis's times do not order reads (steady_offsets). UPSTREAM_CLOCK_SLACK_MS adds the rounding of Redis's time to
+# whole milliseconds.
+UPSTREAM_CLOCK_RATE = 0.001
+UPSTREAM_CLOCK_SLACK_MS = 1
+# The deployment whose limits the router refreshes, in the task that refreshes them, whether the newest
+# observation of it has no limits, and the limits that LiteLLM falls back to for it (table_limits).
+REFRESHING_DEPLOYMENT = contextvars.ContextVar("cetirun_refreshing_deployment", default=None)
+# The kinds of token limits that LiteLLM reads from an upstream's listing.
+UPSTREAM_LIMIT_KINDS = ("max_tokens", "max_input_tokens", "max_output_tokens")
+# This replica's newest observation of each deployment, LiteLLM's last read of each upstream listing
+# (UpstreamRead), the ID of the read whose answer each deployment took last, and the deployments whose last
+# request failed. A lookup that LiteLLM answers again from a listing whose read a deployment took is no new
+# observation of it: the upstream was not asked, and the observation of that read is already in what the replica
+# knows, also when a merge in Redis gave it another ID.
+KEPT_UPSTREAM_LIMITS = {}
+UPSTREAM_LISTINGS = {}
+TAKEN_READS = {}
+FAILED_UPSTREAMS = set()
+# This replica's clock. It measures time only in this replica: when LiteLLM sent the request for a listing and
+# when it received the listing, and the round trips to Redis, with which Redis's clock dates the reads.
+clock = time.monotonic
+LAST_READ = [float("-inf")]
+# This replica's latest round trip to Redis that answered: the times of this replica's clock before and after it,
+# Redis's time, and the epoch of Redis's clock. A read keeps the one before its request as its reference.
+LAST_CALL = [None]
+
+
+def upstream_limits_key(module, deployment, api_base, model):
+    """The key of a deployment's kept limits. The deployment's ID scopes them: two deployments with one
+    upstream URL and model can have other credentials or headers, and so other limits. The ID is the
+    configured one, so a changed credential keeps the key; neither the key nor the value holds a credential."""
+    url = module.add_path_to_api_base(api_base, "/v1/models")
+    return UPSTREAM_LIMITS_KEY + hashlib.sha256(json.dumps([deployment, url, model]).encode("utf-8")).hexdigest()
+
+
+def upstream_listing_key(module, api_base, headers):
+    """The key under which LiteLLM keeps an upstream's listing: the models URL and the request's headers."""
+    url = module.add_path_to_api_base(api_base, "/v1/models")
+    return UPSTREAM_LISTING_KEY + hashlib.sha256(json.dumps((url, sorted(headers.items()))).encode()).hexdigest()
+
+
+def read_time():
+    """A time of this replica's clock for an event of a read of an upstream's listing, its request or its answer,
+    after each earlier such event."""
+    now = clock()
+    if now <= LAST_READ[0]:
+        now = LAST_READ[0] + 1e-6
+    LAST_READ[0] = now
+    return now
+
+
+class ObservedClient:
+    """The HTTP client of one lookup of an upstream's models. It records whether LiteLLM asked the upstream,
+    or answered from the listing it keeps, when it sent the request, this replica's last round trip to Redis before
+    it, and whether the upstream answered with a listing, as LiteLLM reads one: a successful status and a body in
+    the listing's form, also without models."""
+
+    def __init__(self, client, module):
+        self.client, self.module = client, module
+        self.asked = self.answered = False
+        self.sent = self.reference = None
+
+    async def get(self, *args, **kwargs):
+        self.asked, self.sent, self.reference = True, read_time(), LAST_CALL[0]
+        response = await self.client.get(*args, **kwargs)
+        try:
+            response.raise_for_status()
+            self.module._ModelList.model_validate_json(response.content)
+            self.answered = True
+        except Exception:  # noqa: BLE001  # LiteLLM keeps an empty listing for this answer
+            pass
+        return response
+
+    def __getattr__(self, name):
+        return getattr(self.client, name)
+
+
+class UpstreamRead:
+    """One read of an upstream's listing by LiteLLM. A listing that LiteLLM keeps can answer the lookups of several
+    deployments: their observations are of this read, and each keeps it. The read has the times of this replica's
+    clock when LiteLLM sent its request and received the answer (seen), whether the upstream answered with a
+    listing, an ID, and this replica's last round trip to Redis before the request (reference). The first round trip
+    that dates one of its observations dates the read (date_read): the read keeps the times of Redis's clock,
+    whether the dating was late, and its epoch (dating), so that every observation of the read has the same."""
+
+    __slots__ = ("seen", "answered", "id", "reference", "dating")
+
+    def __init__(self, seen, answered, reference):
+        self.seen, self.answered, self.reference = seen, answered, reference
+        self.id, self.dating = secrets.token_hex(8), None
+
+
+def remember_listing(listing, answered, sent, reference):
+    """Record that LiteLLM read an upstream's listing between sending its request, at the time sent, and now, with
+    the round trip to Redis before the request (reference). The upstream answered at an unknown time in between, so
+    two reads whose times overlap cannot be ordered. A later lookup that LiteLLM answers from the listing it keeps
+    is the same read: an observation of these times, not a newer one. The read replaces the listing's earlier read.
+    A listing that this replica has not read before also makes it forget the listings that LiteLLM no longer
+    reads, for example after a change of their requests' headers."""
+    received = read_time()
+    if listing not in UPSTREAM_LISTINGS:
+        for key in [key for key, read in UPSTREAM_LISTINGS.items()
+                    if read.seen[1] < received - UPSTREAM_LISTING_MEMORY]:
+            del UPSTREAM_LISTINGS[key]
+    UPSTREAM_LISTINGS[listing] = UpstreamRead((min(sent, received), received), answered, reference)
+
+
+def token_limits(value):
+    """The token limits in a stored value, or None for anything else."""
+    if not isinstance(value, dict) or not value:
+        return None
+    if not all(isinstance(name, str) and isinstance(limit, int) and not isinstance(limit, bool) and limit > 0
+               for name, limit in value.items()):
+        return None
+    return dict(value)
+
+
+def live_observation(observation):
+    """This replica's observation, or None when it has none or the observation is older than Redis keeps one."""
+    if observation is None or clock() - observation["seen"][0] >= UPSTREAM_LIMITS_TTL:
+        return None
+    return observation
+
+
+def current_read(read, now_ms, current):
+    """Whether two times of Redis's clock date a read that Redis keeps now: within the 30 days that it keeps an
+    observation; and, when the current epoch of Redis's clock dated it, not later than Redis's time now_ms, give
+    or take UPSTREAM_AHEAD_MS. The same bounds hold for an observation in Redis and for this replica's copy."""
+    return (now_ms - UPSTREAM_LIMITS_TTL * 1000 < read[0] <= read[1]
+            and (not current or read[1] <= now_ms + UPSTREAM_AHEAD_MS))
+
+
+def stored_observation(value, now_ms, epoch, sent, received):
+    """The observation in a value of Redis, or None when it is none. Its read happened between two times of
+    Redis's clock, which it keeps as observed_ms, with the epoch of the clock that dated it and whether the dating
+    was late. Redis's time now_ms, of the epoch epoch, fell between the times sent and received of this replica's
+    clock: so the read happened between two times of this replica's clock, which it keeps as seen."""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", "replace")
+    try:
+        stored = json.loads(value)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(stored, dict):
+        return None
+    etag, read, limits = stored.get("etag"), stored.get("observed_ms"), stored.get("limits")
+    dated, late = stored.get("epoch"), stored.get("late")
+    if (not isinstance(etag, str) or not etag or not isinstance(read, list) or len(read) != 2
+            or not all(isinstance(time_, (int, float)) and not isinstance(time_, bool) and math.isfinite(time_)
+                       for time_ in read)
+            or not isinstance(dated, str) or not (dated.isascii() and dated.isdigit()) or not isinstance(late, bool)
+            or not current_read(read, now_ms, dated == epoch)):
+        return None
+    if limits is not None:
+        limits = token_limits(limits)
+        if limits is None:
+            return None
+    return {"limits": limits, "etag": etag, "observed_ms": (read[0], read[1]), "epoch": dated, "late": late,
+            "seen": (sent - (now_ms - read[0]) / 1000, received - (now_ms - read[1]) / 1000)}
+
+
+def stored_value(observation):
+    """An observation as Redis keeps it."""
+    return json.dumps({"limits": observation["limits"], "etag": observation["etag"],
+                       "observed_ms": list(observation["observed_ms"]), "epoch": observation["epoch"],
+                       "late": observation["late"]})
+
+
+def same_observation(one, other):
+    """Whether two observations are the same, with the same times."""
+    return all(one[field] == other[field] for field in ("etag", "limits", "observed_ms", "epoch", "late"))
+
+
+def smaller_limits(one, other, fallback=None):
+    """The smaller limit of each kind of two observations' limits, or None when the result has none. An observation
+    that does not have a kind of limit has the one that LiteLLM falls back to for the deployment (fallback: of its
+    model table, table_limits), or no limit when LiteLLM has none either. When that fallback is the smaller limit
+    of a kind, the result does not have the kind either, so LiteLLM falls back to it as it does for the read that
+    left the kind out."""
+    one, other, fallback = one or {}, other or {}, fallback or {}
+    limits = {}
+    for name in set(one) | set(other):
+        default = fallback.get(name)
+        smallest = min(limit for limit in (one.get(name, default), other.get(name, default)) if limit is not None)
+        if (name in one and name in other) or default is None or smallest < default:
+            limits[name] = smallest
+    return limits or None
+
+
+def merged_etag(one, other, limits):
+    """The read ID of an observation with the smaller limits of two: the ID of the one whose limits they are, or
+    else an ID of both."""
+    if limits == one["limits"]:
+        return one["etag"]
+    if limits == other["limits"]:
+        return other["etag"]
+    return hashlib.sha256("\n".join(sorted((one["etag"], other["etag"]))).encode("utf-8")).hexdigest()[:16]
+
+
+def follows(earlier, later):
+    """Whether the read of an observation certainly happened after the read of another, by Redis's clock: one epoch
+    of the clock dated both, the later read began after the earlier one ended, and the later one was dated in time,
+    so that no step of the clock between its read and its dating can have made it look later. The times of two
+    epochs do not order two reads: a new epoch begins after Redis's clock went back, or with a clock that Redis
+    lost."""
+    return (not later["late"] and earlier["epoch"] == later["epoch"]
+            and earlier["observed_ms"][1] < later["observed_ms"][0])
+
+
+def in_epoch(observation, now_ms, epoch, received):
+    """An observation as one of the current epoch epoch of Redis's clock. The read of an observation of another
+    epoch happened before Redis's time now_ms of this exchange, which it got at the time received of this replica's
+    clock: the observation ends at now_ms, and it is late, so that a read that began after this exchange follows
+    it, and no read before. It keeps its age: it begins as long before now_ms as its read began before received by
+    this replica's clock, so Redis keeps it no longer than 30 days from its read; or None when that is longer
+    ago."""
+    if observation is None or observation["epoch"] == epoch:
+        return observation
+    began = min(observation["seen"][0], received)
+    first = now_ms - math.ceil((received - began) * 1000)
+    if first <= now_ms - UPSTREAM_LIMITS_TTL * 1000:
+        return None
+    return dict(observation, observed_ms=(first, now_ms), seen=(began, received), epoch=epoch, late=True)
+
+
+def combined(shared, local, now_ms, epoch, received, fallback=None):
+    """The newest that this replica knows of a deployment's limits, from the observation in Redis and its own,
+    both dated by Redis's clock, as an observation of the current epoch epoch (in_epoch): the observation of the
+    read that certainly happened later (follows). Otherwise an observation with the smaller limit of each kind
+    (smaller_limits, with LiteLLM's fallback), which only a read that certainly happened after it replaces. It
+    runs from the later of their starts to the later of their ends: no limit of it is larger than the read that
+    began later advertised, and a read that ended before that start is older than that read, so the observation
+    can replace it; Redis keeps it 30 days from that start. It is late when either was. Observations of two epochs
+    are first taken into the current one, so the smaller limit of each kind counts until a read after this
+    exchange."""
+    if shared is not None and local is not None and shared["epoch"] != local["epoch"]:
+        shared, local = (in_epoch(observation, now_ms, epoch, received) for observation in (shared, local))
+    if shared is None or local is None:
+        newest = local if shared is None else shared
+    elif follows(local, shared):
+        newest = shared
+    elif follows(shared, local):
+        newest = local
+    else:
+        limits, both = smaller_limits(shared["limits"], local["limits"], fallback), (shared, local)
+        newest = {"limits": limits, "etag": merged_etag(shared, local, limits),
+                  "observed_ms": (max(o["observed_ms"][0] for o in both), max(o["observed_ms"][1] for o in both)),
+                  "seen": (max(o["seen"][0] for o in both), max(o["seen"][1] for o in both)),
+                  "epoch": shared["epoch"], "late": shared["late"] or local["late"]}
+    return in_epoch(newest, now_ms, epoch, received)
+
+
+def earlier_reference(one, other):
+    """Of the round trips to Redis before two reads, the earlier one, which was before both; or None when one of
+    the reads has none."""
+    if one is None or other is None:
+        return None
+    return one if one[1] <= other[1] else other
+
+
+def newer_read(local, fresh, fallback=None):
+    """This replica's newest observation of a deployment from its observation and a read of the upstream, by this
+    replica's clock: the later read. When the times of the two reads overlap, so that this replica does not know
+    which answer the upstream gave later, an observation with the smaller limit of each kind (smaller_limits, with
+    LiteLLM's fallback), from the later of their starts to the later of their ends (as combined does), which
+    Redis's clock dates at the next round trip, with the round trip before both reads."""
+    if local is None or local["etag"] == fresh["etag"]:
+        return fresh if local is None else local
+    if local["seen"][1] < fresh["seen"][0]:
+        return fresh
+    if fresh["seen"][1] < local["seen"][0]:
+        return local
+    limits = smaller_limits(local["limits"], fresh["limits"], fallback)
+    return {"limits": limits, "etag": secrets.token_hex(8),
+            "seen": (max(local["seen"][0], fresh["seen"][0]), max(local["seen"][1], fresh["seen"][1])),
+            "observed_ms": None, "epoch": None, "late": False,
+            "reference": earlier_reference(local.get("reference"), fresh.get("reference"))}
+
+
+def shared_redis():
+    """The proxy's Redis, which the Gateway's replicas share (its shared health checks use it), or None."""
+    return getattr(sys.modules.get(PROXY_SERVER_MODULE), "redis_usage_cache", None)
+
+
+def clock_offsets(now_ms, sent, received):
+    """How far, in milliseconds, Redis's clock was ahead of this replica's during a round trip: Redis's time now_ms
+    fell between the times sent and received of this replica's clock, so the difference was between the two."""
+    return now_ms - received * 1000, now_ms - sent * 1000
+
+
+def read_times(offsets, seen):
+    """The two times of Redis's clock, in whole milliseconds, between which a read happened: the read happened
+    between the two times seen of this replica's clock, while Redis's clock was ahead of it by a difference between
+    the two offsets."""
+    return math.floor(offsets[0] + seen[0] * 1000), math.ceil(offsets[1] + seen[1] * 1000)
+
+
+def steady_offsets(reference, now_ms, sent, received, epoch):
+    """How far Redis's clock can have been ahead of this replica's, in milliseconds, at any time between the round
+    trip reference and a later one, in which Redis's time now_ms, of the epoch epoch, fell between the times sent and
+    received of this replica's clock. Each round trip bounds the difference of the two clocks (clock_offsets), and in
+    between it changes by no more than UPSTREAM_CLOCK_RATE allows, unless Redis's clock stepped: so it stayed between
+    the smallest and the largest bound of the two round trips, widened by that rate. That holds for a step small
+    enough to fit both round trips too, before and after it. None when no change within the rate fits both round
+    trips, because Redis's clock stepped, forward or back; when the epoch of Redis's clock changed; or when there is
+    no round trip to compare with."""
+    if reference is None:
+        return None
+    before, after, then_ms, then_epoch = reference
+    if then_epoch != epoch:
+        return None
+    low, high = clock_offsets(now_ms, sent, received)
+    then_low, then_high = clock_offsets(then_ms, before, after)
+    drift = UPSTREAM_CLOCK_RATE * (received - before) * 1000 + UPSTREAM_CLOCK_SLACK_MS
+    if low > then_high + drift or high < then_low - drift:
+        return None
+    return min(low, then_low) - drift, max(high, then_high) + drift
+
+
+def date_read(observation, now_ms, sent, received, epoch):
+    """Date the read of this replica's observation by Redis's clock, once for each read: an observation of a read of
+    a listing keeps the read (UpstreamRead), which keeps the dating, so the observations of other deployments of the
+    same read get the same times. Redis's time now_ms, of the epoch epoch, fell between the times sent and received
+    of this replica's clock.
+
+    The read keeps this replica's last round trip to Redis before its request (reference). When Redis's clock ran
+    as this replica's from that round trip to this one (steady_offsets), the read happened between the times that
+    the two clocks' difference then gives. The read ended before this round trip began, so it ends no later than
+    Redis's time now_ms, give or take its rounding (UPSTREAM_CLOCK_SLACK_MS), however wide the allowance for the
+    clocks since a round trip long ago makes its times. Otherwise the dating is late: Redis's clock stepped
+    meanwhile, also while the request was in flight, or the read has no round trip before it, as the first read of
+    a replica has none. It is late too when this round trip started more than UPSTREAM_PROMPT_DATING seconds after
+    the read. A late read follows no other read (follows), and it ends at Redis's time now_ms, so that only a read
+    that began after its dating follows it. It begins as long before now_ms as the read began before received by
+    this replica's clock, so that Redis keeps it 30 days from the read."""
+    read = observation.get("read")
+    dating = None if read is None else read.dating
+    if dating is None:
+        seen = observation["seen"]
+        offsets = steady_offsets(observation.get("reference"), now_ms, sent, received, epoch)
+        if offsets is None or sent - seen[1] > UPSTREAM_PROMPT_DATING:
+            dating = ((read_times(clock_offsets(now_ms, sent, received), seen)[0], now_ms), True, epoch)
+        else:
+            first, last = read_times(offsets, seen)
+            dating = ((first, min(last, now_ms + UPSTREAM_CLOCK_SLACK_MS)), False, epoch)
+        if read is not None:
+            read.dating = dating
+    observation["observed_ms"], observation["late"], observation["epoch"] = dating
+
+
+async def upstream_limits_script(client, name, clock_name, *args):
+    """Run the script in Redis: the value that Redis has afterwards, Redis's time in milliseconds, what Redis did,
+    the epoch of Redis's clock, and the times of this replica's clock before and after (also LAST_CALL)."""
+    sent = clock()
+    value, now_ms, verdict, epoch = await client.eval(UPSTREAM_LIMITS_SCRIPT, 2, name, clock_name, *args,
+                                                      UPSTREAM_LIMITS_TTL)
+    received = clock()
+    now_ms, verdict, epoch = (item.decode("ascii") if isinstance(item, bytes) else item
+                              for item in (now_ms, verdict, epoch))
+    now_ms, epoch = int(now_ms), str(epoch)
+    LAST_CALL[0] = (sent, received, now_ms, epoch)
+    return value, now_ms, verdict, epoch, sent, received
+
+
+async def newest_observation(key, local, fallback=None):
+    """The newest observation of a deployment that this replica can know.
+
+    The replica dates the read of its own observation once, by Redis's clock, with a round trip: Redis's time
+    during the round trip, less the time since the read by this replica's clock, gives two times of Redis between
+    which the read happened, when Redis's clock ran as this replica's since the round trip before the request
+    (date_read). The observation keeps those times and the epoch of Redis's clock, so a later change of Redis's
+    clock does not move them, and the clocks of the replicas are never compared. At each lookup the replica reads
+    Redis, combines the observation there with its own (combined, with the limits that LiteLLM falls back to for
+    the deployment), and writes the result in place of the value that it read when they differ. When another
+    replica wrote meanwhile, Redis answers with that value instead, or with none when it lost the value; the replica
+    combines it at once with the result that it offered, and writes again. So what the replica knows has each value
+    that Redis returned, also when it cannot write. Its own observation counts only with times that Redis keeps now
+    (current_read), and the replica only uses it otherwise while Redis has none. When Redis does not answer, the
+    replica uses what it knows: the result of its last exchange with Redis, or else its own observation, which goes
+    to Redis at the next lookup."""
+    redis = shared_redis()
+    if redis is None:
+        return local
+    known = [local]
+
+    async def exchange():
+        client = redis.init_async_client()
+        name, clock_name = redis.check_and_fix_namespace(key), redis.check_and_fix_namespace(UPSTREAM_CLOCK_KEY)
+        value, now_ms, _, epoch, sent, received = await upstream_limits_script(client, name, clock_name, "", "", "")
+        if local is not None and local["observed_ms"] is None:
+            date_read(local, now_ms, sent, received, epoch)
+        mine = local
+        for attempt in range(UPSTREAM_WRITE_ATTEMPTS + 1):
+            own = (mine if mine is not None and current_read(mine["observed_ms"], now_ms, mine["epoch"] == epoch)
+                   else None)
+            shared = stored_observation(value, now_ms, epoch, sent, received)
+            newest = combined(shared, own, now_ms, epoch, received, fallback)
+            known[0] = local if newest is None else newest
+            if (newest is None or (shared is not None and same_observation(newest, shared))
+                    or attempt == UPSTREAM_WRITE_ATTEMPTS):
+                return
+            value, now_ms, verdict, epoch, sent, received = await upstream_limits_script(
+                client, name, clock_name, stored_value(newest), value or "", newest["observed_ms"][0])
+            if verdict != "changed":
+                return
+            # Redis did not take the write, and answered with its value: none, when it lost the value meanwhile.
+            # This replica combines that value with the result that it offered, which has what it read in Redis.
+            mine = newest
+
+    try:
+        await asyncio.wait_for(exchange(), UPSTREAM_REDIS_TIMEOUT)
+    except Exception:  # noqa: BLE001  # Redis does not answer: what this replica knows, written again later
+        pass
+    newest = known[0]
+    if newest is not None and newest is not local:
+        KEPT_UPSTREAM_LIMITS[key] = newest
+    return newest
+
+
+async def kept_upstream_limits(module, state, model, api_base, listing, fresh, limits):
+    """The limits that the router gets for a deployment at a refresh, after LiteLLM's lookup returned limits.
+
+    An answer of the upstream is an observation of the times between which LiteLLM read the listing, also when
+    LiteLLM answers from the listing that it keeps: the model's limits, or none. A deployment takes the answer of a
+    read once (TAKEN_READS). The router gets the newest observation, so the replicas agree: after a successful
+    request, its answer, unless another replica read a later one; when the upstream did not answer, the limits that
+    it advertised last. An observation without limits withdraws them."""
+    key = upstream_limits_key(module, state["deployment"], api_base, model)
+    record = UPSTREAM_LISTINGS.get(listing)
+    answered = record is not None and record.answered
+    fallback = state.get("fallback")
+    local, read = live_observation(KEPT_UPSTREAM_LIMITS.get(key)), None
+    if answered:
+        FAILED_UPSTREAMS.discard(key)
+        read = record.id
+        if TAKEN_READS.get(key) != read:
+            TAKEN_READS[key] = read
+            local = newer_read(local, {"limits": token_limits(dict(limits)) if limits else None, "etag": read,
+                                       "seen": record.seen, "observed_ms": None, "epoch": None, "late": False,
+                                       "reference": record.reference, "read": record}, fallback)
+    elif limits:
+        return limits  # a listing that LiteLLM read before the guard replaced its lookup
+    if local is None:
+        KEPT_UPSTREAM_LIMITS.pop(key, None)
+    else:
+        KEPT_UPSTREAM_LIMITS[key] = local
+    newest = await newest_observation(key, local, fallback)
+    if newest is None or (fresh and newest["etag"] == read):
+        state["withdrawn"] = fresh and not limits
+        return limits
+    if newest["limits"] is None:
+        state["withdrawn"] = True
+        return MappingProxyType({})
+    if not answered and key not in FAILED_UPSTREAMS:
+        FAILED_UPSTREAMS.add(key)
+        verbose_proxy_logger.warning(
+            "CetiRun guard: the upstream %s did not answer the request for the token limits of the model %s "
+            "of the deployment %s; kept the limits it advertised last: %s",
+            module.add_path_to_api_base(api_base, "/v1/models"), model, state["deployment"], newest["limits"])
+    return MappingProxyType(dict(newest["limits"]))
+
+
+def table_limits(raw_deployment):
+    """The token limits that LiteLLM falls back to for a deployment, of each kind that its upstream does not
+    advertise: those of its model table for the deployment's model, or for the base model that the deployment
+    names, as the proxy's /model/info reads them. None of a kind that the table does not have, and none for a
+    model that it does not have."""
+    try:
+        params, info = field_of(raw_deployment, "litellm_params"), field_of(raw_deployment, "model_info")
+        model, base = field_of(params, "model"), field_of(info, "base_model")
+        if "azure" in str(model) or base:
+            model = base
+        row = sys.modules["litellm"].get_model_info(model)
+        return {name: row[name] for name in UPSTREAM_LIMIT_KINDS
+                if isinstance(row.get(name), int) and not isinstance(row.get(name), bool) and row[name] > 0}
+    except Exception:  # noqa: BLE001  # a model that LiteLLM's table does not have
+        return {}
+
+
+def withdraw_served_limits(registry, model_id, raw_deployment):
+    """Stop the router from serving the limits of a deployment whose newest observation has none. LiteLLM's
+    registry keeps the limits that it discovered last for ten minutes after a lookup without limits; this removes
+    them as the registry does before it stores new ones, for the deployment that it still has."""
+    try:
+        if registry._core_get_model_info(model_id) is raw_deployment:
+            registry._discovered_model_info_cache.delete_cache(model_id)
+            registry._invalidate_model_group_info_cache()
+    except Exception:  # noqa: BLE001  # the image build fails for a registry that keeps them otherwise
+        pass
+
+
+def install_kept_upstream_limits():
+    """Keep the token limits an OpenAI-compatible upstream advertised last while it does not answer.
+
+    LiteLLM 1.110.1 asks the upstream of each such deployment for the limits of its models every five
+    minutes, and forgets them ten minutes after the last answer; meanwhile, and in a replica that starts
+    meanwhile, the deployment has the limits of LiteLLM's own table. The CetiRun operator writes the limits
+    into the configuration of each Agent with the model, so a refused key restarted every such Agent twice:
+    when the upstream stopped answering, and when it answered again. Each answer of the upstream is an
+    observation: the limits that the upstream advertised for the model, or none, between the times when LiteLLM
+    sent its request and received the listing. The client that the replacement passes on shows whether LiteLLM
+    asked the upstream, or answered from the listing that it keeps, and whether the upstream answered. The guard
+    keeps the newest observation in the replica and in the Gateway's Redis. Each replica dates its reads once by
+    Redis's clock, with a round trip, and combines its observation with the one in Redis at each refresh
+    (newest_observation): a read replaces another only when it certainly happened later; otherwise the smaller
+    limits count. When the upstream does not answer, the replacement returns the limits of the newest observation,
+    and the router keeps them as it keeps an answer. When the newest observation has no limits, the registry's
+    refresh stops serving the limits at once. The router imports the function by name at each refresh, so
+    replacing the module's function is enough; the registry's refresh of one deployment names the deployment for
+    it.
+    """
+    try:
+        module = importlib.import_module(UPSTREAM_INFO_MODULE)
+        registry = importlib.import_module(UPSTREAM_REGISTRY_MODULE)
+    except Exception:  # noqa: BLE001
+        return False
+    current = getattr(module, "get_openai_compatible_model_info", None)
+    if current is None or not hasattr(module, "_ModelList") or not hasattr(module, "add_path_to_api_base"):
+        return False
+    owners = [value for value in vars(registry).values() if isinstance(value, type) and UPSTREAM_REFRESH in vars(value)]
+    if len(owners) != 1:
+        return False
+    owner = owners[0]
+    refresh = vars(owner)[UPSTREAM_REFRESH]
+    if not getattr(refresh, "cetirun_kept_limits", False):
+        async def refresh_deployment(self, raw_deployment, *args, **kwargs):
+            model_id = deployment_id(raw_deployment)
+            state = None if model_id is None else {"deployment": model_id, "withdrawn": False,
+                                                   "fallback": table_limits(raw_deployment)}
+            token = REFRESHING_DEPLOYMENT.set(state)
+            try:
+                result = await refresh(self, raw_deployment, *args, **kwargs)
+            finally:
+                REFRESHING_DEPLOYMENT.reset(token)
+            if state is not None and state["withdrawn"]:
+                withdraw_served_limits(self, model_id, raw_deployment)
+            return result
+
+        refresh_deployment.cetirun_kept_limits = True
+        refresh_deployment.cetirun_original = refresh
+        setattr(owner, UPSTREAM_REFRESH, refresh_deployment)
+    if getattr(current, "cetirun_kept_limits", False):
+        return True
+    original = current
+
+    async def get_openai_compatible_model_info(*, model, api_base, headers, client, cache):
+        observed = ObservedClient(client, module)
+        limits = await original(model=model, api_base=api_base, headers=headers, client=observed, cache=cache)
+        try:
+            listing = upstream_listing_key(module, api_base, headers)
+            if observed.asked:
+                remember_listing(listing, observed.answered, observed.sent, observed.reference)
+            state = REFRESHING_DEPLOYMENT.get()
+            if state is None:
+                return limits
+            return await kept_upstream_limits(module, state, model, api_base, listing,
+                                              observed.asked and observed.answered, limits)
+        except Exception:  # noqa: BLE001  # a refresh never fails on this lookup
+            return limits
+
+    get_openai_compatible_model_info.cetirun_kept_limits = True
+    get_openai_compatible_model_info.cetirun_original = original
+    module.get_openai_compatible_model_info = get_openai_compatible_model_info
+    return True
+
+
 # A deployment ID and provider content to call the replaced functions with.
 EXERCISE_MODEL = "cetirun-exercise"
 EXERCISE_CONTENT = "gAAAAexercise"
@@ -566,24 +1259,149 @@ def exercise_savings_provider_lookup():
     return (identity.model, identity.provider) == (EXERCISE_MODEL, "github_copilot")
 
 
+ROUTER_MODULE = "litellm.router"
+ROUTER_TYPES_MODULE = "litellm.types.router"
+
+
+def exercise_credentials_cooldown():
+    """Whether LiteLLM's router records its cooldowns, and its error for a model in cooldown names the
+    deployments, the way the failure hook reads them (credentials_cooldown)."""
+    router = importlib.import_module(ROUTER_MODULE).Router(model_list=[{
+        "model_name": EXERCISE_MODEL, "model_info": {"id": EXERCISE_MODEL},
+        "litellm_params": {"model": f"litellm_proxy/{EXERCISE_MODEL}", "api_base": "http://127.0.0.1:9",
+                           "api_key": EXERCISE_MODEL}}])
+    error = importlib.import_module(ROUTER_TYPES_MODULE).RouterRateLimitError(
+        model=EXERCISE_MODEL, cooldown_time=5, enable_pre_call_checks=False, cooldown_list=[EXERCISE_MODEL],
+        model_ids=[EXERCISE_MODEL], cooldown_deployments=[{"model_id": EXERCISE_MODEL, "api_base": None}])
+    found = []
+    for status in (429, 401):
+        router.health().cooldowns.add_deployment_to_cooldown(EXERCISE_MODEL, Exception(EXERCISE_MODEL), status, 60)
+        found.append(asyncio.run(credentials_cooldown(error, router)))
+    return found == [None, ("litellm_proxy",)]
+
+
+ROUTER_API_MODULE = "litellm.router_api"
+REQUEST_PROCESSING_MODULE = "litellm.proxy.common_request_processing"
+
+
+class ExerciseUpstream:
+    """The models endpoint of an OpenAI-compatible upstream for the build check: one listing, or a failed
+    request for None."""
+
+    class Response:
+        def __init__(self, listing):
+            self.content = json.dumps(listing).encode("utf-8")
+
+        def raise_for_status(self):
+            return None
+
+    def __init__(self, listing):
+        self.listing = listing
+
+    async def get(self, *args, **kwargs):
+        if self.listing is None:
+            raise ConnectionError(EXERCISE_MODEL)
+        return self.Response(self.listing)
+
+
+def exercise_kept_upstream_limits():
+    """Whether LiteLLM's router takes an upstream's token limits through the replacements, for each deployment on
+    its own: a router keeps the limits that the upstream advertised while it does not answer; a router that starts
+    meanwhile has them for the deployment, and none for another deployment of the same upstream and model; and
+    the first router stops serving them as soon as the upstream answers with an empty listing, and keeps none
+    when the upstream then does not answer. Each refresh asks the upstream again: the exercise removes the listing
+    that LiteLLM keeps for minutes."""
+    router_class = importlib.import_module(ROUTER_MODULE).Router
+    change_set = importlib.import_module(ROUTER_API_MODULE).ChangeSet
+    module = importlib.import_module(UPSTREAM_INFO_MODULE)
+    advertised = {"max_input_tokens": 1000, "max_output_tokens": 100}
+    api_base = "http://127.0.0.1:9/v1"
+    listing = upstream_listing_key(module, api_base, {"authorization": f"Bearer {EXERCISE_MODEL}"})
+
+    def router(*ids):
+        return router_class(model_list=[{
+            "model_name": EXERCISE_MODEL, "model_info": {"id": model_id},
+            "litellm_params": {"model": f"openai/{EXERCISE_MODEL}", "api_base": api_base, "api_key": EXERCISE_MODEL}}
+            for model_id in ids])
+
+    async def refresh(target, answer, *ids):
+        target.registry()._router._core_cache.in_memory_cache.delete_cache(listing)
+        await target.aapply(change_set(refresh_model_info=True, refresh_client=ExerciseUpstream(answer)))
+        return [dict(target.registry().discovered_model_info(model_id)) for model_id in ids]
+
+    async def run():
+        serving, other = router(EXERCISE_MODEL), f"{EXERCISE_MODEL}-other"
+        return [await refresh(serving, {"data": [{"id": EXERCISE_MODEL, **advertised}]}, EXERCISE_MODEL),
+                await refresh(serving, None, EXERCISE_MODEL),
+                await refresh(router(EXERCISE_MODEL, other), None, EXERCISE_MODEL, other),
+                await refresh(serving, {"data": []}, EXERCISE_MODEL),
+                await refresh(serving, None, EXERCISE_MODEL)]
+
+    return asyncio.run(run()) == [[advertised], [advertised], [advertised, {}], [{}], [{}]]
+
+
+def exercise_credentials_answer():
+    """Whether the proxy answers a refusal of the Gateway's credentials as the failure hook means it: it
+    raises the hook's answer as it is, and the handler Starlette finds for the answer writes its status, the
+    Gateway's error code, the message and x-should-retry: false."""
+    processing = importlib.import_module(REQUEST_PROCESSING_MODULE)
+    proxy = importlib.import_module(PROXY_SERVER_MODULE)
+    lookup = importlib.import_module("starlette._exception_handler")._lookup_exception_handler
+    request_class = importlib.import_module("starlette.requests").Request
+    answer = credentials_refusal_answer(("openai",), EXERCISE_MODEL, None)
+
+    class Logging:
+        async def post_call_failure_hook(self, **kwargs):
+            return answer
+
+        async def post_call_response_headers_hook(self, **kwargs):
+            return None
+
+    processor = processing.ProxyBaseLLMRequestProcessing(data={"model": EXERCISE_MODEL})
+    try:
+        asyncio.run(processor.handle_llm_api_exception(e=RuntimeError(EXERCISE_MODEL), user_api_key_dict=UserAPIKeyAuth(),
+                                                       proxy_logging_obj=Logging()))
+        raised = None
+    except Exception as error:  # noqa: BLE001
+        raised = error
+    if raised is not answer:
+        return False
+    handler = lookup(proxy.app.exception_handlers, answer)
+    request = request_class({"type": "http", "method": "POST", "path": "/v1/chat/completions", "headers": [],
+                             "query_string": b""})
+    response = asyncio.run(handler(request, answer))
+    error = json.loads(response.body).get("error") or {}
+    return (response.status_code == PROVIDER_CREDENTIALS_STATUS and error.get("code") == PROVIDER_CREDENTIALS_CODE
+            and error.get("message") == answer.detail and response.headers.get("x-should-retry") == "false")
+
+
 def exercise_patches():
-    """Each replaced LiteLLM function, called the way LiteLLM calls it: True for a replacement that works,
-    False or the error otherwise. The image build requires True for each, so a LiteLLM upgrade that calls
-    such a function by another name or with other arguments fails the build. Without this check, LiteLLM
-    1.108.3 failed every GET /v1/models with 500 and wrote LiteLLM's form of the mark again.
+    """Each replaced LiteLLM function, called the way LiteLLM calls it, and the router's records that the
+    failure hook reads: True for what works, False or the error otherwise. The image build requires True for
+    each, so a LiteLLM upgrade that calls such a function by another name or with other arguments, or keeps
+    those records otherwise, fails the build. Without this check, LiteLLM 1.108.3 failed every
+    GET /v1/models with 500 and wrote LiteLLM's form of the mark again.
     """
     exercises = {
         "mark_form": exercise_mark_form,
         "failover_past_affinity": exercise_failover_past_affinity,
         "router_alias_listing": exercise_router_alias_listing,
         "savings_provider_lookup": exercise_savings_provider_lookup,
+        "credentials_cooldown": exercise_credentials_cooldown,
+        "credentials_answer": exercise_credentials_answer,
+        "kept_upstream_limits": exercise_kept_upstream_limits,
     }
     results = {}
-    for name, exercise in exercises.items():
-        try:
-            results[name] = bool(exercise())
-        except Exception as error:  # noqa: BLE001
-            results[name] = f"{type(error).__name__}: {error}"
+    # The exercises fail requests on purpose; their log lines would read as failures of the build.
+    disabled, verbose_proxy_logger.disabled = verbose_proxy_logger.disabled, True
+    try:
+        for name, exercise in exercises.items():
+            try:
+                results[name] = bool(exercise())
+            except Exception as error:  # noqa: BLE001
+                results[name] = f"{type(error).__name__}: {error}"
+    finally:
+        verbose_proxy_logger.disabled = disabled
     return results
 
 
@@ -1400,6 +2218,113 @@ def replace_message(error, message):
         pass
 
 
+# The status of the Gateway's answer when a provider refused the Gateway's own credentials: the
+# upstream failed, not the client's request or key.
+PROVIDER_CREDENTIALS_STATUS = 502
+# Its OpenAI error codes, by which a client tells it from other upstream failures: a provider of a shared
+# model, or an Agent's GitHub Copilot route, refused. The type is the one LiteLLM gives a 502. OpenAI's
+# SDKs do not retry an answer with x-should-retry: false.
+PROVIDER_CREDENTIALS_CODE = "cetirun_provider_credentials"
+COPILOT_CREDENTIALS_CODE = "cetirun_copilot_credentials"
+PROVIDER_CREDENTIALS_TYPE = "internal_server_error"
+NO_RETRY = {"x-should-retry": "false"}
+# The providers through which an Agent's GitHub Copilot route reaches GitHub: its Copilot proxy,
+# or GitHub Copilot itself.
+COPILOT_ROUTE_PROVIDERS = frozenset(("litellm_proxy", "github_copilot"))
+# The status that LiteLLM's router records for a deployment that it cooled down after a provider's 401.
+CREDENTIALS_REFUSED_STATUS = "401"
+
+
+class ProviderCredentialsRefused(ProxyException, HTTPException):
+    """The Gateway's answer when a provider refused the Gateway's credentials: 502, one of the Gateway's
+    OpenAI error codes, and x-should-retry: false.
+
+    LiteLLM takes a failure hook's answer only when it is an HTTPException, and it writes the status as the
+    error code of an HTTPException. An answer that is a ProxyException it raises as it is, with its headers,
+    and Starlette finds the proxy's handler for ProxyException first for this class: that handler writes
+    to_dict() as the error. So the answer is both. ProxyException.__init__ would hand its message to
+    HTTPException.__init__ here, so the fields of both are set directly.
+    """
+
+    def __init__(self, detail, code=PROVIDER_CREDENTIALS_CODE):
+        Exception.__init__(self, detail)
+        self.status_code, self.detail, self.headers = PROVIDER_CREDENTIALS_STATUS, detail, dict(NO_RETRY)
+        self.message, self.type, self.param = detail, PROVIDER_CREDENTIALS_TYPE, None
+        self.code, self.openai_code = str(PROVIDER_CREDENTIALS_STATUS), code
+        self.provider_specific_fields = None
+
+    def to_dict(self):
+        return {"message": self.message, "type": self.type, "param": self.param, "code": self.openai_code}
+
+
+def credentials_refusal_answer(providers, model, caller):
+    """The Gateway's answer when the providers of a model's deployments refused the Gateway's credentials."""
+    named = f"the model {model}" if isinstance(model, str) and model else "the requested model"
+    agent = operator_groups(caller) is not None
+    key = "The key of this Agent" if agent else "Your key"
+    if agent and all(provider in COPILOT_ROUTE_PROVIDERS for provider in providers):
+        return ProviderCredentialsRefused(
+            f"CetiRun AI Gateway: the GitHub Copilot route of {named} refused its credentials. {key} is not the "
+            "cause. The owner of this Agent can sign in to GitHub Copilot again in the Portal. If that does not "
+            "help, a CetiRun administrator must examine the route.", COPILOT_CREDENTIALS_CODE)
+    return ProviderCredentialsRefused(
+        f"CetiRun AI Gateway: the provider of {named} refused the credentials of the AI Gateway. {key} is not the "
+        "cause. A CetiRun administrator must fix the provider configuration of the model.")
+
+
+def provider_credentials_refusal(error, request_data, caller):
+    """The Gateway's answer for a provider that refused the Gateway's credentials for a deployment, or
+    None for any other error.
+
+    LiteLLM raises AuthenticationError, with the provider it called, only for a provider's 401: a key
+    the Gateway does not accept is refused before any model is called, with another error. So the
+    calling key is not the cause, and the answer must not read as a refused key. Its subclass
+    CallerCredentialAuthenticationError is about the caller: the calling user's own provider connection,
+    such as LiteLLM's per-user GitHub Copilot sign-in, is missing or was refused, and LiteLLM's 401 tells
+    the caller to connect again. It keeps that answer."""
+    refusal = getattr(litellm, "AuthenticationError", None)
+    if not (isinstance(refusal, type) and isinstance(error, refusal)):
+        return None
+    caller_scoped = getattr(litellm, "CallerCredentialAuthenticationError", None)
+    if isinstance(caller_scoped, type) and isinstance(error, caller_scoped):
+        return None
+    provider = getattr(error, "llm_provider", None)
+    if not isinstance(provider, str) or not provider:
+        return None
+    model = request_data.get("model") if isinstance(request_data, dict) else None
+    return credentials_refusal_answer((provider,), model, caller)
+
+
+def field_of(value, name):
+    """A field of a dict or an attribute of an object, for LiteLLM records that are either."""
+    return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
+
+
+async def credentials_cooldown(error, router):
+    """The providers of the deployments that a cooldown error names, when the router cooled down each of
+    them after its provider refused the Gateway's credentials; None for any other error or cooldown.
+
+    After a provider's 401, LiteLLM cools the deployment down for some seconds, and it refuses requests
+    for the model in this time with RouterRateLimitError (429). The error names the deployments, not why
+    they cool down; the router's record of each cooldown has the status of the failure that started it."""
+    if router is None or getattr(error, "all_deployments_in_cooldown", None) is not True:
+        return None
+    ids = [field_of(info, "model_id") for info in getattr(error, "cooldown_deployments", None) or ()]
+    if not ids or not all(isinstance(model_id, str) and model_id for model_id in ids):
+        return None
+    try:
+        cooldowns = router.health().cooldowns
+        active = dict(await cooldowns.async_get_active_cooldowns(model_ids=ids, parent_otel_span=None))
+        registry = router.registry()
+        found = [deployment_provider(registry.deployment_dict(model_id)) for model_id in ids]
+    except Exception:  # noqa: BLE001  # a request never fails on this lookup
+        return None
+    statuses = {str(field_of(active.get(model_id), "status_code")) for model_id in ids}
+    if statuses != {CREDENTIALS_REFUSED_STATUS} or not all(found):
+        return None
+    return tuple(provider for _, provider, _ in found)
+
+
 class ModelRefused(HTTPException):
     """The refusal of a model the calling key may not use.
 
@@ -1588,7 +2513,35 @@ class Guard(CustomLogger):
         if message is not None:
             replace_message(original_exception, message)
         remove_cooldown_list(original_exception)
-        return None
+        model = request_data.get("model") if isinstance(request_data, dict) else None
+        answered = getattr(original_exception, "status_code", None)
+        refusal = provider_credentials_refusal(original_exception, request_data, user_api_key_dict)
+        if refusal is not None:
+            verbose_proxy_logger.warning(
+                "CetiRun guard: the provider %s refused the Gateway's credentials for the model %s (%s); answered %d "
+                "instead of %s to the key %s", getattr(original_exception, "llm_provider", None), model,
+                str(getattr(original_exception, "message", None) or original_exception)[:500], refusal.status_code,
+                answered, getattr(user_api_key_dict, "key_alias", None))
+        else:
+            providers = await credentials_cooldown(original_exception, live_router())
+            if providers is None:
+                return None
+            model = model or getattr(original_exception, "model", None)
+            refusal = credentials_refusal_answer(providers, model, user_api_key_dict)
+            verbose_proxy_logger.warning(
+                "CetiRun guard: the model %s is in cooldown after its providers (%s) refused the Gateway's "
+                "credentials; answered %d instead of %s to the key %s", model, ", ".join(sorted(set(providers))),
+                refusal.status_code, answered, getattr(user_api_key_dict, "key_alias", None))
+        # LiteLLM answers with an HTTPException that a failure hook returns, in place of the error. Its
+        # Anthropic Messages route answers from the error itself, so the error carries the answer too,
+        # without a type of its own: the type would be the one of the provider's 401 or of the cooldown.
+        replace_message(original_exception, refusal.detail)
+        for name, value in (("status_code", refusal.status_code), ("type", None)):
+            try:
+                setattr(original_exception, name, value)
+            except (AttributeError, TypeError):
+                pass
+        return refusal
 
 
 handler = Guard()
@@ -1603,5 +2556,6 @@ PATCHED = {
     "failover_past_affinity": install_failover_past_affinity(),
     "router_alias_listing": install_router_alias_listing(),
     "savings_provider_lookup": install_savings_provider_lookup(),
+    "kept_upstream_limits": install_kept_upstream_limits(),
 }
 hide_router_details()
