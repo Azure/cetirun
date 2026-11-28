@@ -639,13 +639,19 @@ UPSTREAM_PROMPT_DATING = 5
 # whole milliseconds.
 UPSTREAM_CLOCK_RATE = 0.001
 UPSTREAM_CLOCK_SLACK_MS = 1
-# The deployment whose limits the router refreshes, in the task that refreshes them, and whether the newest
-# observation of it has no limits.
+# The deployment whose limits the router refreshes, in the task that refreshes them, whether the newest
+# observation of it has no limits, and the limits that LiteLLM falls back to for it (table_limits).
 REFRESHING_DEPLOYMENT = contextvars.ContextVar("cetirun_refreshing_deployment", default=None)
+# The kinds of token limits that LiteLLM reads from an upstream's listing.
+UPSTREAM_LIMIT_KINDS = ("max_tokens", "max_input_tokens", "max_output_tokens")
 # This replica's newest observation of each deployment, LiteLLM's last read of each upstream listing
-# (UpstreamRead), and the deployments whose last request failed.
+# (UpstreamRead), the ID of the read whose answer each deployment took last, and the deployments whose last
+# request failed. A lookup that LiteLLM answers again from a listing whose read a deployment took is no new
+# observation of it: the upstream was not asked, and the observation of that read is already in what the replica
+# knows, also when a merge in Redis gave it another ID.
 KEPT_UPSTREAM_LIMITS = {}
 UPSTREAM_LISTINGS = {}
+TAKEN_READS = {}
 FAILED_UPSTREAMS = set()
 # This replica's clock. It measures time only in this replica: when LiteLLM sent the request for a listing and
 # when it received the listing, and the round trips to Redis, with which Redis's clock dates the reads.
@@ -802,12 +808,19 @@ def same_observation(one, other):
     return all(one[field] == other[field] for field in ("etag", "limits", "observed_ms", "epoch", "late"))
 
 
-def smaller_limits(one, other):
-    """The smaller limit of each kind of two observations' limits, or None when neither has a limit. A kind of
-    limit that an observation does not have counts as no limit."""
-    one, other = one or {}, other or {}
-    limits = {name: min(limit for limit in (one.get(name), other.get(name)) if limit is not None)
-              for name in set(one) | set(other)}
+def smaller_limits(one, other, fallback=None):
+    """The smaller limit of each kind of two observations' limits, or None when the result has none. An observation
+    that does not have a kind of limit has the one that LiteLLM falls back to for the deployment (fallback: of its
+    model table, table_limits), or no limit when LiteLLM has none either. When that fallback is the smaller limit
+    of a kind, the result does not have the kind either, so LiteLLM falls back to it as it does for the read that
+    left the kind out."""
+    one, other, fallback = one or {}, other or {}, fallback or {}
+    limits = {}
+    for name in set(one) | set(other):
+        default = fallback.get(name)
+        smallest = min(limit for limit in (one.get(name, default), other.get(name, default)) if limit is not None)
+        if (name in one and name in other) or default is None or smallest < default:
+            limits[name] = smallest
     return limits or None
 
 
@@ -847,15 +860,16 @@ def in_epoch(observation, now_ms, epoch, received):
     return dict(observation, observed_ms=(first, now_ms), seen=(began, received), epoch=epoch, late=True)
 
 
-def combined(shared, local, now_ms, epoch, received):
+def combined(shared, local, now_ms, epoch, received, fallback=None):
     """The newest that this replica knows of a deployment's limits, from the observation in Redis and its own,
     both dated by Redis's clock, as an observation of the current epoch epoch (in_epoch): the observation of the
-    read that certainly happened later (follows). Otherwise an observation with the smaller limit of each kind,
-    which only a read that certainly happened after it replaces. It runs from the later of their starts to the
-    later of their ends: no limit of it is larger than the read that began later advertised, and a read that ended
-    before that start is older than that read, so the observation can replace it; Redis keeps it 30 days from that
-    start. It is late when either was. Observations of two epochs are first taken into the current one, so the
-    smaller limit of each kind counts until a read after this exchange."""
+    read that certainly happened later (follows). Otherwise an observation with the smaller limit of each kind
+    (smaller_limits, with LiteLLM's fallback), which only a read that certainly happened after it replaces. It
+    runs from the later of their starts to the later of their ends: no limit of it is larger than the read that
+    began later advertised, and a read that ended before that start is older than that read, so the observation
+    can replace it; Redis keeps it 30 days from that start. It is late when either was. Observations of two epochs
+    are first taken into the current one, so the smaller limit of each kind counts until a read after this
+    exchange."""
     if shared is not None and local is not None and shared["epoch"] != local["epoch"]:
         shared, local = (in_epoch(observation, now_ms, epoch, received) for observation in (shared, local))
     if shared is None or local is None:
@@ -865,7 +879,7 @@ def combined(shared, local, now_ms, epoch, received):
     elif follows(shared, local):
         newest = local
     else:
-        limits, both = smaller_limits(shared["limits"], local["limits"]), (shared, local)
+        limits, both = smaller_limits(shared["limits"], local["limits"], fallback), (shared, local)
         newest = {"limits": limits, "etag": merged_etag(shared, local, limits),
                   "observed_ms": (max(o["observed_ms"][0] for o in both), max(o["observed_ms"][1] for o in both)),
                   "seen": (max(o["seen"][0] for o in both), max(o["seen"][1] for o in both)),
@@ -881,19 +895,19 @@ def earlier_reference(one, other):
     return one if one[1] <= other[1] else other
 
 
-def newer_read(local, fresh):
+def newer_read(local, fresh, fallback=None):
     """This replica's newest observation of a deployment from its observation and a read of the upstream, by this
     replica's clock: the later read. When the times of the two reads overlap, so that this replica does not know
-    which answer the upstream gave later, an observation with the smaller limit of each kind, from the later of
-    their starts to the later of their ends (as combined does), which Redis's clock dates at the next round trip,
-    with the round trip before both reads."""
+    which answer the upstream gave later, an observation with the smaller limit of each kind (smaller_limits, with
+    LiteLLM's fallback), from the later of their starts to the later of their ends (as combined does), which
+    Redis's clock dates at the next round trip, with the round trip before both reads."""
     if local is None or local["etag"] == fresh["etag"]:
         return fresh if local is None else local
     if local["seen"][1] < fresh["seen"][0]:
         return fresh
     if fresh["seen"][1] < local["seen"][0]:
         return local
-    limits = smaller_limits(local["limits"], fresh["limits"])
+    limits = smaller_limits(local["limits"], fresh["limits"], fallback)
     return {"limits": limits, "etag": secrets.token_hex(8),
             "seen": (max(local["seen"][0], fresh["seen"][0]), max(local["seen"][1], fresh["seen"][1])),
             "observed_ms": None, "epoch": None, "late": False,
@@ -985,7 +999,7 @@ async def upstream_limits_script(client, name, clock_name, *args):
     return value, now_ms, verdict, epoch, sent, received
 
 
-async def newest_observation(key, local):
+async def newest_observation(key, local, fallback=None):
     """The newest observation of a deployment that this replica can know.
 
     The replica dates the read of its own observation once, by Redis's clock, with a round trip: Redis's time
@@ -993,13 +1007,14 @@ async def newest_observation(key, local):
     which the read happened, when Redis's clock ran as this replica's since the round trip before the request
     (date_read). The observation keeps those times and the epoch of Redis's clock, so a later change of Redis's
     clock does not move them, and the clocks of the replicas are never compared. At each lookup the replica reads
-    Redis, combines the observation there with its own (combined), and writes the result in place of the value that
-    it read when they differ. When another replica wrote meanwhile, Redis answers with that value instead, or with
-    none when it lost the value; the replica combines it at once with the result that it offered, and writes again.
-    So what the replica knows has each value that Redis returned, also when it cannot write. Its own observation
-    counts only with times that Redis keeps now (current_read), and the replica only uses it otherwise while Redis
-    has none. When Redis does not answer, the replica uses what it knows: the result of its last exchange with
-    Redis, or else its own observation, which goes to Redis at the next lookup."""
+    Redis, combines the observation there with its own (combined, with the limits that LiteLLM falls back to for
+    the deployment), and writes the result in place of the value that it read when they differ. When another
+    replica wrote meanwhile, Redis answers with that value instead, or with none when it lost the value; the replica
+    combines it at once with the result that it offered, and writes again. So what the replica knows has each value
+    that Redis returned, also when it cannot write. Its own observation counts only with times that Redis keeps now
+    (current_read), and the replica only uses it otherwise while Redis has none. When Redis does not answer, the
+    replica uses what it knows: the result of its last exchange with Redis, or else its own observation, which goes
+    to Redis at the next lookup."""
     redis = shared_redis()
     if redis is None:
         return local
@@ -1016,7 +1031,7 @@ async def newest_observation(key, local):
             own = (mine if mine is not None and current_read(mine["observed_ms"], now_ms, mine["epoch"] == epoch)
                    else None)
             shared = stored_observation(value, now_ms, epoch, sent, received)
-            newest = combined(shared, own, now_ms, epoch, received)
+            newest = combined(shared, own, now_ms, epoch, received, fallback)
             known[0] = local if newest is None else newest
             if (newest is None or (shared is not None and same_observation(newest, shared))
                     or attempt == UPSTREAM_WRITE_ATTEMPTS):
@@ -1043,27 +1058,30 @@ async def kept_upstream_limits(module, state, model, api_base, listing, fresh, l
     """The limits that the router gets for a deployment at a refresh, after LiteLLM's lookup returned limits.
 
     An answer of the upstream is an observation of the times between which LiteLLM read the listing, also when
-    LiteLLM answers from the listing that it keeps: the model's limits, or none. The router gets the newest
-    observation, so the replicas agree: after a successful request, its answer, unless another replica read a later
-    one; when the upstream did not answer, the limits that it advertised last. An observation without limits
-    withdraws them."""
+    LiteLLM answers from the listing that it keeps: the model's limits, or none. A deployment takes the answer of a
+    read once (TAKEN_READS). The router gets the newest observation, so the replicas agree: after a successful
+    request, its answer, unless another replica read a later one; when the upstream did not answer, the limits that
+    it advertised last. An observation without limits withdraws them."""
     key = upstream_limits_key(module, state["deployment"], api_base, model)
     record = UPSTREAM_LISTINGS.get(listing)
     answered = record is not None and record.answered
+    fallback = state.get("fallback")
     local, read = live_observation(KEPT_UPSTREAM_LIMITS.get(key)), None
     if answered:
         FAILED_UPSTREAMS.discard(key)
         read = record.id
-        local = newer_read(local, {"limits": token_limits(dict(limits)) if limits else None, "etag": read,
-                                   "seen": record.seen, "observed_ms": None, "epoch": None, "late": False,
-                                   "reference": record.reference, "read": record})
+        if TAKEN_READS.get(key) != read:
+            TAKEN_READS[key] = read
+            local = newer_read(local, {"limits": token_limits(dict(limits)) if limits else None, "etag": read,
+                                       "seen": record.seen, "observed_ms": None, "epoch": None, "late": False,
+                                       "reference": record.reference, "read": record}, fallback)
     elif limits:
         return limits  # a listing that LiteLLM read before the guard replaced its lookup
     if local is None:
         KEPT_UPSTREAM_LIMITS.pop(key, None)
     else:
         KEPT_UPSTREAM_LIMITS[key] = local
-    newest = await newest_observation(key, local)
+    newest = await newest_observation(key, local, fallback)
     if newest is None or (fresh and newest["etag"] == read):
         state["withdrawn"] = fresh and not limits
         return limits
@@ -1077,6 +1095,23 @@ async def kept_upstream_limits(module, state, model, api_base, listing, fresh, l
             "of the deployment %s; kept the limits it advertised last: %s",
             module.add_path_to_api_base(api_base, "/v1/models"), model, state["deployment"], newest["limits"])
     return MappingProxyType(dict(newest["limits"]))
+
+
+def table_limits(raw_deployment):
+    """The token limits that LiteLLM falls back to for a deployment, of each kind that its upstream does not
+    advertise: those of its model table for the deployment's model, or for the base model that the deployment
+    names, as the proxy's /model/info reads them. None of a kind that the table does not have, and none for a
+    model that it does not have."""
+    try:
+        params, info = field_of(raw_deployment, "litellm_params"), field_of(raw_deployment, "model_info")
+        model, base = field_of(params, "model"), field_of(info, "base_model")
+        if "azure" in str(model) or base:
+            model = base
+        row = sys.modules["litellm"].get_model_info(model)
+        return {name: row[name] for name in UPSTREAM_LIMIT_KINDS
+                if isinstance(row.get(name), int) and not isinstance(row.get(name), bool) and row[name] > 0}
+    except Exception:  # noqa: BLE001  # a model that LiteLLM's table does not have
+        return {}
 
 
 def withdraw_served_limits(registry, model_id, raw_deployment):
@@ -1127,7 +1162,8 @@ def install_kept_upstream_limits():
     if not getattr(refresh, "cetirun_kept_limits", False):
         async def refresh_deployment(self, raw_deployment, *args, **kwargs):
             model_id = deployment_id(raw_deployment)
-            state = None if model_id is None else {"deployment": model_id, "withdrawn": False}
+            state = None if model_id is None else {"deployment": model_id, "withdrawn": False,
+                                                   "fallback": table_limits(raw_deployment)}
             token = REFRESHING_DEPLOYMENT.set(state)
             try:
                 result = await refresh(self, raw_deployment, *args, **kwargs)

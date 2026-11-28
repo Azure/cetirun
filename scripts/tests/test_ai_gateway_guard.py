@@ -3419,6 +3419,31 @@ class GuardTest(unittest.TestCase):
         result = self.combine(self.observation(self.LIMITS, "one", 0, 10), self.observation(self.LIMITS, "one", 5, 30))
         self.assertEqual((result["etag"], result["observed_ms"]), ("one", (5000, 30000)))
 
+    def test_a_read_without_a_kind_of_limit_has_the_one_that_litellm_falls_back_to(self):
+        # LiteLLM's table has 922,000 input tokens for the model, and LiteLLM falls back to it for a read that does
+        # not advertise an input limit. Of two reads that Redis cannot order, a larger input limit of the other read
+        # does not count: the result does not advertise the kind either, so LiteLLM falls back to the table. A
+        # smaller one counts, and without a fallback, the other read's limit counts.
+        table = {"max_input_tokens": 922000, "max_output_tokens": 128000}
+        output_only = {"max_output_tokens": 16384}
+        larger = {"max_input_tokens": 1050000, "max_output_tokens": 128000}
+        smaller = {"max_input_tokens": 272000, "max_output_tokens": 128000}
+        for one, other, fallback, limits in (
+                (output_only, larger, table, {"max_output_tokens": 16384}),
+                (larger, output_only, table, {"max_output_tokens": 16384}),
+                (output_only, smaller, table, {"max_input_tokens": 272000, "max_output_tokens": 16384}),
+                (output_only, larger, {}, {"max_input_tokens": 1050000, "max_output_tokens": 16384}),
+                (output_only, larger, {"max_input_tokens": 2000000},
+                 {"max_input_tokens": 1050000, "max_output_tokens": 16384}),
+                (None, larger, table, None), (None, smaller, table, {"max_input_tokens": 272000}),
+                (larger, larger, table, larger)):
+            with self.subTest(one=one, other=other, fallback=fallback):
+                self.assertEqual(self.module.smaller_limits(one, other, fallback), limits)
+                shared, local = self.observation(one, "one", 0, 10), self.observation(other, "other", 5, 15)
+                self.assertEqual(self.module.combined(shared, local, 100000, "0", 100, fallback)["limits"], limits)
+                fresh = dict(self.observation(other, "fresh", 5, 15), observed_ms=None)
+                self.assertEqual(self.module.newer_read(shared, fresh, fallback)["limits"], limits)
+
     def test_a_read_that_redis_dated_late_is_not_ordered_after_another(self):
         # The later read was dated late, so a step of Redis's clock may have made it look later: it does not win,
         # in either place. The smaller limit of each kind counts, from the later start, and the merge is late. It can
@@ -3540,6 +3565,76 @@ class GuardTest(unittest.TestCase):
         self.advance(300)
         self.assertEqual(self.limits(self.ADVERTISED, replica=other), self.LIMITS)
         self.assertEqual(self.limits(None), self.LIMITS)
+
+    def test_the_limits_that_litellm_falls_back_to_are_those_of_its_table(self):
+        # As the proxy's /model/info reads LiteLLM's table: for the deployment's model, or for the base model that
+        # the deployment names, also as an object; only positive whole limits of the three kinds; none for a model
+        # that the table does not have.
+        rows = {"gpt-5.4": {"max_tokens": 128000, "max_input_tokens": 1050000, "max_output_tokens": 128000,
+                            "mode": "chat"},
+                "openai/gpt-5.4": {"max_input_tokens": 1050000, "max_output_tokens": 0, "max_tokens": True},
+                "azure/terra": {"max_input_tokens": 400000}}
+
+        def get_model_info(model):
+            if model not in rows:
+                raise Exception("This model isn't mapped yet.")
+            return dict(rows[model])
+
+        self.install_modules({"litellm": {"get_model_info": get_model_info}})
+        table = {"max_tokens": 128000, "max_input_tokens": 1050000, "max_output_tokens": 128000}
+        for deployment, limits in (
+                ({"litellm_params": {"model": "openai/terra"}, "model_info": {"id": "x", "base_model": "gpt-5.4"}}, table),
+                ({"litellm_params": {"model": "azure/terra"}, "model_info": {"id": "x", "base_model": "gpt-5.4"}}, table),
+                (types.SimpleNamespace(litellm_params=types.SimpleNamespace(model="openai/terra"),
+                                       model_info=types.SimpleNamespace(id="x", base_model="gpt-5.4")), table),
+                ({"litellm_params": {"model": "openai/gpt-5.4"}, "model_info": {"id": "x"}},
+                 {"max_input_tokens": 1050000}),
+                ({"litellm_params": {"model": "azure/terra"}, "model_info": {"id": "x"}}, {}),
+                ({"litellm_params": {"model": "openai/unmapped"}, "model_info": {"id": "x"}}, {})):
+            with self.subTest(deployment=deployment):
+                self.assertEqual(self.module.table_limits(deployment), limits)
+
+    def test_a_kind_of_limit_that_a_read_left_out_has_the_limit_of_litellm_table(self):
+        # LiteLLM's table has 922,000 input tokens for the model. Another replica read a window without an input
+        # limit, at times that overlap this replica's read of a larger input limit: Redis cannot order them. The
+        # read without the kind has the table's limit, the smaller one, so the result advertises none, and LiteLLM
+        # falls back to its table.
+        table = {"max_input_tokens": 922000, "max_output_tokens": 128000}
+
+        def get_model_info(model):
+            if model != "openai/gpt-5.4":
+                raise Exception("This model isn't mapped yet.")
+            return dict(table, mode="chat")
+
+        self.install_modules({"litellm": {"get_model_info": get_model_info}})
+        redis = self.shared_redis()
+        self.install_upstream_info()
+        self.assertEqual(self.limits(None), {})
+        name, now = self.stored(redis)[0], redis.time_ms()
+        redis.put(name, json.dumps({"limits": {"max_output_tokens": 16384}, "etag": "synthetic-other",
+                                    "epoch": self.epoch(redis), "late": False, "observed_ms": [now - 10000, now + 10000]}))
+        larger = {"max_input_tokens": 1050000, "max_output_tokens": 128000}
+        self.assertEqual(self.limits(self.listing(larger)), {"max_output_tokens": 16384})
+        self.assertEqual(self.stored(redis)[1]["limits"], {"max_output_tokens": 16384})
+
+    def test_a_deployment_takes_the_answer_of_a_read_once(self):
+        # Redis keeps the window that this replica read. A new replica reads the same window: its first read is
+        # late, so the two are merged, and as both advertise the same limits, the merge keeps the ID of the read in
+        # Redis. This replica then reads a listing without the model, which withdraws the limits. LiteLLM answers
+        # the new replica's next lookup from the listing that it keeps: the new replica took that read's answer
+        # already, so the lookup is no new observation, and the withdrawal stays.
+        redis = self.shared_redis()
+        self.install_upstream_info()
+        self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
+        new, cache = self.replica(warm=False), ListingCache()
+        self.advance(30)
+        self.assertEqual(self.limits(self.ADVERTISED, replica=new, cache=cache), self.LIMITS)
+        self.advance(30)
+        self.assertEqual(self.limits(self.listing(self.LIMITS, model="other-model")), {})
+        self.assertIsNone(self.stored(redis)[1]["limits"])
+        self.advance(30)
+        self.assertEqual(self.limits(None, replica=new, cache=cache), {})
+        self.assertIsNone(self.stored(redis)[1]["limits"])
 
     def test_an_observation_keeps_its_times_when_the_clock_of_redis_steps(self):
         # This replica reads the larger window. A minute later the other replica reads a reduction, and then

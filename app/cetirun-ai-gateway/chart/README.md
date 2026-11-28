@@ -2304,13 +2304,18 @@ these actions:
   because Redis did not answer. At each refresh, a replica combines the
   observation in Redis with its own: the later read wins, and of two reads that
   the clock of Redis cannot order, the smaller limit of each kind wins until a
-  later read. That result counts from the read that began later, which
+  later read. A read that does not advertise a kind of limit has the limit that
+  LiteLLM falls back to, from its table. When that limit is the smaller one,
+  the result does not advertise the kind either, so LiteLLM falls back to it.
+  That result counts from the read that began later, which
   advertised no smaller limit, so Redis keeps it 30 days after that read.
   The replica writes the result in place of the value that it read,
   in one step, so that the replicas agree, also a replica that starts
   meanwhile. When another replica wrote meanwhile, the replica combines that
   value with its result and writes again. A replica uses what it knows when
-  Redis does not answer, and writes it at the next refresh.
+  Redis does not answer, and writes it at the next refresh. A deployment takes
+  the answer of a read once: when LiteLLM answers from the same listing again,
+  the replica does not take that answer as a new observation.
   The ID of the deployment scopes the limits: two deployments with one upstream
   URL and model keep their own limits, and a changed credential keeps them.
   When the upstream answers without limits for the model, also with an empty
