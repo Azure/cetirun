@@ -4,6 +4,7 @@
 package helm
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -15,10 +16,13 @@ import (
 	"sync"
 	"testing"
 
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chartutil"
 	"helm.sh/helm/v3/pkg/registry"
+	"oras.land/oras-go/v2"
+	"oras.land/oras-go/v2/content/memory"
 )
 
 func TestRuntimeChartDigestSurvivesTagReplacement(t *testing.T) {
@@ -107,6 +111,66 @@ func TestRuntimeChartDigestSurvivesTagReplacement(t *testing.T) {
 		if strings.HasSuffix(request, "/manifests/1.0.0") {
 			t.Fatalf("pinned runtime queried a mutable tag: %s", request)
 		}
+	}
+}
+
+func TestAdmissionProfileReadsOnlyAnUnambiguousBoundedChartLayer(t *testing.T) {
+	store := memory.New()
+	ctx := t.Context()
+	file, err := chartutil.Save(testChart(t), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layer, err := oras.PushBytes(ctx, store, registry.ChartLayerMediaType, archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := oras.PushBytes(ctx, store, registry.ConfigMediaType, []byte("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scenario := range []string{"qualified", "duplicate", "oversized", "non-chart"} {
+		t.Run(scenario, func(t *testing.T) {
+			m := ocispec.Manifest{Config: config, Layers: []ocispec.Descriptor{layer}}
+			m.SchemaVersion = 2
+			switch scenario {
+			case "duplicate":
+				m.Layers = append(m.Layers, layer)
+			case "oversized":
+				m.Layers[0].Size = 5 << 20
+			case "non-chart":
+				m.Config.MediaType = ocispec.MediaTypeImageConfig
+			}
+			raw, err := json.Marshal(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			desc, err := oras.PushBytes(ctx, store, ocispec.MediaTypeImageManifest, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Tag(ctx, desc, desc.Digest.String()); err != nil {
+				t.Fatal(err)
+			}
+			got, err := profileArchive(ctx, store, desc.Digest.String())
+			if scenario == "qualified" {
+				if err != nil || !bytes.Equal(got, archive) {
+					t.Fatalf("did not read the exact pinned layer: %v", err)
+				}
+			} else {
+				want := "ambiguous or oversized"
+				if scenario == "non-chart" {
+					want = "expected a Helm OCI chart manifest"
+				}
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("expected %q, got %v", want, err)
+				}
+			}
+		})
 	}
 }
 

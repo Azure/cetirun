@@ -6,9 +6,12 @@ package helm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -73,6 +76,46 @@ func TestInspectChartEndsWhenTheRegistryStalls(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("the read took %s after cancellation", elapsed)
+	}
+}
+
+func TestNativeImageProfileHonorsAdmissionDeadline(t *testing.T) {
+	client := NewClient(ChartReference{RepoURL: "oci://" + stalledRegistry(t) + "/helm/cetirun", Version: "1.0.0"})
+	ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+	defer cancel()
+	if _, err := client.ReadImageProfile(ctx, "1.0.0", "hermes", "registry.example.com", ""); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("stalled image update did not observe the webhook deadline: %v", err)
+	}
+}
+
+func TestNativeImageProfileRequiresConfiguredCredential(t *testing.T) {
+	host := stalledRegistry(t)
+	client := NewClient(ChartReference{RepoURL: "oci://" + host + "/helm/cetirun", Version: "1.0.0"})
+	file := filepath.Join(t.TempDir(), "config.json")
+	for _, tc := range []struct{ name, authHost string }{
+		{"missing projection", ""},
+		{"credential for another registry", "images.example.com"},
+		{"restored projection", host},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.authHost != "" {
+				config := fmt.Sprintf(`{"auths":{%q:{"registrytoken":"synthetic"}}}`, tc.authHost)
+				if err := os.WriteFile(file, []byte(config), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+			defer cancel()
+			_, err := client.ReadImageProfile(ctx, "", "hermes", "images.example.com", file)
+			if tc.authHost == host {
+				// The next lookup must reach the stalled registry without restarting the client.
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("restored credential did not allow a registry lookup: %v", err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "configured chart-read credential") {
+				t.Fatalf("missing registry credential must fail before the registry lookup: %v", err)
+			}
+		})
 	}
 }
 

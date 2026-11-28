@@ -4,6 +4,7 @@
 package agents
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -13,6 +14,14 @@ import (
 )
 
 var usernamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+
+var ErrImageProfileVersion = errors.New("native image selection requires an exact semantic chart version")
+
+// AllowsImage uses exact chart-owned references. A tag is not an alias for a
+// tag with a digest, but a chart can explicitly qualify either spelling.
+func (p Profile) AllowsImage(image string) bool {
+	return image != "" && (image == p.Image || slices.Contains(p.QualifiedImages, image))
+}
 
 func ResolveCustom(request Request) (ResolvedAgent, error) {
 	if request.Username == "" {
@@ -61,7 +70,7 @@ func Resolve(request Request, profile Profile) (ResolvedAgent, error) {
 	if request.Image == "" {
 		request.Image = profile.Image
 	}
-	if request.Image != profile.Image && !slices.Contains(profile.QualifiedImages, request.Image) {
+	if !profile.AllowsImage(request.Image) {
 		return ResolvedAgent{}, fmt.Errorf("spec.agent.image is not qualified for the selected harness profile")
 	}
 	if strings.ContainsAny(request.Image, " \t\r\n") {

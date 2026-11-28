@@ -470,6 +470,7 @@ Source: [app/cetirun-operator/chart/values.yaml]({{< repo "app/cetirun-operator/
 | `sandboxAdmission.affinity` | `{}` |  |
 | `sandboxAdmission.tolerations` | `[]` |  |
 | `sandboxAdmission.tlsSecretName` | `""` | Existing platform-issued TLS Secret in namespace, containing tls.crt and tls.key. The certificate must cover cetirun-sandbox-admission.\<namespace>.svc. This chart does not issue certificates or install cert-manager. |
+| `sandboxAdmission.chartPullSecretName` | `""` | Optional chart-read-only dockerconfigjson Secret for native built-in image updates. Admission does not inherit the Operator's acrDockerSecret or Agent pull credentials. |
 | `sandboxAdmission.caBundle` | `""` | Base64-encoded PEM CA bundle supplied by the platform issuer. Required when enforce=true. Helm checks encoding/framing, not certificate trust, expiry, CA constraints, or the serving certificate's subject names. |
 | `sandboxAdmission.adminUsers` | `[]` | Exact authenticated Kubernetes usernames/groups allowed to administer configuration. At least one nonempty list is required even before enforce. Blanket groups (system:authenticated, system:unauthenticated and the system:serviceaccounts groups) are refused; list service accounts as users. |
 | `sandboxAdmission.adminGroups` | `[]` |  |

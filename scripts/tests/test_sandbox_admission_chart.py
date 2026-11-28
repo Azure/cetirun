@@ -660,6 +660,33 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         self.assertTrue(configured["nativeExecution"])
         self.assertNotIn("reconciledExecution", configured)
 
+    def test_native_image_validation_uses_the_selected_chart_and_its_own_reader(self):
+        values = {
+            "sandboxSources": {"enabled": True, "nativeExecution": True, "bootstrapOwnedPrerequisites": True,
+                              "platformConfigMapName": "sandbox-platform"},
+            "cetirun": {"chart": {"repoURL": "oci://registry.example.com/test/helm/cetirun",
+                                  "version": "1.2.3", "digest": "sha256:" + "a" * 64}},
+            "acrDockerSecret": "operator-only",
+        }
+        for secret in ("", "admission-chart-reader"):
+            with self.subTest(secret=secret):
+                docs = self.render(self.enforced_values(podsEnabled=True, chartPullSecretName=secret), values=values)
+                pod = docs[("Deployment", "cetirun-sandbox-admission")]["spec"]["template"]["spec"]
+                container = pod["containers"][0]
+                manager = docs[("Deployment", "cetirun-operator")]["spec"]["template"]["spec"]["containers"][0]
+                self.assertEqual([a for a in container["args"] if a.startswith("--chart-")],
+                                 [a for a in manager["args"] if a.startswith("--chart-")])
+                volumes = {v["name"]: v for v in pod["volumes"]}
+                self.assertNotIn("operator-only", {v.get("secret", {}).get("secretName") for v in volumes.values()})
+                self.assertEqual("chart-pull" in volumes, bool(secret))
+                self.assertFalse(volumes["admission-tls"]["secret"].get("optional", False))
+                self.assertEqual("--admission-chart-credentials=/var/run/cetirun-chart-pull/config.json" in container["args"], bool(secret))
+                if secret:
+                    self.assertIs(volumes["chart-pull"]["secret"].get("optional"), True)
+                    self.assertEqual(volumes["chart-pull"]["secret"]["secretName"], secret)
+                    self.assertEqual(volumes["chart-pull"]["secret"]["items"], [{"key": ".dockerconfigjson", "path": "config.json"}])
+                    self.assertTrue(next(m["readOnly"] for m in container["volumeMounts"] if m["name"] == "chart-pull"))
+
     def test_removed_reconciled_execution_option_is_rejected(self):
         for enabled in (False, True):
             for setting in (False, True, "true", 1):
