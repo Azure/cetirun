@@ -108,6 +108,8 @@ def create_job(prompt, schedule, name=None, repeat=None, deliver=None,
     jobs = load() + [job]
     if fault == "create_collision":
         jobs.append({**job, "id": "abcdef012345"})
+    if fault == "create_with_model":
+        job["model"] = "main-model"
     save(jobs)
     if fault == "create_after_write":
         raise RuntimeError("sk-dummy-must-not-appear")
@@ -550,19 +552,50 @@ class CronSyncCLITest(unittest.TestCase):
         self.assertEqual(self.run_cli()["status"], "updated")
         self.assertIsNone(self.jobs()[0]["model"])
 
-    def test_a_new_job_is_bound_only_after_the_record_of_its_model(self):
-        # The record of the model comes before the binding: a creation that cannot write the record stays in
-        # creation, and never leaves a bound job with a model that the record does not have.
+    def test_a_new_job_is_bound_before_it_gets_its_model(self):
+        # A new job is created paused without the model and bound at once. It gets the model as a bound job does,
+        # recorded first, before it resumes: when the record cannot be written, the job stays bound and paused
+        # without a model, disabling the monitor only pauses it, and the next synchronization sets the model.
         self.config["monitor"]["model"] = "gpt-6-sol"
         self.state_dir.mkdir(mode=0o700)
         (self.state_dir / "cron-models.json").mkdir()
         self.assertEqual(self.run_cli(success=False)["code"], "sync_failed")
-        self.assertEqual(json.loads(self.binding.read_text())["phase"], "creating")
+        binding = json.loads(self.binding.read_text())
+        self.assertEqual((binding["phase"], binding["jobId"]), ("bound", self.jobs()[0]["id"]))
+        self.assertEqual((self.jobs()[0]["model"], self.jobs()[0]["state"]), (None, "paused"))
+        self.assertEqual(self.calls("update"), [])
+        (self.state_dir / "cron-models.json").rmdir()
+        self.config["monitor"]["enabled"] = False
+        self.assertEqual(self.run_cli(), {"status": "paused", "timezone": "UTC", "jobId": binding["jobId"]})
+        self.config["monitor"]["enabled"] = True
+        result = self.run_cli()
+        self.assertEqual((result["status"], result["jobId"]), ("updated", binding["jobId"]))
+        self.assertEqual((self.jobs()[0]["model"], self.jobs()[0]["state"]), ("gpt-6-sol", "scheduled"))
+        self.assertEqual(self.models_record(), {"version": 1, "jobId": binding["jobId"], "models": ["gpt-6-sol"]})
+        self.assertEqual(len(self.calls("create")), 1)
 
-    def test_a_creation_that_stops_after_the_binding_has_the_record_of_its_model(self):
+    def test_a_new_job_with_a_model_is_created_and_resumed_in_one_synchronization(self):
+        self.config["monitor"]["model"] = "gpt-6-sol"
+        result = self.run_cli()
+        self.assertEqual(result["status"], "created")
+        self.assertEqual((self.jobs()[0]["model"], self.jobs()[0]["state"]), ("gpt-6-sol", "scheduled"))
+        self.assertEqual(self.models_record(), {"version": 1, "jobId": result["jobId"], "models": ["gpt-6-sol"]})
+        self.assertEqual([call["fields"] for call in self.calls("update")][0], ["model"])
+
+    def test_a_new_job_that_comes_with_a_model_is_not_resumed(self):
+        # A model that the new job has before its binding is not one that monitor.model set.
+        self.config["monitor"]["model"] = "gpt-6-sol"
+        self.assertEqual(self.run_cli(fault="create_with_model", success=False)["code"], "readback_mismatch")
+        self.assertEqual(self.calls("update"), [])
+        self.assertEqual(self.jobs()[0]["state"], "paused")
+
+    def test_a_creation_that_stops_after_the_binding_leaves_a_paused_job_without_a_model(self):
         self.config["monitor"]["model"] = "gpt-6-sol"
         self.assertEqual(self.run_cli(fault="missing_readback", success=False)["code"], "job_missing")
         self.assertEqual(json.loads(self.binding.read_text())["phase"], "bound")
+        self.assertEqual((self.jobs()[0]["model"], self.jobs()[0]["state"]), (None, "paused"))
+        self.assertEqual(self.run_cli()["status"], "updated")
+        self.assertEqual((self.jobs()[0]["model"], self.jobs()[0]["state"]), ("gpt-6-sol", "scheduled"))
         del self.config["monitor"]["model"]
         self.assertEqual(self.run_cli()["status"], "updated")
         self.assertIsNone(self.jobs()[0]["model"])

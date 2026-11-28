@@ -36,9 +36,9 @@ MONITOR_FIELDS = {"enabled", "schedule", "timezone", "deliver", "slackChannel", 
 BINDING_FIELDS = {"version", "instance", "hermesHome", "phase", "jobId", "timezone"}
 # The model that monitor.model set on the bound job, with its ID. Without monitor.model, a synchronization removes
 # only that model, whatever the job's prompt says, and keeps a model that the owner chose. A model is recorded
-# before the job gets it, and a new job is bound only after the record of its model, so an interrupted
-# synchronization leaves no model that the next one does not know. While a synchronization changes the model,
-# the record has both models; the next synchronization keeps the one that the job has (settled_models).
+# before the job gets it, and a new job gets its model only after it is bound, so an interrupted synchronization
+# leaves no model that the next one does not know. While a synchronization changes the model, the record has
+# both models; the next synchronization keeps the one that the job has (settled_models).
 MODELS_FILE = "cron-models.json"
 MODELS_FIELDS = {"version", "jobId", "models"}
 
@@ -357,21 +357,20 @@ def sync(config, home, install, state_dir):
                        "phase": "creating", "jobId": None, "timezone": monitor["timezone"]}
             # A crash after native create must never authorize a second create.
             save_binding(path, binding, directory_fd)
-            new_job = native_call(native.create_job, schedule=monitor["schedule"], **desired,
+            # The new job has no model until it is bound: it gets its model below, as a bound job does, before it
+            # resumes. So nothing but the binding stands between the create and the binding.
+            initial = {key: value for key, value in desired.items() if key != "model"}
+            new_job = native_call(native.create_job, schedule=monitor["schedule"], **initial,
                                   paused=True, paused_reason="CetiAdmin binding awaiting readback",
                                   error="create_uncertain")
             job_id = new_job.get("id") if isinstance(new_job, dict) else None
             if not isinstance(job_id, str) or not JOB_ID.fullmatch(job_id):
                 raise SyncError("create_uncertain")
-            # The record of the job's model comes first: a bound job has it.
-            models = [monitor["model"]] if monitor["model"] else []
-            if models:
-                save_models(models_path, job_id, models, directory_fd)
             binding.update(phase="bound", jobId=job_id)
             save_binding(path, binding, directory_fd)
             job = known_job(native, job_id)
-            verify_definition(job, desired, schedule)
-            if job.get("enabled") is not False or job.get("state") != "paused":
+            verify_definition(job, initial, schedule)
+            if job.get("enabled") is not False or job.get("state") != "paused" or job.get("model"):
                 raise SyncError("readback_mismatch")
 
         if (any(job.get(key) for key in ("script", "no_agent", "monitor_script", "monitor_url"))

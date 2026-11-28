@@ -247,7 +247,8 @@ Do not leave an old scheduler running after a rejected configuration.
 
 `cron-binding.json` stores this instance identity, canonical HOME, stable native
 job ID, creation phase, and last synchronized timezone. Initial create is
-paused until the binding and native readback succeed. Ordinary changes edit
+paused, without `model`, until the binding and native readback succeed. The job
+then gets `model` as an ordinary change, before it resumes. Ordinary changes edit
 that ID; disabled monitoring only pauses it. Missing jobs, unknown same-name
 jobs, foreign binding files, and uncertain creates require inspection. Never
 clear the record and retry creation blindly. Preserve output and notepad;
