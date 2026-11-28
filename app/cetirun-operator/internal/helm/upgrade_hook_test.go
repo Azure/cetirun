@@ -325,9 +325,11 @@ func TestUpgradeHookScript(t *testing.T) {
 		{name: "changed selector", live: map[string]string{upgradeHookSelectorNameQuery: "other"},
 			output: "selector app.kubernetes.io/name: 'other' -> 'cetirun'"},
 		// Its recovery deletes only the StatefulSet object: a normal deletion would take the HOME claim with it
-		// when persistence.retainPolicy is Delete.
+		// when persistence.retainPolicy is Delete. The whole command is on one line, so that it is copied whole.
 		{name: "changed selector, recovery", live: map[string]string{upgradeHookSelectorNameQuery: "other"},
-			output: "--cascade=orphan), so that its HOME claim stays also with persistence.retainPolicy Delete"},
+			output: "so that its HOME claim stays also with\npersistence.retainPolicy Delete:\n" +
+				"kubectl delete statefulset cetirun-example -n cetirun-example --cascade=orphan\n" +
+				"When it is gone, delete its Pod cetirun-example-0.\n"},
 		{name: "changed selector, recovery keeps the claim of the StatefulSet",
 			live:   map[string]string{upgradeHookSelectorNameQuery: "other"},
 			output: "then mounts the same HOME claim, data-cetirun-example-0."},

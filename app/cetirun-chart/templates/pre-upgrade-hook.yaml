@@ -239,9 +239,12 @@ spec:
                   echo "HOME of the running Pod is in the claim $CURRENT_CLAIM, which the chart creates. The new values do not"
                   echo "create it, so an upgrade with them deletes it, with its files, if this release created it."
                 elif [ -n "$CURRENT_CLAIM" ] && [ "$CURRENT_CLAIM" = "$EXPECT_CLAIM" ]; then
-                  echo "Or, before the upgrade, delete only the StatefulSet object (kubectl delete statefulset $STS_NAME -n $NS"
-                  echo "--cascade=orphan), so that its HOME claim stays also with persistence.retainPolicy Delete. When it is"
-                  echo "gone, delete its Pod ${STS_NAME}-0."
+                  # The command is on a line of its own: without --cascade=orphan, the deletion would also delete the HOME
+                  # claim when persistence.retainPolicy is Delete.
+                  echo "Or, before the upgrade, delete only the StatefulSet object, so that its HOME claim stays also with"
+                  echo "persistence.retainPolicy Delete:"
+                  echo "kubectl delete statefulset $STS_NAME -n $NS --cascade=orphan"
+                  echo "When it is gone, delete its Pod ${STS_NAME}-0."
                   echo "The new StatefulSet of the same name then mounts the same HOME claim, $CURRENT_CLAIM."
                 else
                   echo "HOME of the running Pod is in $(home_of "$CURRENT_CLAIM")."
