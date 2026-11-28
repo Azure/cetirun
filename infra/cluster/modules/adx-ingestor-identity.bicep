@@ -1,11 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-// An Azure identity of a CetiRun workload that writes to Azure Data Explorer:
-// a user-assigned managed identity that the workload's Kubernetes service
-// account uses through workload identity. The ADX-Mon ingestor has one, and
-// the AI Gateway another for its content. Their only grants are the database
-// roles that the ADX module assigns.
+// An Azure identity of a CetiRun workload that uses Azure Data Explorer: a
+// user-assigned managed identity that the workload's Kubernetes service
+// account uses through workload identity. The ADX-Mon ingestor has one, the AI
+// Gateway another for its content, and the ADX-Mon alerter and the Portal can
+// have one to read. Their only grants are the database roles that the ADX
+// module assigns.
 
 param name string
 param location string = resourceGroup().location

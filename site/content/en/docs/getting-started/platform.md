@@ -209,10 +209,16 @@ databases of the ADX-Mon collection. It also needs the ingestor's managed
 identity, with its roles and federated credential. By default, the cluster
 template creates them. Its outputs `adxClusterUri` and `adxIngestorClientId`
 give `observability.adx.endpoint` and `observability.ingestorClientId` of the
-environment file. With `adxContent`, the template also creates the database of
-the AI Gateway's prompts and responses: its outputs `adxContentDatabase` and
-`adxContentClientId` give the optional `observability.content` block. Refer to
-the prerequisites in
+environment file.
+
+With `adxContent`, the template also creates the database of the AI Gateway's
+prompts and responses: its outputs `adxContentDatabase` and
+`adxContentClientId` give the optional `observability.content` block. With
+`adxPortalUsage`, the template also creates the identity with which the Portal
+reads the AI Gateway usage: its output `adxPortalUsageClientId` gives the
+optional `observability.portal` block. Use `adxPortalUsage` only while the logs
+database holds the data of this CetiRun cluster alone. Refer to the
+prerequisites in
 [Monitoring and logs](../../operations/observability/#prerequisites).
 
 ## 2. Configure authentication and storage
@@ -853,6 +859,7 @@ Values of the platform release, under `platform.values`:
 | `cetirun-connections-mcp.broker.baseURL`, `cetirun-connections-mcp.istio.brokerNamespace`, `cetirun-connections-mcp.istio.controlPlaneNamespace`, `cetirun-connections-mcp.istio.revision`, `cetirun-connections-mcp.portal.baseURL` | The Broker Service, `broker.namespace`, `istio.controlPlaneNamespace`, `istio.revision`, and `https://<domain>` |
 | Under `cetirun-operator.skillMarketplace`: `enabled`, the `repository` fields `url`, `ref`, `path`, `auth`, `existingSecret`, and `syncInterval`, and the `storage` fields `resourceGroup`, `storageAccount`, `containerName`, and `storageClassName`. Under `cetirun-portal.skillMarketplace`: `enabled` and `catalogNamespace` | The top-level `skillMarketplace` block, and `platform.namespace` for the catalog. Without that block, both `enabled` values are `false` |
 | Under `cetirun-observability`: `enabled`, `clusterName`, `adx.endpoint`, `adx.databases.logs`, `adx.databases.metrics`, `adx.databases.agentLogs`, and `ingestor.clientId`. With an `alerter` block: `alerter.endpoint`, `alerter.clientId`, and `alerter.destination` | The top-level `observability` block, which `make deploy` requires, and its optional `alerter` block. `enabled` is always `true`. A database that the block does not name gets its default name |
+| With a `portal` block under `observability`: `cetirun-portal.usage.enabled`, `cetirun-portal.usage.clusterName`, `cetirun-portal.usage.adx.endpoint`, `cetirun-portal.usage.adx.database`, and `cetirun-portal.usage.adx.clientId` | `true`, `observability.clusterName`, `observability.adx.endpoint`, the logs database, and `observability.portal.clientId` |
 
 `make deploy` also writes these values without a conflict check. A value that
 you set for them under `platform.values` has no effect:

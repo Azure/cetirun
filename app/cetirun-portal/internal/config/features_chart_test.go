@@ -210,6 +210,45 @@ func renderedPortal(t *testing.T, output []byte) (map[string]string, []rbacv1.Po
 	return env, rules
 }
 
+func TestUsageChartWiring(t *testing.T) {
+	helm, err := exec.LookPath("helm")
+	if err != nil {
+		t.Skip("Helm is required for the Portal chart rendering check")
+	}
+	base := []string{"template", "portal", "../../chart", "--set", "istio.host=portal.example.com",
+		"--set", "agentIdentity.tenantId=11111111-1111-1111-1111-111111111111",
+		"--set", "agentIdentity.portalClientId=33333333-3333-3333-3333-333333333333"}
+	for _, tc := range []struct {
+		name   string
+		values []string
+		want   Config
+	}{
+		{name: "defaults"},
+		{name: "enabled", values: []string{"--set", "usage.enabled=true", "--set", "usage.clusterName=example",
+			"--set", "usage.adx.endpoint=https://example.australiaeast.kusto.windows.net/",
+			"--set", "usage.adx.clientId=44444444-4444-4444-4444-444444444444"},
+			want: Config{UsageEnabled: true, UsageADXEndpoint: "https://example.australiaeast.kusto.windows.net",
+				UsageADXDatabase: "CetiRunLogs", UsageClusterName: "example"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := exec.Command(helm, append(append([]string{}, base...), tc.values...)...).Output()
+			if err != nil {
+				t.Fatalf("render: %v", err)
+			}
+			env, _ := renderedPortal(t, output)
+			for _, name := range []string{"USAGE_ENABLED", "USAGE_ADX_ENDPOINT", "USAGE_ADX_DATABASE", "USAGE_CLUSTER_NAME"} {
+				t.Setenv(name, env[name])
+			}
+			cfg := Load()
+			got := Config{UsageEnabled: cfg.UsageEnabled, UsageADXEndpoint: cfg.UsageADXEndpoint,
+				UsageADXDatabase: cfg.UsageADXDatabase, UsageClusterName: cfg.UsageClusterName}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("usage configuration = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSkillMarketplaceChartWiring(t *testing.T) {
 	helm, err := exec.LookPath("helm")
 	if err != nil {

@@ -82,6 +82,13 @@ type Config struct {
 	ConfigurationCoordinationNamespace string
 	ConfigurationCoordinationName      string
 	ConfigurationCoordinationUID       string
+	// UsageEnabled reads the AI Gateway usage of this cluster from the logs
+	// database of Azure Data Explorer, with the Pod's workload identity.
+	UsageEnabled     bool
+	UsageADXEndpoint string
+	UsageADXDatabase string
+	// UsageClusterName names this cluster in the Cluster column of its rows.
+	UsageClusterName string
 }
 
 // Load reads configuration from environment variables.
@@ -128,6 +135,11 @@ func Load() Config {
 		SandboxStoragePlatformNamespace:     os.Getenv("SANDBOX_STORAGE_PLATFORM_NAMESPACE"),
 		SandboxStoragePlatformConfigMapName: os.Getenv("SANDBOX_STORAGE_PLATFORM_CONFIG_MAP_NAME"),
 		SandboxStorageDefaultClassName:      os.Getenv("SANDBOX_STORAGE_DEFAULT_CLASS_NAME"),
+
+		UsageEnabled:     os.Getenv("USAGE_ENABLED") == "true",
+		UsageADXEndpoint: os.Getenv("USAGE_ADX_ENDPOINT"),
+		UsageADXDatabase: os.Getenv("USAGE_ADX_DATABASE"),
+		UsageClusterName: os.Getenv("USAGE_CLUSTER_NAME"),
 	}
 }
 

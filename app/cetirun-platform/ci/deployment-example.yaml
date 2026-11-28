@@ -233,3 +233,12 @@ observability:
   # content:
   #   clientId: 88888888-8888-8888-8888-888888888888
   #   database: CetiRunContent
+  # Optional: the Portal reads the AI Gateway usage of this cluster from the logs
+  # database. Kusto grants a role on a whole database, so use it only while the
+  # logs database holds the data of this CetiRun cluster alone, and remove the
+  # role before another cluster writes to it. The cluster template
+  # creates the identity with adxMode create and adxPortalUsage: it has the
+  # Viewer role on the logs database and a federated credential for
+  # system:serviceaccount:<platform.namespace>:cetirun-portal.
+  # portal:
+  #   clientId: 99999999-9999-9999-9999-999999999999

@@ -54,3 +54,39 @@ Otherwise: repository:tag
 {{- $tag := include "cetirun-portal.version" . | default .Values.image.tag | default .Chart.AppVersion -}}
 {{ $repo }}:{{ $tag }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ end }}
 {{- end }}
+
+{{/*
+usage: the AI Gateway usage from the logs database in Azure Data Explorer,
+read with a workload identity (internal/usage).
+*/}}
+{{- define "cetirun-portal.usageEnabled" -}}
+{{- $usage := .Values.usage | default dict }}
+{{- if and (kindIs "map" $usage) $usage.enabled }}true{{ end }}
+{{- end }}
+
+{{- define "cetirun-portal.validateUsage" -}}
+{{- $usage := .Values.usage | default dict }}
+{{- if not (kindIs "map" $usage) }}
+{{- fail "usage must be an object" }}
+{{- end }}
+{{- if and (hasKey $usage "enabled") (not (kindIs "bool" $usage.enabled)) }}
+{{- fail "usage.enabled must be a boolean" }}
+{{- end }}
+{{- if $usage.enabled }}
+{{- if not (regexMatch "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/?$" (toString (dig "adx" "endpoint" "" $usage))) }}
+{{- fail "usage.adx.endpoint must be the query URI of the Kusto cluster, such as https://<name>.<region>.kusto.windows.net" }}
+{{- end }}
+{{- if not (regexMatch "^[A-Za-z][A-Za-z0-9]{0,99}$" (toString (dig "adx" "database" "" $usage))) }}
+{{- fail "usage.adx.database must be the name of the logs database: letters and digits" }}
+{{- end }}
+{{- if not (regexMatch "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" (toString (dig "adx" "clientId" "" $usage))) }}
+{{- fail "usage.adx.clientId must be the client ID of the managed identity with the Viewer role on the logs database" }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" (toString ($usage.clusterName | default ""))) }}
+{{- fail "usage.clusterName must be a DNS label: the clusterName of the cetirun-observability chart, which names this cluster in its rows" }}
+{{- end }}
+{{- if not .Values.serviceAccount.create }}
+{{- fail "usage.enabled needs serviceAccount.create: the chart names the usage identity on the ServiceAccount it creates" }}
+{{- end }}
+{{- end }}
+{{- end }}

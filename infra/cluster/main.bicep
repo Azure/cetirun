@@ -161,6 +161,9 @@ param adxGatewayUsageRetentionDays int = 400
 @description('Create the managed identity of the ADX-Mon alerter, with the Viewer role on the logs and metrics databases. Needs adxMode create or existing.')
 param adxAlerter bool = false
 
+@description('Create the managed identity with which the Portal reads the AI Gateway usage, with the Viewer role on the logs database. Only with adxMode create, and only while the logs database holds the data of this CetiRun cluster alone: Kusto grants a role on a whole database. Before another installation uses the database, remove the role; setting this to false does not remove it.')
+param adxPortalUsage bool = false
+
 @description('Send the Kubernetes audit events of the AKS API server, except get and list, to the database CetiRunAudit through an Event Hub. Needs adxMode create, or an existing Kusto cluster with a system-assigned identity.')
 param adxAuditLogs bool = false
 
@@ -260,6 +263,7 @@ module adx 'modules/adx.bicep' = if (adxMode != 'none') {
     contentViewers: adxContentViewers
     gatewayUsageRetentionDays: adxGatewayUsageRetentionDays
     alerterClientId: adxAlerterIdentity.?outputs.clientId ?? ''
+    portalUsageClientId: portalUsageIdentity.?outputs.clientId ?? ''
     auditLogs: adxAuditLogs
     auditRetentionDays: adxAuditRetentionDays
     auditViewers: adxAuditViewers
@@ -278,6 +282,21 @@ module adxAlerterIdentity 'modules/adx-ingestor-identity.bicep' = if (adxMode !=
     namespace: observabilityNamespace
     serviceAccountName: 'cetirun-adx-mon-alerter'
     credentialName: 'cetirun-adx-mon-alerter'
+  }
+}
+
+// The Portal's identity for the usage report: the Portal chart names its
+// ServiceAccount cetirun-portal.
+module portalUsageIdentity 'modules/adx-ingestor-identity.bicep' = if (adxMode == 'create' && adxPortalUsage) {
+  name: 'deploy-portal-usage-identity'
+  params: {
+    name: '${clusterName}-portal-usage'
+    location: location
+    tags: tags
+    oidcIssuerUrl: cluster.outputs.oidcIssuerUrl
+    namespace: platformNamespace
+    serviceAccountName: 'cetirun-portal'
+    credentialName: 'cetirun-portal'
   }
 }
 
@@ -321,6 +340,8 @@ output adxClusterUri string = adx.?outputs.clusterUri ?? ''
 output adxIngestorClientId string = adxIngestorIdentity.?outputs.clientId ?? ''
 @description('observability.alerter.clientId of the make deploy environment file.')
 output adxAlerterClientId string = adxAlerterIdentity.?outputs.clientId ?? ''
+@description('observability.portal.clientId of the make deploy environment file.')
+output adxPortalUsageClientId string = portalUsageIdentity.?outputs.clientId ?? ''
 output adxAuditDatabase string = adx.?outputs.auditDatabaseName ?? ''
 
 // Inputs of the AI Gateway's content values.

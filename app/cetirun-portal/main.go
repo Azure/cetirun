@@ -31,6 +31,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/handler"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/server"
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/usage"
 )
 
 //go:embed all:web/dist
@@ -159,6 +160,21 @@ func main() {
 	// Graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+
+	// The usage report reads the AI Gateway usage from Azure Data Explorer.
+	// An unusable configuration turns the report off, not the Portal.
+	if cfg.UsageEnabled {
+		report, err := usage.FromEnvironment(usage.Settings{
+			Endpoint: cfg.UsageADXEndpoint,
+			Database: cfg.UsageADXDatabase,
+			Cluster:  cfg.UsageClusterName,
+		}, os.Getenv, slog.Default())
+		if err != nil {
+			slog.Error("Usage report is off", "error", err)
+		} else {
+			report.Start(ctx)
+		}
+	}
 
 	go func() {
 		slog.Info("Starting portal server", "addr", cfg.ListenAddr)
