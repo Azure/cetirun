@@ -127,7 +127,7 @@
     "configmap.yaml": "7d359cebae91bfd6ea7f20a3fcc7cd9117b00c6b0b868a9ee551660499de9f92",
     "deny-exec-policy.yaml": "7dd9900c6cb720cda23eae4abebcdd68e7d868d91be7df00bac133f63acb4267",
     "networkpolicy.yaml": "6c57b76bb0ecee3288edfc78b188519894908e356083989a683c5e9d21c4a47f",
-    "pre-upgrade-hook.yaml": "dd285fa25f993889dea81ea1b90e4ab2ddb90b9e45c69ff6bdb8548c622642d4",
+    "pre-upgrade-hook.yaml": "46d8638ad61a34132f0d47786ffd3ebcb5da16d897117d0fe8dec5108e944e82",
     "service.yaml": "32f5e1f17661d94fbec319327628e7977d04d6231befc907400dc4f2ae84c0c1",
     "statefulset.yaml": "198cb95b28b83d2aaf82c68c31d42db768167c0add005e1e319eb38a1dad639d"
   }

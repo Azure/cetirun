@@ -178,6 +178,7 @@ const (
 	upgradeHookClassQuery        = `{.spec.volumeClaimTemplates[0].spec.storageClassName}`
 	upgradeHookAccessModeQuery   = `{.spec.volumeClaimTemplates[0].spec.accessModes[0]}`
 	upgradeHookSizeQuery         = `{.spec.volumeClaimTemplates[0].spec.resources.requests.storage}`
+	upgradeHookHomeClaimQuery    = `{.spec.template.spec.volumes[?(@.name=="data")].persistentVolumeClaim.claimName}`
 )
 
 // upgradeStatefulSet returns the StatefulSet that the agent chart renders for
@@ -224,7 +225,13 @@ func liveStatefulSetFields(t *testing.T, sts map[string]any) map[string]string {
 		}
 		fields[upgradeHookSizeQuery] = size.String()
 	}
-	if fields[upgradeHookServiceNameQuery] == "" || fields[upgradeHookSelectorNameQuery] == "" || len(names) == 0 {
+	fields[upgradeHookHomeClaimQuery] = ""
+	for _, item := range array(object(object(spec["template"])["spec"])["volumes"]) {
+		if volume := object(item); volume["name"] == "data" {
+			fields[upgradeHookHomeClaimQuery] = text(object(volume["persistentVolumeClaim"])["claimName"])
+		}
+	}
+	if fields[upgradeHookServiceNameQuery] == "" || fields[upgradeHookSelectorNameQuery] == "" {
 		t.Fatalf("unexpected rendered StatefulSet: %v", fields)
 	}
 	return fields
@@ -286,9 +293,11 @@ func TestUpgradeHookScript(t *testing.T) {
 		// unless it says otherwise. The live StatefulSet is the one that the same
 		// values render, as Kubernetes keeps it; live overrides its fields.
 		name, getError, missing, failQuery string
-		persistence, live                  map[string]string
+		persistence                        map[string]any
+		live                               map[string]string
 		succeeds, deletes                  bool
-		output                             string
+		// output is in the hook's output, and absent is not.
+		output, absent string
 	}{
 		// The image user's HOME made every kubectl call fail like this; the hook
 		// must not treat it as a missing StatefulSet.
@@ -296,16 +305,16 @@ func TestUpgradeHookScript(t *testing.T) {
 		{name: "missing StatefulSet", missing: "yes", succeeds: true, output: "not found, nothing to do"},
 		{name: "unchanged", succeeds: true, output: "No immutable field changes detected"},
 		{name: "unchanged with a storage class and another access mode",
-			persistence: map[string]string{"storageClass": "managed-csi-premium", "accessMode": "ReadWriteOncePod"},
+			persistence: map[string]any{"storageClass": "managed-csi-premium", "accessMode": "ReadWriteOncePod"},
 			succeeds:    true, output: "No immutable field changes detected"},
-		{name: "unchanged with the cluster's default storage class", persistence: map[string]string{"storageClass": ""},
+		{name: "unchanged with the cluster's default storage class", persistence: map[string]any{"storageClass": ""},
 			succeeds: true, output: "No immutable field changes detected"},
 		// Kubernetes keeps 1024Gi as 1Ti.
-		{name: "same size in canonical form", persistence: map[string]string{"size": "1024Gi"}, succeeds: true,
+		{name: "same size in canonical form", persistence: map[string]any{"size": "1024Gi"}, succeeds: true,
 			output: "No immutable field changes detected"},
 		{name: "grown volume", live: map[string]string{upgradeHookSizeQuery: "100Gi"}, succeeds: true, deletes: true,
 			output: "volumeClaimTemplate size: '100Gi' -> '120Gi'"},
-		{name: "grown volume to a size in another form", persistence: map[string]string{"size": "1024Gi"},
+		{name: "grown volume to a size in another form", persistence: map[string]any{"size": "1024Gi"},
 			live: map[string]string{upgradeHookSizeQuery: "1000Gi"}, succeeds: true, deletes: true,
 			output: "volumeClaimTemplate size: '1000Gi' -> '1024Gi'"},
 		{name: "changed storage class", live: map[string]string{upgradeHookClassQuery: "other"}, succeeds: true,
@@ -319,11 +328,42 @@ func TestUpgradeHookScript(t *testing.T) {
 		// when persistence.retainPolicy is Delete.
 		{name: "changed selector, recovery", live: map[string]string{upgradeHookSelectorNameQuery: "other"},
 			output: "--cascade=orphan), so that its HOME claim stays also with persistence.retainPolicy Delete"},
+		{name: "changed selector, recovery keeps the claim of the StatefulSet",
+			live:   map[string]string{upgradeHookSelectorNameQuery: "other"},
+			output: "then mounts the same HOME claim, data-cetirun-example-0."},
+		{name: "changed selector, recovery keeps an existing claim",
+			persistence: map[string]any{"existingClaim": "home-example"},
+			live:        map[string]string{upgradeHookSelectorNameQuery: "other"},
+			output:      "then mounts the same HOME claim, home-example."},
+		{name: "changed selector, recovery keeps the claim of the chart",
+			persistence: map[string]any{"useStatefulSetVolumeClaim": false},
+			live:        map[string]string{upgradeHookSelectorNameQuery: "other"},
+			output:      "then mounts the same HOME claim, cetirun-example-data."},
+		// An emptyDir HOME does not outlive the running Pod: only reverting the selector keeps it.
+		{name: "changed selector, HOME in an emptyDir", persistence: map[string]any{"enabled": false},
+			live: map[string]string{upgradeHookSelectorNameQuery: "other"},
+			output: "Set nameOverride back.\nHOME of the running Pod is in an emptyDir.\n" +
+				"HOME of a new Pod would be in an emptyDir, without the files of the running one.",
+			absent: "--cascade=orphan"},
+		{name: "changed selector, HOME in another claim than the new one",
+			persistence: map[string]any{"existingClaim": "home-example"},
+			live:        map[string]string{upgradeHookSelectorNameQuery: "other", upgradeHookClaimNamesQuery: "data"},
+			output: "HOME of the running Pod is in the claim data-cetirun-example-0.\n" +
+				"HOME of a new Pod would be in the claim home-example, without the files of the running one.",
+			absent: "--cascade=orphan"},
+		{name: "changed selector, HOME from a claim to an emptyDir", persistence: map[string]any{"enabled": false},
+			live: map[string]string{upgradeHookSelectorNameQuery: "other", upgradeHookHomeClaimQuery: "home-example"},
+			output: "HOME of the running Pod is in the claim home-example.\n" +
+				"HOME of a new Pod would be in an emptyDir, without the files of the running one.",
+			absent: "--cascade=orphan"},
 		{name: "changed selector and grown volume",
 			live:   map[string]string{upgradeHookInstanceQuery: "other", upgradeHookSizeQuery: "100Gi"},
 			output: "selector app.kubernetes.io/instance: 'other' -> 'cetirun-example'; volumeClaimTemplate size"},
 		{name: "failed read", live: map[string]string{upgradeHookSizeQuery: "100Gi"}, failQuery: upgradeHookServiceNameQuery,
 			output: "unable to return a response"},
+		{name: "failed read of the HOME claim", persistence: map[string]any{"existingClaim": "home-example"},
+			live: map[string]string{upgradeHookSelectorNameQuery: "other"}, failQuery: upgradeHookHomeClaimQuery,
+			output: "unable to return a response", absent: "--cascade=orphan"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := upgradeHookInput("hermes")
@@ -346,6 +386,9 @@ func TestUpgradeHookScript(t *testing.T) {
 			}
 			if !strings.Contains(string(out), tc.output) {
 				t.Fatalf("output lacks %q:\n%s", tc.output, out)
+			}
+			if tc.absent != "" && strings.Contains(string(out), tc.absent) {
+				t.Fatalf("output has %q:\n%s", tc.absent, out)
 			}
 			calls, err := os.ReadFile(filepath.Join(dir, "calls"))
 			if err != nil {
