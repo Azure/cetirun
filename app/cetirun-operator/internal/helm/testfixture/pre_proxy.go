@@ -156,6 +156,10 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 		chrt.Schema = bytes.Replace(chrt.Schema, []byte(change[0]), []byte(change[1]), 1)
 	}
 	var err error
+	chrt.Schema, err = restoreBlobSkillsSchema(chrt.Schema)
+	if err != nil {
+		return err
+	}
 	chrt.Schema, err = restoreHermesWebappSchema(chrt.Schema)
 	if err != nil {
 		return err
@@ -1028,6 +1032,53 @@ func restoreHermesWebappSchema(schema []byte) ([]byte, error) {
 	} {
 		if bytes.Count(schema, []byte(change[0])) != 1 {
 			return nil, fmt.Errorf("pre-proxy fixture requires the exact Hermes Webapp schema")
+		}
+		schema = bytes.Replace(schema, []byte(change[0]), []byte(change[1]), 1)
+	}
+	return schema, nil
+}
+
+// restoreBlobSkillsSchema removes the later Azure Files option from the fixture,
+// preserving the immutable historical asset checksum checked by the caller.
+func restoreBlobSkillsSchema(schema []byte) ([]byte, error) {
+	for _, change := range [][2]string{
+		{`"description": "Static shared skills storage: Blob or Azure Files NFS 4.1 with required TLS. Backend and mount settings require replacement PV/PVC resources to change."`, `"description": "Shared skills volume configuration. Auto-creates PV/PVC backed by Azure Blob CSI (NFS by default; Fuse/Fuse2 supported). Protocol, secretName, and mountOptions are install-time-only PV settings."`},
+		{`                "backend": {
+                    "type": "string",
+                    "enum": ["blob", "azure-files-nfs"],
+                    "default": "blob"
+                },
+                "shareName": {
+                    "type": "string",
+                    "description": "Azure Files NFS share, used only with azure-files-nfs",
+                    "default": ""
+                },
+`, ``},
+		{`"description": "Blob container name",
+                    "default": "aks-skills"`, `"description": "Blob container name",
+                    "minLength": 1,
+                    "default": "aks-skills"`},
+		{`            },
+            "allOf": [
+                {
+                    "if": {"required": ["backend"], "properties": {"backend": {"const": "azure-files-nfs"}}},
+                    "then": {
+                        "required": ["shareName"],
+                        "properties": {
+                            "shareName": {"pattern": "^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$", "not": {"pattern": "--"}},
+                            "containerName": {"maxLength": 0},
+                            "protocol": {"const": "nfs"},
+                            "secretName": {"maxLength": 0},
+                            "mountOptions": {"maxItems": 1, "items": {"const": "ro"}}
+                        },
+                        "not": {"anyOf": [{"required": ["driver"]}, {"required": ["volumeAttributes"]}, {"required": ["encryptInTransit"]}]}
+                    },
+                    "else": {"properties": {"shareName": {"maxLength": 0}, "containerName": {"minLength": 1}}}
+                }
+            ]`, `            }`},
+	} {
+		if bytes.Count(schema, []byte(change[0])) != 1 {
+			return nil, fmt.Errorf("pre-proxy fixture requires the exact encrypted skills schema")
 		}
 		schema = bytes.Replace(schema, []byte(change[0]), []byte(change[1]), 1)
 	}

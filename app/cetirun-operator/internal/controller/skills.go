@@ -65,6 +65,11 @@ func applySkillValues(values map[string]any, team *api.Team, overrides api.Skill
 		return errSkillMarketplaceOverride
 	}
 	if team != nil && team.Spec.SkillStorage != nil {
+		if global, ok := values["skills"].(map[string]any); ok && global["backend"] == "azure-files-nfs" {
+			return fmt.Errorf("Team skillStorage Blob overrides are incompatible with the platform Azure Files skills backend")
+		}
+	}
+	if team != nil && team.Spec.SkillStorage != nil {
 		s := team.Spec.SkillStorage
 		storage := map[string]any{
 			"shared": true, "resourceGroup": s.ResourceGroup,

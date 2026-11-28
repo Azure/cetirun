@@ -28,12 +28,14 @@ type SkillMarketplaceConfig struct {
 	Storage *SkillMarketplaceStorage `json:"storage,omitempty"`
 }
 
-// SkillMarketplaceStorage names the Blob NFS container of the Team releases.
+// SkillMarketplaceStorage names the platform-owned Team release storage.
 // It holds no credentials: NFS mounts authorize by network.
 type SkillMarketplaceStorage struct {
+	Backend          string `json:"backend,omitempty"`
 	ResourceGroup    string `json:"resourceGroup"`
 	StorageAccount   string `json:"storageAccount"`
 	ContainerName    string `json:"containerName"`
+	ShareName        string `json:"shareName,omitempty"`
 	StorageClassName string `json:"storageClassName"`
 }
 
@@ -66,14 +68,23 @@ func ParseSkillMarketplaceConfig(raw string) (SkillMarketplaceConfig, error) {
 }
 
 func (s *SkillMarketplaceStorage) validate() error {
-	switch {
-	case s == nil:
+	if s == nil {
 		return errors.New("storage is required while the marketplace is enabled")
+	}
+	if s.Backend != "" && s.Backend != "blob" && s.Backend != "azure-files-nfs" {
+		return errors.New("storage.backend must be blob or azure-files-nfs")
+	}
+	if s.Backend != "azure-files-nfs" && s.ShareName != "" {
+		return errors.New("storage.shareName requires the Azure Files backend")
+	}
+	switch {
 	case !sandboxResourceGroup.MatchString(s.ResourceGroup) || strings.HasSuffix(s.ResourceGroup, "."):
 		return errors.New("storage.resourceGroup is not a resource group name")
 	case !sandboxStorageAccount.MatchString(s.StorageAccount):
 		return errors.New("storage.storageAccount must be 3-24 lowercase letters and digits")
-	case len(s.ContainerName) < 3 || len(validation.IsDNS1123Label(s.ContainerName)) != 0 || strings.Contains(s.ContainerName, "--"):
+	case s.Backend == "azure-files-nfs" && (s.ContainerName != "" || len(s.ShareName) < 3 || len(validation.IsDNS1123Label(s.ShareName)) != 0 || strings.Contains(s.ShareName, "--")):
+		return errors.New("storage.shareName is required and storage.containerName must be empty for Azure Files")
+	case s.Backend != "azure-files-nfs" && (len(s.ContainerName) < 3 || len(validation.IsDNS1123Label(s.ContainerName)) != 0 || strings.Contains(s.ContainerName, "--")):
 		return errors.New("storage.containerName is not a Blob container name")
 	case len(validation.IsDNS1123Subdomain(s.StorageClassName)) != 0:
 		return errors.New("storage.storageClassName is not a StorageClass name")

@@ -11,7 +11,7 @@ import (
 )
 
 func TestPreProxyRestoresOriginalSHAAndRejectsDrift(t *testing.T) {
-	for _, scenario := range []string{"original", "later addition changed", "historical field changed"} {
+	for _, scenario := range []string{"original", "later addition changed", "encrypted storage changed", "historical field changed"} {
 		t.Run(scenario, func(t *testing.T) {
 			chart, err := loader.Load("../../../../cetirun-chart")
 			if err != nil {
@@ -20,6 +20,8 @@ func TestPreProxyRestoresOriginalSHAAndRejectsDrift(t *testing.T) {
 			switch scenario {
 			case "later addition changed":
 				chart.Schema = bytes.Replace(chart.Schema, []byte(`"operatorImage"`), []byte(`"unapprovedImage"`), 1)
+			case "encrypted storage changed":
+				chart.Schema = bytes.Replace(chart.Schema, []byte(`"enum": ["blob", "azure-files-nfs"]`), []byte(`"enum": ["blob"]`), 1)
 			case "historical field changed":
 				chart.Schema = bytes.Replace(chart.Schema, []byte("CetiRun Helm Chart Values Schema"), []byte("Unapproved historical schema"), 1)
 			}

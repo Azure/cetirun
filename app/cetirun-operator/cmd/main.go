@@ -461,8 +461,9 @@ func getEnvOrDefault(key, defaultVal string) string {
 // the volumes whose claim is gone.
 func setupSkillMarketplace(mgr ctrl.Manager, config controller.SkillMarketplaceConfig, claimName, namespace string) error {
 	storage := skillmarketplace.StorageSource{
+		Backend:       config.Storage.Backend,
 		ResourceGroup: config.Storage.ResourceGroup, StorageAccount: config.Storage.StorageAccount,
-		ContainerName: config.Storage.ContainerName, StorageClassName: config.Storage.StorageClassName,
+		ContainerName: config.Storage.ContainerName, ShareName: config.Storage.ShareName, StorageClassName: config.Storage.StorageClassName,
 	}
 	if err := (&skillmarketplace.TeamsReconciler{Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Namespace: namespace}).SetupWithManager(mgr); err != nil {
 		return err

@@ -1559,6 +1559,31 @@ class SkillMarketplaceTests(DeploymentFixture, unittest.TestCase):
         deployment = next(doc for doc in documents if doc["kind"] == "Deployment" and doc["metadata"]["name"] == name)
         return {item["name"]: item.get("value") for item in deployment["spec"]["template"]["spec"]["containers"][0].get("env", [])}
 
+    def test_encrypted_files_storage_flows_to_both_consumers(self):
+        config = self.marketplace_config()
+        shared = {"backend": "azure-files-nfs", "resourceGroup": "example-rg",
+                  "storageAccount": "exampleskills", "shareName": "shared-skills",
+                  "storageClassName": "azurefile-csi-premium"}
+        config["sharedSkills"] = shared
+        config["skillMarketplace"]["storage"] = {**shared, "shareName": "marketplace"}
+        _, values = self.configure(config)
+        operator = values["platform"]["cetirun-operator"]
+        self.assertEqual(operator["skillMarketplace"]["storage"]["backend"], "azure-files-nfs")
+        self.assertEqual(operator["skillMarketplace"]["storage"]["shareName"], "marketplace")
+        runtime_skills = operator["cetirun"]["helmValues"]["skills"]
+        self.assertEqual(runtime_skills["backend"], "azure-files-nfs")
+        self.assertEqual(runtime_skills["shareName"], "shared-skills")
+        self.assertEqual(runtime_skills["protocol"], "nfs")
+        self.assertEqual(runtime_skills["containerName"], "")
+        for field, value in (("containerName", "blob-skills"), ("secretName", "account-key"),
+                             ("encryptInTransit", False), ("mountOptions", ["rw"]), ("protocol", "smb")):
+            with self.subTest(field=field):
+                invalid = copy.deepcopy(config)
+                invalid["sharedSkills"][field] = value
+                self.refused(invalid, "sharedSkills")
+        config["skillMarketplace"]["storage"]["shareName"] = "shared-skills"
+        self.refused(config, "other than the sharedSkills share")
+
     def test_block_sets_the_marketplace_operator_and_portal_values(self):
         _, values = self.configure(self.marketplace_config())
         platform = values["platform"]

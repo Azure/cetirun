@@ -273,7 +273,7 @@ sandboxSources:
   # selecting any skill still requires a configured, existing skills claim.
   skillsClaimName: skills
   # -- Optional separate operator-namespace ConfigMap containing skills.json.
-  # Requires owned bootstrap. Selects already-published Blob NFS content by Team UID;
+  # Requires owned bootstrap. Selects already-published shared storage content by Team UID;
   # creates only retained, read-only static PV/PVC bindings, never source content.
   skillsCatalogConfigMapName: ""
   # -- Optional placement.json registry for durable namespace/HOME/Node binding.
@@ -320,13 +320,14 @@ skillMarketplace:
     tokenUsername: x-access-token
     # -- Allows an http:// URL. Only for tests inside a private network.
     allowInsecureHTTP: false
-  # -- The Blob NFS container that holds the Team releases. Use a storage
-  # account that only private endpoints can reach: NFS 3.0 has no client
-  # authentication.
+  # -- Platform-owned storage for Team releases. azure-files-nfs requires
+  # NFS 4.1 TLS at the server and client, with a private file endpoint.
   storage:
+    backend: blob
     resourceGroup: ""
     storageAccount: ""
     containerName: ""
+    shareName: ""
     storageClassName: azureblob-nfs-premium
     # -- Capacity of the worker's read-write volume and claim. The storage is
     # part of their names: a change of these values gives the worker a new

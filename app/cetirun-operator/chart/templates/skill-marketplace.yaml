@@ -12,6 +12,7 @@ skills claims.
 {{- $marketplace := .Values.skillMarketplace -}}
 {{- $repository := $marketplace.repository -}}
 {{- $storage := $marketplace.storage -}}
+{{- $files := eq ($storage.backend | default "blob") "azure-files-nfs" -}}
 {{- $limits := $marketplace.limits -}}
 {{- $worker := $marketplace.worker | default dict -}}
 {{- $name := "cetirun-skill-marketplace" -}}
@@ -20,6 +21,9 @@ size of a bound claim. The storage is part of the names of the worker's
 volume and claim: when it changes, Helm creates new ones and removes the
 earlier ones. */ -}}
 {{- $storageHash := printf "%s/%s/%s/%s/%s" $storage.resourceGroup $storage.storageAccount $storage.containerName $storage.storageClassName (toString $storage.size) | sha256sum | trunc 10 -}}
+{{- if $files -}}
+{{- $storageHash = printf "azure-files-nfs/tls/%s/%s/%s/%s/%s" $storage.resourceGroup $storage.storageAccount $storage.shareName $storage.storageClassName (toString $storage.size) | sha256sum | trunc 10 -}}
+{{- end -}}
 {{- $volume := printf "%s-%s-%s" $name .Values.namespace $storageHash -}}
 {{- $claim := printf "%s-storage-%s" $name $storageHash -}}
 {{- $version := include "cetirun-operator.version" . | default .Chart.AppVersion -}}
@@ -102,13 +106,20 @@ spec:
     namespace: {{ .Values.namespace }}
     name: {{ $claim }}
   csi:
-    driver: blob.csi.azure.com
+    driver: {{ ternary "file.csi.azure.com" "blob.csi.azure.com" $files }}
     volumeHandle: {{ $volume }}
     volumeAttributes:
       resourceGroup: {{ $storage.resourceGroup | quote }}
       storageAccount: {{ $storage.storageAccount | quote }}
-      containerName: {{ $storage.containerName | quote }}
       protocol: nfs
+      {{- if $files }}
+      shareName: {{ $storage.shareName | quote }}
+      encryptInTransit: "true"
+      mountPermissions: "0"
+      fsGroupChangePolicy: None
+      {{- else }}
+      containerName: {{ $storage.containerName | quote }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

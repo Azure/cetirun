@@ -311,7 +311,7 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 			}
 		}
 		if kind == "PersistentVolume" && (objectMeta.Namespace != "" ||
-			objectMeta.Annotations["pv.kubernetes.io/provisioned-by"] != "blob.csi.azure.com") {
+			objectMeta.Annotations["pv.kubernetes.io/provisioned-by"] != text(object(expected.spec["csi"])["driver"])) {
 			return fail()
 		}
 		return nil

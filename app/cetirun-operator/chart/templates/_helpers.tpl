@@ -189,6 +189,21 @@ worker's values.
 {{- end -}}
 {{- $repository := $marketplace.repository | default dict -}}
 {{- $storage := $marketplace.storage | default dict -}}
+{{- if not (kindIs "map" $storage) -}}
+{{- fail "skillMarketplace.storage must be an object" -}}
+{{- end -}}
+{{- range $key, $_ := $storage -}}
+{{- if not (has $key (list "backend" "resourceGroup" "storageAccount" "containerName" "shareName" "storageClassName" "size")) -}}
+{{- fail (printf "unsupported skillMarketplace.storage field %s" $key) -}}
+{{- end -}}
+{{- end -}}
+{{- if and (hasKey $storage "backend") (not (kindIs "string" $storage.backend)) -}}
+{{- fail "skillMarketplace.storage.backend must be a string" -}}
+{{- end -}}
+{{- $backend := $storage.backend | default "blob" -}}
+{{- if not (has $backend (list "blob" "azure-files-nfs")) -}}
+{{- fail "skillMarketplace.storage.backend must be blob or azure-files-nfs" -}}
+{{- end -}}
 {{- if not $repository.url -}}
 {{- fail "skillMarketplace.repository.url is required" -}}
 {{- end -}}
@@ -207,7 +222,7 @@ worker's values.
 {{- if and (hasPrefix "http://" $repository.url) (not $repository.allowInsecureHTTP) -}}
 {{- fail "skillMarketplace.repository.url must use https://" -}}
 {{- end -}}
-{{- range $field := list "resourceGroup" "storageAccount" "containerName" "storageClassName" -}}
+{{- range $field := list "resourceGroup" "storageAccount" "storageClassName" -}}
 {{- if not (get $storage $field) -}}
 {{- fail (printf "skillMarketplace.storage.%s is required" $field) -}}
 {{- end -}}
@@ -215,8 +230,22 @@ worker's values.
 {{- if not (regexMatch "^[a-z0-9]{3,24}$" $storage.storageAccount) -}}
 {{- fail "skillMarketplace.storage.storageAccount must be 3-24 lowercase letters and digits" -}}
 {{- end -}}
-{{- if or (not (regexMatch "^[a-z0-9]([a-z0-9-]{1,61}[a-z0-9])$" $storage.containerName)) (contains "--" $storage.containerName) -}}
+{{- if eq $backend "azure-files-nfs" -}}
+{{- if $storage.containerName -}}
+{{- fail "skillMarketplace.storage.containerName must be empty for azure-files-nfs" -}}
+{{- end -}}
+{{- $share := $storage.shareName | default "" -}}
+{{- if or (not (regexMatch "^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$" $share)) (contains "--" $share) -}}
+{{- fail "skillMarketplace.storage.shareName must be a valid Azure Files share name" -}}
+{{- end -}}
+{{- else -}}
+{{- if $storage.shareName -}}
+{{- fail "skillMarketplace.storage.shareName is only supported for azure-files-nfs" -}}
+{{- end -}}
+{{- $container := required "skillMarketplace.storage.containerName is required" $storage.containerName -}}
+{{- if or (not (regexMatch "^[a-z0-9]([a-z0-9-]{1,61}[a-z0-9])$" $container)) (contains "--" $container) -}}
 {{- fail "skillMarketplace.storage.containerName must be a valid Blob container name" -}}
+{{- end -}}
 {{- end -}}
 {{- if or (not (regexMatch "^[a-zA-Z0-9_().-]{1,90}$" $storage.resourceGroup)) (hasSuffix "." $storage.resourceGroup) -}}
 {{- fail "skillMarketplace.storage.resourceGroup must be a resource group name" -}}
@@ -235,7 +264,14 @@ worker's values.
 {{- fail (printf "skillMarketplace.limits.%s must be a size such as 5Mi: a positive whole number, optionally with Ki, Mi or Gi" $field) -}}
 {{- end -}}
 {{- end -}}
-{{- $config := dict "enabled" true "storage" (dict "resourceGroup" $storage.resourceGroup "storageAccount" $storage.storageAccount "containerName" $storage.containerName "storageClassName" $storage.storageClassName) -}}
+{{- $source := dict "resourceGroup" $storage.resourceGroup "storageAccount" $storage.storageAccount "storageClassName" $storage.storageClassName -}}
+{{- if eq $backend "azure-files-nfs" -}}
+{{- $_ := set $source "backend" $backend -}}
+{{- $_ := set $source "shareName" $storage.shareName -}}
+{{- else -}}
+{{- $_ := set $source "containerName" $storage.containerName -}}
+{{- end -}}
+{{- $config := dict "enabled" true "storage" $source -}}
 {{- toJson $config -}}
 {{- end -}}
 {{- end }}

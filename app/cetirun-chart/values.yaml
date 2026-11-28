@@ -680,9 +680,11 @@ networkPolicy:
     - 168.63.129.16/32
 
 # -- Shared skills volume configuration.
-# Auto-creates PV/PVC backed by Azure Blob CSI (NFS by default; Fuse/Fuse2 supported).
-# Protocol, secretName, and mountOptions are install-time-only PV settings.
+# Auto-creates a static PV/PVC for Blob or encrypted Azure Files NFS.
+# Backend and mount settings require replacement PV/PVC resources to change.
 skills:
+  # -- Storage backend: blob or azure-files-nfs (NFS 4.1 with required TLS).
+  backend: blob
   # -- Enable shared skills PV/PVC
   shared: false
   # -- Use a separately owned skills PVC without creating a PV or PVC.
@@ -702,7 +704,7 @@ skills:
   #   selectionDigest: ""
   # -- StorageClass for the shared skills PV/PVC
   storageClassName: azureblob-nfs-premium
-  # -- Install-time-only Blob CSI protocol. Use fuse2 for HTTPS-only storage accounts.
+  # -- Install-time-only protocol. Azure Files requires nfs and enforces TLS.
   protocol: nfs
   # -- Install-time-only namespace-local secret used by Blob Fuse mounts.
   secretName: ""
@@ -714,6 +716,8 @@ skills:
   storageAccount: ""
   # -- Blob container name
   containerName: aks-skills
+  # -- Azure Files NFS share. Set containerName to "" for azure-files-nfs.
+  shareName: ""
   # -- Shared skills are included in $HOME/.agents/skills. A different path
   # adds a read-only alias to the same composed view for native Agents.
   mountPath: /home/vibe/.aks/skills

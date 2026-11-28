@@ -38,6 +38,13 @@ az_target() {
 PRIVATE_ENDPOINT_SUBNET_ID="${PRIVATE_ENDPOINT_SUBNET_ID:-}"
 PRIVATE_DNS_ZONE_ID="${PRIVATE_DNS_ZONE_ID:-}"
 PUBLIC_NETWORK_ACCESS="${PUBLIC_NETWORK_ACCESS:-Enabled}"
+STORAGE_BACKEND="${STORAGE_BACKEND:-blob}"
+SHARE_NAME="${SHARE_NAME:-aks-skills}"
+SHARE_QUOTA_GIB="${SHARE_QUOTA_GIB:-100}"
+case "$STORAGE_BACKEND" in
+  blob|azure-files-nfs) ;;
+  *) echo "ERROR: STORAGE_BACKEND must be blob or azure-files-nfs." >&2; exit 1 ;;
+esac
 case "$PUBLIC_NETWORK_ACCESS" in
   Enabled|Disabled) ;;
   *)
@@ -49,6 +56,31 @@ if [[ -n "$PRIVATE_DNS_ZONE_ID" && -z "$PRIVATE_ENDPOINT_SUBNET_ID" ]]; then
   echo "ERROR: PRIVATE_DNS_ZONE_ID requires PRIVATE_ENDPOINT_SUBNET_ID." >&2
   exit 1
 fi
+if [[ "$STORAGE_BACKEND" == azure-files-nfs ]]; then
+  if [[ "$PUBLIC_NETWORK_ACCESS" != Disabled ]]; then
+    echo "ERROR: azure-files-nfs requires PUBLIC_NETWORK_ACCESS=Disabled." >&2
+    exit 1
+  fi
+  if [[ -z "$PRIVATE_ENDPOINT_SUBNET_ID" || -z "$PRIVATE_DNS_ZONE_ID" ]]; then
+    echo "ERROR: azure-files-nfs requires PRIVATE_ENDPOINT_SUBNET_ID and PRIVATE_DNS_ZONE_ID." >&2
+    exit 1
+  fi
+  if [[ "$PRIVATE_DNS_ZONE_ID" != *privatelink.file.core.windows.net* ]]; then
+    echo "ERROR: azure-files-nfs requires the privatelink.file.core.windows.net private DNS zone." >&2
+    exit 1
+  fi
+  python3 - "$PRIVATE_DNS_ZONE_ID" <<'PYDNS'
+import re, sys
+if not re.fullmatch(
+    r'/subscriptions/[^/\s]+/resourceGroups/[^/\s]+/providers/Microsoft\.Network/privateDnsZones/privatelink\.file\.core\.windows\.net',
+    sys.argv[1], re.IGNORECASE):
+    raise SystemExit('Error: PRIVATE_DNS_ZONE_ID must be the exact privatelink.file.core.windows.net private DNS zone ARM ID.')
+PYDNS
+  if ! [[ "$SHARE_QUOTA_GIB" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: SHARE_QUOTA_GIB must be a positive integer." >&2
+    exit 1
+  fi
+fi
 if [[ "$PUBLIC_NETWORK_ACCESS" == Disabled && -z "$PRIVATE_ENDPOINT_SUBNET_ID" ]]; then
   echo "ERROR: PUBLIC_NETWORK_ACCESS=Disabled requires PRIVATE_ENDPOINT_SUBNET_ID: without a private endpoint, no client can reach the account." >&2
   exit 1
@@ -57,10 +89,21 @@ fi
 PARAMETERS=(
   --parameters "@${DEPLOYMENT_INPUT_DIR}/parameters.json"
   --parameters publicNetworkAccess="$PUBLIC_NETWORK_ACCESS"
+  --parameters storageBackend="$STORAGE_BACKEND"
 )
+
+if [[ "$STORAGE_BACKEND" == azure-files-nfs ]]; then
+  PARAMETERS+=(--parameters shareName="$SHARE_NAME" shareQuotaGiB="$SHARE_QUOTA_GIB")
+fi
 
 if [[ -n "$PRIVATE_ENDPOINT_SUBNET_ID" ]]; then
   echo "Using a private endpoint in subnet: $PRIVATE_ENDPOINT_SUBNET_ID"
+  python3 - "$PRIVATE_ENDPOINT_SUBNET_ID" "$AZURE_SUBSCRIPTION_ID" <<'PYSUBNET'
+import re, sys
+match = re.fullmatch(r'/subscriptions/([^/\s]+)/resourceGroups/([^/\s]+)/providers/Microsoft\.Network/virtualNetworks/([^/\s]+)/subnets/([^/\s]+)', sys.argv[1], re.IGNORECASE)
+if not match or match[1].lower() != sys.argv[2].lower():
+    raise SystemExit('Error: PRIVATE_ENDPOINT_SUBNET_ID must be a subnet ARM ID in the explicit target subscription.')
+PYSUBNET
   PARAMETERS+=(--parameters privateEndpointSubnetId="$PRIVATE_ENDPOINT_SUBNET_ID")
   if [[ -n "$PRIVATE_DNS_ZONE_ID" ]]; then
     PARAMETERS+=(--parameters privateDnsZoneId="$PRIVATE_DNS_ZONE_ID")
@@ -140,15 +183,52 @@ BLOB_ENDPOINT="$(az_target deployment group show \
   --name "$DEPLOYMENT_NAME" \
   --query 'properties.outputs.primaryBlobEndpoint.value' -o tsv)"
 
+SHARE_OUTPUT="$(az_target deployment group show \
+  --resource-group "$RG_NAME" \
+  --name "$DEPLOYMENT_NAME" \
+  --query 'properties.outputs.shareName.value' -o tsv)"
+
 # Verify
 az_target storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RG_NAME" -o table
 # The workstation is outside the NFS subnet allowlist even when public network
 # access is Enabled. Verify the container through ARM, not the blocked data plane.
-az_target storage container-rm show --name "$CONTAINER_NAME" --storage-account "$STORAGE_ACCOUNT" --resource-group "$RG_NAME" -o table
+if [[ "$STORAGE_BACKEND" == azure-files-nfs ]]; then
+  # Verify the security properties through the control plane. No account keys
+  # or data-plane credentials are requested.
+  verify_value() {
+    local label="$1" expected="$2" actual="$3"
+    if [[ "$actual" != "$expected" ]]; then
+      echo "ERROR: $label must be '$expected'; got '$actual'." >&2
+      exit 1
+    fi
+  }
+  ACCOUNT_ID="$(az_target storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RG_NAME" --query id -o tsv)"
+  ARM_API_VERSION="2025-01-01"
+  HTTPS_ONLY="$(az_target resource show --ids "$ACCOUNT_ID" --api-version "$ARM_API_VERSION" --query 'properties.supportsHttpsTrafficOnly' -o tsv)"
+  PUBLIC_ACCESS="$(az_target resource show --ids "$ACCOUNT_ID" --api-version "$ARM_API_VERSION" --query 'properties.publicNetworkAccess' -o tsv)"
+  SHARED_KEY="$(az_target resource show --ids "$ACCOUNT_ID" --api-version "$ARM_API_VERSION" --query 'properties.allowSharedKeyAccess' -o tsv)"
+  verify_value "supportsHttpsTrafficOnly" true "$HTTPS_ONLY"
+  verify_value "publicNetworkAccess" Disabled "$PUBLIC_ACCESS"
+  verify_value "allowSharedKeyAccess" false "$SHARED_KEY"
+  NFS_ENCRYPTION="$(az_target resource show --ids "${ACCOUNT_ID}/fileServices/default" --api-version "$ARM_API_VERSION" --query 'properties.protocolSettings.nfs.encryptionInTransit.required' -o tsv)"
+  verify_value "NFS encryptionInTransit.required" true "$NFS_ENCRYPTION"
+  SHARE_ROOT_SQUASH="$(az_target storage share-rm show --name "$SHARE_OUTPUT" --storage-account "$STORAGE_ACCOUNT" --resource-group "$RG_NAME" --query 'rootSquash' -o tsv)"
+  SHARE_PROTOCOL="$(az_target storage share-rm show --name "$SHARE_OUTPUT" --storage-account "$STORAGE_ACCOUNT" --resource-group "$RG_NAME" --query 'enabledProtocols' -o tsv)"
+  verify_value "share rootSquash" RootSquash "$SHARE_ROOT_SQUASH"
+  verify_value "share enabledProtocols" NFS "$SHARE_PROTOCOL"
+else
+  az_target storage container-rm show --name "$CONTAINER_NAME" --storage-account "$STORAGE_ACCOUNT" --resource-group "$RG_NAME" -o table
+fi
 
 echo ""
 echo "=== Deployment Summary ==="
 echo "Storage Account: $STORAGE_ACCOUNT"
-echo "Container:       $CONTAINER_NAME"
-echo "Blob Endpoint:   $BLOB_ENDPOINT"
+if [[ "$STORAGE_BACKEND" == azure-files-nfs ]]; then
+  echo "Backend:         Azure Files NFS (TLS in transit)"
+  echo "Share:           $SHARE_OUTPUT"
+else
+  echo "Backend:         Blob NFS"
+  echo "Container:       $CONTAINER_NAME"
+  echo "Blob Endpoint:   $BLOB_ENDPOINT"
+fi
 echo "Resource Group:  $RG_NAME"

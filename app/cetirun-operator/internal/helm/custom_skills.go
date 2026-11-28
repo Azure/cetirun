@@ -21,7 +21,25 @@ func validateCustomSkillValues(values map[string]any) error {
 	if skills["shared"] != true {
 		return nil
 	}
-	for _, key := range []string{"resourceGroup", "storageAccount", "containerName", "storageClassName"} {
+	backend := text(skills["backend"])
+	if backend != "" && backend != "blob" && backend != runtimebindings.AzureFilesNFSBackend {
+		return fmt.Errorf("unsupported skills.backend")
+	}
+	nameKey := "containerName"
+	if backend == runtimebindings.AzureFilesNFSBackend {
+		nameKey = "shareName"
+		if strings.TrimSpace(text(skills["containerName"])) != "" || text(skills["protocol"]) != "nfs" || strings.TrimSpace(text(skills["secretName"])) != "" {
+			return fmt.Errorf("Azure Files skills require nfs, shareName, and no containerName or secretName")
+		}
+		for _, option := range array(skills["mountOptions"]) {
+			if option != "ro" {
+				return fmt.Errorf("Azure Files skills allow only the ro mount option")
+			}
+		}
+	} else if strings.TrimSpace(text(skills["shareName"])) != "" {
+		return fmt.Errorf("shareName requires the Azure Files skills backend")
+	}
+	for _, key := range []string{"resourceGroup", "storageAccount", nameKey, "storageClassName"} {
 		if strings.TrimSpace(text(skills[key])) == "" {
 			return fmt.Errorf("shared skills require skills.%s", key)
 		}
@@ -62,6 +80,7 @@ func (p *PreparedRelease) customSkillsObjects(namespace string) map[string]platf
 		return objects
 	}
 	skills := object(p.Values["skills"])
+	backend := text(skills["backend"])
 	pv, pvc := p.sharedSkillsNames(namespace)
 	csi := map[string]any{
 		"driver": "blob.csi.azure.com", "volumeHandle": pv,
@@ -69,6 +88,16 @@ func (p *PreparedRelease) customSkillsObjects(namespace string) map[string]platf
 			"resourceGroup": skills["resourceGroup"], "storageAccount": skills["storageAccount"],
 			"containerName": skills["containerName"], "protocol": skills["protocol"],
 		},
+	}
+	if backend == runtimebindings.AzureFilesNFSBackend {
+		csi["driver"] = "file.csi.azure.com"
+		csi["readOnly"] = true
+		attrs := csi["volumeAttributes"].(map[string]any)
+		delete(attrs, "containerName")
+		attrs["shareName"] = skills["shareName"]
+		attrs["encryptInTransit"] = "true"
+		attrs["mountPermissions"] = "0"
+		attrs["fsGroupChangePolicy"] = "None"
 	}
 	if skills["protocol"] != "nfs" {
 		csi["nodeStageSecretRef"] = map[string]any{"name": skills["secretName"], "namespace": namespace}
@@ -80,6 +109,9 @@ func (p *PreparedRelease) customSkillsObjects(namespace string) map[string]platf
 	}
 	if options := array(skills["mountOptions"]); len(options) != 0 {
 		spec["mountOptions"] = options
+	}
+	if backend == runtimebindings.AzureFilesNFSBackend {
+		spec["mountOptions"] = []string{"ro"}
 	}
 	objects["PersistentVolume"] = platformObject{"v1", pv, spec}
 	objects["PersistentVolumeClaim"] = platformObject{"v1", pvc, map[string]any{

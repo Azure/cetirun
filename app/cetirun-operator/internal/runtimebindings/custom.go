@@ -303,7 +303,7 @@ func WorkloadValues(values map[string]any) map[string]any {
 	} else {
 		mounted := map[string]any{}
 		for _, key := range []string{"shared", "storageClassName", "protocol", "secretName", "mountOptions",
-			"resourceGroup", "storageAccount", "containerName", "storageSize"} {
+			"resourceGroup", "storageAccount", "containerName", "backend", "shareName", "storageSize"} {
 			mounted[key] = skills[key]
 		}
 		selected["skills"] = mounted

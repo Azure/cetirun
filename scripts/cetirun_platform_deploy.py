@@ -144,7 +144,7 @@ SKILL_MARKETPLACE_SWITCHES = (f"{SKILL_MARKETPLACE}.enabled", "cetirun-portal.sk
 SKILL_MARKETPLACE_FIELDS = {
     "skillMarketplace": ("repository", "storage"),
     "skillMarketplace.repository": ("url", "ref", "path", "auth", "existingSecret", "syncInterval"),
-    "skillMarketplace.storage": ("resourceGroup", "storageAccount", "containerName", "storageClassName"),
+    "skillMarketplace.storage": ("backend", "resourceGroup", "storageAccount", "containerName", "shareName", "storageClassName"),
 }
 # Keys that the marketplace reads from the repository credentials Secret.
 SKILL_MARKETPLACE_SECRET_KEYS = {"none": (), "token": ("token",), "ssh": ("ssh-privatekey", "known_hosts")}
@@ -260,6 +260,53 @@ def check_repository_url(url, auth):
         raise ValueError(f"skillMarketplace.repository.auth {auth} needs an https:// URL")
 
 
+def skills_storage_source(storage, path):
+    """Validate the platform's storage choice without accepting arbitrary CSI inputs."""
+    source = dict(mapping(storage, path))
+    def field_value(field):
+        try:
+            return required(source, field)
+        except ValueError as error:
+            raise ValueError(f"{path}.{error}") from None
+
+    backend = source.get("backend", "blob")
+    if backend not in ("blob", "azure-files-nfs"):
+        raise ValueError(f"{path}.backend must be blob or azure-files-nfs")
+    for field in ("resourceGroup", "storageAccount", "storageClassName"):
+        field_value(field)
+    if backend == "blob":
+        field_value("containerName")
+        if source.get("shareName"):
+            raise ValueError(f"{path}.shareName is only supported for azure-files-nfs")
+    else:
+        share = field_value("shareName")
+        if not re.fullmatch(r"[a-z0-9]{3,24}", source["storageAccount"]):
+            raise ValueError(f"{path}.storageAccount must be 3-24 lowercase letters and digits")
+        if not re.fullmatch(r"[a-zA-Z0-9_().-]{1,90}", source["resourceGroup"]) or source["resourceGroup"].endswith("."):
+            raise ValueError(f"{path}.resourceGroup must be a resource group name")
+        if not re.fullmatch(DNS_SUBDOMAIN, source["storageClassName"]):
+            raise ValueError(f"{path}.storageClassName must be a StorageClass name")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", share) or "--" in share:
+            raise ValueError(f"{path}.shareName must be an Azure Files share name")
+        if source.get("containerName"):
+            raise ValueError(f"{path}.containerName must be empty for azure-files-nfs")
+        if source.get("protocol", "nfs") != "nfs" or source.get("secretName"):
+            raise ValueError(f"{path}: azure-files-nfs uses encrypted NFS without a credential Secret")
+        if source.get("mountOptions", []) not in ([], ["ro"]):
+            raise ValueError(f"{path}: azure-files-nfs mountOptions may only contain ro")
+        if any(field in source for field in ("driver", "volumeAttributes", "encryptInTransit")):
+            raise ValueError(f"{path}: azure-files-nfs CSI driver and required TLS cannot be overridden")
+        # Clear the Blob default when these values are merged into the Agent chart.
+        source["containerName"] = ""
+        source["protocol"] = "nfs"
+    return source
+
+
+def skills_storage_identity(storage):
+    backend = storage.get("backend", "blob")
+    return backend, storage.get("storageAccount"), storage.get("shareName" if backend == "azure-files-nfs" else "containerName")
+
+
 def skill_marketplace(config, platform, *, operator_defaults=None):
     """Platform values of the optional Skill Marketplace, from its own input block."""
     if "skillMarketplace" not in config:
@@ -304,18 +351,19 @@ def skill_marketplace(config, platform, *, operator_defaults=None):
     if seconds is None or seconds < 30:
         raise ValueError("skillMarketplace.repository.syncInterval must be a duration of at least 30s, for example 5m")
 
-    for field in SKILL_MARKETPLACE_FIELDS["skillMarketplace.storage"]:
-        required(config, f"skillMarketplace.storage.{field}")
+    storage = skills_storage_source(storage, "skillMarketplace.storage")
     if not re.fullmatch(r"[a-z0-9]{3,24}", storage["storageAccount"]):
         raise ValueError("skillMarketplace.storage.storageAccount must be 3-24 lowercase letters and digits")
-    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", storage["containerName"]) or "--" in storage["containerName"]:
+    if (storage.get("backend", "blob") == "blob" and
+            (not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", storage["containerName"]) or "--" in storage["containerName"])):
         raise ValueError("skillMarketplace.storage.containerName must be a Blob container name")
     if not re.fullmatch(DNS_SUBDOMAIN, storage["storageClassName"]):
         raise ValueError("skillMarketplace.storage.storageClassName must be a StorageClass name")
     shared = config.get("sharedSkills") if isinstance(config.get("sharedSkills"), dict) else {}
-    if (storage["storageAccount"], storage["containerName"]) == (shared.get("storageAccount"), shared.get("containerName")):
-        raise ValueError("skillMarketplace.storage must name a container other than the sharedSkills container: "
-                         "the marketplace writes Team releases into its container")
+    if skills_storage_identity(storage) == skills_storage_identity(shared):
+        kind = "share" if storage.get("backend") == "azure-files-nfs" else "container"
+        raise ValueError(f"skillMarketplace.storage must name a {kind} other than the sharedSkills {kind}: "
+                         "the marketplace writes Team releases into its storage")
 
     # The Operator creates the skills claims only in native Sandbox execution,
     # and its chart refuses the marketplace next to a published skills catalog.
@@ -334,7 +382,7 @@ def skill_marketplace(config, platform, *, operator_defaults=None):
     namespace = config["platform"]["namespace"]
     values = {"enabled": True, "repository.url": url, "repository.auth": auth, "repository.existingSecret": secret if keys else "",
               **{f"repository.{field}": value for field, value in optional.items()},
-              **{f"storage.{field}": storage[field] for field in SKILL_MARKETPLACE_FIELDS["skillMarketplace.storage"]}}
+              **{f"storage.{field}": storage[field] for field in SKILL_MARKETPLACE_FIELDS["skillMarketplace.storage"] if field in storage}}
     return {**{f"{SKILL_MARKETPLACE}.{field}": value for field, value in values.items()},
             "cetirun-portal.skillMarketplace.enabled": True, "cetirun-portal.skillMarketplace.catalogNamespace": namespace}
 
@@ -882,8 +930,7 @@ def infrastructure_configuration(path, artifacts, scratch):
         raise ValueError("customRuntime contains fields unsupported by the published Operator")
     for field in ("storageClass", "storageSize", "accessMode"):
         required(raw_custom, field)
-    for field in ("storageClassName", "resourceGroup", "storageAccount", "containerName"):
-        required(config, "sharedSkills." + field)
+    skills_storage_source(config.get("sharedSkills"), "sharedSkills")
     ai = platform["cetirun-ai-gateway"]
     audiences = {
         operator.get("connectionsMCP", {}).get("audience"),
@@ -1228,9 +1275,7 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
         raise ValueError("Custom runtime requires explicitly qualified approvedImages pinned by digest")
     if len(custom["approvedImages"]) > 64:
         raise ValueError("Custom runtime approvedImages cannot contain more than 64 images")
-    skills = mapping(config.get("sharedSkills"), "sharedSkills")
-    for field in ("storageClassName", "resourceGroup", "storageAccount", "containerName"):
-        required(skills, field)
+    skills = skills_storage_source(config.get("sharedSkills"), "sharedSkills")
     operator["cetirun"]["helmValues"]["skills"] = {**skills, "shared": True}
     for field in ("providerCredentials.existingSecret", "auth.masterKey.existingSecret", "auth.saltKey.existingSecret",
                   "auth.adminUI.passwordSecret.existingSecret", "redis.passwordSecret.existingSecret"):
