@@ -9,7 +9,8 @@ so Helm can recreate it. Pods keep running as orphans and are re-adopted via lab
 A changed selector stops the hook before it deletes anything: a StatefulSet of the same
 name with another selector can adopt no orphaned Pod, and cannot create a Pod whose name
 an orphan still has. Its message tells how to replace the StatefulSet by hand only when
-the new one mounts the claim that holds HOME now: an emptyDir HOME does not outlive its Pod.
+the new one mounts the claim that holds HOME now: an emptyDir HOME does not outlive its Pod,
+and Helm deletes a claim of the chart that the new values no longer create.
 The hook finds the StatefulSet by its rendered name. It does not protect a rename: when the
 name changes, for example with nameOverride and no fullnameOverride, it finds none, and Helm
 replaces the old StatefulSet with one that has a new HOME claim.
@@ -130,6 +131,13 @@ spec:
               {{- else }}
               EXPECT_CLAIM=""
               {{- end }}
+              # The chart's own HOME claim when the new values do not create it: an upgrade with them deletes it if
+              # this release created it.
+              {{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) (not .Values.persistence.useStatefulSetVolumeClaim) }}
+              DROPPED_CLAIM=""
+              {{- else }}
+              DROPPED_CLAIM="{{ include "cetirun.fullname" . }}-data"
+              {{- end }}
 
               # Where a Pod keeps HOME: in a claim, or in an emptyDir.
               home_of() {
@@ -227,7 +235,10 @@ spec:
                   *" data "*) CURRENT_CLAIM="data-${STS_NAME}-0" ;;
                   *) CURRENT_CLAIM=$(kubectl get statefulset "$STS_NAME" -n "$NS" -o jsonpath='{.spec.template.spec.volumes[?(@.name=="data")].persistentVolumeClaim.claimName}') ;;
                 esac
-                if [ -n "$CURRENT_CLAIM" ] && [ "$CURRENT_CLAIM" = "$EXPECT_CLAIM" ]; then
+                if [ -n "$CURRENT_CLAIM" ] && [ "$CURRENT_CLAIM" = "$DROPPED_CLAIM" ]; then
+                  echo "HOME of the running Pod is in the claim $CURRENT_CLAIM, which the chart creates. The new values do not"
+                  echo "create it, so an upgrade with them deletes it, with its files, if this release created it."
+                elif [ -n "$CURRENT_CLAIM" ] && [ "$CURRENT_CLAIM" = "$EXPECT_CLAIM" ]; then
                   echo "Or, before the upgrade, delete only the StatefulSet object (kubectl delete statefulset $STS_NAME -n $NS"
                   echo "--cascade=orphan), so that its HOME claim stays also with persistence.retainPolicy Delete. When it is"
                   echo "gone, delete its Pod ${STS_NAME}-0."

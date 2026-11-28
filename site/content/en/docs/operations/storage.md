@@ -328,9 +328,13 @@ When immutable fields differ, the agent chart's
 can orphan-delete and recreate a StatefulSet that keeps its name. A changed
 selector, for example after a change of `nameOverride`, stops the upgrade
 instead: a StatefulSet with another selector cannot take over the running Pod.
-Set `nameOverride` back. The message of the hook can also tell how to replace
-the StatefulSet by hand and keep HOME. It does so only when the new StatefulSet
-mounts the same HOME claim. An `emptyDir` HOME does not outlive its Pod.
+Set `nameOverride` back.
+
+The message of the hook can also tell how to replace the StatefulSet by hand
+and keep HOME. It does so only when the new StatefulSet mounts the same HOME
+claim and the upgrade keeps that claim. An `emptyDir` HOME does not outlive its
+Pod. An upgrade deletes a claim that the chart created when the new values do
+not create it.
 
 The hook does not protect a rename. Without `fullnameOverride`, a change of
 `nameOverride` can also change the name of the StatefulSet. The hook then

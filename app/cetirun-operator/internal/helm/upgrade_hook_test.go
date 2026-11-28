@@ -356,6 +356,25 @@ func TestUpgradeHookScript(t *testing.T) {
 			output: "HOME of the running Pod is in the claim home-example.\n" +
 				"HOME of a new Pod would be in an emptyDir, without the files of the running one.",
 			absent: "--cascade=orphan"},
+		{name: "changed selector, HOME from an emptyDir to the claim of the chart",
+			persistence: map[string]any{"useStatefulSetVolumeClaim": false},
+			live:        map[string]string{upgradeHookSelectorNameQuery: "other", upgradeHookHomeClaimQuery: ""},
+			output: "HOME of the running Pod is in an emptyDir.\n" +
+				"HOME of a new Pod would be in the claim cetirun-example-data, without the files of the running one.",
+			absent: "--cascade=orphan"},
+		// Helm deletes a claim that the chart created and the new values no longer create, also when they name it as
+		// an existing claim.
+		{name: "changed selector, the claim of the chart named as an existing claim",
+			persistence: map[string]any{"useStatefulSetVolumeClaim": false, "existingClaim": "cetirun-example-data"},
+			live:        map[string]string{upgradeHookSelectorNameQuery: "other"},
+			output: "HOME of the running Pod is in the claim cetirun-example-data, which the chart creates. " +
+				"The new values do not\ncreate it, so an upgrade with them deletes it, with its files, if this release created it.",
+			absent: "--cascade=orphan"},
+		{name: "changed selector, HOME from the claim of the chart to the claim template",
+			live: map[string]string{upgradeHookSelectorNameQuery: "other", upgradeHookClaimNamesQuery: "",
+				upgradeHookHomeClaimQuery: "cetirun-example-data"},
+			output: "HOME of the running Pod is in the claim cetirun-example-data, which the chart creates.",
+			absent: "--cascade=orphan"},
 		{name: "changed selector and grown volume",
 			live:   map[string]string{upgradeHookInstanceQuery: "other", upgradeHookSizeQuery: "100Gi"},
 			output: "selector app.kubernetes.io/instance: 'other' -> 'cetirun-example'; volumeClaimTemplate size"},
