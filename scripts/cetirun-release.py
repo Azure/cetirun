@@ -29,6 +29,13 @@ VERSION_SPEC = importlib.util.spec_from_file_location("cetirun_version", ROOT / 
 VERSIONS = importlib.util.module_from_spec(VERSION_SPEC)
 VERSION_SPEC.loader.exec_module(VERSIONS)
 
+# These charts are deploy-time bootstrap helpers, not release artifacts. They
+# must remain explicit so an unrelated infra chart cannot silently evade the
+# published inventory check or be mistaken for an MCR release chart.
+LOCAL_BOOTSTRAP_CHARTS = {
+    "infra/keyvault-tls": "cetirun-keyvault-tls",
+}
+
 
 def inventory():
     data = json.loads(INVENTORY.read_text())
@@ -63,6 +70,31 @@ def selected_inventory(data, excluded_images):
             raise ValueError(f"excludeImages can only exclude optional images: {name}")
     excluded = set(excluded_images)
     return {**data, "images": [entry for entry in data["images"] if entry["name"] not in excluded]}
+
+
+def chart_inventory_paths(data):
+    published = {entry["path"] for entry in data["charts"]}
+    local = set(LOCAL_BOOTSTRAP_CHARTS)
+    overlap = published & local
+    if overlap:
+        raise ValueError(f"Published and local bootstrap chart inventories overlap: {sorted(overlap)}")
+    for path, expected_name in LOCAL_BOOTSTRAP_CHARTS.items():
+        chart = ROOT / path
+        if not (chart / "Chart.yaml").is_file() or not (chart / "values.yaml").is_file():
+            raise ValueError(f"Missing local bootstrap chart source: {chart}")
+        metadata = (chart / "Chart.yaml").read_text()
+        match = re.search(r"(?m)^name:\s*([^#\s]+)", metadata)
+        if match is None or match.group(1) != expected_name:
+            raise ValueError(f"Local bootstrap chart name mismatch: {path}")
+        if expected_name in {entry["name"] for entry in data["charts"]}:
+            raise ValueError(f"Local bootstrap chart name duplicates published chart: {expected_name}")
+    return published | local
+
+
+def validate_chart_inventory(discovered, data):
+    expected = chart_inventory_paths(data)
+    if discovered != expected:
+        raise ValueError("Release chart inventory differs from repository charts")
 
 
 def run(command, *, env=None, capture=False, root=ROOT):
@@ -308,8 +340,7 @@ def main(argv=None):
             discovered = {path.parent.relative_to(ROOT).as_posix() for pattern in
                           ("app/*/Chart.yaml", "app/*/chart/Chart.yaml", "infra/*/Chart.yaml")
                           for path in ROOT.glob(pattern)}
-            if discovered != {entry["path"] for entry in data["charts"]}:
-                raise ValueError("Release chart inventory differs from repository charts")
+            validate_chart_inventory(discovered, data)
             print(f"Artifact inventory: {len(data['images'])} images, {len(data['charts'])} charts")
             return 0
         source_version = VERSIONS.top_level_yaml(ROOT / "app/cetirun-chart/Chart.yaml", "version")

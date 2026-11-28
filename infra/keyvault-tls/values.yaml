@@ -1,0 +1,17 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+namespace: aks-istio-ingress
+secretName: cetirun-tls
+serviceAccountName: cetirun-tls-sync
+replicaCount: 2
+
+keyVault:
+  name: ""
+  tenantId: ""
+  certificateSecretName: ""
+  clientId: ""
+
+image:
+  repository: mcr.microsoft.com/azurelinux/base/valkey
+  tag: "3.0"
+  digest: sha256:1f9457e9e325de0301c85d0c18765777820e06290c03849545868b4d22781496

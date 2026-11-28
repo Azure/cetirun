@@ -298,6 +298,15 @@ providerCredentials:
   # chart-managed Secret and are visible to anyone who can read the release.
   inline: {}
 
+# -- Use Azure Workload Identity to obtain provider tokens. This is intended
+# for Azure AI providers that support Entra authentication; API-key models can
+# still be configured alongside them with providerCredentials.
+providerIdentity:
+  # -- Enable token acquisition through the Gateway ServiceAccount
+  enabled: false
+  # -- Client ID of the user-assigned managed identity bound to the ServiceAccount
+  clientId: ""
+
 # -- Gateway platform credentials. These are distinct from provider keys and
 # from the virtual keys that agents use.
 auth:

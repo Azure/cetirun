@@ -31,6 +31,12 @@ WORKFLOWS = (
     "cetirun-validation.yml",
 )
 CHARTS = (
+    ("infra/keyvault-tls", (
+        "keyVault.name=example-vault",
+        "keyVault.tenantId=11111111-1111-1111-1111-111111111111",
+        "keyVault.clientId=22222222-2222-2222-2222-222222222222",
+        "keyVault.certificateSecretName=example-public-tls",
+    )),
     ("app/cetirun-connections-mcp/chart", (
         "tls.secretName=tools-tls", "broker.clientTLSSecretName=broker-client-tls",
         "broker.baseURL=https://broker.example.com",

@@ -368,6 +368,83 @@ class ReleaseCoordinateTests(DeploymentFixture, unittest.TestCase):
 
 
 class DeploymentInputTests(DeploymentFixture, unittest.TestCase):
+    def _enable_provider_identity(self, config):
+        gateway = config["platform"]["values"]["cetirun-ai-gateway"]
+        gateway["providerIdentity"] = {"enabled": True, "clientId": "99999999-9999-9999-9999-999999999999"}
+        gateway["providerCredentials"].pop("existingSecret", None)
+        return gateway
+
+    def test_provider_identity_allows_keyless_azure_models_in_direct_mode(self):
+        config = copy.deepcopy(self.config)
+        gateway = self._enable_provider_identity(config)
+        config["modelRouting"] = {"mode": "direct"}
+        for model in gateway["models"][:2]:
+            model["litellm_params"]["model"] = ("azure/" if model["model_name"] == "gpt-mini" else "azure_ai/") + model["model_name"]
+            model["litellm_params"].pop("api_key", None)
+        gateway["models"] = gateway["models"][:2]
+        _, values = self.configure(config)
+        self.assertTrue(values["platform"]["cetirun-ai-gateway"]["providerIdentity"]["enabled"])
+
+    def test_provider_identity_allows_keyless_azure_classifier(self):
+        config = copy.deepcopy(self.config)
+        gateway = self._enable_provider_identity(config)
+        for model in gateway["models"]:
+            if model["model_name"] in ("gpt-mini", "gpt-main", "decision-1"):
+                model["litellm_params"].pop("api_key", None)
+                model["litellm_params"]["model"] = "azure_ai/" + model["model_name"]
+        _, values = self.configure(config)
+        self.assertTrue(values["platform"]["cetirun-ai-gateway"]["providerIdentity"]["enabled"])
+
+    def test_provider_identity_rejects_keyless_non_azure_model(self):
+        config = copy.deepcopy(self.config)
+        gateway = self._enable_provider_identity(config)
+        config["modelRouting"] = {"mode": "direct"}
+        gateway["models"] = gateway["models"][:1]
+        gateway["models"][0]["litellm_params"].update(model="openai/example")
+        gateway["models"][0]["litellm_params"].pop("api_key", None)
+        with self.assertRaisesRegex(ValueError, "api_key for non-Azure"):
+            self.configure(config)
+
+    def test_provider_identity_rejects_api_key_reference_without_provider_secret(self):
+        config = copy.deepcopy(self.config)
+        gateway = self._enable_provider_identity(config)
+        config["modelRouting"] = {"mode": "direct"}
+        gateway["models"] = gateway["models"][:1]
+        gateway["models"][0]["litellm_params"]["model"] = "azure/example"
+        with self.assertRaisesRegex(ValueError, "providerCredentials.existingSecret"):
+            self.configure(config)
+
+    def test_provider_identity_rejects_endpoint_reference_without_provider_secret(self):
+        config = copy.deepcopy(self.config)
+        gateway = self._enable_provider_identity(config)
+        config["modelRouting"] = {"mode": "direct"}
+        gateway["models"] = gateway["models"][:1]
+        gateway["models"][0]["litellm_params"]["model"] = "azure/example"
+        gateway["models"][0]["litellm_params"].pop("api_key", None)
+        gateway["models"][0]["litellm_params"]["api_base"] = "os.environ/PROVIDER_ENDPOINT"
+        with self.assertRaisesRegex(ValueError, "providerCredentials.existingSecret"):
+            self.configure(config)
+
+    def test_decision_1_1_requires_explicit_pricing_and_token_limit(self):
+        config = copy.deepcopy(self.config)
+        decision = config["platform"]["values"]["cetirun-ai-gateway"]["models"][2]
+        decision["model_info"]["base_model"] = "azure_ai/Microsoft-Decision-1.1"
+        for invalid in ({}, {"max_input_tokens": True, "input_cost_per_token": 0, "output_cost_per_token": 0},
+                        {"max_input_tokens": 32768, "input_cost_per_token": float("nan"), "output_cost_per_token": 0}):
+            candidate = copy.deepcopy(config)
+            candidate["platform"]["values"]["cetirun-ai-gateway"]["models"][2]["model_info"].update(invalid)
+            with self.assertRaisesRegex(ValueError, "Decision-1.1"):
+                self.configure(candidate)
+        decision["model_info"].update(max_input_tokens=32768, input_cost_per_token=0.1, output_cost_per_token=0.2)
+        self.configure(config)
+
+    def test_auto_classifier_requires_explicit_decision_deployment_name(self):
+        config = copy.deepcopy(self.config)
+        router = config["platform"]["values"]["cetirun-ai-gateway"]["models"][3]["litellm_params"]["complexity_router_config"]
+        router["jev_classifier_config"].pop("deployment_name")
+        with self.assertRaisesRegex(ValueError, "decision-1 deployment"):
+            self.configure(config)
+
     def test_portal_admins_use_owner_object_id_not_alias(self):
         config = yaml.safe_load(FIXTURE.read_text())
         extra = "99999999-9999-9999-9999-999999999999"
@@ -576,6 +653,47 @@ class DeploymentInputTests(DeploymentFixture, unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("helm"), "requires existing Helm for real local chart rendering")
 class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
+
+    def test_agent_identity_can_be_disabled_without_disabling_portal_auth_or_mcp(self):
+        config = copy.deepcopy(self.config)
+        config["identity"]["agentIdentityEnabled"] = False
+        config["identity"].pop("blueprintClientId")
+        config["identity"].pop("authorizationClientId")
+        config["platform"]["values"]["cetirun-operator"]["agentIdentity"] = {"enabled": False, "cleanupEnabled": False}
+        deployment = self.deployment(config, name="identity-disabled")
+        platform = deployment.values["platform"]
+        broker = deployment.values["broker"]
+        self.assertFalse(platform["cetirun-operator"]["agentIdentity"]["enabled"])
+        self.assertFalse(platform["cetirun-operator"]["agentIdentity"]["cleanupEnabled"])
+        self.assertFalse(platform["cetirun-portal"]["features"]["agentIdentityEnabled"])
+        self.assertTrue(platform["cetirun-portal"]["features"]["agentToolsEnabled"])
+        self.assertFalse(broker["identityModes"]["azureAgent"]["enabled"])
+        self.assertFalse(broker["identityModes"]["microsoftDelegated"]["enabled"])
+        portal_doc = next(document for document in deployment.documents["platform"]
+                          if document["kind"] == "Deployment" and document["metadata"]["name"] == "cetirun-portal")
+        portal_env = {item["name"]: item["value"] for item in portal_doc["spec"]["template"]["spec"]["containers"][0]["env"]
+                      if "value" in item}
+        self.assertEqual(portal_env["FEATURE_AGENT_IDENTITY_ENABLED"], "false")
+        self.assertEqual(portal_env["FEATURE_AGENT_TOOLS_ENABLED"], "true")
+        self.assertTrue(platform["cetirun-portal"]["istio"]["internalAuthMTLS"])
+        broker_doc = next(document for document in deployment.documents["broker"]
+                          if document["kind"] == "Deployment")
+        self.assertNotIn("auth-sdk", {container["name"] for container in broker_doc["spec"]["template"]["spec"]["containers"]})
+        self.assertFalse(deployment.writes)
+
+    def test_agent_identity_enabled_is_explicit_boolean(self):
+        config = copy.deepcopy(self.config)
+        config["identity"]["agentIdentityEnabled"] = "false"
+        with self.assertRaisesRegex(ValueError, "agentIdentityEnabled"):
+            self.configure(config)
+
+    def test_agent_identity_cleanup_default_is_preserved_when_enabled(self):
+        _, values = self.configure(self.config)
+        self.assertFalse(values["platform"]["cetirun-operator"]["agentIdentity"]["cleanupEnabled"])
+        config = copy.deepcopy(self.config)
+        config["platform"]["values"]["cetirun-operator"].setdefault("agentIdentity", {})["cleanupEnabled"] = True
+        _, values = self.configure(config)
+        self.assertTrue(values["platform"]["cetirun-operator"]["agentIdentity"]["cleanupEnabled"])
 
     def test_rendered_operator_custom_config_matches_current_inputs(self):
         config = copy.deepcopy(self.config)

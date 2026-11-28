@@ -175,6 +175,11 @@ data:
       # A caller cannot turn recording off for its own calls by sending
       # "no-log": true.
       global_disable_no_log_param: true
+      {{- if dig "enabled" false (.Values.providerIdentity | default dict) }}
+      # LiteLLM refreshes the projected Azure token instead of treating it as
+      # a static provider key.
+      enable_azure_ad_token_refresh: true
+      {{- end }}
       {{- /* The request log is not registered here: the image's entrypoint
       registers it, and turns LiteLLM's spend log off with it (see
       cetirun-ai-gateway.proxyEnv). */}}

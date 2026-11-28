@@ -57,6 +57,89 @@ records outside the repository.
 
 ## Install and verify
 
+### Deploy without Entra Agent Identity preview
+
+Set `identity.agentIdentityEnabled: false` in the environment file to skip the
+Blueprint and Authorization application prerequisites. This disables Operator
+identity provisioning and cleanup, the Portal Agent Identity feature, and the
+Broker's Azure Agent and Microsoft delegated identity modes. Ordinary Portal
+Entra sign-in, its allowed group, Workload Identity, MCP tools, Broker encryption
+and internal TLS are still required. Keep the Portal application's existing
+OIDC permissions and consent. The Operator still needs its ordinary managed
+identity in `platform.values.cetirun-operator.azure.clientId`.
+
+This setting does not provision infrastructure or supply the public certificate.
+The external-certificate deployment preflight still requires a valid
+`cetirun-tls` Secret before installation.
+
+### Bootstrap the internal platform before public TLS
+
+When the external certificate, DNS record, or the Portal callback and
+new-cluster federated credential are still pending, a new cluster can be
+bootstrapped without creating the public CetiRun Gateway or OAuth2 release:
+
+```bash
+python3 scripts/cetirun_platform_deploy.py \
+  --config /absolute/path/environment.yaml \
+  --internal-only
+```
+
+This mode is only for a new internal stage. It skips the CetiRun Istio/OAuth2
+release and the public `cetirun-tls` reference, but still requires managed Istio
+CRDs, revision-labelled application namespaces, Broker/MCP/admission TLS and
+CA material, admission enforcement, storage, identity, ADX, model, and
+artifact checks. It refuses existing Istio Gateway resources, non-ClusterIP
+Services, external IPs, NodePorts, and rendered Gateway resources. The rendered
+Portal VirtualServices have no entry point until the public Gateway is installed.
+Do not use this mode to downgrade an already public installation.
+
+The helper does not create an internal-stage receipt automatically. The
+operator must record the target and intended internal deployment in a private
+mode-0600 JSON receipt before the first Helm write. Before retrying, inspect the
+existing releases and confirm that they came from that recorded internal stage.
+A retry after a partial internal installation must provide the receipt explicitly:
+
+```bash
+python3 scripts/cetirun_platform_deploy.py \
+  --config /absolute/path/environment.yaml \
+  --internal-only \
+  --internal-stage-receipt /private/internal-stage.json
+```
+
+Its minimum shape is:
+
+```json
+{
+  "schemaVersion": 1,
+  "mode": "internal-only",
+  "target": {"cluster": "...", "server": "https://...", "clusterUID": "..."},
+  "release": {"registry": "...", "version": "...", "gitSHA": "..."},
+  "charts": {
+    "istio": {"release": "...", "namespace": "..."},
+    "broker": {"release": "...", "namespace": "..."},
+    "platform": {"release": "...", "namespace": "..."}
+  },
+  "profileSha256": "64-hex-SHA256-of-the-environment-file"
+}
+```
+
+The receipt is bound to the target cluster/server/UID, release registry,
+version and source SHA, and every chart release name/namespace. If the profile
+hash is recorded, it must also match the exact environment file. Keep the
+receipt and deployment track outside the repository; never put credentials or
+Secret data in it.
+
+After the external certificate is available in Key Vault and synchronized to
+`aks-istio-ingress/cetirun-tls`, and the Entra owner has added the callback and
+new AKS federated credential, run the normal full deployment path. It performs
+the original public Gateway, OAuth2 configuration, and certificate checks again.
+Confirm the callback and federated credential in Entra separately; the helper
+does not query their live registration. The internal-only stage is not a
+substitute for public TLS, DNS, login, group
+authorization, SDS, or renewal acceptance.
+
+### Install the prepared platform
+
 | Step | Do this | Page | Check |
 | --- | --- | --- | --- |
 | 12 | Run `make deploy`. This step writes to the cluster | [Run the plan and the deployment](../../getting-started/platform/#platform-chart) | The command ends without an error. If it fails, refer to [When make deploy fails](../troubleshooting/#when-make-deploy-fails) |
