@@ -642,15 +642,11 @@ UPSTREAM_CLOCK_SLACK_MS = 1
 # The deployment whose limits the router refreshes, in the task that refreshes them, and whether the newest
 # observation of it has no limits.
 REFRESHING_DEPLOYMENT = contextvars.ContextVar("cetirun_refreshing_deployment", default=None)
-# This replica's newest observation of each deployment, LiteLLM's reads of each upstream listing, and the
-# deployments whose last request failed.
+# This replica's newest observation of each deployment, LiteLLM's last read of each upstream listing
+# (UpstreamRead), and the deployments whose last request failed.
 KEPT_UPSTREAM_LIMITS = {}
 UPSTREAM_LISTINGS = {}
 FAILED_UPSTREAMS = set()
-# The times of Redis's clock of each read in UPSTREAM_LISTINGS that Redis dated, whether it dated the read late,
-# and the epoch of the dating. A listing that LiteLLM keeps can answer the lookups of several deployments: their
-# observations are of one read, which is dated once.
-READ_TIMES = {}
 # This replica's clock. It measures time only in this replica: when LiteLLM sent the request for a listing and
 # when it received the listing, and the round trips to Redis, with which Redis's clock dates the reads.
 clock = time.monotonic
@@ -710,19 +706,34 @@ class ObservedClient:
         return getattr(self.client, name)
 
 
+class UpstreamRead:
+    """One read of an upstream's listing by LiteLLM. A listing that LiteLLM keeps can answer the lookups of several
+    deployments: their observations are of this read, and each keeps it. The read has the times of this replica's
+    clock when LiteLLM sent its request and received the answer (seen), whether the upstream answered with a
+    listing, an ID, and this replica's last round trip to Redis before the request (reference). The first round trip
+    that dates one of its observations dates the read (date_read): the read keeps the times of Redis's clock,
+    whether the dating was late, and its epoch (dating), so that every observation of the read has the same."""
+
+    __slots__ = ("seen", "answered", "id", "reference", "dating")
+
+    def __init__(self, seen, answered, reference):
+        self.seen, self.answered, self.reference = seen, answered, reference
+        self.id, self.dating = secrets.token_hex(8), None
+
+
 def remember_listing(listing, answered, sent, reference):
     """Record that LiteLLM read an upstream's listing between sending its request, at the time sent, and now, with
-    an ID of the read and the round trip to Redis before the request (reference). The upstream answered at an
-    unknown time in between, so two reads whose times overlap cannot be ordered. A later lookup that LiteLLM
-    answers from the listing it keeps is the same read: an observation of these times, not a newer one."""
+    the round trip to Redis before the request (reference). The upstream answered at an unknown time in between, so
+    two reads whose times overlap cannot be ordered. A later lookup that LiteLLM answers from the listing it keeps
+    is the same read: an observation of these times, not a newer one. The read replaces the listing's earlier read.
+    A listing that this replica has not read before also makes it forget the listings that LiteLLM no longer
+    reads, for example after a change of their requests' headers."""
     received = read_time()
-    for key in [key for key, (times, _, _, _) in UPSTREAM_LISTINGS.items()
-                if times[1] < received - UPSTREAM_LISTING_MEMORY]:
-        del UPSTREAM_LISTINGS[key]
-    UPSTREAM_LISTINGS[listing] = ((min(sent, received), received), answered, secrets.token_hex(8), reference)
-    reads = {read for _, _, read, _ in UPSTREAM_LISTINGS.values()}
-    for read in [read for read in READ_TIMES if read not in reads]:
-        del READ_TIMES[read]
+    if listing not in UPSTREAM_LISTINGS:
+        for key in [key for key, read in UPSTREAM_LISTINGS.items()
+                    if read.seen[1] < received - UPSTREAM_LISTING_MEMORY]:
+            del UPSTREAM_LISTINGS[key]
+    UPSTREAM_LISTINGS[listing] = UpstreamRead((min(sent, received), received), answered, reference)
 
 
 def token_limits(value):
@@ -930,8 +941,10 @@ def steady_offsets(reference, now_ms, sent, received, epoch):
 
 
 def date_read(observation, now_ms, sent, received, epoch):
-    """Date the read of this replica's observation by Redis's clock, once for each read (READ_TIMES): Redis's time
-    now_ms, of the epoch epoch, fell between the times sent and received of this replica's clock.
+    """Date the read of this replica's observation by Redis's clock, once for each read: an observation of a read of
+    a listing keeps the read (UpstreamRead), which keeps the dating, so the observations of other deployments of the
+    same read get the same times. Redis's time now_ms, of the epoch epoch, fell between the times sent and received
+    of this replica's clock.
 
     The read keeps this replica's last round trip to Redis before its request (reference). When Redis's clock ran
     as this replica's from that round trip to this one (steady_offsets), the read happened between the times that
@@ -943,7 +956,8 @@ def date_read(observation, now_ms, sent, received, epoch):
     the read. A late read follows no other read (follows), and it ends at Redis's time now_ms, so that only a read
     that began after its dating follows it. It begins as long before now_ms as the read began before received by
     this replica's clock, so that Redis keeps it 30 days from the read."""
-    dating = READ_TIMES.get(observation["etag"])
+    read = observation.get("read")
+    dating = None if read is None else read.dating
     if dating is None:
         seen = observation["seen"]
         offsets = steady_offsets(observation.get("reference"), now_ms, sent, received, epoch)
@@ -952,7 +966,8 @@ def date_read(observation, now_ms, sent, received, epoch):
         else:
             first, last = read_times(offsets, seen)
             dating = ((first, min(last, now_ms + UPSTREAM_CLOCK_SLACK_MS)), False, epoch)
-        READ_TIMES[observation["etag"]] = dating
+        if read is not None:
+            read.dating = dating
     observation["observed_ms"], observation["late"], observation["epoch"] = dating
 
 
@@ -1034,14 +1049,14 @@ async def kept_upstream_limits(module, state, model, api_base, listing, fresh, l
     withdraws them."""
     key = upstream_limits_key(module, state["deployment"], api_base, model)
     record = UPSTREAM_LISTINGS.get(listing)
-    answered = record is not None and record[1]
+    answered = record is not None and record.answered
     local, read = live_observation(KEPT_UPSTREAM_LIMITS.get(key)), None
     if answered:
         FAILED_UPSTREAMS.discard(key)
-        seen, _, read, reference = record
+        read = record.id
         local = newer_read(local, {"limits": token_limits(dict(limits)) if limits else None, "etag": read,
-                                   "seen": seen, "observed_ms": None, "epoch": None, "late": False,
-                                   "reference": reference})
+                                   "seen": record.seen, "observed_ms": None, "epoch": None, "late": False,
+                                   "reference": record.reference, "read": record})
     elif limits:
         return limits  # a listing that LiteLLM read before the guard replaced its lookup
     if local is None:

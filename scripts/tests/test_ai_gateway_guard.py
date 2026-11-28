@@ -2784,6 +2784,7 @@ class GuardTest(unittest.TestCase):
             return before, after, then_ms - shift, moved(epoch)
 
         for guard in [self.module] + [replica.guard for replica in getattr(self, "replicas", [])]:
+            reads = {}
             for observation in guard.KEPT_UPSTREAM_LIMITS.values():
                 if observation.get("observed_ms") is not None:
                     first, last = observation["observed_ms"]
@@ -2791,10 +2792,16 @@ class GuardTest(unittest.TestCase):
                     observation["epoch"] = moved(observation.get("epoch"))
                 if observation.get("reference") is not None:
                     observation["reference"] = moved_call(observation["reference"])
-            for read, ((first, last), late, epoch) in list(getattr(guard, "READ_TIMES", {}).items()):
-                guard.READ_TIMES[read] = ((first - shift, last - shift), late, moved(epoch))
-            for listing, (times, answered, read, reference) in list(getattr(guard, "UPSTREAM_LISTINGS", {}).items()):
-                guard.UPSTREAM_LISTINGS[listing] = (times, answered, read, moved_call(reference))
+                if observation.get("read") is not None:
+                    reads[id(observation["read"])] = observation["read"]
+            for read in getattr(guard, "UPSTREAM_LISTINGS", {}).values():
+                reads[id(read)] = read
+            # Each read of a listing once, also when several observations keep it.
+            for read in reads.values():
+                read.reference = moved_call(read.reference)
+                if read.dating is not None:
+                    (first, last), late, epoch = read.dating
+                    read.dating = ((first - shift, last - shift), late, moved(epoch))
             if hasattr(guard, "LAST_CALL"):
                 guard.LAST_CALL[0] = moved_call(guard.LAST_CALL[0])
         for request in getattr(self, "requests", []):
@@ -3342,11 +3349,14 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(dated(1_005_999, 15.998, 16.0, reference=None), ((1_001_999, 1_005_999), True, "5"))
         # The round trip started ten seconds after the read.
         self.assertEqual(dated(1_012_999, 22.998, 23.0), ((1_001_999, 1_012_999), True, "5"))
-        # A read is dated once.
-        observation = dict(read, etag=secrets.token_hex(8))
+        # A read is dated once: the observations of a read keep it, and the first dating is the read's.
+        record = self.module.UpstreamRead(read["seen"], True, self.REFERENCE)
+        observation = dict(read, etag=record.id, read=record)
         self.module.date_read(observation, 1_005_999, 15.998, 16.0, "5")
-        self.module.date_read(dict(observation, observed_ms=None), 4_605_999, 15.998, 16.0, "5")
-        self.assertEqual(self.module.READ_TIMES[observation["etag"]], ((1_001_992, 1_003_008), False, "5"))
+        other = dict(read, etag=record.id, read=record)
+        self.module.date_read(other, 4_605_999, 15.998, 16.0, "5")
+        self.assertEqual((record.dating, other["observed_ms"], other["late"]),
+                         (((1_001_992, 1_003_008), False, "5"), (1_001_992, 1_003_008), False))
         # A day after the round trip before the request, the clocks can have run 86.4 seconds apart, which widens
         # the read's times. The read ended before the round trip that dates it, so its times end there.
         day = dict(read, etag=secrets.token_hex(8), seen=(86406.0, 86407.0))
@@ -3754,10 +3764,37 @@ class GuardTest(unittest.TestCase):
         self.advance(30)
         self.assertEqual(self.limits(None, cache=cache, **other), self.LIMITS)
         self.assertEqual(self.stored(redis, deployment=other["deployment"])[1]["limits"], self.LIMITS)
-        # The replica keeps the times of the reads that LiteLLM may still answer from, and no others. A request
-        # that the upstream did not answer is no observation: Redis does not date it.
-        self.assertEqual(set(self.module.READ_TIMES),
-                         {read for _, answered, read, _ in self.module.UPSTREAM_LISTINGS.values() if answered})
+        # Both observations keep the read, which has the one dating of both.
+        first, second = self.stored(redis)[1], self.stored(redis, deployment=other["deployment"])[1]
+        self.assertEqual((second["etag"], second["observed_ms"]), (first["etag"], first["observed_ms"]))
+        reads = [read for read in self.module.UPSTREAM_LISTINGS.values() if read.id == first["etag"]]
+        self.assertEqual([list(read.dating[0]) for read in reads], [first["observed_ms"]])
+        # A request that the upstream did not answer is no observation: Redis does not date it.
+        self.advance(300)
+        with self.assertLogs(LOGGER, "WARNING"):
+            self.assertEqual(self.limits(None), self.LIMITS)
+        failed = [read for read in self.module.UPSTREAM_LISTINGS.values() if not read.answered]
+        self.assertTrue(failed)
+        self.assertEqual({read.dating for read in failed}, {None})
+
+    def test_a_new_listing_forgets_the_listings_that_litellm_no_longer_reads(self):
+        # The replica keeps LiteLLM's last read of each upstream listing, and a refresh replaces only the read of
+        # its own listing. A listing that the replica has not read before, here after a change of the upstream key,
+        # makes it forget the listings that LiteLLM has not read for longer than it keeps one.
+        self.install_upstream_info()
+        self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
+        main = set(self.module.UPSTREAM_LISTINGS)
+        self.assertEqual(self.limits(self.ADVERTISED, api_key="synthetic-other-key"), self.LIMITS)
+        other = set(self.module.UPSTREAM_LISTINGS) - main
+        self.advance(self.module.UPSTREAM_LISTING_MEMORY + 1)
+        read = self.module.UPSTREAM_LISTINGS[next(iter(main))]
+        self.assertEqual(self.limits(self.ADVERTISED), self.LIMITS)
+        self.assertEqual(set(self.module.UPSTREAM_LISTINGS), main | other)
+        self.assertIsNot(self.module.UPSTREAM_LISTINGS[next(iter(main))], read)
+        self.assertEqual(self.limits(self.ADVERTISED, api_key="synthetic-rotated-key"), self.LIMITS)
+        rotated = set(self.module.UPSTREAM_LISTINGS) - main - other
+        self.assertEqual((len(main), len(other), len(rotated)), (1, 1, 1))
+        self.assertEqual(set(self.module.UPSTREAM_LISTINGS), main | rotated)
 
     def test_of_two_reads_whose_requests_overlap_the_smaller_limit_counts(self):
         # This replica asks the upstream for its listing while the limit changes. The other replica asks later and
