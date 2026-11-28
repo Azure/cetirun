@@ -9,8 +9,9 @@ so Helm can recreate it. Pods keep running as orphans and are re-adopted via lab
 A changed selector stops the hook before it deletes anything: a StatefulSet of the same
 name with another selector can adopt no orphaned Pod, and cannot create a Pod whose name
 an orphan still has. Its message tells how to replace the StatefulSet by hand only when
-the new one mounts the claim that holds HOME now: an emptyDir HOME does not outlive its Pod,
-and Helm deletes a claim of the chart that the new values no longer create.
+the new one mounts the claim that holds HOME in the running Pod, as the Pod mounts it: an
+emptyDir HOME does not outlive its Pod, and Helm deletes a claim of the chart that the new
+values no longer create.
 The hook finds the StatefulSet by its rendered name. It does not protect a rename: when the
 name changes, for example with nameOverride and no fullnameOverride, it finds none, and Helm
 replaces the old StatefulSet with one that has a new HOME claim.
@@ -45,6 +46,11 @@ rules:
     # kubectl delete waits for the deletion with a list and a watch that select
     # this name, so resourceNames limits them too.
     verbs: ["get", "list", "watch", "delete"]
+  # The Pod of the StatefulSet: where it keeps HOME, for a changed selector.
+  - apiGroups: [""]
+    resources: ["pods"]
+    resourceNames: [{{ printf "%s-0" (include "cetirun.fullname" .) | quote }}]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -230,14 +236,18 @@ spec:
                 echo "The selector of StatefulSet $STS_NAME cannot change: ${SELECTOR_CHANGED}${CHANGED}"
                 echo "A StatefulSet of this name with another selector could not take over the running Pod, nor create its"
                 echo "Pod while the old one keeps the name, so the StatefulSet stays as it is. Set nameOverride back."
-                # HOME outlives the running Pod only in a claim that the new StatefulSet mounts again.
-                case " $CURRENT_VCT " in
-                  *" data "*) CURRENT_CLAIM="data-${STS_NAME}-0" ;;
-                  *) CURRENT_CLAIM=$(kubectl get statefulset "$STS_NAME" -n "$NS" -o jsonpath='{.spec.template.spec.volumes[?(@.name=="data")].persistentVolumeClaim.claimName}') ;;
-                esac
-                if [ -n "$CURRENT_CLAIM" ] && [ "$CURRENT_CLAIM" = "$DROPPED_CLAIM" ]; then
+                # HOME outlives the running Pod only in a claim that the new StatefulSet mounts again. The Pod's own
+                # volume tells where it keeps HOME, also while a rollout to another template is not finished.
+                POD_HOME=$(kubectl get pod "${STS_NAME}-0" -n "$NS" --ignore-not-found -o jsonpath='{.metadata.name}/{.spec.volumes[?(@.name=="data")].persistentVolumeClaim.claimName}')
+                CURRENT_CLAIM=${POD_HOME#*/}
+                if [ -z "$POD_HOME" ]; then
+                  echo "No Pod ${STS_NAME}-0 runs, so the hook cannot tell where it kept HOME."
+                elif [ -n "$CURRENT_CLAIM" ] && [ "$CURRENT_CLAIM" = "$DROPPED_CLAIM" ]; then
                   echo "HOME of the running Pod is in the claim $CURRENT_CLAIM, which the chart creates. The new values do not"
-                  echo "create it, so an upgrade with them deletes it, with its files, if this release created it."
+                  echo "create it, so an upgrade with them deletes it, with its files, if this release created it. Before the"
+                  echo "upgrade runs again, set back the persistence values that create it too, or first keep the claim out of"
+                  echo "the deletions of Helm:"
+                  echo "kubectl annotate pvc $CURRENT_CLAIM -n $NS helm.sh/resource-policy=keep"
                 elif [ -n "$CURRENT_CLAIM" ] && [ "$CURRENT_CLAIM" = "$EXPECT_CLAIM" ]; then
                   # The command is on a line of its own: without --cascade=orphan, the deletion would also delete the HOME
                   # claim when persistence.retainPolicy is Delete.

@@ -50,20 +50,33 @@ of a claim that already exists.
 
 ### Grow the HOME of an Agent
 
-This procedure is for Hermes and OpenClaw Agents without a Sandbox. The HOME
-claim of such an Agent is `data-cetirun-<name>-0` in the namespace
-`cetirun-<name>`. The StorageClass of the claim must allow volume expansion.
+This procedure is for Hermes and OpenClaw Agents without a Sandbox, in the
+namespace `cetirun-<name>`. The StorageClass of the HOME claim must allow
+volume expansion.
 
-1. Increase the storage request of the claim. The CSI driver expands the disk
+1. Find the claim that holds HOME in the running Pod:
+
+   ```bash
+   kubectl get pod cetirun-<name>-0 -n cetirun-<name> \
+     -o jsonpath='{.spec.volumes[?(@.name=="data")].persistentVolumeClaim.claimName}'
+   ```
+
+   With the default values, it is `data-cetirun-<name>-0`, the claim of the
+   claim template of the StatefulSet. An existing claim or a claim that the
+   chart creates has another name. Without output, HOME is an `emptyDir`,
+   which cannot grow this way.
+
+2. Increase the storage request of that claim. The CSI driver expands the disk
    and the file system while the Agent runs:
 
    ```bash
-   kubectl patch pvc data-cetirun-<name>-0 -n cetirun-<name> --type merge \
+   kubectl patch pvc <claim> -n cetirun-<name> --type merge \
      -p '{"spec":{"resources":{"requests":{"storage":"120Gi"}}}}'
    ```
 
-2. Set `spec.helm.values.persistence.size` of the Agent to the same size, so
-   that the StatefulSet template agrees with the claim. Kubernetes cannot
+3. Only when the claim is `data-cetirun-<name>-0`, set
+   `spec.helm.values.persistence.size` of the Agent to the same size. The claim
+   template of the StatefulSet then agrees with the claim. Kubernetes cannot
    change this template in place. The upgrade hook of the agent chart deletes
    only the StatefulSet object. Helm creates it again with the new size. The
    Pod keeps running.
@@ -71,7 +84,7 @@ claim of such an Agent is `data-cetirun-<name>-0` in the namespace
 Agent charts 0.2.2 and earlier cannot apply a larger `persistence.size`. Their
 upgrade hook does not replace the StatefulSet, so each later Helm upgrade of
 the Agent fails with `spec.volumeClaimTemplates: ... field is immutable`, and
-the Agent stays `Provisioning`. For these Agents, do only step 1. If
+the Agent stays `Provisioning`. For these Agents, do only steps 1 and 2. If
 `persistence.size` was already changed, set it back to the size in the
 StatefulSet template. The claim keeps its larger size. Alternatively, delete
 only the StatefulSet object:
@@ -331,10 +344,15 @@ instead: a StatefulSet with another selector cannot take over the running Pod.
 Set `nameOverride` back.
 
 The message of the hook can also tell how to replace the StatefulSet by hand
-and keep HOME. It does so only when the new StatefulSet mounts the same HOME
-claim and the upgrade keeps that claim. An `emptyDir` HOME does not outlive its
-Pod. An upgrade deletes a claim that the chart created when the new values do
-not create it.
+and keep HOME. It does so when the new StatefulSet mounts the same HOME claim
+and the upgrade keeps that claim. An `emptyDir` HOME ends with its Pod. An
+upgrade deletes a claim that the chart created when the new values omit it. To
+keep such a claim, restore the persistence values that create it, together with
+`nameOverride`. Or first annotate the claim, so that Helm keeps it:
+
+```bash
+kubectl annotate pvc cetirun-<name>-data -n cetirun-<name> helm.sh/resource-policy=keep
+```
 
 The hook does not protect a rename. Without `fullnameOverride`, a change of
 `nameOverride` can also change the name of the StatefulSet. The hook then

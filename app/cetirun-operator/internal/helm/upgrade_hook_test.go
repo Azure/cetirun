@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -142,9 +143,10 @@ func TestUpgradeHookCanWaitForTheDeletion(t *testing.T) {
 	if name == nil {
 		t.Fatal("the hook script names no StatefulSet")
 	}
-	// kubectl delete waits with a list and a watch that select this name.
+	// kubectl delete waits with a list and a watch that select this name. The
+	// hook also reads the StatefulSet's Pod, for where it keeps HOME.
 	rules := array(object(objects["Role"])["rules"])
-	if len(rules) != 1 {
+	if len(rules) != 2 {
 		t.Fatalf("hook Role rules: %v", rules)
 	}
 	rule := object(rules[0])
@@ -153,9 +155,16 @@ func TestUpgradeHookCanWaitForTheDeletion(t *testing.T) {
 		text, _ := verb.(string)
 		verbs[text] = true
 	}
-	if !reflect.DeepEqual(array(rule["resourceNames"]), []any{name[1]}) ||
+	if !reflect.DeepEqual(array(rule["resources"]), []any{"statefulsets"}) ||
+		!reflect.DeepEqual(array(rule["resourceNames"]), []any{name[1]}) ||
 		len(verbs) != 4 || !verbs["get"] || !verbs["list"] || !verbs["watch"] || !verbs["delete"] {
 		t.Fatalf("the hook Role must allow get, list, watch, and delete of %s only: %v", name[1], rule)
+	}
+	pods := object(rules[1])
+	if !reflect.DeepEqual(array(pods["apiGroups"]), []any{""}) || !reflect.DeepEqual(array(pods["resources"]), []any{"pods"}) ||
+		!reflect.DeepEqual(array(pods["resourceNames"]), []any{name[1] + "-0"}) ||
+		!reflect.DeepEqual(array(pods["verbs"]), []any{"get"}) {
+		t.Fatalf("the hook Role must allow get of the Pod %s-0 only: %v", name[1], pods)
 	}
 	deadline, _ := object(job["spec"])["activeDeadlineSeconds"].(float64)
 	wait := regexp.MustCompile(`kubectl delete statefulset .*--timeout=(\d+)s`).FindStringSubmatch(script)
@@ -178,7 +187,7 @@ const (
 	upgradeHookClassQuery        = `{.spec.volumeClaimTemplates[0].spec.storageClassName}`
 	upgradeHookAccessModeQuery   = `{.spec.volumeClaimTemplates[0].spec.accessModes[0]}`
 	upgradeHookSizeQuery         = `{.spec.volumeClaimTemplates[0].spec.resources.requests.storage}`
-	upgradeHookHomeClaimQuery    = `{.spec.template.spec.volumes[?(@.name=="data")].persistentVolumeClaim.claimName}`
+	upgradeHookPodHomeQuery      = `{.metadata.name}/{.spec.volumes[?(@.name=="data")].persistentVolumeClaim.claimName}`
 )
 
 // upgradeStatefulSet returns the StatefulSet that the agent chart renders for
@@ -194,7 +203,9 @@ func upgradeStatefulSet(t *testing.T, values map[string]any) map[string]any {
 
 // liveStatefulSetFields answers the hook's jsonpath queries for the StatefulSet
 // that Kubernetes keeps when Helm applies sts: with the API's default
-// podManagementPolicy, and the size in the canonical form of a quantity.
+// podManagementPolicy, and the size in the canonical form of a quantity. It
+// also answers for the StatefulSet's Pod, which mounts the claim of its claim
+// template, or else the volume of its template.
 func liveStatefulSetFields(t *testing.T, sts map[string]any) map[string]string {
 	t.Helper()
 	spec := object(sts["spec"])
@@ -225,12 +236,17 @@ func liveStatefulSetFields(t *testing.T, sts map[string]any) map[string]string {
 		}
 		fields[upgradeHookSizeQuery] = size.String()
 	}
-	fields[upgradeHookHomeClaimQuery] = ""
+	pod := text(object(sts["metadata"])["name"]) + "-0"
+	home := ""
 	for _, item := range array(object(object(spec["template"])["spec"])["volumes"]) {
 		if volume := object(item); volume["name"] == "data" {
-			fields[upgradeHookHomeClaimQuery] = text(object(volume["persistentVolumeClaim"])["claimName"])
+			home = text(object(volume["persistentVolumeClaim"])["claimName"])
 		}
 	}
+	if slices.Contains(names, "data") {
+		home = "data-" + pod
+	}
+	fields[upgradeHookPodHomeQuery] = pod + "/" + home
 	if fields[upgradeHookServiceNameQuery] == "" || fields[upgradeHookSelectorNameQuery] == "" {
 		t.Fatalf("unexpected rendered StatefulSet: %v", fields)
 	}
@@ -242,7 +258,9 @@ func shellQuote(value string) string {
 }
 
 // writeKubectlStub writes a kubectl that logs its arguments, answers the hook's
-// existence check and jsonpath queries from fields, and fails as requested.
+// existence check of the StatefulSet and its jsonpath queries from fields, and
+// fails as requested. It has only the Pod that the answer about the Pod's HOME
+// names: a query for another Pod finds none.
 func writeKubectlStub(t *testing.T, dir string, fields map[string]string, getError, missing, failQuery string) {
 	t.Helper()
 	var arms []string
@@ -258,12 +276,14 @@ func writeKubectlStub(t *testing.T, dir string, fields map[string]string, getErr
 		}
 		arms = append(arms, fmt.Sprintf("\t\t%s) %s ;;", shellQuote("jsonpath="+query), answer))
 	}
+	pod, _, _ := strings.Cut(fields[upgradeHookPodHomeQuery], "/")
 	stub := strings.Join([]string{
 		"#!/bin/sh",
 		`printf '%s\n' "$*" >> "$STUB_DIR/calls"`,
 		`if [ "$1" = delete ]; then exit 0; fi`,
+		fmt.Sprintf(`if [ "$1" = get ] && [ "$2" = pod ] && [ "$3" != %s ]; then exit 0; fi`, shellQuote(pod)),
 		`case "$*" in`,
-		`*--ignore-not-found*)`,
+		`*statefulset*--ignore-not-found*)`,
 		fmt.Sprintf("\tif [ -n %s ]; then printf '%%s\\n' %s >&2; exit 1; fi", shellQuote(getError), shellQuote(getError)),
 		fmt.Sprintf("\tif [ -n %s ]; then exit 0; fi", shellQuote(missing)),
 		`	printf 'statefulset.apps/%s\n' "$3"`,
@@ -347,34 +367,50 @@ func TestUpgradeHookScript(t *testing.T) {
 			output: "Set nameOverride back.\nHOME of the running Pod is in an emptyDir.\n" +
 				"HOME of a new Pod would be in an emptyDir, without the files of the running one.",
 			absent: "--cascade=orphan"},
+		// The Pod tells where it keeps HOME: a rollout to a claim may not have replaced it yet.
+		{name: "changed selector, the running Pod still has an emptyDir HOME",
+			live: map[string]string{upgradeHookSelectorNameQuery: "other", upgradeHookPodHomeQuery: "cetirun-example-0/"},
+			output: "HOME of the running Pod is in an emptyDir.\n" +
+				"HOME of a new Pod would be in the claim data-cetirun-example-0, without the files of the running one.",
+			absent: "--cascade=orphan"},
+		{name: "changed selector, no running Pod",
+			live:   map[string]string{upgradeHookSelectorNameQuery: "other", upgradeHookPodHomeQuery: ""},
+			output: "Set nameOverride back.\nNo Pod cetirun-example-0 runs, so the hook cannot tell where it kept HOME.",
+			absent: "--cascade=orphan"},
 		{name: "changed selector, HOME in another claim than the new one",
 			persistence: map[string]any{"existingClaim": "home-example"},
-			live:        map[string]string{upgradeHookSelectorNameQuery: "other", upgradeHookClaimNamesQuery: "data"},
+			live: map[string]string{upgradeHookSelectorNameQuery: "other", upgradeHookClaimNamesQuery: "data",
+				upgradeHookPodHomeQuery: "cetirun-example-0/data-cetirun-example-0"},
 			output: "HOME of the running Pod is in the claim data-cetirun-example-0.\n" +
 				"HOME of a new Pod would be in the claim home-example, without the files of the running one.",
 			absent: "--cascade=orphan"},
 		{name: "changed selector, HOME from a claim to an emptyDir", persistence: map[string]any{"enabled": false},
-			live: map[string]string{upgradeHookSelectorNameQuery: "other", upgradeHookHomeClaimQuery: "home-example"},
+			live: map[string]string{upgradeHookSelectorNameQuery: "other",
+				upgradeHookPodHomeQuery: "cetirun-example-0/home-example"},
 			output: "HOME of the running Pod is in the claim home-example.\n" +
 				"HOME of a new Pod would be in an emptyDir, without the files of the running one.",
 			absent: "--cascade=orphan"},
 		{name: "changed selector, HOME from an emptyDir to the claim of the chart",
 			persistence: map[string]any{"useStatefulSetVolumeClaim": false},
-			live:        map[string]string{upgradeHookSelectorNameQuery: "other", upgradeHookHomeClaimQuery: ""},
+			live:        map[string]string{upgradeHookSelectorNameQuery: "other", upgradeHookPodHomeQuery: "cetirun-example-0/"},
 			output: "HOME of the running Pod is in an emptyDir.\n" +
 				"HOME of a new Pod would be in the claim cetirun-example-data, without the files of the running one.",
 			absent: "--cascade=orphan"},
 		// Helm deletes a claim that the chart created and the new values no longer create, also when they name it as
-		// an existing claim.
+		// an existing claim. Reverting only the selector would not keep it: the values that create it go back too, or
+		// the claim is kept out of the deletions of Helm first.
 		{name: "changed selector, the claim of the chart named as an existing claim",
 			persistence: map[string]any{"useStatefulSetVolumeClaim": false, "existingClaim": "cetirun-example-data"},
 			live:        map[string]string{upgradeHookSelectorNameQuery: "other"},
 			output: "HOME of the running Pod is in the claim cetirun-example-data, which the chart creates. " +
-				"The new values do not\ncreate it, so an upgrade with them deletes it, with its files, if this release created it.",
+				"The new values do not\ncreate it, so an upgrade with them deletes it, with its files, if this release " +
+				"created it. Before the\nupgrade runs again, set back the persistence values that create it too, or first " +
+				"keep the claim out of\nthe deletions of Helm:\n" +
+				"kubectl annotate pvc cetirun-example-data -n cetirun-example helm.sh/resource-policy=keep\n",
 			absent: "--cascade=orphan"},
 		{name: "changed selector, HOME from the claim of the chart to the claim template",
 			live: map[string]string{upgradeHookSelectorNameQuery: "other", upgradeHookClaimNamesQuery: "",
-				upgradeHookHomeClaimQuery: "cetirun-example-data"},
+				upgradeHookPodHomeQuery: "cetirun-example-0/cetirun-example-data"},
 			output: "HOME of the running Pod is in the claim cetirun-example-data, which the chart creates.",
 			absent: "--cascade=orphan"},
 		{name: "changed selector and grown volume",
@@ -382,8 +418,8 @@ func TestUpgradeHookScript(t *testing.T) {
 			output: "selector app.kubernetes.io/instance: 'other' -> 'cetirun-example'; volumeClaimTemplate size"},
 		{name: "failed read", live: map[string]string{upgradeHookSizeQuery: "100Gi"}, failQuery: upgradeHookServiceNameQuery,
 			output: "unable to return a response"},
-		{name: "failed read of the HOME claim", persistence: map[string]any{"existingClaim": "home-example"},
-			live: map[string]string{upgradeHookSelectorNameQuery: "other"}, failQuery: upgradeHookHomeClaimQuery,
+		{name: "failed read of the HOME of the Pod", persistence: map[string]any{"existingClaim": "home-example"},
+			live: map[string]string{upgradeHookSelectorNameQuery: "other"}, failQuery: upgradeHookPodHomeQuery,
 			output: "unable to return a response", absent: "--cascade=orphan"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

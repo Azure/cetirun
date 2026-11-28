@@ -216,10 +216,12 @@ every `*.log` under HOME disposable. If no safe files exist, skip cleanup.
 
 Measure again after cleanup. If use remains above 85% or is above 95%, recommend
 expansion and obtain confirmation. Check the actual StorageClass's expansion
-support and current PVC ownership. Increase the bound PVC request first, using
-observed identities and conditional writes. For an ordinary target, raise the
-capacity intent `spec.helm.values.persistence.size` to the same size only when
-its `spec.helm.version` is later than 0.2.2. Charts 0.2.2 and earlier cannot
+support and current PVC ownership. Resolve the HOME mount of the running Pod to
+its bound PVC, and increase that PVC's request first, using observed identities
+and conditional writes. For an ordinary target, raise the capacity intent
+`spec.helm.values.persistence.size` to the same size only when that PVC is the
+claim of the StatefulSet's claim template and its `spec.helm.version` is later
+than 0.2.2. Charts 0.2.2 and earlier cannot
 replace the StatefulSet template, so a larger size makes every later Helm
 upgrade of the target fail with an immutable `volumeClaimTemplates` error.
 There, keep the size and report that the template keeps the old size. If such
