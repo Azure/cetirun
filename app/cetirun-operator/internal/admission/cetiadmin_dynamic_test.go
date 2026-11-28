@@ -104,6 +104,50 @@ func TestCetiAdminCreatesAgentInNewTeam(t *testing.T) {
 	}
 }
 
+func TestCetiAdminCreationRefusalNamesTheFailedCondition(t *testing.T) {
+	f := newCetiAdminFixture(t)
+	ctx := context.Background()
+	agent := f.target.DeepCopy()
+	agent.ObjectMeta = metav1.ObjectMeta{Name: "new-runtime", Annotations: map[string]string{
+		api.AnnotationOwnerTenantID: f.state.Configuration.Owner.TenantID,
+		api.AnnotationOwnerObjectID: f.state.Configuration.Owner.ObjectID,
+	}}
+	agent.Status = api.AgentStatus{}
+	if response := f.guard.Validate(ctx, adminRequest(t, admissionv1.Create, api.GroupVersion.Group, "Agent", "agents", agent, nil, f.actor)); !response.Allowed {
+		t.Fatalf("confirmed owner and Team denied: %v", response.Result)
+	}
+	for _, tc := range []struct {
+		name, refusal string
+		change        func(*api.Agent)
+	}{
+		{"no Team", "spec.team to name a live Team", func(a *api.Agent) { a.Spec.Team = "" }},
+		{"the CetiAdmin Team", "other than the CetiAdmin Team", func(a *api.Agent) { a.Spec.Team = f.state.Configuration.InstanceName }},
+		{"a missing Team", "spec.team names no Team: missing-team", func(a *api.Agent) { a.Spec.Team = "missing-team" }},
+		{"another runtime", "spec.agent.type", func(a *api.Agent) { a.Spec.Agent.Type = "other" }},
+		{"a namespace", "metadata.namespace", func(a *api.Agent) { a.Namespace = "default" }},
+		{"Tailscale", "cannot set spec.tailscale", func(a *api.Agent) { a.Spec.Tailscale = &api.TailscaleSpec{} }},
+		{"Agent Identity", "cannot set spec.agentIdentity", func(a *api.Agent) { a.Spec.AgentIdentity = &api.AgentIdentitySpec{} }},
+		{"finalizers", "cannot set metadata.finalizers", func(a *api.Agent) { a.Finalizers = []string{"example.com/hold"} }},
+		{"no owner annotations", "requires the owner annotations", func(a *api.Agent) { a.Annotations = nil }},
+		{"one owner annotation", "requires the owner annotations", func(a *api.Agent) { delete(a.Annotations, api.AnnotationOwnerObjectID) }},
+		{"an unknown owner", "no live Agent has these owner annotations", func(a *api.Agent) {
+			a.Annotations[api.AnnotationOwnerObjectID] = "synthetic-other-object"
+		}},
+		{"another alias", "same spec.user.alias and spec.user.email", func(a *api.Agent) { a.Spec.User.Alias = "someone-else" }},
+		{"another email", "same spec.user.alias and spec.user.email", func(a *api.Agent) { a.Spec.User.Email = "" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			next := agent.DeepCopy()
+			tc.change(next)
+			request := adminRequest(t, admissionv1.Create, api.GroupVersion.Group, "Agent", "agents", next, nil, f.actor)
+			response := f.guard.Validate(ctx, request)
+			if response.Allowed || response.Result == nil || !strings.Contains(response.Result.Message, tc.refusal) {
+				t.Fatalf("want a refusal that says %q: %v", tc.refusal, response.Result)
+			}
+		})
+	}
+}
+
 func TestCetiAdminMissingAuthorityDoesNotBypassOperations(t *testing.T) {
 	for _, missing := range []string{"record", "recorded-account", "source"} {
 		t.Run(missing, func(t *testing.T) {

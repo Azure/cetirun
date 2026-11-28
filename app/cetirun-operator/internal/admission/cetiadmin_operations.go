@@ -17,6 +17,7 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -178,12 +179,32 @@ func (h *CetiAdminHandler) cetiAdminCreate(ctx context.Context, request admissio
 	case "oauth2", "api", "internal", "healthz", "readyz", "assets", "portal", "instances", "connections", "admin", "ui":
 		return admission.Denied("instance name is reserved for a platform route")
 	}
-	if agent.Name == config.InstanceName || agent.Namespace != "" || agent.Spec.Team == config.InstanceName || agent.Spec.Team == "" ||
-		(config.MigrationSource != nil && agent.Name == config.MigrationSource.Agent.Name) ||
-		(agent.Spec.Agent.Type != api.AgentTypeHermes && agent.Spec.Agent.Type != api.AgentTypeOpenClaw && agent.Spec.Agent.Type != api.AgentTypeCustom) ||
-		agent.Spec.AgentIdentity != nil || agent.Spec.Tailscale != nil || agent.Spec.Agent.RegistrySecretRef != nil ||
-		agent.Spec.PlannedMigration != nil || len(agent.OwnerReferences) != 0 || len(agent.Finalizers) != 0 {
-		return admission.Denied("CetiAdmin creation requires an ordinary approved runtime and Team without privilege or identity overrides")
+	if agent.Name == config.InstanceName || (config.MigrationSource != nil && agent.Name == config.MigrationSource.Agent.Name) {
+		return admission.Denied("instance name belongs to CetiAdmin")
+	}
+	if agent.Namespace != "" {
+		return admission.Denied("Agents are cluster-scoped: omit metadata.namespace")
+	}
+	if agent.Spec.Team == "" || agent.Spec.Team == config.InstanceName {
+		return admission.Denied("CetiAdmin creation requires spec.team to name a live Team other than the CetiAdmin Team")
+	}
+	if agent.Spec.Agent.Type != api.AgentTypeHermes && agent.Spec.Agent.Type != api.AgentTypeOpenClaw && agent.Spec.Agent.Type != api.AgentTypeCustom {
+		return admission.Denied("CetiAdmin creation requires spec.agent.type hermes, openclaw, or custom")
+	}
+	for _, override := range []struct {
+		field string
+		set   bool
+	}{
+		{"spec.agentIdentity", agent.Spec.AgentIdentity != nil},
+		{"spec.tailscale", agent.Spec.Tailscale != nil},
+		{"spec.agent.registrySecretRef", agent.Spec.Agent.RegistrySecretRef != nil},
+		{"spec.plannedMigration", agent.Spec.PlannedMigration != nil},
+		{"metadata.ownerReferences", len(agent.OwnerReferences) != 0},
+		{"metadata.finalizers", len(agent.Finalizers) != 0},
+	} {
+		if override.set {
+			return admission.Denied("CetiAdmin creation cannot set " + override.field)
+		}
 	}
 	for key := range agent.Labels {
 		if strings.HasPrefix(key, "cetirun.microsoft.com/") {
@@ -197,21 +218,42 @@ func (h *CetiAdminHandler) cetiAdminCreate(ctx context.Context, request admissio
 	}
 	// A new owner must already be represented by the platform's trusted owner
 	// metadata; copying an arbitrary email or minting claims is not authorization.
+	// Each refusal names the condition that failed, so that CetiAdmin can correct
+	// its input; CetiAdmin can read every Agent, so it learns nothing new.
+	tenant, object := agent.Annotations[api.AnnotationOwnerTenantID], agent.Annotations[api.AnnotationOwnerObjectID]
+	if tenant == "" || object == "" {
+		return admission.Denied("CetiAdmin creation requires the owner annotations " + api.AnnotationOwnerTenantID + " and " +
+			api.AnnotationOwnerObjectID + " of an existing Agent of the owner")
+	}
 	owners := &api.AgentList{}
 	if err := h.reader.List(ctx, owners); err != nil {
 		return admission.Denied("existing owner identity cannot be confirmed")
 	}
-	knownOwner := false
+	sameOwner, knownOwner := false, false
 	for _, existing := range owners.Items {
-		knownOwner = knownOwner || (existing.DeletionTimestamp == nil && existing.Spec.User.Alias == agent.Spec.User.Alias &&
-			strings.EqualFold(existing.Spec.User.Email, agent.Spec.User.Email) &&
-			existing.Annotations[api.AnnotationOwnerTenantID] != "" && existing.Annotations[api.AnnotationOwnerObjectID] != "" &&
-			strings.EqualFold(existing.Annotations[api.AnnotationOwnerTenantID], agent.Annotations[api.AnnotationOwnerTenantID]) &&
-			strings.EqualFold(existing.Annotations[api.AnnotationOwnerObjectID], agent.Annotations[api.AnnotationOwnerObjectID]))
+		if existing.DeletionTimestamp != nil || !strings.EqualFold(existing.Annotations[api.AnnotationOwnerTenantID], tenant) ||
+			!strings.EqualFold(existing.Annotations[api.AnnotationOwnerObjectID], object) {
+			continue
+		}
+		sameOwner = true
+		knownOwner = knownOwner || (existing.Spec.User.Alias == agent.Spec.User.Alias && strings.EqualFold(existing.Spec.User.Email, agent.Spec.User.Email))
+	}
+	if !sameOwner {
+		return admission.Denied("no live Agent has these owner annotations; CetiAdmin creates Agents only for an owner who already has one")
+	}
+	if !knownOwner {
+		return admission.Denied("no live Agent with these owner annotations has the same spec.user.alias and spec.user.email; " +
+			"copy both from one of them, also an empty email")
 	}
 	team := &api.Team{}
-	if !knownOwner || h.reader.Get(ctx, client.ObjectKey{Name: agent.Spec.Team}, team) != nil || team.DeletionTimestamp != nil {
-		return admission.Denied("CetiAdmin creation requires an existing owner identity and live Team")
+	if err := h.reader.Get(ctx, client.ObjectKey{Name: agent.Spec.Team}, team); err != nil {
+		if apierrors.IsNotFound(err) {
+			return admission.Denied("spec.team names no Team: " + agent.Spec.Team)
+		}
+		return admission.Denied("the Team of spec.team cannot be confirmed")
+	}
+	if team.DeletionTimestamp != nil {
+		return admission.Denied("the Team of spec.team is being deleted: " + agent.Spec.Team)
 	}
 	if !safeCetiAdminValues(agent.Spec.Helm.Values) {
 		return admission.Denied("CetiAdmin creation only accepts resource limits and HOME size Helm values")

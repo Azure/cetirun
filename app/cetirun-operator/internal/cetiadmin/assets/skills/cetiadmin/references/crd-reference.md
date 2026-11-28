@@ -14,8 +14,9 @@ same as a Forbidden response or a failed observation.
 
 This minimal example shows the shape for a requested ordinary Hermes instance.
 `example-agent` and `example-team` are synthetic names, not approved identities.
-Creation requires deployment-admin supplied, trusted owner input through the
-current admission contract. Do not invent or copy another user's owner claims.
+Creation requires trusted owner input, which CetiAdmin copies from an existing
+Agent of the same owner; see [Owner input for creation](#owner-input-for-creation).
+Do not invent owner claims or copy another user's.
 
 ```yaml
 apiVersion: cetirun.microsoft.com/v1alpha1
@@ -66,6 +67,38 @@ The trusted owner annotations are
 `agentidentity.cetirun.microsoft.com/owner-object-id`. Trusted platform code
 writes them from verified owner claims. CetiAdmin cannot change an existing
 owner or Team assignment; it cannot infer those claims from a display name.
+
+### Owner input for creation
+
+CetiAdmin admission creates an Agent only for an owner whom the platform
+already knows: a live Agent of that owner has both owner annotations. The
+Portal records them when it creates an Agent for a verified owner. The new
+Agent must have:
+
+- Both owner annotations, copied from such an Agent.
+- The same `spec.user.alias` and `spec.user.email` as that Agent. An empty
+  email matches only an empty one. The CetiAdmin Agent has the owner
+  annotations of its owner and usually no email: for that owner, copy its
+  alias, email, and annotations.
+- A `spec.team` that names a live Team other than the CetiAdmin Team. A Team
+  is optional elsewhere, but CetiAdmin creation requires one.
+
+Read these fields from one Agent of the owner, by its name. Ask the requester
+for the name of such an Agent; the owner sees the names of their Agents in the
+Portal. For the owner of CetiAdmin, the CetiAdmin Agent has them:
+
+```sh
+kubectl --context cetiadmin get agents.cetirun.microsoft.com <source-agent> -o 'custom-columns=NAME:.metadata.name,ALIAS:.spec.user.alias,EMAIL:.spec.user.email,TEAM:.spec.team,TENANT:.metadata.annotations.agentidentity\.cetirun\.microsoft\.com/owner-tenant-id,OBJECT:.metadata.annotations.agentidentity\.cetirun\.microsoft\.com/owner-object-id'
+```
+
+Do not print these fields for all Agents. The aliases, email addresses, and IDs
+of other owners would enter the conversation, the next model request, and the
+logs of the AI Gateway.
+
+When no live Agent of the owner has the annotations, CetiAdmin cannot create
+the Agent. Report it, so that the owner creates one in the Portal or an
+administrator creates it. A refusal names the condition that failed: correct
+that input instead of trying variants.
 
 `cetiadmin.model.initialMonthlyBudgetUSD` is installation input for the first
 Virtual Key of that CetiAdmin UID. It is not a replacement for Agent policy

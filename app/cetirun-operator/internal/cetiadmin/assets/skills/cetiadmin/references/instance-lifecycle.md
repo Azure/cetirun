@@ -20,8 +20,9 @@ Read [operational constraints](operational-constraints.md) before mutations.
    or unavailable artifact from a permission problem. Do not change registry
    credentials, perform a cloud login, or disable admission to pass preflight.
 4. Construct only the allowed Agent fields from the
-   [CRD reference](crd-reference.md). Submit trusted owner information through
-   the installed admission contract. Preview the manifest, then create the CR.
+   [CRD reference](crd-reference.md). Copy the owner input as
+   [Owner input for creation](crd-reference.md#owner-input-for-creation)
+   describes. Preview the manifest, then create the CR.
    Do not pre-create its namespace, native-auth Secret, or Virtual Key.
 5. For more than one instance, obtain batch confirmation and create no more
    than three concurrently. Poll every 10 seconds with a 10-minute timeout for
