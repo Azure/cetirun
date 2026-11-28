@@ -169,6 +169,9 @@ func TestConfigHashUsesCanonicalConfigJSON(t *testing.T) {
 		{"null diagnostics", `{"enabled":false,"platformReadNamespaces":null}`, canonical},
 		{"platform diagnostics", `{"platformReadNamespaces":["kube-system"],"enabled":false}`,
 			strings.Replace(canonical, `"kubernetes":`, `"platformReadNamespaces":["kube-system"],"kubernetes":`, 1)},
+		{"empty monitor model", `{"enabled":false,"monitor":{"model":""}}`, canonical},
+		{"monitor model", `{"enabled":false,"monitor":{"model":"gpt-6-sol"}}`,
+			strings.Replace(canonical, `"deliver":"local"}`, `"deliver":"local","model":"gpt-6-sol"}`, 1)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			config, err := ParseConfig(test.raw)

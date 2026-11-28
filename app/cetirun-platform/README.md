@@ -582,6 +582,14 @@ channel in `monitor.slackChannel`. Also set `monitor.slackSecretName` to a
 Secret in `cetirun-<instanceName>` with the `SLACK_BOT_TOKEN` and
 `SLACK_APP_TOKEN` keys. The helper examines key names, not values.
 
+`monitor.model` optionally names the model of the scheduled runs, for example a
+fixed model that the CetiAdmin key may use. Without it, the runs use
+`model.default`, or a model that the owner chose for the job in CetiAdmin; with
+the `auto` router, the long monitor prompt goes to its most expensive tier. A monitor run reads about one million input tokens, also
+when nothing changed, so choose the schedule and `initialMonthlyBudgetUSD`
+together. Refer to
+[Model use and budget](../../site/content/en/docs/operations/cetiadmin.md#model-use-and-budget).
+
 For a new namespace, install with `monitor.enabled: false`. After the Operator
 creates the namespace, provision the Secret through the approved workflow. Then
 set `monitor.enabled: true`. No Teams settings or credentials are accepted or

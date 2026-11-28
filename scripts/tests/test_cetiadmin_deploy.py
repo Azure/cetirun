@@ -31,7 +31,7 @@ def admin_values(config):
         "model": {"default": "auto", "initialMonthlyBudgetUSD": "100", "githubCopilot": False},
         "sharedSkills": {"enabled": True},
         "monitor": {"enabled": True, "schedule": "every 30m", "timezone": "Asia/Singapore", "deliver": "slack",
-                    "slackChannel": "C012EXAMPLE", "slackSecretName": "cetiadmin-monitor-slack"},
+                    "slackChannel": "C012EXAMPLE", "slackSecretName": "cetiadmin-monitor-slack", "model": "gpt-6-sol"},
         "azureWorkloadIdentity": {"enabled": True, "clientId": "99999999-9999-9999-9999-999999999999"},
         "migrationSource": {"agent": {"name": "old-operations", "uid": "old-agent-uid"},
                             "namespace": {"name": "cetirun-old-operations", "uid": "old-namespace-uid"}},
@@ -193,6 +193,7 @@ class CetiAdminInputTests(full.DeploymentFixture, unittest.TestCase):
     def test_optional_inputs_fail_closed_and_never_accept_teams(self):
         for path, value in (("monitor.deliver", "teams"), ("monitor.timezone", "Invalid/Timezone"),
                             ("monitor.slackChannel", ""), ("monitor.slackSecretName", ""),
+                            ("monitor.model", "gpt 6"), ("monitor.model", 6), ("monitor.model", "a" * 257),
                             ("azureWorkloadIdentity.clientId", ""), ("runtime.version", "9.9.9"),
                             ("runtime.port", 18789), ("runtime.image", False), ("runtime.version", 0),
                             ("assets.image", "registry.example.com/other:1"),
@@ -257,6 +258,12 @@ class CetiAdminInputTests(full.DeploymentFixture, unittest.TestCase):
             with self.subTest(namespaces=namespaces):
                 expected = encoded.replace('"kubernetes":', '"platformReadNamespaces":["kube-system"],"kubernetes":', 1) if namespaces else encoded
                 actual = DEPLOY.cetiadmin_config_hash({"platformReadNamespaces": namespaces, "enabled": False})
+                self.assertEqual(actual, hashlib.sha256(expected.encode()).hexdigest())
+        # The monitor model is the last monitor field, and an empty one is no input.
+        for model, expected in (("", encoded),
+                                ("gpt-6-sol", encoded.replace('"deliver":"local"}', '"deliver":"local","model":"gpt-6-sol"}', 1))):
+            with self.subTest(model=model):
+                actual = DEPLOY.cetiadmin_config_hash({"enabled": False, "monitor": {"model": model}})
                 self.assertEqual(actual, hashlib.sha256(expected.encode()).hexdigest())
 
     def test_hash_rejects_legacy_scope_and_untyped_diagnostics(self):

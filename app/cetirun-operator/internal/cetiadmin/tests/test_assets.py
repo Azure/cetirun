@@ -64,7 +64,7 @@ class AssetContractTest(unittest.TestCase):
         monitor = next(item for item in examples if isinstance(item, dict) and "monitor" in item)
         self.assertEqual(set(monitor["instance"]), {"name", "namespace", "uid"})
         self.assertEqual(set(monitor["monitor"]), {
-            "enabled", "schedule", "timezone", "deliver", "slackChannel", "slackSecretName",
+            "enabled", "schedule", "timezone", "deliver", "slackChannel", "slackSecretName", "model",
         })
         issue_state = next(item for item in examples if isinstance(item, dict) and "knownIssues" in item)
         self.assertEqual(issue_state["pendingDeliveries"], {})

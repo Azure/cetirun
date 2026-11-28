@@ -6,7 +6,7 @@
 
 Run before the Hermes scheduler starts. The runtime must also export the
 returned timezone as HERMES_TIMEZONE for that scheduler and stop on failure.
-This CLI changes only its own process environment and private binding file;
+This CLI changes only its own process environment and private state files;
 cron.jobs owns all native job storage, output, and notepad handling.
 """
 
@@ -32,8 +32,15 @@ DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 UID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 SLACK_CHANNEL = re.compile(r"[CG][A-Z0-9]{8,31}")
 MAX_JSON_BYTES = 65536
-MONITOR_FIELDS = {"enabled", "schedule", "timezone", "deliver", "slackChannel", "slackSecretName"}
+MONITOR_FIELDS = {"enabled", "schedule", "timezone", "deliver", "slackChannel", "slackSecretName", "model"}
 BINDING_FIELDS = {"version", "instance", "hermesHome", "phase", "jobId", "timezone"}
+# The model that monitor.model set on the bound job, with its ID. Without monitor.model, a synchronization removes
+# only that model, whatever the job's prompt says, and keeps a model that the owner chose. A model is recorded
+# before the job gets it, and a new job gets its model only after it is bound, so an interrupted synchronization
+# leaves no model that the next one does not know. While a synchronization changes the model, the record has
+# both models; the next synchronization keeps the one that the job has (settled_models).
+MODELS_FILE = "cron-models.json"
+MODELS_FIELDS = {"version", "jobId", "models"}
 
 
 class SyncError(Exception):
@@ -81,7 +88,7 @@ def read_config(path):
     if (not isinstance(monitor, dict) or set(monitor) - MONITOR_FIELDS
             or not {"enabled", "timezone", "deliver"}.issubset(monitor)):
         raise SyncError("invalid_config")
-    for key in ("schedule", "slackChannel", "slackSecretName"):
+    for key in ("schedule", "slackChannel", "slackSecretName", "model"):
         monitor.setdefault(key, "")
     if not isinstance(monitor["enabled"], bool):
         raise SyncError("invalid_config")
@@ -91,6 +98,8 @@ def read_config(path):
             raise SyncError("invalid_config")
         if any(ord(char) < 32 for char in text):
             raise SyncError("invalid_config")
+    if any(char.isspace() for char in monitor["model"]):
+        raise SyncError("invalid_config")
     if ((monitor["enabled"] and not monitor["schedule"])
             or monitor["deliver"] not in {"local", "slack"}):
         raise SyncError("invalid_config")
@@ -143,14 +152,19 @@ def state_lock(directory):
         os.close(descriptor)
 
 
+def check_state_file(info):
+    """A state file is a private regular file of this user, with one link."""
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) & 0o077):
+        raise SyncError("unsafe_state")
+
+
 def read_binding(path, instance, home):
     try:
         info = path.lstat()
     except FileNotFoundError:
         return None
-    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid()
-            or stat.S_IMODE(info.st_mode) & 0o077):
-        raise SyncError("unsafe_state")
+    check_state_file(info)
     saved = read_json(path, "state_conflict")
     if (set(saved) != BINDING_FIELDS or type(saved["version"]) is not int or saved["version"] != 1
             or saved["instance"] != instance or saved["hermesHome"] != str(home)
@@ -161,6 +175,38 @@ def read_binding(path, instance, home):
     if not isinstance(saved["jobId"], str) or not JOB_ID.fullmatch(saved["jobId"]):
         raise SyncError("state_conflict")
     return saved
+
+
+def read_models(path, job_id):
+    """The models that monitor.model set on the job job_id (MODELS_FILE): none when the file is missing or names
+    another job."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return []
+    check_state_file(info)
+    saved = read_json(path, "state_conflict")
+    if (set(saved) != MODELS_FIELDS or type(saved["version"]) is not int or saved["version"] != 1
+            or not isinstance(saved["jobId"], str) or not JOB_ID.fullmatch(saved["jobId"])
+            or not isinstance(saved["models"], list)
+            or any(not isinstance(model, str) or not model or any(char.isspace() for char in model)
+                   for model in saved["models"])):
+        raise SyncError("state_conflict")
+    return saved["models"] if saved["jobId"] == job_id else []
+
+
+def save_models(path, job_id, models, directory_fd):
+    save_binding(path, {"version": 1, "jobId": job_id, "models": models}, directory_fd)
+
+
+def settled_models(models, job):
+    """The record of the model that monitor.model set, settled against the bound job: the job's model when the
+    record has it, else none. A synchronization that stopped while it changed the model left both models in the
+    record, and the job has one of them: Hermes, and so the owner, changes the job only after a synchronization
+    succeeds, and each synchronization settles the record first. So the record has at most the one model that
+    monitor.model set and the job still has, and a model that the owner chooses later is not in it."""
+    model = job.get("model")
+    return [model] if model and model in models else []
 
 
 def save_binding(path, binding, directory_fd):
@@ -261,8 +307,13 @@ def desired_job(config, state_dir):
     prompt += "\n\n## Bound monitor input\n\n```json\n" + json.dumps(context, sort_keys=True) + "\n```"
     monitor = config["monitor"]
     deliver = "slack:" + monitor["slackChannel"] if monitor["deliver"] == "slack" else "local"
-    return {"name": JOB_NAME, "prompt": prompt, "skills": ["cetiadmin"], "skill": "cetiadmin",
-            "deliver": deliver, "failure_deliver": deliver, "origin": None, "attach_to_session": False}
+    desired = {"name": JOB_NAME, "prompt": prompt, "skills": ["cetiadmin"], "skill": "cetiadmin",
+               "deliver": deliver, "failure_deliver": deliver, "origin": None, "attach_to_session": False}
+    # Hermes runs a job with a model on that model through its configured provider, the AI Gateway. Without
+    # monitor.model, the job keeps its own model: none, which is the main model, or one that its owner chose.
+    if monitor["model"]:
+        desired["model"] = monitor["model"]
+    return desired
 
 
 def verify_definition(job, desired, schedule):
@@ -273,10 +324,18 @@ def verify_definition(job, desired, schedule):
 def sync(config, home, install, state_dir):
     monitor = config["monitor"]
     path = state_dir / "cron-binding.json"
+    models_path = state_dir / MODELS_FILE
     with state_lock(state_dir) as directory_fd:
         binding = read_binding(path, config["instance"], home)
         native = load_native(install, monitor["timezone"])
         job = known_job(native, binding["jobId"] if binding else None)
+        models = []
+        if job is not None:
+            # Settle the record before anything else, also when the monitor is disabled: Hermes may run after this.
+            recorded = read_models(models_path, binding["jobId"])
+            models = settled_models(recorded, job)
+            if models != recorded:
+                save_models(models_path, binding["jobId"], models, directory_fd)
         result = {"status": "disabled", "timezone": monitor["timezone"]}
         if not monitor["enabled"]:
             if job is not None:
@@ -298,7 +357,10 @@ def sync(config, home, install, state_dir):
                        "phase": "creating", "jobId": None, "timezone": monitor["timezone"]}
             # A crash after native create must never authorize a second create.
             save_binding(path, binding, directory_fd)
-            new_job = native_call(native.create_job, schedule=monitor["schedule"], **desired,
+            # The new job has no model until it is bound: it gets its model below, as a bound job does, before it
+            # resumes. So nothing but the binding stands between the create and the binding.
+            initial = {key: value for key, value in desired.items() if key != "model"}
+            new_job = native_call(native.create_job, schedule=monitor["schedule"], **initial,
                                   paused=True, paused_reason="CetiAdmin binding awaiting readback",
                                   error="create_uncertain")
             job_id = new_job.get("id") if isinstance(new_job, dict) else None
@@ -307,8 +369,8 @@ def sync(config, home, install, state_dir):
             binding.update(phase="bound", jobId=job_id)
             save_binding(path, binding, directory_fd)
             job = known_job(native, job_id)
-            verify_definition(job, desired, schedule)
-            if job.get("enabled") is not False or job.get("state") != "paused":
+            verify_definition(job, initial, schedule)
+            if job.get("enabled") is not False or job.get("state") != "paused" or job.get("model"):
                 raise SyncError("readback_mismatch")
 
         if (any(job.get(key) for key in ("script", "no_agent", "monitor_script", "monitor_url"))
@@ -316,6 +378,13 @@ def sync(config, home, install, state_dir):
                 or not isinstance(job.get("enabled"), bool) or job.get("state") not in {"scheduled", "paused"}):
             raise SyncError("job_conflict")
         updates = {key: value for key, value in desired.items() if job.get(key) != value}
+        # Without monitor.model, remove only the model that monitor.model set, not one that the owner chose.
+        clear_model = not monitor["model"] and bool(job.get("model")) and job.get("model") in models
+        if clear_model:
+            updates["model"] = None
+        if monitor["model"] and monitor["model"] not in models:
+            models = models + [monitor["model"]]
+            save_models(models_path, binding["jobId"], models, directory_fd)
         timezone_changed = binding["timezone"] != monitor["timezone"]
         if job.get("schedule") != schedule or timezone_changed:
             updates["schedule"] = monitor["schedule"]
@@ -326,6 +395,8 @@ def sync(config, home, install, state_dir):
             native_call(native.update_job, binding["jobId"], updates)
             job = known_job(native, binding["jobId"])
         verify_definition(job, desired, schedule)
+        if clear_model and job.get("model"):
+            raise SyncError("readback_mismatch")
         if not job["enabled"] or job.get("state") == "paused" or job.get("paused_at"):
             native_call(native.resume_job, binding["jobId"])
             job = known_job(native, binding["jobId"])
@@ -342,6 +413,9 @@ def sync(config, home, install, state_dir):
         if timezone_changed:
             binding["timezone"] = monitor["timezone"]
             save_binding(path, binding, directory_fd)
+        managed = [monitor["model"]] if monitor["model"] else []
+        if models != managed:
+            save_models(models_path, binding["jobId"], managed, directory_fd)
         result.update(status="created" if created else "updated" if changed else "unchanged",
                       jobId=binding["jobId"], nextRunAt=next_run.isoformat())
         return result

@@ -221,7 +221,8 @@ The file contains no credential values:
     "timezone": "UTC",
     "deliver": "local",
     "slackChannel": "",
-    "slackSecretName": ""
+    "slackSecretName": "",
+    "model": ""
   }
 }
 ```
@@ -231,7 +232,12 @@ or cron schedule is required when enabled; one-shot schedules are not monitor
 jobs. Empty Slack fields can be omitted for local delivery. Disabled monitoring
 can omit schedule and Slack fields. Slack requires an explicit channel ID,
 a same-instance Secret reference, and injected `SLACK_BOT_TOKEN` plus
-`SLACK_APP_TOKEN`. The helper checks presence, not live authorization.
+`SLACK_APP_TOKEN`. The helper checks presence, not live authorization. A model
+name in `model` sets the model of the native job. Without it, the job keeps its
+own model: none, which is CetiAdmin's default model, or one that its owner chose.
+A model that `model` set earlier is removed. The helper records each model that
+it sets, with the job's ID, in `cron-models.json` of its state directory, so an
+edit of the job's prompt does not keep such a model.
 
 The runtime must stop startup on a nonzero exit. On success it must export the
 returned validated `timezone` as `HERMES_TIMEZONE` before starting the scheduler.
@@ -242,7 +248,8 @@ Do not leave an old scheduler running after a rejected configuration.
 
 `cron-binding.json` stores this instance identity, canonical HOME, stable native
 job ID, creation phase, and last synchronized timezone. Initial create is
-paused until the binding and native readback succeed. Ordinary changes edit
+paused, without `model`, until the binding and native readback succeed. The job
+then gets `model` as an ordinary change, before it resumes. Ordinary changes edit
 that ID; disabled monitoring only pauses it. Missing jobs, unknown same-name
 jobs, foreign binding files, and uncertain creates require inspection. Never
 clear the record and retry creation blindly. Preserve output and notepad;

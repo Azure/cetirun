@@ -108,6 +108,8 @@ def create_job(prompt, schedule, name=None, repeat=None, deliver=None,
     jobs = load() + [job]
     if fault == "create_collision":
         jobs.append({**job, "id": "abcdef012345"})
+    if fault == "create_with_model":
+        job["model"] = "main-model"
     save(jobs)
     if fault == "create_after_write":
         raise RuntimeError("sk-dummy-must-not-appear")
@@ -488,6 +490,187 @@ class CronSyncCLITest(unittest.TestCase):
                 self.config["monitor"][field] = value
                 self.assertEqual(self.run_cli(success=False)["code"], code)
                 self.config["monitor"] = previous
+        self.assertEqual(self.calls("create"), [])
+
+    def test_monitor_model_is_the_model_of_the_job_and_changes_in_place(self):
+        # Without a model the job runs on the main model. A model pins the job to it, a change of the model edits
+        # the same job, and removing it removes the model that it set.
+        first = self.run_cli()
+        self.assertIsNone(self.jobs()[0]["model"])
+        self.config["monitor"]["model"] = "gpt-6-sol"
+        second = self.run_cli()
+        self.assertEqual((second["status"], second["jobId"]), ("updated", first["jobId"]))
+        self.assertEqual(self.jobs()[0]["model"], "gpt-6-sol")
+        self.assertIn("model", self.calls("update")[-1]["fields"])
+        self.assertEqual(self.run_cli()["status"], "unchanged")
+        del self.config["monitor"]["model"]
+        self.assertEqual(self.run_cli()["status"], "updated")
+        self.assertIsNone(self.jobs()[0]["model"])
+        self.assertEqual(len(self.calls("create")), 1)
+
+    def test_monitor_model_keeps_a_model_that_the_owner_chose(self):
+        # Without monitor.model, a model that the owner chose for the job stays, as before the field existed.
+        self.run_cli()
+        self.change_job(model="owner-model")
+        self.assertEqual(self.run_cli()["status"], "unchanged")
+        self.assertEqual(self.jobs()[0]["model"], "owner-model")
+        # The installation input wins while it is set.
+        self.config["monitor"]["model"] = "gpt-6-sol"
+        self.run_cli()
+        self.assertEqual(self.jobs()[0]["model"], "gpt-6-sol")
+        # A later choice of the owner is not the model that monitor.model set, so it stays when the field goes.
+        self.change_job(model="owner-model")
+        del self.config["monitor"]["model"]
+        self.assertEqual(self.run_cli()["status"], "updated")
+        self.assertNotIn("model", self.calls("update")[-1]["fields"])
+        self.assertEqual(self.jobs()[0]["model"], "owner-model")
+
+    def models_record(self):
+        return json.loads((self.state_dir / "cron-models.json").read_text())
+
+    def test_monitor_model_goes_also_after_the_owner_edited_the_prompt(self):
+        # The helper keeps the model that it set apart from the job's prompt: a note that the owner adds to the
+        # prompt does not keep the model when monitor.model goes.
+        self.config["monitor"]["model"] = "gpt-6-sol"
+        job_id = self.run_cli()["jobId"]
+        self.assertEqual(self.models_record(), {"version": 1, "jobId": job_id, "models": ["gpt-6-sol"]})
+        self.change_job(prompt=self.jobs()[0]["prompt"] + "\n\nOwner note: check the GPU nodes too.")
+        del self.config["monitor"]["model"]
+        self.assertEqual(self.run_cli()["status"], "updated")
+        self.assertIsNone(self.jobs()[0]["model"])
+        self.assertNotIn("Owner note", self.jobs()[0]["prompt"])
+        self.assertEqual(self.models_record(), {"version": 1, "jobId": job_id, "models": []})
+
+    def test_a_model_that_an_interrupted_synchronization_set_goes_too(self):
+        # The helper records the model before the job gets it: a synchronization that stops after the update keeps
+        # the record, so the model goes with monitor.model.
+        self.run_cli()
+        self.config["monitor"]["model"] = "gpt-6-sol"
+        self.assertEqual(self.run_cli(fault="update_after_write", success=False)["code"], "native_error")
+        self.assertEqual(self.jobs()[0]["model"], "gpt-6-sol")
+        del self.config["monitor"]["model"]
+        self.assertEqual(self.run_cli()["status"], "updated")
+        self.assertIsNone(self.jobs()[0]["model"])
+
+    def test_a_new_job_is_bound_before_it_gets_its_model(self):
+        # A new job is created paused without the model and bound at once. It gets the model as a bound job does,
+        # recorded first, before it resumes: when the record cannot be written, the job stays bound and paused
+        # without a model, disabling the monitor only pauses it, and the next synchronization sets the model.
+        self.config["monitor"]["model"] = "gpt-6-sol"
+        self.state_dir.mkdir(mode=0o700)
+        (self.state_dir / "cron-models.json").mkdir()
+        self.assertEqual(self.run_cli(success=False)["code"], "sync_failed")
+        binding = json.loads(self.binding.read_text())
+        self.assertEqual((binding["phase"], binding["jobId"]), ("bound", self.jobs()[0]["id"]))
+        self.assertEqual((self.jobs()[0]["model"], self.jobs()[0]["state"]), (None, "paused"))
+        self.assertEqual(self.calls("update"), [])
+        (self.state_dir / "cron-models.json").rmdir()
+        self.config["monitor"]["enabled"] = False
+        self.assertEqual(self.run_cli(), {"status": "paused", "timezone": "UTC", "jobId": binding["jobId"]})
+        self.config["monitor"]["enabled"] = True
+        result = self.run_cli()
+        self.assertEqual((result["status"], result["jobId"]), ("updated", binding["jobId"]))
+        self.assertEqual((self.jobs()[0]["model"], self.jobs()[0]["state"]), ("gpt-6-sol", "scheduled"))
+        self.assertEqual(self.models_record(), {"version": 1, "jobId": binding["jobId"], "models": ["gpt-6-sol"]})
+        self.assertEqual(len(self.calls("create")), 1)
+
+    def test_a_new_job_with_a_model_is_created_and_resumed_in_one_synchronization(self):
+        self.config["monitor"]["model"] = "gpt-6-sol"
+        result = self.run_cli()
+        self.assertEqual(result["status"], "created")
+        self.assertEqual((self.jobs()[0]["model"], self.jobs()[0]["state"]), ("gpt-6-sol", "scheduled"))
+        self.assertEqual(self.models_record(), {"version": 1, "jobId": result["jobId"], "models": ["gpt-6-sol"]})
+        self.assertEqual([call["fields"] for call in self.calls("update")][0], ["model"])
+
+    def test_a_new_job_that_comes_with_a_model_is_not_resumed(self):
+        # A model that the new job has before its binding is not one that monitor.model set.
+        self.config["monitor"]["model"] = "gpt-6-sol"
+        self.assertEqual(self.run_cli(fault="create_with_model", success=False)["code"], "readback_mismatch")
+        self.assertEqual(self.calls("update"), [])
+        self.assertEqual(self.jobs()[0]["state"], "paused")
+
+    def test_a_creation_that_stops_after_the_binding_leaves_a_paused_job_without_a_model(self):
+        self.config["monitor"]["model"] = "gpt-6-sol"
+        self.assertEqual(self.run_cli(fault="missing_readback", success=False)["code"], "job_missing")
+        self.assertEqual(json.loads(self.binding.read_text())["phase"], "bound")
+        self.assertEqual((self.jobs()[0]["model"], self.jobs()[0]["state"]), (None, "paused"))
+        self.assertEqual(self.run_cli()["status"], "updated")
+        self.assertEqual((self.jobs()[0]["model"], self.jobs()[0]["state"]), ("gpt-6-sol", "scheduled"))
+        del self.config["monitor"]["model"]
+        self.assertEqual(self.run_cli()["status"], "updated")
+        self.assertIsNone(self.jobs()[0]["model"])
+
+    def test_a_model_that_the_owner_chooses_after_an_interrupted_change_stays(self):
+        # monitor.model changes from A to B, and the synchronization stops after the update: the record has both.
+        # The next synchronization, before Hermes runs, settles the record to the model of the job, B, also when it
+        # only pauses the job. A, which the owner chooses then, is not the model that monitor.model set: it stays.
+        self.config["monitor"]["model"] = "model-a"
+        job_id = self.run_cli()["jobId"]
+        self.config["monitor"]["model"] = "model-b"
+        self.assertEqual(self.run_cli(fault="update_after_write", success=False)["code"], "native_error")
+        self.assertEqual(self.jobs()[0]["model"], "model-b")
+        self.assertEqual(self.models_record()["models"], ["model-a", "model-b"])
+        self.config["monitor"]["enabled"] = False
+        self.assertEqual(self.run_cli()["status"], "paused")
+        self.assertEqual(self.models_record(), {"version": 1, "jobId": job_id, "models": ["model-b"]})
+        self.change_job(model="model-a")
+        self.config["monitor"]["enabled"] = True
+        del self.config["monitor"]["model"]
+        self.assertEqual(self.run_cli()["status"], "updated")
+        self.assertEqual(self.jobs()[0]["model"], "model-a")
+        self.assertEqual(self.models_record()["models"], [])
+
+    def test_a_model_change_that_did_not_reach_the_job_is_settled_too(self):
+        # The update did not change the job: the record keeps A, which the job still has.
+        self.config["monitor"]["model"] = "model-a"
+        self.run_cli()
+        self.config["monitor"]["model"] = "model-b"
+        self.assertEqual(self.run_cli(fault="ignore_update", success=False)["code"], "readback_mismatch")
+        self.assertEqual(self.jobs()[0]["model"], "model-a")
+        self.assertEqual(self.models_record()["models"], ["model-a", "model-b"])
+        self.config["monitor"]["enabled"] = False
+        self.assertEqual(self.run_cli()["status"], "paused")
+        self.assertEqual(self.models_record()["models"], ["model-a"])
+        # A model that the owner chose instead of the record's one empties the record.
+        self.change_job(model="owner-model")
+        self.assertEqual(self.run_cli()["status"], "paused")
+        self.assertEqual(self.models_record()["models"], [])
+
+    def test_a_model_record_of_another_job_does_not_count(self):
+        self.run_cli()
+        self.change_job(model="gpt-6-sol")
+        record = self.state_dir / "cron-models.json"
+        record.write_text(json.dumps({"version": 1, "jobId": "abcdef012345", "models": ["gpt-6-sol"]}))
+        record.chmod(0o600)
+        self.assertEqual(self.run_cli()["status"], "unchanged")
+        self.assertEqual(self.jobs()[0]["model"], "gpt-6-sol")
+
+    def test_the_model_record_is_private_and_checked(self):
+        self.config["monitor"]["model"] = "gpt-6-sol"
+        job_id = self.run_cli()["jobId"]
+        record = self.state_dir / "cron-models.json"
+        self.assertEqual(record.stat().st_mode & 0o777, 0o600)
+        for value in ({"version": 1, "jobId": job_id, "models": ["gpt 6"]},
+                      {"version": 1, "jobId": job_id, "models": "gpt-6-sol"},
+                      {"version": 1, "jobId": job_id, "models": [""]},
+                      {"version": 2, "jobId": job_id, "models": []},
+                      {"version": 1, "jobId": "../job", "models": []},
+                      {"version": 1, "jobId": job_id}, [job_id]):
+            with self.subTest(value=value):
+                record.write_text(json.dumps(value))
+                record.chmod(0o600)
+                self.assertEqual(self.run_cli(success=False)["code"], "state_conflict")
+        record.write_text(json.dumps({"version": 1, "jobId": job_id, "models": ["gpt-6-sol"]}))
+        record.chmod(0o644)
+        self.assertEqual(self.run_cli(success=False)["code"], "unsafe_state")
+        record.chmod(0o600)
+        self.assertEqual(self.run_cli()["status"], "unchanged")
+
+    def test_monitor_model_names_one_model(self):
+        for model in ("gpt 6", " gpt-6", "gpt-6\t", "a" * 257, 6):
+            with self.subTest(model=model):
+                self.config["monitor"]["model"] = model
+                self.assertEqual(self.run_cli(success=False)["code"], "invalid_config")
         self.assertEqual(self.calls("create"), [])
 
     def test_native_stdout_and_stderr_are_not_forwarded(self):

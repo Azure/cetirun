@@ -127,6 +127,25 @@ func declaresValuePath(values map[string]any, path []string) bool {
 	return false
 }
 
+// schemaDeclaresProperty reports whether the values schema of a chart
+// declares a nested property, through the properties of each object.
+func schemaDeclaresProperty(schema []byte, path ...string) bool {
+	var node any
+	if len(path) == 0 || json.Unmarshal(schema, &node) != nil {
+		return false
+	}
+	for _, name := range path {
+		properties, ok := object(node)["properties"].(map[string]any)
+		if !ok {
+			return false
+		}
+		if node, ok = properties[name]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // Rebuild uses the same loaded chart after platform integration bindings have
 // been resolved. It never pulls a second, potentially changed chart.
 func (p *PreparedRelease) Rebuild(input map[string]any) (*PreparedRelease, error) {
@@ -188,6 +207,11 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 		}
 		if err := request.CetiAdmin.Validate(); err != nil {
 			return nil, err
+		}
+		// Charts before the field have a closed schema for the monitor.
+		if request.CetiAdmin.Monitor.Model != "" && !schemaDeclaresProperty(chrt.Schema, "cetiadmin", "monitor", "model") {
+			return nil, fmt.Errorf("the selected runtime chart does not support cetiadmin.monitor.model; " +
+				"leave it empty, or select a later chart in cetiadmin.runtime.version")
 		}
 		copy := make(map[string]any, len(input))
 		for key, value := range input {

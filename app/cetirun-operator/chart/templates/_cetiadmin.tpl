@@ -33,7 +33,7 @@ Licensed under the MIT License.
 {{- if or (not (regexMatch "^[0-9]+$" (toString $c.hookTimeoutSeconds))) (lt (int64 $c.hookTimeoutSeconds) 1) (gt (int64 $c.hookTimeoutSeconds) 3600) -}}
 {{- fail "cetiadmin.hookTimeoutSeconds must be an integer between 1 and 3600" -}}
 {{- end -}}
-{{- range $field, $allowed := dict "owner" (list "alias" "tenantID" "objectID") "kubernetes" (list "apiServer" "apiAudience" "caConfigMapName" "apiEgressCIDRs") "model" (list "default" "initialMonthlyBudgetUSD" "githubCopilot") "runtime" (list "version" "image" "port") "azureWorkloadIdentity" (list "enabled" "clientId") "sharedSkills" (list "enabled") "monitor" (list "enabled" "schedule" "timezone" "deliver" "slackChannel" "slackSecretName") -}}
+{{- range $field, $allowed := dict "owner" (list "alias" "tenantID" "objectID") "kubernetes" (list "apiServer" "apiAudience" "caConfigMapName" "apiEgressCIDRs") "model" (list "default" "initialMonthlyBudgetUSD" "githubCopilot") "runtime" (list "version" "image" "port") "azureWorkloadIdentity" (list "enabled" "clientId") "sharedSkills" (list "enabled") "monitor" (list "enabled" "schedule" "timezone" "deliver" "slackChannel" "slackSecretName" "model") -}}
 {{- $value := get $c $field -}}
 {{- if not (kindIs "map" $value) -}}{{- fail (printf "cetiadmin.%s must be an object" $field) -}}{{- end -}}
 {{- range $key, $_ := $value -}}
@@ -83,6 +83,9 @@ Licensed under the MIT License.
 {{- if and $c.sharedSkills.enabled (empty (dig "skills" "storageAccount" "" .Values.cetirun.helmValues)) -}}{{- fail "cetiadmin.sharedSkills.enabled requires cetirun.helmValues.skills.storageAccount" -}}{{- end -}}
 {{- if not (has $c.monitor.deliver (list "local" "slack")) -}}{{- fail "cetiadmin.monitor.deliver must be local or slack" -}}{{- end -}}
 {{- if or (not (kindIs "string" $c.monitor.timezone)) (empty $c.monitor.timezone) (eq $c.monitor.timezone "Local") -}}{{- fail "cetiadmin.monitor.timezone must name an IANA timezone" -}}{{- end -}}
+{{- $monitorModel := $c.monitor.model -}}
+{{- if kindIs "invalid" $monitorModel -}}{{- $monitorModel = "" -}}{{- end -}}
+{{- if or (not (kindIs "string" $monitorModel)) (regexMatch "[[:space:][:cntrl:]]" $monitorModel) (gt (len $monitorModel) 256) -}}{{- fail "cetiadmin.monitor.model must name a model, or be empty for model.default" -}}{{- end -}}
 {{- if $c.monitor.enabled -}}
 {{- if empty (trim $c.monitor.schedule) -}}{{- fail "cetiadmin.monitor.schedule is required" -}}{{- end -}}
 {{- if eq $c.monitor.deliver "slack" -}}
@@ -96,6 +99,10 @@ Licensed under the MIT License.
 {{- if $portSet -}}{{- $_ := set $runtime "port" $c.runtime.port -}}{{- end -}}
 {{- $config := omit $c "hookTimeoutSeconds" "legacyDisabledSource" -}}
 {{- $_ := set $config "runtime" $runtime -}}
+{{- /* An empty monitor model is no input: the operator and its configuration hash see the monitor as before. */ -}}
+{{- $monitor := omit $c.monitor "model" -}}
+{{- if $c.monitor.model -}}{{- $_ := set $monitor "model" $c.monitor.model -}}{{- end -}}
+{{- $_ := set $config "monitor" $monitor -}}
 {{- if $c.legacyDisabledSource -}}
 {{- $_ := unset $config "platformReadNamespaces" -}}
 {{- $_ := set $config "scope" (dict "mode" "all-managed-agents" "teamNames" (list) "platformReadNamespaces" $c.platformReadNamespaces) -}}

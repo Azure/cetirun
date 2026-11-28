@@ -897,6 +897,7 @@ operations Agent that the operator installs. The platform chart and
 | `cetiadmin.kubernetes.apiAudience`, `cetiadmin.kubernetes.apiEgressCIDRs` | Empty and `[]`. Both are necessary when CetiAdmin is enabled: a token audience that the API server accepts and that is different from the Connections MCP audience, and the endpoint addresses of the API server as `/32` or `/128` CIDRs. |
 | `cetiadmin.platformReadNamespaces` | `[]`. Other namespaces for read-only diagnostics. |
 | `cetiadmin.monitor.enabled` | `false`. Scheduled health checks. `monitor.deliver` is `local` or `slack`. |
+| `cetiadmin.monitor.model` | Empty. The model of the scheduled health checks. When it is empty, they run on `cetiadmin.model.default`, or on a model that the owner chose for the job in CetiAdmin. Agent charts 0.2.2 and earlier do not accept it, so leave it empty when `cetiadmin.runtime.version` selects one. See [Model use and budget](../../operations/cetiadmin/#model-use-and-budget). |
 | `cetiadmin.runtime.version`, `cetiadmin.runtime.image`, `cetiadmin.runtime.port` | Empty. CetiAdmin then uses the agent chart and the Hermes profile of the same release. |
 | `cetiadmin.sharedSkills.enabled`, `cetiadmin.azureWorkloadIdentity.enabled` | `false` |
 | `cetiadmin.hookTimeoutSeconds` | `600`. The wait budget of the CetiAdmin hooks. Helm's own `--timeout` must also allow this duration. |
